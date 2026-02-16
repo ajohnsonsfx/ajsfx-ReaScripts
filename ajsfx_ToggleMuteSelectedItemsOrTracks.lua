@@ -1,36 +1,101 @@
-function ToggleMuteSelectedItems()
-  -- Check for any selected items
-  local item_count = reaper.CountSelectedMediaItems(0)
-  if item_count > 0 then
+-- @description Smart Toggle Mute (Razor > Items > Tracks)
+-- @author ajsfx
+-- @version 2.0
+-- @about Toggles mute intelligently. Priority: 1. Razor Edits (mutes items in area), 2. Selected Items, 3. Selected Tracks.
 
-    local any_muted = false
-    local all_muted = true
+local r = reaper
+-- Ensure correct package path
+local script_path = debug.getinfo(1, "S").source:match("@?(.*[\\/])")
+if not script_path then script_path = "" end
+package.path = script_path .. "?.lua;" .. package.path
 
-    -- Iterate over selected items to check mute state
-    for i = 0, item_count - 1 do
-      local item = reaper.GetSelectedMediaItem(0, i)
-      local muted = reaper.GetMediaItemInfo_Value(item, "B_MUTE")
-      if muted == 1 then
-        any_muted = true
-      else
-        all_muted = false 
+local core = require("lib.ajsfx_core")
+
+core.Transaction("Smart Toggle Mute", function()
+  
+  -- Priority 1: Razor Edits
+  local razor_items = {}
+  local track_count = r.CountTracks(0)
+  for i = 0, track_count - 1 do
+    local track = r.GetTrack(0, i)
+    local razor_edits = core.GetRazorEdits(track)
+    
+    for _, edit in ipairs(razor_edits) do
+      local item_count = r.CountTrackMediaItems(track)
+      for j = 0, item_count - 1 do
+        local item = r.GetTrackMediaItem(track, j)
+        local pos = r.GetMediaItemInfo_Value(item, "D_POSITION")
+        local len = r.GetMediaItemInfo_Value(item, "D_LENGTH")
+        local end_pos = pos + len
+        
+        -- Check for intersection
+        if pos < edit.end_time and end_pos > edit.start_time then
+          table.insert(razor_items, item)
+        end
       end
     end
-
-    -- Apply mute/unmute based on state
-    for i = 0, item_count - 1 do
-      local item = reaper.GetSelectedMediaItem(0, i)
-      if all_muted then -- All muted, unmute all 
-        reaper.SetMediaItemInfo_Value(item, "B_MUTE", 0) 
-      else -- Any muted or none muted, mute all
-        reaper.SetMediaItemInfo_Value(item, "B_MUTE", 1) 
-      end
-    end
-
-    reaper.UpdateArrange() -- Refresh the track view
   end
-end
+  
+  if #razor_items > 0 then
+    local any_unmuted = false
+    for _, item in ipairs(razor_items) do
+      if r.GetMediaItemInfo_Value(item, "B_MUTE") == 0 then
+        any_unmuted = true
+        break
+      end
+    end
+    
+    local new_state = any_unmuted and 1 or 0
+    for _, item in ipairs(razor_items) do
+      r.SetMediaItemInfo_Value(item, "B_MUTE", new_state)
+    end
+    
+    r.UpdateArrange()
+    return
+  end
+  
+  -- Priority 2: Selected Items
+  local selected_item_count = r.CountSelectedMediaItems(0)
+  if selected_item_count > 0 then
+    local any_unmuted = false
+    for i = 0, selected_item_count - 1 do
+      local item = r.GetSelectedMediaItem(0, i)
+      if r.GetMediaItemInfo_Value(item, "B_MUTE") == 0 then
+        any_unmuted = true
+        break
+      end
+    end
+    
+    local new_state = any_unmuted and 1 or 0
+    for i = 0, selected_item_count - 1 do
+      local item = r.GetSelectedMediaItem(0, i)
+      r.SetMediaItemInfo_Value(item, "B_MUTE", new_state)
+    end
+    
+    r.UpdateArrange()
+    return
+  end
+  
+  -- Priority 3: Selected Tracks
+  local selected_track_count = r.CountSelectedTracks(0)
+  if selected_track_count > 0 then
+    local any_unmuted = false
+    for i = 0, selected_track_count - 1 do
+      local track = r.GetSelectedTrack(0, i)
+      if r.GetMediaTrackInfo_Value(track, "B_MUTE") == 0 then
+        any_unmuted = true
+        break
+      end
+    end
+    
+    local new_state = any_unmuted and 1 or 0
+    for i = 0, selected_track_count - 1 do
+      local track = r.GetSelectedTrack(0, i)
+      r.SetMediaTrackInfo_Value(track, "B_MUTE", new_state)
+    end
+    
+    r.UpdateArrange()
+    return
+  end
 
-ToggleMuteSelectedItems() -- Call the function to execute it
-
-reaper.AddRemoveReaScript(true, 0, "ToggleMuteSelectedItems", 0)
+end)

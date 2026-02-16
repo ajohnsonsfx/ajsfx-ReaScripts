@@ -5,11 +5,9 @@
 
 local r = reaper
 
--- Attempt to load the built-in ImGui library
--- This is the graphics library Reaper uses for scripts
 local success, im = pcall(function()
     package.path = r.ImGui_GetBuiltinPath() .. '/?.lua;' .. package.path
-    return require('imgui')('0.9.3') -- Pass a version string for compatibility
+    return require('imgui')('0.9.3')
 end)
 
 if not success then
@@ -17,7 +15,6 @@ if not success then
     return
 end
 
--- Create a graphics context for our script
 local ctx = im.CreateContext('Item Counter')
 
 --------------------------------
@@ -32,7 +29,7 @@ local VERTICAL_ALIGN = 0.5   -- 0.0=top, 0.5=center, 1.0=bottom
 
 local font
 
--- This function finds the arrange view window and prepares our overlay
+-- Finds the arrange view window and prepares the overlay
 local arrange = r.JS_Window_FindChildByID(r.GetMainHwnd(), 0x3E8)
 local LEFT, TOP, RIGHT, BOT = 0, 0, 0, 0
 local WX, WY = 0, 0
@@ -55,9 +52,7 @@ local function DrawOverArrange()
     im.SetNextWindowSize(ctx, (RIGHT - LEFT) - scroll_size, (BOT - TOP) - scroll_size)
 end
 
--- This is the main loop that runs continuously
 function loop()
-    -- Check if the graphics context is still valid
     if not (ctx and im.ValidatePtr(ctx, 'ImGui_Context*')) then
         ctx = im.CreateContext('Item Counter')
         font = im.CreateFont(FONT_NAME, FONT_SIZE)
@@ -66,19 +61,19 @@ function loop()
 
     DrawOverArrange()
     
-    -- These flags make our window transparent and non-interactive
-    local window_flags = im.WindowFlags_NoTitleBar() |
-                         im.WindowFlags_NoResize() |
-                         im.WindowFlags_NoNav() |
-                         im.WindowFlags_NoScrollbar() |
-                         im.WindowFlags_NoDecoration() |
-                         im.WindowFlags_NoDocking() | 
-                         im.WindowFlags_NoBackground() |
-                         im.WindowFlags_NoInputs() |
-                         im.WindowFlags_NoMove() |
-                         im.WindowFlags_NoSavedSettings() |
-                         im.WindowFlags_NoMouseInputs() |
-                         im.WindowFlags_NoFocusOnAppearing()
+    -- Window flags for transparent, non-interactive overlay
+    local window_flags = im.WindowFlags_NoTitleBar |
+                         im.WindowFlags_NoResize |
+                         im.WindowFlags_NoNav |
+                         im.WindowFlags_NoScrollbar |
+                         im.WindowFlags_NoDecoration |
+                         im.WindowFlags_NoDocking |
+                         im.WindowFlags_NoBackground |
+                         im.WindowFlags_NoInputs |
+                         im.WindowFlags_NoMove |
+                         im.WindowFlags_NoSavedSettings |
+                         im.WindowFlags_NoMouseInputs |
+                         im.WindowFlags_NoFocusOnAppearing
 
     im.PushFont(ctx, font)
     local visible, open = im.Begin(ctx, 'Item Counter Display', true, window_flags)
@@ -94,7 +89,6 @@ function loop()
         for i = 0, track_count - 1 do
             local track = r.GetTrack(0, i)
             
-            -- Only draw on visible tracks
             if r.GetMediaTrackInfo_Value(track, "B_SHOWINTCP") == 1 then
                 local item_count = r.CountTrackMediaItems(track)
                 
@@ -102,7 +96,7 @@ function loop()
                     local track_y = r.GetMediaTrackInfo_Value(track, "I_TCPY") / screen_scale
                     local track_h = r.GetMediaTrackInfo_Value(track, "I_TCPH") / screen_scale
                     
-                    if track_h > 10 then -- Don't draw on tiny tracks
+                    if track_h > 10 then
                         local text = string.format("[%d]", item_count)
                         local text_w, text_h = im.CalcTextSize(ctx, text)
                         
@@ -110,7 +104,6 @@ function loop()
                         local text_x = WX + HORIZONTAL_OFFSET
                         local text_y = WY + track_y + (track_h * VERTICAL_ALIGN) - (text_h * 0.5)
                         
-                        -- Draw the text
                         im.DrawList_AddText(draw_list, text_x, text_y, TEXT_COLOR, text)
                     end
                 end
@@ -121,25 +114,30 @@ function loop()
     im.End(ctx)
     im.PopFont(ctx)
     
-    -- If the window is still open, schedule the loop to run again
     if open then
         r.defer(loop)
     end
 end
 
--- This function runs once at the start
 function main()
     font = im.CreateFont(FONT_NAME, FONT_SIZE)
     im.Attach(ctx, font)
     loop()
 end
 
--- This function runs when the script is closed
+-- Start the script
+local _, _, section, cmdID = r.get_action_context()
+
 r.atexit(function()
-    if ctx and im.ValidatePtr(ctx, 'ImGui_Context*') then
-        im.DestroyContext(ctx)
+    if cmdID then
+        r.SetToggleCommandState(section, cmdID, 0)
+        r.RefreshToolbar2(section, cmdID)
     end
 end)
 
--- Start the script
+if cmdID then
+    r.SetToggleCommandState(section, cmdID, 1)
+    r.RefreshToolbar2(section, cmdID)
+end
+
 main()

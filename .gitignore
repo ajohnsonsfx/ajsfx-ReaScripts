@@ -1,0 +1,5 @@
+.clinerules
+plans/
+.vscode/
+*.bak
+*.RPP-bak
