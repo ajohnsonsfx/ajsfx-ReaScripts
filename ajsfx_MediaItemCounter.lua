@@ -29,7 +29,8 @@ local function LoadConfig()
         TEXT_COLOR = 0x99FFFFFF, -- White with 60% alpha (AABBGGRR format)
         HORIZONTAL_OFFSET = 5,
         VERTICAL_ALIGN = 0.5,
-        H_ALIGN = 0
+        H_ALIGN = 0,
+        REFRESH_RATE = 30
     }
     
     if r.HasExtState(EXT_SECTION, "FONT_SIZE") then cfg.FONT_SIZE = tonumber(r.GetExtState(EXT_SECTION, "FONT_SIZE")) or cfg.FONT_SIZE end
@@ -37,6 +38,7 @@ local function LoadConfig()
     if r.HasExtState(EXT_SECTION, "HORIZONTAL_OFFSET") then cfg.HORIZONTAL_OFFSET = tonumber(r.GetExtState(EXT_SECTION, "HORIZONTAL_OFFSET")) or cfg.HORIZONTAL_OFFSET end
     if r.HasExtState(EXT_SECTION, "VERTICAL_ALIGN") then cfg.VERTICAL_ALIGN = tonumber(r.GetExtState(EXT_SECTION, "VERTICAL_ALIGN")) or cfg.VERTICAL_ALIGN end
     if r.HasExtState(EXT_SECTION, "H_ALIGN") then cfg.H_ALIGN = tonumber(r.GetExtState(EXT_SECTION, "H_ALIGN")) or cfg.H_ALIGN end
+    if r.HasExtState(EXT_SECTION, "REFRESH_RATE") then cfg.REFRESH_RATE = tonumber(r.GetExtState(EXT_SECTION, "REFRESH_RATE")) or cfg.REFRESH_RATE end
     
     return cfg
 end
@@ -49,9 +51,13 @@ local LAST_CONFIG_CHECK = r.time_precise()
 local font
 local arrange = r.JS_Window_FindChildByID(r.GetMainHwnd(), 0x3E8)
 local LEFT, TOP, RIGHT, BOT = 0, 0, 0, 0
-local WX, WY = 0, 0
 local scroll_size = 0
 local OLD_VAL = 0
+
+local CachedItemCounts = {}
+local LastProjStateCount = -1
+local LastDrawTime = 0
+local DrawCache = {}
 
 local function RecreateFont()
     if font then im.Detach(ctx, font) end
@@ -126,38 +132,72 @@ function loop()
         local screen_scale = tonumber(screen_scale_str) or 1
         if screen_scale == 0 then screen_scale = 1 end
 
-        local track_count = r.CountTracks(0)
-        for i = 0, track_count - 1 do
-            local track = r.GetTrack(0, i)
+        -- Refresh Rate Throttling
+        local min_frame_time = 1.0 / (Config.REFRESH_RATE or 30)
+        
+        if current_time - LastDrawTime >= min_frame_time then
+            LastDrawTime = current_time
+            DrawCache = {}
             
-            if r.GetMediaTrackInfo_Value(track, "B_SHOWINTCP") == 1 then
-                local item_count = r.CountTrackMediaItems(track)
+            local current_proj_state = r.GetProjectStateChangeCount(0)
+            if current_proj_state ~= LastProjStateCount then
+                LastProjStateCount = current_proj_state
+                CachedItemCounts = {} -- invalidate cache
+            end
+
+            local track_count = r.CountTracks(0)
+            for i = 0, track_count - 1 do
+                local track = r.GetTrack(0, i)
                 
-                if item_count >= 0 then
+                if r.GetMediaTrackInfo_Value(track, "B_SHOWINTCP") == 1 then
                     local track_y = r.GetMediaTrackInfo_Value(track, "I_TCPY") / screen_scale
-                    local track_h = r.GetMediaTrackInfo_Value(track, "I_TCPH") / screen_scale
                     
-                    if track_h > 10 then
-                        local text = string.format("[%d]", item_count)
-                        local text_w, text_h = im.CalcTextSize(ctx, text)
-                        
-                        -- Calculate position
-                        local text_x = WX + Config.HORIZONTAL_OFFSET
-                        
-                        if Config.H_ALIGN == 1 then -- Middle
-                            local view_width = RIGHT - LEFT
-                            text_x = WX + (view_width / 2) - (text_w / 2) + Config.HORIZONTAL_OFFSET
-                        elseif Config.H_ALIGN == 2 then -- Right
-                            local view_width = RIGHT - LEFT
-                            text_x = WX + view_width - text_w - scroll_size - Config.HORIZONTAL_OFFSET
+                    -- Early exit: stop iterating once we're past the visible bottom
+                    if track_y > (BOT - TOP) then break end
+                    
+                    local track_h = r.GetMediaTrackInfo_Value(track, "I_TCPH") / screen_scale
+
+                    -- Check if track is visible on screen before counting items
+                    if track_h > 10 and track_y + track_h > 0 then
+                        local item_count = CachedItemCounts[track]
+                        if not item_count then
+                            item_count = r.CountTrackMediaItems(track)
+                            CachedItemCounts[track] = item_count
                         end
                         
-                        local text_y = WY + track_y + (track_h * Config.VERTICAL_ALIGN) - (text_h * 0.5)
-                        
-                        im.DrawList_AddText(draw_list, text_x, text_y, Config.TEXT_COLOR, text)
+                        if item_count >= 0 then
+                            local text = string.format("[%d]", item_count)
+                            local text_w, text_h = im.CalcTextSize(ctx, text)
+                            
+                            table.insert(DrawCache, {
+                                text = text,
+                                text_w = text_w,
+                                text_h = text_h,
+                                track_y = track_y,
+                                track_h = track_h
+                            })
+                        end
                     end
                 end
             end
+        end
+        
+        -- Draw the cached items
+        for _, item in ipairs(DrawCache) do
+            -- Calculate position
+            local text_x = WX + Config.HORIZONTAL_OFFSET
+            
+            if Config.H_ALIGN == 1 then -- Middle
+                local view_width = RIGHT - LEFT
+                text_x = WX + (view_width / 2) - (item.text_w / 2) + Config.HORIZONTAL_OFFSET
+            elseif Config.H_ALIGN == 2 then -- Right
+                local view_width = RIGHT - LEFT
+                text_x = WX + view_width - item.text_w - scroll_size - Config.HORIZONTAL_OFFSET
+            end
+            
+            local text_y = WY + item.track_y + (item.track_h * Config.VERTICAL_ALIGN) - (item.text_h * 0.5)
+            
+            im.DrawList_AddText(draw_list, text_x, text_y, Config.TEXT_COLOR, item.text)
         end
     end
     

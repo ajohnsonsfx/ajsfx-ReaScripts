@@ -29,7 +29,8 @@ local DEFAULT_CONFIG = {
     TEXT_COLOR = 0x99FFFFFF, -- White with 60% alpha (AABBGGRR format)
     HORIZONTAL_OFFSET = 5,
     VERTICAL_ALIGN = 0.5,
-    H_ALIGN = 0 -- 0=Left, 1=Middle, 2=Right
+    H_ALIGN = 0, -- 0=Left, 1=Middle, 2=Right
+    REFRESH_RATE = 30 -- default 30 FPS
 }
 
 --------------------------------
@@ -42,7 +43,8 @@ local function CloneConfig(src)
         TEXT_COLOR = src.TEXT_COLOR,
         HORIZONTAL_OFFSET = src.HORIZONTAL_OFFSET,
         VERTICAL_ALIGN = src.VERTICAL_ALIGN,
-        H_ALIGN = src.H_ALIGN or 0
+        H_ALIGN = src.H_ALIGN or 0,
+        REFRESH_RATE = src.REFRESH_RATE or 30
     }
 end
 
@@ -54,6 +56,7 @@ local function LoadConfig()
     if r.HasExtState(EXT_SECTION, "HORIZONTAL_OFFSET") then cfg.HORIZONTAL_OFFSET = tonumber(r.GetExtState(EXT_SECTION, "HORIZONTAL_OFFSET")) or cfg.HORIZONTAL_OFFSET end
     if r.HasExtState(EXT_SECTION, "VERTICAL_ALIGN") then cfg.VERTICAL_ALIGN = tonumber(r.GetExtState(EXT_SECTION, "VERTICAL_ALIGN")) or cfg.VERTICAL_ALIGN end
     if r.HasExtState(EXT_SECTION, "H_ALIGN") then cfg.H_ALIGN = tonumber(r.GetExtState(EXT_SECTION, "H_ALIGN")) or cfg.H_ALIGN end
+    if r.HasExtState(EXT_SECTION, "REFRESH_RATE") then cfg.REFRESH_RATE = tonumber(r.GetExtState(EXT_SECTION, "REFRESH_RATE")) or cfg.REFRESH_RATE end
     
     return cfg
 end
@@ -64,6 +67,7 @@ local function SaveConfig(cfg)
     r.SetExtState(EXT_SECTION, "HORIZONTAL_OFFSET", tostring(cfg.HORIZONTAL_OFFSET), true)
     r.SetExtState(EXT_SECTION, "VERTICAL_ALIGN", tostring(cfg.VERTICAL_ALIGN), true)
     r.SetExtState(EXT_SECTION, "H_ALIGN", tostring(cfg.H_ALIGN), true)
+    r.SetExtState(EXT_SECTION, "REFRESH_RATE", tostring(cfg.REFRESH_RATE), true)
 end
 
 local Config = LoadConfig()
@@ -84,19 +88,25 @@ local function LoadPresets()
             if name ~= "" and name ~= "Default" then
                 local data_str = r.GetExtState(PRESETS_SECTION, "P_" .. name)
                 if data_str and data_str ~= "" then
-                    local p_fs, p_tc, p_ho, p_va, p_ha = data_str:match("([^,]+),([^,]+),([^,]+),([^,]+),([^,]+)")
+                    local p_fs, p_tc, p_ho, p_va, p_ha, p_rr = data_str:match("([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),([^,]+)")
+                    if not p_rr then
+                        p_fs, p_tc, p_ho, p_va, p_ha = data_str:match("([^,]+),([^,]+),([^,]+),([^,]+),([^,]+)")
+                        p_rr = "30"
+                    end
                     if not p_ha then -- fallback for older presets
                         p_fs, p_tc, p_ho, p_va = data_str:match("([^,]+),([^,]+),([^,]+),([^,]+)")
                         p_ha = "0"
+                        p_rr = "30"
                     end
-                    if p_fs and p_tc and p_ho and p_va and p_ha then
+                    if p_fs and p_tc and p_ho and p_va and p_ha and p_rr then
                         custom_presets[name] = {
                             FONT_SIZE = tonumber(p_fs),
                             FONT_NAME = "Arial",
                             TEXT_COLOR = tonumber(p_tc),
                             HORIZONTAL_OFFSET = tonumber(p_ho),
                             VERTICAL_ALIGN = tonumber(p_va),
-                            H_ALIGN = tonumber(p_ha)
+                            H_ALIGN = tonumber(p_ha),
+                            REFRESH_RATE = tonumber(p_rr)
                         }
                         table.insert(preset_names, name)
                     end
@@ -124,7 +134,7 @@ local function SavePreset(name, cfg)
     end
     
     custom_presets[name] = CloneConfig(cfg)
-    local data_str = string.format("%d,%d,%d,%f,%d", cfg.FONT_SIZE, cfg.TEXT_COLOR, cfg.HORIZONTAL_OFFSET, cfg.VERTICAL_ALIGN, cfg.H_ALIGN)
+    local data_str = string.format("%d,%d,%d,%f,%d,%d", cfg.FONT_SIZE, cfg.TEXT_COLOR, cfg.HORIZONTAL_OFFSET, cfg.VERTICAL_ALIGN, cfg.H_ALIGN, cfg.REFRESH_RATE)
     r.SetExtState(PRESETS_SECTION, "P_" .. name, data_str, true)
     
     SavePresetsList()
@@ -263,6 +273,11 @@ function loop()
         if rv_ha then Config.H_ALIGN = new_h_align; changed = true end
         local reset_ha, r_val_ha = CheckDoubleClickReset(DEFAULT_CONFIG.H_ALIGN, Config.H_ALIGN)
         if reset_ha then Config.H_ALIGN = r_val_ha; changed = true end
+        
+        local rv_rr, new_rr = im.SliderInt(ctx, "Refresh Rate (FPS)", Config.REFRESH_RATE, 1, 60)
+        if rv_rr then Config.REFRESH_RATE = new_rr; changed = true end
+        local reset_rr, r_val_rr = CheckDoubleClickReset(DEFAULT_CONFIG.REFRESH_RATE, Config.REFRESH_RATE)
+        if reset_rr then Config.REFRESH_RATE = r_val_rr; changed = true end
         
         local rgba_color = ColorToRGBA(Config.TEXT_COLOR)
         local rv_c, new_color = im.ColorEdit4(ctx, "Text Color", rgba_color)
