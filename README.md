@@ -2,18 +2,27 @@
 
 A collection of custom ReaScripts for REAPER, written in Lua.
 
-## Installation
+## Installation via ReaPack (Recommended)
+
+1.  Install [ReaPack](https://reapack.com/) if you haven't already.
+2.  In REAPER, go to **Extensions → ReaPack → Import repositories...**
+3.  Paste this URL and click OK:
+    ```
+    https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/index.xml
+    ```
+4.  Go to **Extensions → ReaPack → Browse packages...**
+5.  Search for "ajsfx" and install the scripts you want.
+6.  ReaPack will automatically download the shared core library alongside each script.
+
+## Manual Installation
 
 1.  Download the scripts or clone this repository.
 2.  Place the files in your REAPER Scripts directory (usually `AppData/Roaming/REAPER/Scripts` on Windows, or `~/Library/Application Support/REAPER/Scripts` on macOS).
-3.  Open REAPER.
-4.  Open the Action List (`?`).
-5.  Click `New Action` -> `Load ReaScript...`.
-6.  Select the desired `.lua` files from your Scripts directory.
-
-## Dependencies
-
-These scripts rely on a shared core library. Ensure the `lib/` folder containing `ajsfx_core.lua` is present in the same directory as the scripts.
+3.  Ensure the `lib/` folder containing `ajsfx_core.lua` is present in the same directory as the scripts.
+4.  Open REAPER.
+5.  Open the Action List (`?`).
+6.  Click `New Action` -> `Load ReaScript...`.
+7.  Select the desired `.lua` files from your Scripts directory.
 
 ## Scripts
 

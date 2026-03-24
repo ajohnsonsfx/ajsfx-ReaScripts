@@ -2,6 +2,8 @@
 -- @author ajsfx
 -- @version 2.0
 -- @about Collapses all folder tracks at the same depth as the shallowest selected track.
+-- @provides
+--   [nomain] lib/ajsfx_core.lua
 
 local r = reaper
 local script_path = debug.getinfo(1, "S").source:match("@?(.*[\\/])")

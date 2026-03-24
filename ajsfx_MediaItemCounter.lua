@@ -2,6 +2,8 @@
 -- @author ajsfx
 -- @version 1.2
 -- @changelog Moved settings to a separate script
+-- @provides
+--   [nomain] lib/ajsfx_core.lua
 
 local r = reaper
 

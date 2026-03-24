@@ -3,7 +3,7 @@
 -- @version 1.1
 -- @about Normalizes selected items to a target level with a strength percentage.
 -- @provides
---   [main] .
+--   [nomain] lib/ajsfx_core.lua
 
 local r = reaper
 

@@ -2,6 +2,8 @@
 -- @author ajsfx
 -- @version 1.2
 -- @about Settings panel for ajsfx_MediaItemCounter
+-- @provides
+--   [nomain] lib/ajsfx_core.lua
 
 local r = reaper
 

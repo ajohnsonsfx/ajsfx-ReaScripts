@@ -1,0 +1,20 @@
+name: Build ReaPack Index
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: cfillion/reapack-index@v1
+        with:
+          output: index.xml
+          commit: true
