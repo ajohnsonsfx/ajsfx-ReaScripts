@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(lua tests/test_core.lua)"
+    ]
+  }
+}
