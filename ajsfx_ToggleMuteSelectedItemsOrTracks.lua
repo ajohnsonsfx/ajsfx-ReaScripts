@@ -31,7 +31,7 @@ core.Transaction("Smart Toggle Mute", function()
         local end_pos = pos + len
         
         -- Check for intersection
-        if pos < edit.end_time and end_pos > edit.start_time then
+        if core.ItemIntersectsRange(pos, len, edit.start_time, edit.end_time) then
           table.insert(razor_items, item)
         end
       end

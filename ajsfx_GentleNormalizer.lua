@@ -54,7 +54,7 @@ local function CalculateItemLevel(item, meter_type)
 
     if gain_adjust_linear <= 0 then return nil end
 
-    local gain_adjust_db = 20 * math.log(gain_adjust_linear, 10)
+    local gain_adjust_db = core.LinearToDb(gain_adjust_linear)
     local current_level = ref_target - gain_adjust_db
 
     return current_level
@@ -121,9 +121,8 @@ local function Process()
 
                 if gain_adjust_linear > 0 then
                     -- Apply strength scaling to the required gain adjustment
-                    local gain_adjust_db = 20 * math.log(gain_adjust_linear, 10)
-                    local apply_db = gain_adjust_db * (settings.strength / 100.0)
-                    local apply_linear = 10 ^ (apply_db / 20)
+                    local gain_adjust_db = core.LinearToDb(gain_adjust_linear)
+                    local _, apply_linear = core.CalculateGentleNormGain(gain_adjust_db, settings.strength)
 
                     local old_vol = r.GetMediaItemTakeInfo_Value(take, "D_VOL")
                     r.SetMediaItemTakeInfo_Value(take, "D_VOL", old_vol * apply_linear)

@@ -274,4 +274,39 @@ function core.ToggleMuteTracks(tracks)
   end
 end
 
+--------------------------------
+-- Geometry Helpers
+--------------------------------
+
+-- Check if an item (pos, length) intersects a time range (start_time, end_time)
+function core.ItemIntersectsRange(item_pos, item_length, range_start, range_end)
+  local item_end = item_pos + item_length
+  return item_pos < range_end and item_end > range_start
+end
+
+--------------------------------
+-- Normalization Math
+--------------------------------
+
+-- Convert a linear gain value to decibels.  Returns nil if gain <= 0.
+function core.LinearToDb(gain)
+  if gain <= 0 then return nil end
+  return 20 * math.log(gain, 10)
+end
+
+-- Convert a decibel value to linear gain.
+function core.DbToLinear(db)
+  return 10 ^ (db / 20)
+end
+
+-- Calculate the gain (in dB) to apply for a "gentle" normalization.
+-- required_gain_db: full gain adjustment needed to hit the target
+-- strength_pct: 0–100 percentage of adjustment to apply
+-- Returns the scaled gain in dB and its linear equivalent.
+function core.CalculateGentleNormGain(required_gain_db, strength_pct)
+  local apply_db = required_gain_db * (strength_pct / 100.0)
+  local apply_linear = core.DbToLinear(apply_db)
+  return apply_db, apply_linear
+end
+
 return core
