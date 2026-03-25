@@ -10,7 +10,7 @@
       </metadata>
     </reapack>
   </category>
-  <category name="ajsfx scripts">
+  <category name="Items">
     <reapack name="ajsfx_GentleNormalizer.lua" type="script" desc="Gentle Normalizer">
       <version name="1.1">
         <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/ajsfx_GentleNormalizer.lua</source>
@@ -54,6 +54,8 @@
         <description><![CDATA[Toggles mute intelligently. Priority: 1. Razor Edits, 2. Selected Items, 3. Selected Tracks.]]></description>
       </metadata>
     </reapack>
+  </category>
+  <category name="Track">
     <reapack name="ajsfx_Track_CollapseVisibleChildrenAtHighestSelectedLevel.lua" type="script" desc="Collapse Visible Children At Highest Selected Level">
       <version name="2.0">
         <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/ajsfx_Track_CollapseVisibleChildrenAtHighestSelectedLevel.lua</source>
