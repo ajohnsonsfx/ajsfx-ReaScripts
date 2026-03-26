@@ -3,14 +3,14 @@
 -- @version 1.2
 -- @about Settings panel for ajsfx_MediaItemCounter
 -- @provides
---   [nomain] lib/ajsfx_core.lua
+--   [nomain] ../lib/ajsfx_core.lua
 
 local r = reaper
 
 -- Load core library
 local script_path = debug.getinfo(1, "S").source:match("@?(.*[\\/])")
 if not script_path then script_path = "" end
-package.path = script_path .. "?.lua;" .. package.path
+package.path = script_path .. "?.lua;" .. script_path .. "../?.lua;" .. package.path
 local core = require("lib.ajsfx_core")
 
 local success, im = pcall(function()
