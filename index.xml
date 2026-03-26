@@ -13,8 +13,7 @@
   <category name="Items">
     <reapack name="ajsfx_GentleNormalizer.lua" type="script" desc="Gentle Normalizer">
       <version name="1.1">
-        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/ajsfx_GentleNormalizer.lua</source>
-        <source file="lib/ajsfx_core.lua" main="false">https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/lib/ajsfx_core.lua</source>
+        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/Items/ajsfx_GentleNormalizer.lua</source>
       </version>
       <metadata>
         <description><![CDATA[Normalizes selected items to a target level with a strength percentage.]]></description>
@@ -22,7 +21,7 @@
     </reapack>
     <reapack name="ajsfx_MediaItemCounter.lua" type="script" desc="Simple Item Counter">
       <version name="1.2">
-        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/ajsfx_MediaItemCounter.lua</source>
+        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/Items/ajsfx_MediaItemCounter.lua</source>
       </version>
       <metadata>
         <description><![CDATA[Displays a count of selected media items as an overlay.]]></description>
@@ -30,7 +29,7 @@
     </reapack>
     <reapack name="ajsfx_MediaItemCounter_Settings.lua" type="script" desc="Media Item Counter Settings">
       <version name="1.2">
-        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/ajsfx_MediaItemCounter_Settings.lua</source>
+        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/Items/ajsfx_MediaItemCounter_Settings.lua</source>
       </version>
       <metadata>
         <description><![CDATA[Settings panel for ajsfx_MediaItemCounter]]></description>
@@ -38,8 +37,7 @@
     </reapack>
     <reapack name="ajsfx_SetAllSelectedItemsLengthToFirstSelectedItem.lua" type="script" desc="Set All Selected Items Length To First Selected Item">
       <version name="1.0">
-        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/ajsfx_SetAllSelectedItemsLengthToFirstSelectedItem.lua</source>
-        <source file="lib/ajsfx_core.lua" main="false">https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/lib/ajsfx_core.lua</source>
+        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/Items/ajsfx_SetAllSelectedItemsLengthToFirstSelectedItem.lua</source>
       </version>
       <metadata>
         <description><![CDATA[Sets the length of all selected media items to match the length of the first selected item.]]></description>
@@ -47,8 +45,7 @@
     </reapack>
     <reapack name="ajsfx_ToggleMuteSelectedItemsOrTracks.lua" type="script" desc="Smart Toggle Mute (Razor > Items > Tracks)">
       <version name="2.0">
-        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/ajsfx_ToggleMuteSelectedItemsOrTracks.lua</source>
-        <source file="lib/ajsfx_core.lua" main="false">https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/lib/ajsfx_core.lua</source>
+        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/Items/ajsfx_ToggleMuteSelectedItemsOrTracks.lua</source>
       </version>
       <metadata>
         <description><![CDATA[Toggles mute intelligently. Priority: 1. Razor Edits, 2. Selected Items, 3. Selected Tracks.]]></description>
@@ -58,8 +55,7 @@
   <category name="Track">
     <reapack name="ajsfx_Track_CollapseVisibleChildrenAtHighestSelectedLevel.lua" type="script" desc="Collapse Visible Children At Highest Selected Level">
       <version name="2.0">
-        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/ajsfx_Track_CollapseVisibleChildrenAtHighestSelectedLevel.lua</source>
-        <source file="lib/ajsfx_core.lua" main="false">https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/lib/ajsfx_core.lua</source>
+        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/Track/ajsfx_Track_CollapseVisibleChildrenAtHighestSelectedLevel.lua</source>
       </version>
       <metadata>
         <description><![CDATA[Collapses all folder tracks at the same depth as the deepest selected track.]]></description>
@@ -67,8 +63,7 @@
     </reapack>
     <reapack name="ajsfx_Track_CollapseVisibleChildrenAtLowestSelectedLevel.lua" type="script" desc="Collapse Visible Children At Lowest Selected Level">
       <version name="2.0">
-        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/ajsfx_Track_CollapseVisibleChildrenAtLowestSelectedLevel.lua</source>
-        <source file="lib/ajsfx_core.lua" main="false">https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/lib/ajsfx_core.lua</source>
+        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/Track/ajsfx_Track_CollapseVisibleChildrenAtLowestSelectedLevel.lua</source>
       </version>
       <metadata>
         <description><![CDATA[Collapses all folder tracks at the same depth as the shallowest selected track.]]></description>
@@ -76,8 +71,7 @@
     </reapack>
     <reapack name="ajsfx_Track_UnCollapseVisibleChildrenAtHighestSelectedLevel.lua" type="script" desc="Uncollapse Visible Children At Highest Selected Level">
       <version name="2.0">
-        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/ajsfx_Track_UnCollapseVisibleChildrenAtHighestSelectedLevel.lua</source>
-        <source file="lib/ajsfx_core.lua" main="false">https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/lib/ajsfx_core.lua</source>
+        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/Track/ajsfx_Track_UnCollapseVisibleChildrenAtHighestSelectedLevel.lua</source>
       </version>
       <metadata>
         <description><![CDATA[Uncollapses all folder tracks at the same depth as the deepest selected track.]]></description>
@@ -85,8 +79,7 @@
     </reapack>
     <reapack name="ajsfx_Track_UnCollapseVisibleChildrenAtLowestSelectedLevel.lua" type="script" desc="Uncollapse Visible Children At Lowest Selected Level">
       <version name="2.0">
-        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/ajsfx_Track_UnCollapseVisibleChildrenAtLowestSelectedLevel.lua</source>
-        <source file="lib/ajsfx_core.lua" main="false">https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/lib/ajsfx_core.lua</source>
+        <source>https://github.com/ajohnsonsfx/ajsfx-Scripts/raw/main/Track/ajsfx_Track_UnCollapseVisibleChildrenAtLowestSelectedLevel.lua</source>
       </version>
       <metadata>
         <description><![CDATA[Uncollapses all folder tracks at the same depth as the shallowest selected track.]]></description>
