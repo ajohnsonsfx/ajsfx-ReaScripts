@@ -107,6 +107,16 @@ Every script begins with ReaScript metadata comments:
 -- @about Brief description
 ```
 
+**ReaPack `@provides` Quirk:**
+If your script relies on a shared library (like `ajsfx_core.lua`) and you declare an `@provides` block to include it, you **must** also explicitly provide the script itself using `[main] .`. Otherwise, ReaPack assumes the script is *only* a provider of the library and will not register it as a main action in the REAPER Action List.
+
+Correct `@provides` usage:
+```lua
+-- @provides
+--   [main] .
+--   [nomain] ../lib/ajsfx_core.lua
+```
+
 Keep these accurate when editing scripts.
 
 ## Key REAPER API Concepts
