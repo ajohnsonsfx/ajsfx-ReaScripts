@@ -1,8 +1,9 @@
 -- @description Gentle Normalizer
 -- @author ajsfx
--- @version 1.1
+-- @version 1.2
 -- @about Normalizes selected items to a target level with a strength percentage.
 -- @provides
+--   [main] .
 --   [nomain] ../lib/ajsfx_core.lua
 
 local r = reaper

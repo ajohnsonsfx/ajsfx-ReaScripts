@@ -1,8 +1,9 @@
 -- @description Smart Toggle Mute (Razor > Items > Tracks)
 -- @author ajsfx
--- @version 2.0
+-- @version 2.1
 -- @about Toggles mute intelligently. Priority: 1. Razor Edits (mutes items in area), 2. Selected Items, 3. Selected Tracks.
 -- @provides
+--   [main] .
 --   [nomain] ../lib/ajsfx_core.lua
 
 local r = reaper

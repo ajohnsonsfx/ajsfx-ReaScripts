@@ -1,8 +1,9 @@
 -- @description Collapse Visible Children At Highest Selected Level
 -- @author ajsfx
--- @version 2.0
+-- @version 2.1
 -- @about Collapses all folder tracks at the same depth as the deepest selected track.
 -- @provides
+--   [main] .
 --   [nomain] ../lib/ajsfx_core.lua
 
 local r = reaper

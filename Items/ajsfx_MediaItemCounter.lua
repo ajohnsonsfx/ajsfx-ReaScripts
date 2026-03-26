@@ -1,8 +1,9 @@
 -- @description Simple Item Counter
 -- @author ajsfx
--- @version 1.2
+-- @version 1.3
 -- @changelog Moved settings to a separate script
 -- @provides
+--   [main] .
 --   [nomain] ../lib/ajsfx_core.lua
 
 local r = reaper

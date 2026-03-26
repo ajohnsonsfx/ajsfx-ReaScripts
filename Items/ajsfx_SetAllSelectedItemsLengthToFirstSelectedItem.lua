@@ -1,8 +1,9 @@
 -- @description Set All Selected Items Length To First Selected Item
 -- @author ajsfx
--- @version 1.0
+-- @version 1.1
 -- @about Sets the length of all selected media items to match the length of the first selected item.
 -- @provides
+--   [main] .
 --   [nomain] ../lib/ajsfx_core.lua
 
 local r = reaper

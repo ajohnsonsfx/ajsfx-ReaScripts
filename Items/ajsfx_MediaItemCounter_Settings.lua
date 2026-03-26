@@ -1,8 +1,9 @@
 -- @description Media Item Counter Settings
 -- @author ajsfx
--- @version 1.2
+-- @version 1.3
 -- @about Settings panel for ajsfx_MediaItemCounter
 -- @provides
+--   [main] .
 --   [nomain] ../lib/ajsfx_core.lua
 
 local r = reaper
