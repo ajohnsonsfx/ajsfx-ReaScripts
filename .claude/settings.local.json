@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(lua tests/test_core.lua)"
+      "Bash(lua tests/test_core.lua)",
+      "WebSearch",
+      "WebFetch(domain:www.reaper.fm)",
+      "WebFetch(domain:forums.cockos.com)",
+      "Read(//c/Users/ajohn/AppData/Local/Temp/**)"
     ]
   }
 }
