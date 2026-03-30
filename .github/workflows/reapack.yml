@@ -32,7 +32,7 @@ jobs:
         run: gem install reapack-index
 
       - name: Update index.xml
-        run: reapack-index --commit
+        run: reapack-index --rebuild --commit --verbose
 
       - name: Push changes
         run: git push
