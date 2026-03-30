@@ -20,6 +20,9 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
 
+      - name: Install Pandoc
+        run: sudo apt-get install -yy pandoc
+
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
@@ -29,7 +32,7 @@ jobs:
         run: gem install reapack-index
 
       - name: Update index.xml
-        run: reapack-index --commit --output index.xml
+        run: reapack-index --commit
 
       - name: Push changes
         run: git push
