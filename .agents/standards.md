@@ -58,3 +58,19 @@ If using a shared library, explicitly provide the script itself:
 
 ## File Naming
 `ajsfx_<Category>_<Description>.lua` or `ajsfx_<Description>.lua` (PascalCase).
+
+## Branching & Release Workflow
+
+This project uses a standard `dev` to `main` workflow for versioning and releases via ReaPack.
+
+### Branches
+- **`main`**: The stable branch. This branch is used for ReaPack releases. It should always contain working, tested code.
+- **`dev`**: The active development branch. Daily work, new features, and experimentation happen here.
+
+### Versioning & Release Process
+1.  **Work in `dev`**: All development starts in the `dev` branch.
+2.  **Test in REAPER**: Ensure all scripts and changes are thoroughly tested within the REAPER environment.
+3.  **Bump `@version` tags**: Update the `@version` metadata tag in the script headers for any modified scripts.
+4.  **Merge `dev` into `main`**: Once changes are stable and tested, merge the `dev` branch into `main`.
+5.  **Run `reapack-index`**: Execute the `reapack-index` command to update the `index.xml` file.
+6.  **Commit and Push**: Commit the changes to `main` (including the updated `index.xml`) and push to the remote repository.
