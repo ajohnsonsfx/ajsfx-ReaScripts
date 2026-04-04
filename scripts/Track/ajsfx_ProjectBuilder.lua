@@ -229,8 +229,8 @@ local function create_batch_from_preset(preset)
         shared_values = {},
         num_groups = 1,
         num_aux = 1,
-        num_content = 4,
-        aux_names = { "FX_1" },
+        num_audio = 4,
+        num_midi = 0,
         groups = {},
     }
     -- Initialize groups with empty input values
@@ -271,14 +271,7 @@ local function sync_batch_groups(batch)
     end
 end
 
-local function sync_batch_aux_names(batch)
-    while #batch.aux_names < batch.num_aux do
-        batch.aux_names[#batch.aux_names + 1] = "FX_" .. #batch.aux_names + 1
-    end
-    while #batch.aux_names > batch.num_aux do
-        batch.aux_names[#batch.aux_names] = nil
-    end
-end
+-- Removed sync_batch_aux_names
 
 --------------------------------
 -- --- SESSION PERSISTENCE ---
@@ -294,7 +287,8 @@ local function serialize_session(batches)
             b.delimiter,
             tostring(b.num_groups),
             tostring(b.num_aux),
-            tostring(b.num_content),
+            tostring(b.num_audio),
+            tostring(b.num_midi),
         }
         lines[#lines + 1] = table.concat(parts, "\t")
 
@@ -310,10 +304,7 @@ local function serialize_session(batches)
             end
         end
 
-        -- Aux names
-        for i, name in ipairs(b.aux_names) do
-            lines[#lines + 1] = "AUX\t" .. tostring(i) .. "\t" .. name
-        end
+        -- No standalone Aux names required now
 
         -- Group input values
         for gi, g in ipairs(b.groups) do
@@ -346,8 +337,8 @@ local function deserialize_session(str)
                 shared_values = {},
                 num_groups = tonumber(parts[4]) or 1,
                 num_aux = tonumber(parts[5]) or 1,
-                num_content = tonumber(parts[6]) or 4,
-                aux_names = {},
+                num_audio = tonumber(parts[6]) or 4,
+                num_midi = tonumber(parts[7]) or 0,
                 groups = {},
             }
             batches[#batches + 1] = current
@@ -356,8 +347,7 @@ local function deserialize_session(str)
         elseif current and parts[1] == "SV" and #parts >= 3 then
             current.shared_values[parts[2]] = parts[3]
         elseif current and parts[1] == "AUX" and #parts >= 3 then
-            local idx = tonumber(parts[2])
-            if idx then current.aux_names[idx] = parts[3] end
+            -- Legacy support, do nothing.
         elseif current and parts[1] == "GRP" and #parts >= 4 then
             local gi = tonumber(parts[2])
             if gi then
@@ -370,7 +360,6 @@ local function deserialize_session(str)
     -- Sync each batch
     for _, b in ipairs(batches) do
         sync_batch_groups(b)
-        sync_batch_aux_names(b)
     end
 
     return #batches > 0 and batches or nil
@@ -457,14 +446,14 @@ local function generate_tracks(batches)
                 for a = 1, batch.num_aux do
                     r.InsertTrackAtIndex(insert_idx, true)
                     local aux = r.GetTrack(0, insert_idx)
-                    r.GetSetMediaTrackInfo_String(aux, "P_NAME", batch.aux_names[a] or ("FX_" .. a), true)
+                    r.GetSetMediaTrackInfo_String(aux, "P_NAME", "FX_" .. a, true)
                     aux_tracks[#aux_tracks + 1] = aux
                     insert_idx = insert_idx + 1
                 end
 
                 -- Content tracks
-                local total_children = batch.num_aux + batch.num_content
-                for c = 1, batch.num_content do
+                local total_children = batch.num_aux + batch.num_audio + batch.num_midi
+                for c = 1, batch.num_audio + batch.num_midi do
                     r.InsertTrackAtIndex(insert_idx, true)
                     local content = r.GetTrack(0, insert_idx)
 
@@ -481,13 +470,13 @@ local function generate_tracks(batches)
                 end
 
                 -- Edge case: 0 content tracks, close folder on last aux
-                if batch.num_content == 0 and batch.num_aux > 0 then
+                if (batch.num_audio + batch.num_midi) == 0 and batch.num_aux > 0 then
                     local last_aux = r.GetTrack(0, insert_idx - 1)
                     r.SetMediaTrackInfo_Value(last_aux, "I_FOLDERDEPTH", -1)
                 end
 
                 -- Edge case: 0 content and 0 aux — empty folder, need a dummy close
-                if batch.num_content == 0 and batch.num_aux == 0 then
+                if (batch.num_audio + batch.num_midi) == 0 and batch.num_aux == 0 then
                     -- Close the folder on the master itself (depth goes back to 0)
                     r.SetMediaTrackInfo_Value(master, "I_FOLDERDEPTH", 0)
                 end
@@ -787,12 +776,8 @@ local function draw_batch_config()
     local btns_total_w = (btn_w * num_btns) + (item_spacing_x * num_btns)
     local combo_w = avail_w - btns_total_w
 
-    -- Draw Combo
-    local start_cursor_x = im.GetCursorPosX(ctx)
-    local start_cursor_y = im.GetCursorPosY(ctx)
-    
     im.SetNextItemWidth(ctx, combo_w)
-    if im.BeginCombo(ctx, "##PresetCombo", "") then
+    if im.BeginCombo(ctx, "##PresetCombo", batch.preset_name) then
         for _, p in ipairs(all_presets) do
             local is_selected = batch.preset_name == p.name
             if im.Selectable(ctx, p.name .. "##" .. p.name, is_selected) then
@@ -812,24 +797,7 @@ local function draw_batch_config()
         im.EndCombo(ctx)
     end
 
-    -- Draw Custom Preview over the combo
-    local end_cursor_x = im.GetCursorPosX(ctx)
-    local end_cursor_y = im.GetCursorPosY(ctx)
-    
-    -- Move cursor back to draw inside the combo box
-    local frame_padding_x = 4
-    local frame_padding_y = 4
-    im.SetCursorPosX(ctx, start_cursor_x + frame_padding_x)
-    im.SetCursorPosY(ctx, start_cursor_y + frame_padding_y)
-    
-    im.Text(ctx, batch.preset_name)
-    im.SameLine(ctx, start_cursor_x + 150)
-    draw_preset_layout(ctx, batch.sections, batch.delimiter)
-    
-    -- Restore cursor position for next items on the same line
-    im.SetCursorPosX(ctx, start_cursor_x + combo_w + item_spacing_x)
-    im.SetCursorPosY(ctx, start_cursor_y)
-
+    im.SameLine(ctx)
     if im.Button(ctx, "Edit", btn_w, 0) then
         for _, p in ipairs(all_presets) do
             if p.name == batch.preset_name then
@@ -877,69 +845,121 @@ local function draw_batch_config()
 
     im.Spacing(ctx)
     im.Spacing(ctx)
-    im.SeparatorText(ctx, "Global Format Options")
+    im.SeparatorText(ctx, "Layout")
 
-    -- Combine Delimiter, FX Aux Names, and Shared Sections into one area
+    -- Row 1: Root Node (Groups & Naming)
+    local draw_list = im.GetWindowDrawList(ctx)
+    local root_x, root_y = im.GetCursorScreenPos(ctx)
+
+    im.BeginGroup(ctx)
+    -- Align "Format:" with the "Groups" text (Input width 26 + default ItemSpacing 8)
+    local c_x = im.GetCursorPosX(ctx)
+    im.SetCursorPosX(ctx, c_x + 34)
+    im.TextDisabled(ctx, "Format:")
     
-    -- Shared sections first
-    local has_shared = false
-    for _, s in ipairs(batch.sections) do
-        if s.type == "shared" then has_shared = true; break end
-    end
-
-    if has_shared then
-        for _, s in ipairs(batch.sections) do
-            if s.type == "shared" then
-                local buf_id = bid .. "sv_" .. s.label
-                local rv, val = draw_labeled_input_text(ctx, s.label .. " (Shared)", buf_id, get_buf(buf_id, batch.shared_values[s.label] or ""), 200, 120)
-                if rv then
-                    batch.shared_values[s.label] = val
-                    input_buffers[buf_id] = val
-                end
-            end
-        end
-    end
-
-    -- Delimiter
-    local rv_d, val_d = draw_labeled_input_text(ctx, "Delimiter", bid .. "delim", get_buf(bid .. "delim", batch.delimiter), 200, 120)
-    if rv_d then
-        batch.delimiter = val_d
-        input_buffers[bid .. "delim"] = val_d
-    end
-
-    -- FX Aux names
-    if batch.num_aux > 0 then
-        for i = 1, batch.num_aux do
-            local buf_id = bid .. "aux_" .. i
-            local rv, val = draw_labeled_input_text(ctx, "FX " .. i .. " Name", buf_id, get_buf(buf_id, batch.aux_names[i] or ("FX_" .. i)), 200, 120)
-            if rv then
-                batch.aux_names[i] = val
-                input_buffers[buf_id] = val
-            end
-        end
-    end
-
-    -- Track counts
-    im.Spacing(ctx)
-    im.Spacing(ctx)
-    im.SeparatorText(ctx, "Track Structure")
-
-    local rv_g, val_g = draw_labeled_input_int(ctx, "# of Groups", batch.num_groups, 100, 150, 1, MAX_GROUPS)
+    im.SetCursorPosX(ctx, c_x)
+    im.SetNextItemWidth(ctx, 26)
+    local rv_g, val_g = im.InputInt(ctx, "##num_groups", batch.num_groups, 0, 0)
     if rv_g then
-        batch.num_groups = val_g
+        batch.num_groups = math.max(1, math.min(MAX_GROUPS, val_g))
         sync_batch_groups(batch)
     end
-
-    local rv_a, val_a = draw_labeled_input_int(ctx, "# of FX Auxes", batch.num_aux, 100, 150, 0, MAX_AUX)
-    if rv_a then
-        batch.num_aux = val_a
-        sync_batch_aux_names(batch)
+    -- Capture coordinates for the hierarchy line exactly at the vertical center of this InputInt
+    local _, root_item_y_min = im.GetItemRectMin(ctx)
+    local _, root_item_y_max = im.GetItemRectMax(ctx)
+    local root_y_center = (root_item_y_min + root_item_y_max) / 2
+    
+    im.SameLine(ctx)
+    im.Text(ctx, "Groups")
+    im.EndGroup(ctx)
+    
+    im.SameLine(ctx, 0, 30)
+    
+    for i, s in ipairs(batch.sections) do
+        im.PushID(ctx, "fmt_" .. i)
+        
+        im.BeginGroup(ctx)
+        -- Label Row
+        local color = s.type == "shared" and COLOR_SHARED or COLOR_INPUT
+        im.TextColored(ctx, color, "[" .. s.label .. "]")
+        
+        -- Input Row
+        if s.type == "shared" then
+            im.SetNextItemWidth(ctx, 80)
+            local buf_id = bid .. "sv_" .. s.label
+            local rv, val = im.InputText(ctx, "##" .. s.label, get_buf(buf_id, batch.shared_values[s.label] or ""))
+            if rv then
+                batch.shared_values[s.label] = val
+                input_buffers[buf_id] = val
+            end
+        else
+            -- No input box, just an empty space that aligns with the visual row height
+            -- Let's give it a consistent width, and ensure it respects the vertical layout
+            im.Dummy(ctx, 70, 22)
+        end
+        im.EndGroup(ctx)
+        
+        if i < #batch.sections then
+            im.SameLine(ctx, 0, 4)
+            im.BeginGroup(ctx)
+            im.Dummy(ctx, 1, 22) -- vertical spacer to push character down
+            im.TextColored(ctx, COLOR_DELIM, batch.delimiter)
+            im.EndGroup(ctx)
+            im.SameLine(ctx, 0, 4)
+        end
+        im.PopID(ctx)
     end
 
-    local rv_c, val_c = draw_labeled_input_int(ctx, "# of Content Tracks", batch.num_content, 100, 150, 0, MAX_CONTENT)
-    if rv_c then
-        batch.num_content = val_c
-    end
+    -- Child Nodes (indented)
+    im.Indent(ctx, 30)
+    im.Spacing(ctx)
+    
+    local aux_x, aux_y = im.GetCursorScreenPos(ctx)
+    im.SetNextItemWidth(ctx, 26)
+    local rv_a, val_a = im.InputInt(ctx, "##num_aux", batch.num_aux, 0, 0)
+    if rv_a then batch.num_aux = math.max(0, math.min(MAX_AUX, val_a)) end
+    im.SameLine(ctx)
+    im.Text(ctx, "FX Aux Tracks")
+    local aux_r_min_x, aux_r_min_y = im.GetItemRectMin(ctx)
+    local aux_r_max_x, aux_r_max_y = im.GetItemRectMax(ctx)
+    
+    local aud_x, aud_y = im.GetCursorScreenPos(ctx)
+    im.SetNextItemWidth(ctx, 26)
+    local rv_au, val_au = im.InputInt(ctx, "##num_audio", batch.num_audio, 0, 0)
+    if rv_au then batch.num_audio = math.max(0, math.min(MAX_CONTENT, val_au)) end
+    im.SameLine(ctx)
+    im.Text(ctx, "Audio Tracks")
+    local aud_r_min_x, aud_r_min_y = im.GetItemRectMin(ctx)
+    local aud_r_max_x, aud_r_max_y = im.GetItemRectMax(ctx)
+    
+    local mid_x, mid_y = im.GetCursorScreenPos(ctx)
+    im.SetNextItemWidth(ctx, 26)
+    local rv_mi, val_mi = im.InputInt(ctx, "##num_midi", batch.num_midi, 0, 0)
+    if rv_mi then batch.num_midi = math.max(0, math.min(MAX_CONTENT, val_mi)) end
+    im.SameLine(ctx)
+    im.Text(ctx, "MIDI Tracks")
+    local mid_r_min_x, mid_r_min_y = im.GetItemRectMin(ctx)
+    local mid_r_max_x, mid_r_max_y = im.GetItemRectMax(ctx)
+
+    im.Unindent(ctx, 30)
+
+    -- Drawing Custom Hierarchy and Routing Lines
+    local HIER_COLOR = 0xFFFFFF88 
+    local ROUTE_COLOR = 0xEE77EEAA
+    local line_thick = 3.0
+    
+    -- Node centers
+    local h_line_x = aux_x - 15  -- Place the line within the indentation gap
+    local h_start_y = root_y_center
+    local aux_mid_y = (aux_r_min_y + aux_r_max_y) / 2
+    local aud_mid_y = (aud_r_min_y + aud_r_max_y) / 2
+    local mid_mid_y = (mid_r_min_y + mid_r_max_y) / 2
+    
+    -- Main vertical stem and branches
+    im.DrawList_AddLine(draw_list, h_line_x, h_start_y, h_line_x, mid_mid_y, HIER_COLOR, line_thick)
+    im.DrawList_AddLine(draw_list, h_line_x, aux_mid_y, aux_x - 4, aux_mid_y, HIER_COLOR, line_thick)
+    im.DrawList_AddLine(draw_list, h_line_x, aud_mid_y, aud_x - 4, aud_mid_y, HIER_COLOR, line_thick)
+    im.DrawList_AddLine(draw_list, h_line_x, mid_mid_y, mid_x - 4, mid_mid_y, HIER_COLOR, line_thick)
 
     -- Group input sections table
     local input_sections = {}
@@ -951,7 +971,7 @@ local function draw_batch_config()
 
     if #input_sections > 0 then
         im.Spacing(ctx)
-        im.SeparatorText(ctx, "Group Names")
+        im.SeparatorText(ctx, "Groups")
 
         -- Column count: # + input sections + preview
         local col_count = 1 + #input_sections + 1
@@ -1018,6 +1038,14 @@ local function Loop()
         ctx = im.CreateContext('Project Builder')
     end
 
+    -- Styling
+    im.PushStyleVar(ctx, im.StyleVar_FrameRounding, 4.0)
+    im.PushStyleVar(ctx, im.StyleVar_WindowRounding, 8.0)
+    im.PushStyleVar(ctx, im.StyleVar_ChildRounding, 4.0)
+    im.PushStyleVar(ctx, im.StyleVar_GrabRounding, 4.0)
+    im.PushStyleVar(ctx, im.StyleVar_ItemSpacing, 8, 8)
+    im.PushStyleVar(ctx, im.StyleVar_FramePadding, 6, 4)
+
     im.SetNextWindowSize(ctx, 700, 500, im.Cond_FirstUseEver)
     local visible, open = im.Begin(ctx, "ajsfx Project Builder", true, WINDOW_FLAGS)
 
@@ -1055,6 +1083,8 @@ local function Loop()
 
     -- Draw preset editor (separate window)
     draw_preset_editor()
+    
+    im.PopStyleVar(ctx, 6)
 
     if open then
         r.defer(Loop)
