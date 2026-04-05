@@ -3,3 +3,4 @@ plans/
 .vscode/
 *.bak
 *.RPP-bak
+*.code-workspace
