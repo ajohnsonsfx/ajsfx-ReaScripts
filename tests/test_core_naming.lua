@@ -45,5 +45,57 @@ test("Load returns defaults when no ExtState", function()
     assert_eq(#s.custom_wildcards, 0, "custom_wildcards empty")
 end)
 
+-- ── Naming tests ────────────────────────────────────────────────────────────
+print("\n=== core.naming ===")
+
+test("SerializePreset produces type:label pipe-separated string", function()
+    local preset = {
+        name = "My Preset",
+        sections = {
+            { type = "shared", label = "Character" },
+            { type = "input",  label = "Action" },
+            { type = "shared", label = "Date" },
+        }
+    }
+    local s = core.naming.SerializePreset(preset)
+    assert_eq(s, "shared:Character|input:Action|shared:Date", "serialized form")
+end)
+
+test("DeserializePreset round-trips correctly", function()
+    local preset = {
+        name = "My Preset",
+        sections = {
+            { type = "shared", label = "Character" },
+            { type = "input",  label = "Action" },
+        }
+    }
+    local str = core.naming.SerializePreset(preset)
+    local out = core.naming.DeserializePreset("My Preset", str)
+    assert_eq(out.name, "My Preset")
+    assert_eq(#out.sections, 2)
+    assert_eq(out.sections[1].type,  "shared")
+    assert_eq(out.sections[1].label, "Character")
+    assert_eq(out.sections[2].type,  "input")
+    assert_eq(out.sections[2].label, "Action")
+end)
+
+test("DeserializePreset migrates legacy format (leading delimiter field)", function()
+    -- Old format: "delimiter|type:label|type:label"
+    local legacy = "_|shared:Character|input:Action"
+    local out = core.naming.DeserializePreset("Legacy", legacy)
+    assert_eq(#out.sections, 2, "section count after migration")
+    assert_eq(out.sections[1].label, "Character")
+    assert_eq(out.sections[2].label, "Action")
+end)
+
+test("IsDefaultPreset returns true for defaults, false for custom", function()
+    local defaults = {
+        { name = "Standard Asset", sections = {} },
+        { name = "VO Asset",       sections = {} },
+    }
+    assert_eq(core.naming.IsDefaultPreset("Standard Asset", defaults), true)
+    assert_eq(core.naming.IsDefaultPreset("My Custom",      defaults), false)
+end)
+
 print("\nAll done: " .. passed .. " passed, " .. failed .. " failed")
 if failed > 0 then os.exit(1) end

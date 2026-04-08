@@ -310,6 +310,99 @@ function core.CalculateGentleNormGain(required_gain_db, strength_pct)
 end
 
 --------------------------------
+-- Naming
+--------------------------------
+
+core.naming = {}
+
+function core.naming.SerializePreset(preset)
+  -- Format: type:label|type:label|...  (no delimiter — delimiter is global in settings)
+  local parts = {}
+  for _, s in ipairs(preset.sections) do
+    parts[#parts + 1] = s.type .. ":" .. s.label
+  end
+  return table.concat(parts, "|")
+end
+
+function core.naming.DeserializePreset(name, str)
+  local parts = {}
+  for part in str:gmatch("[^|]+") do
+    parts[#parts + 1] = part
+  end
+  if #parts < 1 then return nil end
+
+  -- Legacy migration: if first segment has no ":", it was the old delimiter field — discard it
+  local start = 1
+  if not parts[1]:find(":") then
+    start = 2
+  end
+
+  local preset = { name = name, sections = {} }
+  for i = start, #parts do
+    local stype, label = parts[i]:match("^(%w+):(.+)$")
+    if stype and label then
+      preset.sections[#preset.sections + 1] = { type = stype, label = label }
+    end
+  end
+  return preset
+end
+
+function core.naming.IsDefaultPreset(name, defaults)
+  for _, dp in ipairs(defaults) do
+    if dp.name == name then return true end
+  end
+  return false
+end
+
+function core.naming.LoadAllPresets(section, defaults)
+  local presets = {}
+  -- Deep-copy defaults first
+  for _, dp in ipairs(defaults) do
+    local p = { name = dp.name, sections = {} }
+    for _, s in ipairs(dp.sections) do
+      p.sections[#p.sections + 1] = { type = s.type, label = s.label }
+    end
+    presets[#presets + 1] = p
+  end
+  -- Load custom presets from ExtState
+  if r.HasExtState(section, "LIST") then
+    local list_str = r.GetExtState(section, "LIST")
+    for name in list_str:gmatch("[^|]+") do
+      if name ~= "" and not core.naming.IsDefaultPreset(name, defaults) then
+        local key = "P_" .. name
+        if r.HasExtState(section, key) then
+          local p = core.naming.DeserializePreset(name, r.GetExtState(section, key))
+          if p then
+            presets[#presets + 1] = p
+          end
+        end
+      end
+    end
+  end
+  return presets
+end
+
+function core.naming.SaveCustomPresets(section, presets, defaults)
+  local names = {}
+  for _, p in ipairs(presets) do
+    if not core.naming.IsDefaultPreset(p.name, defaults) then
+      names[#names + 1] = p.name
+      r.SetExtState(section, "P_" .. p.name, core.naming.SerializePreset(p), true)
+    end
+  end
+  r.SetExtState(section, "LIST", table.concat(names, "|"), true)
+end
+
+function core.naming.DeleteCustomPreset(presets, name, defaults)
+  if core.naming.IsDefaultPreset(name, defaults) then return presets end
+  local new = {}
+  for _, p in ipairs(presets) do
+    if p.name ~= name then new[#new + 1] = p end
+  end
+  return new
+end
+
+--------------------------------
 -- Settings
 --------------------------------
 
