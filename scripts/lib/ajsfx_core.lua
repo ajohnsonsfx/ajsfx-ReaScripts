@@ -317,39 +317,37 @@ core.settings = {}
 local SETTINGS_SECTION = "ajsfx_UserSettings"
 
 function core.settings.Load()
-    local s = {
-        delimiter       = "_",
-        custom_wildcards = {},
-        version_label   = "v",
-    }
-    if r.HasExtState(SETTINGS_SECTION, "delimiter") then
-        local d = r.GetExtState(SETTINGS_SECTION, "delimiter")
-        if d ~= "" then s.delimiter = d end
+  local s = {
+    delimiter        = "_",
+    custom_wildcards = {},
+    version_label    = "v",
+  }
+  if r.HasExtState(SETTINGS_SECTION, "delimiter") then
+    s.delimiter = r.GetExtState(SETTINGS_SECTION, "delimiter")
+  end
+  if r.HasExtState(SETTINGS_SECTION, "version_label") then
+    s.version_label = r.GetExtState(SETTINGS_SECTION, "version_label")
+  end
+  if r.HasExtState(SETTINGS_SECTION, "custom_wildcards") then
+    local raw = r.GetExtState(SETTINGS_SECTION, "custom_wildcards")
+    for line in raw:gmatch("[^\n]+") do
+      local name, pattern = line:match("^([^\t]+)\t(.+)$")
+      if name and pattern then
+        s.custom_wildcards[#s.custom_wildcards + 1] = { name = name, pattern = pattern }
+      end
     end
-    if r.HasExtState(SETTINGS_SECTION, "version_label") then
-        local vl = r.GetExtState(SETTINGS_SECTION, "version_label")
-        if vl ~= "" then s.version_label = vl end
-    end
-    if r.HasExtState(SETTINGS_SECTION, "custom_wildcards") then
-        local raw = r.GetExtState(SETTINGS_SECTION, "custom_wildcards")
-        for line in raw:gmatch("[^\n]+") do
-            local name, pattern = line:match("^([^\t]+)\t(.+)$")
-            if name and pattern then
-                s.custom_wildcards[#s.custom_wildcards + 1] = { name = name, pattern = pattern }
-            end
-        end
-    end
-    return s
+  end
+  return s
 end
 
 function core.settings.Save(s)
-    r.SetExtState(SETTINGS_SECTION, "delimiter",     s.delimiter,     true)
-    r.SetExtState(SETTINGS_SECTION, "version_label", s.version_label, true)
-    local lines = {}
-    for _, wc in ipairs(s.custom_wildcards) do
-        lines[#lines + 1] = wc.name .. "\t" .. wc.pattern
-    end
-    r.SetExtState(SETTINGS_SECTION, "custom_wildcards", table.concat(lines, "\n"), true)
+  r.SetExtState(SETTINGS_SECTION, "delimiter",        s.delimiter,     true)
+  r.SetExtState(SETTINGS_SECTION, "version_label",    s.version_label, true)
+  local lines = {}
+  for _, wc in ipairs(s.custom_wildcards) do
+    lines[#lines + 1] = wc.name .. "\t" .. wc.pattern
+  end
+  r.SetExtState(SETTINGS_SECTION, "custom_wildcards", table.concat(lines, "\n"), true)
 end
 
 return core
