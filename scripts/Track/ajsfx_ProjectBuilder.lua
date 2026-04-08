@@ -833,7 +833,9 @@ local function Loop()
                 if not p_tab_open then
                     -- User clicked × on this tab — remove the batch
                     table.remove(batches, i)
+                    if i < selected_batch then selected_batch = selected_batch - 1 end
                     if selected_batch > #batches then selected_batch = #batches end
+                    if selected_batch < 1 then selected_batch = 0 end
                     if visible_tab then im.EndTabItem(ctx) end
                     im.EndTabBar(ctx)
                     goto continue_loop
