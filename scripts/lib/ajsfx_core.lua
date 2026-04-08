@@ -314,6 +314,7 @@ end
 --------------------------------
 
 core.naming = {}
+core.naming.DEFAULT_SECTION = "ajsfx_Presets"
 
 function core.naming.SerializePreset(preset)
   -- Format: type:label|type:label|...  (no delimiter — delimiter is global in settings)
@@ -393,8 +394,9 @@ function core.naming.SaveCustomPresets(section, presets, defaults)
   r.SetExtState(section, "LIST", table.concat(names, "|"), true)
 end
 
-function core.naming.DeleteCustomPreset(presets, name, defaults)
+function core.naming.DeleteCustomPreset(section, presets, name, defaults)
   if core.naming.IsDefaultPreset(name, defaults) then return presets end
+  r.DeleteExtState(section, "P_" .. name, true)
   local new = {}
   for _, p in ipairs(presets) do
     if p.name ~= name then new[#new + 1] = p end
