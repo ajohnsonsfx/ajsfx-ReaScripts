@@ -439,6 +439,7 @@ function core.naming.DeleteCustomPreset(section, presets, name, defaults)
   for _, p in ipairs(presets) do
     if p.name ~= name then new[#new + 1] = p end
   end
+  core.naming.SaveCustomPresets(section, new, defaults)
   return new
 end
 

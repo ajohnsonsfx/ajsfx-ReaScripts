@@ -28,7 +28,7 @@ end
 -- --- CONSTANTS ---
 --------------------------------
 local EXT_SECTION     = "ajsfx_ProjectBuilder"
-local PRESETS_SECTION = core.naming.DEFAULT_SECTION
+local PRESETS_SECTION = "ajsfx_ProjectBuilder_Presets"
 local MAX_GROUPS      = 64
 local MAX_AUX         = 8
 local MAX_CONTENT     = 64
