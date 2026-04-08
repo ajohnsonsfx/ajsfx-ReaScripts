@@ -97,5 +97,75 @@ test("IsDefaultPreset returns true for defaults, false for custom", function()
     assert_eq(core.naming.IsDefaultPreset("My Custom",      defaults), false)
 end)
 
+-- ── Wildcard tests ──────────────────────────────────────────────────────────
+print("\n=== core.ResolveWildcards ===")
+
+test("Resolves $year to 4-digit year", function()
+  local result = core.ResolveWildcards("asset_$year")
+  local expected = "asset_" .. os.date("%Y")
+  assert_eq(result, expected)
+end)
+
+test("Resolves $project from mocked project name", function()
+  local result = core.ResolveWildcards("$project_sfx")
+  assert_eq(result, "MyProject_sfx")
+end)
+
+test("Resolves $monthname before $month to avoid partial match", function()
+  local result = core.ResolveWildcards("$monthname")
+  assert_eq(result, os.date("%B"))
+end)
+
+test("Custom wildcard resolved before built-in wildcards", function()
+  -- Temporarily override HasExtState/GetExtState to return a custom wildcard
+  local original_has = reaper.HasExtState
+  local original_get = reaper.GetExtState
+  reaper.HasExtState = function(section, key)
+    if section == "ajsfx_UserSettings" and key == "custom_wildcards" then return true end
+    return false
+  end
+  reaper.GetExtState = function(section, key)
+    if section == "ajsfx_UserSettings" and key == "custom_wildcards" then
+      return "$mydate\t$year$month"
+    end
+    return ""
+  end
+  local result = core.ResolveWildcards("$mydate")
+  local expected = os.date("%Y") .. os.date("%m")
+  reaper.HasExtState = original_has
+  reaper.GetExtState = original_get
+  assert_eq(result, expected, "custom wildcard + built-in expansion")
+end)
+
+-- ── ResolveGroupName tests ──────────────────────────────────────────────────
+print("\n=== core.naming.ResolveGroupName ===")
+
+test("Resolves shared + input sections with delimiter from settings", function()
+  local batch = {
+    sections = {
+      { type = "shared", label = "Char" },
+      { type = "input",  label = "Action" },
+    },
+    shared_values = { Char = "Hero" },
+    groups = { [1] = { Action = "Attack" } },
+  }
+  local result = core.naming.ResolveGroupName(batch, 1)
+  assert_eq(result, "Hero_Attack")
+end)
+
+test("Resolves wildcard in shared value", function()
+  local batch = {
+    sections = {
+      { type = "shared", label = "Date" },
+      { type = "input",  label = "Name" },
+    },
+    shared_values = { Date = "$year" },
+    groups = { [1] = { Name = "Boom" } },
+  }
+  local result = core.naming.ResolveGroupName(batch, 1)
+  local expected = os.date("%Y") .. "_Boom"
+  assert_eq(result, expected)
+end)
+
 print("\nAll done: " .. passed .. " passed, " .. failed .. " failed")
 if failed > 0 then os.exit(1) end

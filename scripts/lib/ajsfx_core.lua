@@ -310,6 +310,44 @@ function core.CalculateGentleNormGain(required_gain_db, strength_pct)
 end
 
 --------------------------------
+-- Wildcard Resolution
+--------------------------------
+
+function core.ResolveWildcards(str)
+  -- Resolve user-defined custom wildcards first (they may contain built-in wildcards)
+  local settings = core.settings.Load()
+  for _, wc in ipairs(settings.custom_wildcards) do
+    -- wc.name starts with "$" — escape for Lua pattern: "$" becomes "%$"
+    local pattern = "%" .. wc.name
+    local replacement = (wc.pattern:gsub("%%", "%%%%"))
+    str = str:gsub(pattern, replacement)
+  end
+
+  -- Resolve built-in wildcards (ordered longest-first to prevent partial matches)
+  local proj_name = r.GetProjectName(0, "")
+  proj_name = proj_name:match("(.+)%.[^.]+$") or proj_name
+
+  local replacements = {
+    { "monthname", os.date("%B")                                        },
+    { "computer",  os.getenv("COMPUTERNAME") or ""                     },
+    { "project",   proj_name                                            },
+    { "author",    select(2, r.GetSetProjectAuthor(0, false, "")) or "" },
+    { "minute",    os.date("%M")                                        },
+    { "hour12",    os.date("%I")                                        },
+    { "year2",     os.date("%y")                                        },
+    { "month",     os.date("%m")                                        },
+    { "year",      os.date("%Y")                                        },
+    { "hour",      os.date("%H")                                        },
+    { "user",      os.getenv("USERNAME") or os.getenv("USER") or ""    },
+    { "day",       os.date("%d")                                        },
+  }
+  for _, rep in ipairs(replacements) do
+    str = str:gsub("%$" .. rep[1], (rep[2]:gsub("%%", "%%%%")))
+  end
+  return str
+end
+
+--------------------------------
 -- Naming
 --------------------------------
 
@@ -402,6 +440,21 @@ function core.naming.DeleteCustomPreset(section, presets, name, defaults)
     if p.name ~= name then new[#new + 1] = p end
   end
   return new
+end
+
+function core.naming.ResolveGroupName(batch, group_index)
+  local settings = core.settings.Load()
+  local parts = {}
+  for _, section in ipairs(batch.sections) do
+    local value
+    if section.type == "shared" then
+      value = batch.shared_values[section.label] or ""
+    else
+      value = (batch.groups[group_index] and batch.groups[group_index][section.label]) or ""
+    end
+    parts[#parts + 1] = core.ResolveWildcards(value)
+  end
+  return table.concat(parts, settings.delimiter)
 end
 
 --------------------------------
