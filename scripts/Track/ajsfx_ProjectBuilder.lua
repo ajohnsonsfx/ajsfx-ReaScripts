@@ -81,6 +81,7 @@ local function create_batch_from_preset(preset)
     num_midi      = 0,
     groups        = {},
     layout_preview_open = true,
+    batch.save_dialog_name    = "",
   }
   batch.groups[1] = {}
   for _, s in ipairs(batch.sections) do
@@ -342,8 +343,6 @@ local all_presets    = core.naming.LoadAllPresets(PRESETS_SECTION, DEFAULT_PRESE
 local batches        = load_session() or {}
 local selected_batch = #batches > 0 and 1 or 0
 
-local save_dialog_name = ""
-
 -- Input buffers for ImGui (keyed by unique id)
 local input_buffers = {}
 
@@ -431,14 +430,26 @@ local function draw_batch_config()
 
     im.SameLine(ctx)
     if im.Button(ctx, "Save##preset", btn_w, 0) then
-        save_dialog_name = batch.preset_name
+        batch.save_dialog_name = batch.preset_name
         input_buffers["save_name_" .. bid] = batch.preset_name
         im.OpenPopup(ctx, "##save_preset_dialog")
     end
 
     im.SameLine(ctx)
     if im.Button(ctx, "New##preset", btn_w, 0) then
-        local new_p = { name = "New Preset", sections = { { type = "input", label = "Name" } } }
+        -- Find a unique name
+        local base_name = "New Preset"
+        local new_name  = base_name
+        local suffix    = 2
+        local name_taken = true
+        while name_taken do
+            name_taken = false
+            for _, p in ipairs(all_presets) do
+                if p.name == new_name then name_taken = true; break end
+            end
+            if name_taken then new_name = base_name .. " " .. suffix; suffix = suffix + 1 end
+        end
+        local new_p = { name = new_name, sections = { { type = "input", label = "Name" } } }
         all_presets[#all_presets + 1] = new_p
         core.naming.SaveCustomPresets(PRESETS_SECTION, all_presets, DEFAULT_PRESETS)
         batch.preset_name   = new_p.name
@@ -463,20 +474,20 @@ local function draw_batch_config()
     if im.BeginPopup(ctx, "##save_preset_dialog") then
         im.Text(ctx, "Save preset as:")
         im.SetNextItemWidth(ctx, 220)
-        local rv, val = im.InputText(ctx, "##save_name", get_buf("save_name_" .. bid, save_dialog_name))
+        local rv, val = im.InputText(ctx, "##save_name", get_buf("save_name_" .. bid, batch.save_dialog_name))
         if rv then
-            save_dialog_name = val
+            batch.save_dialog_name = val
             input_buffers["save_name_" .. bid] = val
         end
 
         local name_exists = false
         for _, p in ipairs(all_presets) do
-            if p.name == save_dialog_name then name_exists = true; break end
+            if p.name == batch.save_dialog_name then name_exists = true; break end
         end
-        local is_default = core.naming.IsDefaultPreset(save_dialog_name, DEFAULT_PRESETS)
+        local is_default = core.naming.IsDefaultPreset(batch.save_dialog_name, DEFAULT_PRESETS)
 
         if name_exists then
-            im.TextColored(ctx, 0xFFAA44FF, "\xe2\x9a\xa0 \"" .. save_dialog_name .. "\" already exists. Overwrite?")
+            im.TextColored(ctx, 0xFFAA44FF, "\xe2\x9a\xa0 \"" .. batch.save_dialog_name .. "\" already exists. Overwrite?")
         end
         im.Spacing(ctx)
 
@@ -485,22 +496,22 @@ local function draw_batch_config()
         end
         im.SameLine(ctx)
 
-        local can_save = save_dialog_name ~= "" and not is_default
+        local can_save = batch.save_dialog_name ~= "" and not is_default
         if not can_save then im.BeginDisabled(ctx) end
         local confirm_label = name_exists and "Overwrite" or "Save"
         if im.Button(ctx, confirm_label .. "##save_confirm", 80, 0) then
             local found = false
             for idx, p in ipairs(all_presets) do
-                if p.name == save_dialog_name then
-                    all_presets[idx] = { name = save_dialog_name, sections = deep_copy_sections(batch.sections) }
+                if p.name == batch.save_dialog_name then
+                    all_presets[idx] = { name = batch.save_dialog_name, sections = deep_copy_sections(batch.sections) }
                     found = true
                     break
                 end
             end
             if not found then
-                all_presets[#all_presets + 1] = { name = save_dialog_name, sections = deep_copy_sections(batch.sections) }
+                all_presets[#all_presets + 1] = { name = batch.save_dialog_name, sections = deep_copy_sections(batch.sections) }
             end
-            batch.preset_name = save_dialog_name
+            batch.preset_name = batch.save_dialog_name
             core.naming.SaveCustomPresets(PRESETS_SECTION, all_presets, DEFAULT_PRESETS)
             im.CloseCurrentPopup(ctx)
         end
@@ -599,11 +610,14 @@ local function draw_batch_config()
     end
 
     im.SameLine(ctx, 0, 10)
-    if im.SmallButton(ctx, "+ section") and #batch.sections < MAX_SECTIONS then
+    local at_limit = #batch.sections >= MAX_SECTIONS
+    if at_limit then im.BeginDisabled(ctx) end
+    if im.SmallButton(ctx, "+ section") then
         batch.sections[#batch.sections + 1] = { type = "input", label = "Name" }
         input_buffers[bid .. "strip_" .. #batch.sections] = "Name"
         sync_batch_groups(batch)
     end
+    if at_limit then im.EndDisabled(ctx) end
 
     end -- strip_visible
     im.EndChild(ctx)
