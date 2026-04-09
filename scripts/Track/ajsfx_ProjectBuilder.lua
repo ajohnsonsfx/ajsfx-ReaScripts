@@ -735,9 +735,10 @@ local function draw_batch_config()
     -- ── GROUPS ─────────────────────────────────────────────────────────────────
     im.SeparatorText(ctx, "Groups")
 
-    local col_count = 1 + #batch.sections + 1  -- # + sections + Preview
-    local tbl_flags = im.TableFlags_Borders | im.TableFlags_RowBg | im.TableFlags_ScrollY
-    local tbl_h     = math.min(batch.num_groups * 26 + 26, 260)
+    local col_count  = 1 + #batch.sections + 1  -- # + sections + Preview
+    local tbl_flags  = im.TableFlags_Borders | im.TableFlags_RowBg | im.TableFlags_ScrollY
+    local tbl_h      = math.min(batch.num_groups * 26 + 26, 260)
+    local settings_l = core.settings.Load()
 
     if im.BeginTable(ctx, "##groups_" .. bid, col_count, tbl_flags, 0, tbl_h) then
 
@@ -790,7 +791,7 @@ local function draw_batch_config()
                 else
                     local buf_id = bid .. "grp_" .. gi .. "_" .. s.label
                     im.SetNextItemWidth(ctx, -1)
-                    local rv, val = im.InputText(ctx, "##" .. s.label, get_buf(buf_id, batch.groups[gi][s.label] or ""))
+                    local rv, val = im.InputText(ctx, "##" .. buf_id, get_buf(buf_id, batch.groups[gi][s.label] or ""))
                     if rv then
                         batch.groups[gi][s.label] = val
                         input_buffers[buf_id] = val
@@ -801,7 +802,6 @@ local function draw_batch_config()
             -- Preview column
             im.TableNextColumn(ctx)
             local preview = core.naming.ResolveGroupName(batch, gi)
-            local settings_l = core.settings.Load()
             if preview == "" or preview == settings_l.delimiter:rep(#batch.sections - 1) then
                 im.TextDisabled(ctx, "(empty)")
             else
