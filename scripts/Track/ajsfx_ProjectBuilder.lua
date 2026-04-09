@@ -27,187 +27,56 @@ end
 --------------------------------
 -- --- CONSTANTS ---
 --------------------------------
-local EXT_SECTION = "ajsfx_ProjectBuilder"
+local EXT_SECTION     = "ajsfx_ProjectBuilder"
 local PRESETS_SECTION = "ajsfx_ProjectBuilder_Presets"
-local MAX_PRESETS = 50
-local MAX_GROUPS = 64
-local MAX_AUX = 8
-local MAX_CONTENT = 64
-local MAX_SECTIONS = 16
-
-local DEFAULT_PRESETS = {
-    {
-        name = "Standard Asset",
-        delimiter = "_",
-        sections = {
-            { type = "shared", label = "Character" },
-            { type = "input",  label = "Action" },
-            { type = "shared", label = "Date" },
-        }
-    },
-    {
-        name = "VO Asset",
-        delimiter = "_",
-        sections = {
-            { type = "shared", label = "Prefix" },
-            { type = "input",  label = "Character" },
-            { type = "shared", label = "Date" },
-        }
-    },
-    {
-        name = "Blank",
-        delimiter = "_",
-        sections = {
-            { type = "input", label = "Name" },
-        }
-    },
+local BUILTIN_WILDCARDS = {
+    "$monthname","$computer","$project","$author","$minute",
+    "$hour12","$year2","$month","$year","$hour","$user","$day"
 }
-
---------------------------------
--- --- WILDCARD RESOLUTION ---
---------------------------------
-local function resolve_wildcards(str)
-    local proj_name = r.GetProjectName(0, "")
-    proj_name = proj_name:match("(.+)%.[^.]+$") or proj_name -- strip extension
-
-    -- Ordered longest-first to prevent $month matching inside $monthname
-    local replacements = {
-        { "monthname", os.date("%B") },
-        { "computer",  os.getenv("COMPUTERNAME") or "" },
-        { "project",   proj_name },
-        { "author",    select(2, r.GetSetProjectAuthor(0, false, "")) or "" },
-        { "minute",    os.date("%M") },
-        { "hour12",    os.date("%I") },
-        { "year2",     os.date("%y") },
-        { "month",     os.date("%m") },
-        { "year",      os.date("%Y") },
-        { "hour",      os.date("%H") },
-        { "user",      os.getenv("USERNAME") or os.getenv("USER") or "" },
-        { "day",       os.date("%d") },
-    }
-
-    for _, rep in ipairs(replacements) do
-        local pattern = "%$" .. rep[1]
-        local escaped_value = rep[2]:gsub("%%", "%%%%")
-        str = str:gsub(pattern, escaped_value)
-    end
-    return str
-end
-
---------------------------------
--- --- NAME RESOLUTION ---
---------------------------------
-local function resolve_group_name(batch, group_index)
-    local parts = {}
-    for _, section in ipairs(batch.sections) do
-        local value
-        if section.type == "shared" then
-            value = batch.shared_values[section.label] or ""
-        else
-            value = (batch.groups[group_index] and batch.groups[group_index][section.label]) or ""
-        end
-        value = resolve_wildcards(value)
-        parts[#parts + 1] = value
-    end
-    return table.concat(parts, batch.delimiter)
-end
-
---------------------------------
--- --- PRESET PERSISTENCE ---
---------------------------------
-local function is_default_preset(name)
-    for _, dp in ipairs(DEFAULT_PRESETS) do
-        if dp.name == name then return true end
-    end
+local function is_builtin_wildcard(name)
+    for _, b in ipairs(BUILTIN_WILDCARDS) do if b == name then return true end end
     return false
 end
+local MAX_GROUPS      = 64
+local MAX_AUX         = 8
+local MAX_CONTENT     = 64
+local MAX_SECTIONS    = 16
 
-local function serialize_preset(preset)
-    -- Format: delimiter|type:label|type:label|...
-    local parts = { preset.delimiter }
-    for _, s in ipairs(preset.sections) do
-        parts[#parts + 1] = s.type .. ":" .. s.label
-    end
-    return table.concat(parts, "|")
-end
-
-local function deserialize_preset(name, str)
-    local parts = {}
-    for part in str:gmatch("[^|]+") do
-        parts[#parts + 1] = part
-    end
-    if #parts < 1 then return nil end
-
-    local preset = {
-        name = name,
-        delimiter = parts[1],
-        sections = {}
+local DEFAULT_PRESETS = {
+  {
+    name     = "Standard Asset",
+    sections = {
+      { type = "shared", label = "Character" },
+      { type = "input",  label = "Action" },
+      { type = "shared", label = "Date" },
     }
-    for i = 2, #parts do
-        local stype, label = parts[i]:match("^(%w+):(.+)$")
-        if stype and label then
-            preset.sections[#preset.sections + 1] = { type = stype, label = label }
-        end
-    end
-    return preset
-end
+  },
+  {
+    name     = "VO Asset",
+    sections = {
+      { type = "shared", label = "Prefix" },
+      { type = "input",  label = "Character" },
+      { type = "shared", label = "Date" },
+    }
+  },
+  {
+    name     = "Blank",
+    sections = {
+      { type = "input", label = "Name" },
+    }
+  },
+}
 
-local function load_all_presets()
-    local presets = {}
-    -- Load defaults first
-    for _, dp in ipairs(DEFAULT_PRESETS) do
-        presets[#presets + 1] = {
-            name = dp.name,
-            delimiter = dp.delimiter,
-            sections = {}
-        }
-        for _, s in ipairs(dp.sections) do
-            presets[#presets].sections[#presets[#presets].sections + 1] = { type = s.type, label = s.label }
-        end
-    end
-
-    -- Load custom presets
-    if r.HasExtState(PRESETS_SECTION, "LIST") then
-        local list_str = r.GetExtState(PRESETS_SECTION, "LIST")
-        for name in list_str:gmatch("[^|]+") do
-            if name ~= "" and not is_default_preset(name) then
-                local key = "P_" .. name
-                if r.HasExtState(PRESETS_SECTION, key) then
-                    local p = deserialize_preset(name, r.GetExtState(PRESETS_SECTION, key))
-                    if p then
-                        presets[#presets + 1] = p
-                        if #presets >= MAX_PRESETS then break end
-                    end
-                end
-            end
-        end
-    end
-    return presets
-end
-
-local function save_custom_presets(presets)
-    -- Build list of custom preset names
-    local names = {}
-    for _, p in ipairs(presets) do
-        if not is_default_preset(p.name) then
-            names[#names + 1] = p.name
-            r.SetExtState(PRESETS_SECTION, "P_" .. p.name, serialize_preset(p), true)
-        end
-    end
-    r.SetExtState(PRESETS_SECTION, "LIST", table.concat(names, "|"), true)
-end
-
-local function delete_custom_preset(presets, name)
-    if is_default_preset(name) then return presets end
-    local new = {}
-    for _, p in ipairs(presets) do
-        if p.name ~= name then
-            new[#new + 1] = p
-        end
-    end
-    r.DeleteExtState(PRESETS_SECTION, "P_" .. name, true)
-    save_custom_presets(new)
-    return new
+local BATCH_COLORS = {
+    0x88FF88FF, -- green
+    0x88CCFFFF, -- blue
+    0xFFCC66FF, -- amber
+    0xCC88FFFF, -- purple
+    0xFF8888FF, -- red
+    0x88FFFFFF, -- cyan
+}
+local function batch_color(i)
+    return BATCH_COLORS[((i - 1) % #BATCH_COLORS) + 1]
 end
 
 --------------------------------
@@ -222,25 +91,25 @@ local function deep_copy_sections(sections)
 end
 
 local function create_batch_from_preset(preset)
-    local batch = {
-        preset_name = preset.name,
-        delimiter = preset.delimiter,
-        sections = deep_copy_sections(preset.sections),
-        shared_values = {},
-        num_groups = 1,
-        num_aux = 1,
-        num_audio = 4,
-        num_midi = 0,
-        groups = {},
-    }
-    -- Initialize groups with empty input values
-    batch.groups[1] = {}
-    for _, s in ipairs(batch.sections) do
-        if s.type == "input" then
-            batch.groups[1][s.label] = ""
-        end
+  local batch = {
+    preset_name   = preset.name,
+    sections      = deep_copy_sections(preset.sections),
+    shared_values = {},
+    num_groups    = 1,
+    num_aux       = 1,
+    num_audio     = 4,
+    num_midi      = 0,
+    groups        = {},
+    layout_preview_open = true,
+    save_dialog_name    = "",
+  }
+  batch.groups[1] = {}
+  for _, s in ipairs(batch.sections) do
+    if s.type == "input" then
+      batch.groups[1][s.label] = ""
     end
-    return batch
+  end
+  return batch
 end
 
 local function sync_batch_groups(batch)
@@ -284,7 +153,6 @@ local function serialize_session(batches)
         local parts = {
             "BATCH",
             b.preset_name,
-            b.delimiter,
             tostring(b.num_groups),
             tostring(b.num_aux),
             tostring(b.num_audio),
@@ -329,17 +197,16 @@ local function deserialize_session(str)
             parts[#parts + 1] = part
         end
 
-        if parts[1] == "BATCH" and #parts >= 6 then
+        if parts[1] == "BATCH" and #parts >= 5 then
             current = {
-                preset_name = parts[2],
-                delimiter = parts[3],
-                sections = {},
+                preset_name   = parts[2],
+                sections      = {},
                 shared_values = {},
-                num_groups = tonumber(parts[4]) or 1,
-                num_aux = tonumber(parts[5]) or 1,
-                num_audio = tonumber(parts[6]) or 4,
-                num_midi = tonumber(parts[7]) or 0,
-                groups = {},
+                num_groups    = tonumber(parts[3]) or 1,
+                num_aux       = tonumber(parts[4]) or 1,
+                num_audio     = tonumber(parts[5]) or 4,
+                num_midi      = tonumber(parts[6]) or 0,
+                groups        = {},
             }
             batches[#batches + 1] = current
         elseif current and parts[1] == "SEC" and #parts >= 3 then
@@ -380,44 +247,42 @@ end
 -- --- GENERATION ---
 --------------------------------
 local function validate_batches(batches)
-    if #batches == 0 then return false, "No batches configured." end
-    for bi, batch in ipairs(batches) do
-        if #batch.sections == 0 then
-            return false, "Batch " .. bi .. " has no name sections."
-        end
-        for gi = 1, batch.num_groups do
-            local name = resolve_group_name(batch, gi)
-            if name == "" or name == batch.delimiter:rep(#batch.sections - 1) then
-                return false, "Batch " .. bi .. ", Group " .. gi .. ": name resolves to empty.\nPlease fill in all sections."
-            end
-        end
+  local settings = core.settings.Load()
+  if #batches == 0 then return false, "No batches configured." end
+  for bi, batch in ipairs(batches) do
+    if #batch.sections == 0 then
+      return false, "Batch " .. bi .. " has no name sections."
     end
-
-    -- Warn if $project used on unsaved project
-    local proj_name = r.GetProjectName(0, "")
-    if proj_name == "" then
-        for _, batch in ipairs(batches) do
-            for _, s in ipairs(batch.sections) do
-                local label = s.label
-                local value
-                if s.type == "shared" then
-                    value = batch.shared_values[label] or ""
-                else
-                    for gi = 1, batch.num_groups do
-                        value = (batch.groups[gi] and batch.groups[gi][label]) or ""
-                        if value:find("%$project") then
-                            return false, "Project is unsaved — $project will resolve to empty.\nPlease save the project first or remove the $project wildcard."
-                        end
-                    end
-                end
-                if value and value:find("%$project") then
-                    return false, "Project is unsaved — $project will resolve to empty.\nPlease save the project first or remove the $project wildcard."
-                end
-            end
-        end
+    for gi = 1, batch.num_groups do
+      local name = core.naming.ResolveGroupName(batch, gi)
+      local empty_name = settings.delimiter:rep(#batch.sections - 1)
+      if name == "" or name == empty_name then
+        return false, "Batch " .. bi .. ", Group " .. gi .. ": name resolves to empty.\nPlease fill in all sections."
+      end
     end
-
-    return true, nil
+  end
+  local proj_name = r.GetProjectName(0, "")
+  if proj_name == "" then
+    for _, batch in ipairs(batches) do
+      for _, s in ipairs(batch.sections) do
+        local value
+        if s.type == "shared" then
+          value = batch.shared_values[s.label] or ""
+        else
+          for gi = 1, batch.num_groups do
+            value = (batch.groups[gi] and batch.groups[gi][s.label]) or ""
+            if value:find("%$project") then
+              return false, "Project is unsaved — $project will resolve to empty.\nPlease save the project first or remove the $project wildcard."
+            end
+          end
+        end
+        if value and value:find("%$project") then
+          return false, "Project is unsaved — $project will resolve to empty.\nPlease save the project first or remove the $project wildcard."
+        end
+      end
+    end
+  end
+  return true, nil
 end
 
 local function generate_tracks(batches)
@@ -432,7 +297,7 @@ local function generate_tracks(batches)
 
         for _, batch in ipairs(batches) do
             for g = 1, batch.num_groups do
-                local group_name = resolve_group_name(batch, g)
+                local group_name = core.naming.ResolveGroupName(batch, g)
 
                 -- Group Master (folder)
                 r.InsertTrackAtIndex(insert_idx, true)
@@ -494,14 +359,13 @@ end
 local ctx = im.CreateContext('Project Builder')
 local WINDOW_FLAGS = im.WindowFlags_None
 
-local all_presets = load_all_presets()
-local batches = load_session() or {}
+local all_presets    = core.naming.LoadAllPresets(PRESETS_SECTION, DEFAULT_PRESETS)
+local batches        = load_session() or {}
 local selected_batch = #batches > 0 and 1 or 0
-
--- Preset editor state
-local editing_preset = nil -- nil = not editing, table = the preset being edited
-local edit_new_preset_name = ""
-local edit_is_new = false
+local settings_open = false
+local settings_state = core.settings.Load()  -- working copy while window is open
+local settings_new_wc_name    = ""
+local settings_new_wc_pattern = ""
 
 -- Input buffers for ImGui (keyed by unique id)
 local input_buffers = {}
@@ -514,520 +378,573 @@ local function get_buf(id, default)
 end
 
 --------------------------------
--- --- GUI HELPERS ---
---------------------------------
-local function draw_labeled_input_text(ctx, label, buf_id, current_val, input_width, label_width)
-    im.Text(ctx, label)
-    im.SameLine(ctx, label_width)
-    im.SetNextItemWidth(ctx, input_width)
-    local rv, val = im.InputText(ctx, "##" .. buf_id, current_val)
-    return rv, val
-end
-
-local function draw_labeled_input_int(ctx, label, current_val, input_width, label_width, min_val, max_val)
-    im.Text(ctx, label)
-    im.SameLine(ctx, label_width)
-    im.SetNextItemWidth(ctx, input_width)
-    local rv, val = im.InputInt(ctx, "##" .. label, current_val, 1, 1)
-    if rv then
-        val = math.max(min_val, math.min(max_val, val))
-    end
-    return rv, val
-end
-
---------------------------------
--- --- PRESET EDITOR UI ---
---------------------------------
-local function draw_preset_editor()
-    if not editing_preset then return false end
-
-    local open = true
-    local title = edit_is_new and "New Preset" or ("Edit Preset: " .. editing_preset.name)
-
-    im.SetNextWindowSize(ctx, 400, 0, im.Cond_Appearing)
-    local visible, p_open = im.Begin(ctx, title .. "###preset_editor", true, im.WindowFlags_AlwaysAutoResize)
-    if not visible then
-        if not p_open then editing_preset = nil end
-        return editing_preset ~= nil
-    end
-
-    if not p_open then
-        editing_preset = nil
-        im.End(ctx)
-        return false
-    end
-
-    -- Preset name (only for new presets)
-        if edit_is_new then
-            local rv, val = im.InputText(ctx, "Preset Name", get_buf("pe_name", edit_new_preset_name))
-            if rv then
-                edit_new_preset_name = val
-                input_buffers["pe_name"] = val
-            end
-            im.Spacing(ctx)
-        end
-
-        -- Delimiter
-        local rv_d, val_d = im.InputText(ctx, "Delimiter", get_buf("pe_delim", editing_preset.delimiter))
-        if rv_d then
-            editing_preset.delimiter = val_d
-            input_buffers["pe_delim"] = val_d
-        end
-
-        im.Spacing(ctx)
-        im.SeparatorText(ctx, "Sections")
-
-        -- Section list
-        local remove_idx = nil
-        local swap_a, swap_b = nil, nil
-
-        for i, s in ipairs(editing_preset.sections) do
-            im.PushID(ctx, i)
-
-            -- Type dropdown
-            im.SetNextItemWidth(ctx, 80)
-            if im.BeginCombo(ctx, "##type", s.type) then
-                if im.Selectable(ctx, "shared", s.type == "shared") then s.type = "shared" end
-                if im.Selectable(ctx, "input", s.type == "input") then s.type = "input" end
-                im.EndCombo(ctx)
-            end
-
-            im.SameLine(ctx)
-
-            -- Label
-            im.SetNextItemWidth(ctx, 150)
-            local buf_id = "pe_sec_" .. i
-            local rv_l, val_l = im.InputText(ctx, "##label", get_buf(buf_id, s.label))
-            if rv_l then
-                s.label = val_l
-                input_buffers[buf_id] = val_l
-            end
-
-            im.SameLine(ctx)
-
-            -- Move up
-            if i > 1 then
-                if im.SmallButton(ctx, "^") then swap_a, swap_b = i, i - 1 end
-            else
-                im.SmallButton(ctx, " ")
-            end
-
-            im.SameLine(ctx)
-
-            -- Move down
-            if i < #editing_preset.sections then
-                if im.SmallButton(ctx, "v") then swap_a, swap_b = i, i + 1 end
-            else
-                im.SmallButton(ctx, " ")
-            end
-
-            im.SameLine(ctx)
-
-            -- Delete
-            if im.SmallButton(ctx, "x") then remove_idx = i end
-
-            im.PopID(ctx)
-        end
-
-        -- Apply moves/removes
-        if swap_a and swap_b then
-            editing_preset.sections[swap_a], editing_preset.sections[swap_b] =
-                editing_preset.sections[swap_b], editing_preset.sections[swap_a]
-            -- Swap buffers too
-            local ba = "pe_sec_" .. swap_a
-            local bb = "pe_sec_" .. swap_b
-            input_buffers[ba], input_buffers[bb] = input_buffers[bb], input_buffers[ba]
-        end
-        if remove_idx then
-            table.remove(editing_preset.sections, remove_idx)
-            -- Rebuild section buffers
-            for i, s in ipairs(editing_preset.sections) do
-                input_buffers["pe_sec_" .. i] = s.label
-            end
-        end
-
-        im.Spacing(ctx)
-        if im.Button(ctx, "+ Add Section") and #editing_preset.sections < MAX_SECTIONS then
-            editing_preset.sections[#editing_preset.sections + 1] = { type = "shared", label = "" }
-            input_buffers["pe_sec_" .. #editing_preset.sections] = ""
-        end
-
-        im.Spacing(ctx)
-        im.Separator(ctx)
-        im.Spacing(ctx)
-
-        -- Save / Cancel
-        local can_save = #editing_preset.sections > 0
-        if edit_is_new then
-            can_save = can_save and edit_new_preset_name ~= "" and not is_default_preset(edit_new_preset_name)
-        end
-
-        if not can_save then im.BeginDisabled(ctx) end
-        if im.Button(ctx, "Save") then
-            if edit_is_new then
-                editing_preset.name = edit_new_preset_name
-                -- Check for duplicate names
-                local dupe = false
-                for _, p in ipairs(all_presets) do
-                    if p.name == editing_preset.name then dupe = true; break end
-                end
-                if not dupe then
-                    all_presets[#all_presets + 1] = editing_preset
-                end
-            else
-                -- Update existing
-                for i, p in ipairs(all_presets) do
-                    if p.name == editing_preset.name then
-                        all_presets[i] = editing_preset
-                        break
-                    end
-                end
-            end
-            save_custom_presets(all_presets)
-            editing_preset = nil
-        end
-        if not can_save then im.EndDisabled(ctx) end
-
-        im.SameLine(ctx)
-        if im.Button(ctx, "Cancel") then
-            editing_preset = nil
-        end
-    im.End(ctx)
-    return editing_preset ~= nil
-end
-
---------------------------------
 -- --- MAIN GUI ---
 --------------------------------
-local COLOR_SHARED = 0x88FF88FF -- Light Green
-local COLOR_INPUT = 0x88CCFFFF -- Light Blue
-local COLOR_DELIM = 0x888888FF -- Grey
-
-local function draw_preset_layout(ctx, sections, delimiter)
-    for i, s in ipairs(sections) do
-        local color = s.type == "shared" and COLOR_SHARED or COLOR_INPUT
-        im.TextColored(ctx, color, "[" .. s.label .. "]")
-        if i < #sections then
-            im.SameLine(ctx, 0, 0)
-            im.TextColored(ctx, COLOR_DELIM, delimiter)
-            im.SameLine(ctx, 0, 0)
-        end
-    end
-end
-
-local function draw_batch_list()
-    im.BeginChild(ctx, "batch_list", 200, -30, 1)
-    im.SeparatorText(ctx, "Batches")
-
-    local remove_idx = nil
-    for i, b in ipairs(batches) do
-        local display = b.preset_name
-        if display == "" then display = "Batch " .. i end
-
-        im.PushID(ctx, i)
-        if im.Selectable(ctx, display, selected_batch == i) then
-            selected_batch = i
-        end
-        im.SameLine(ctx)
-        if im.SmallButton(ctx, "x") then
-            remove_idx = i
-        end
-        im.PopID(ctx)
-    end
-
-    if remove_idx then
-        table.remove(batches, remove_idx)
-        if selected_batch > #batches then selected_batch = #batches end
-        if selected_batch < 1 and #batches > 0 then selected_batch = 1 end
-    end
-
-    im.Spacing(ctx)
-    if im.Button(ctx, "+ Add Batch", -1, 0) then
-        local preset = all_presets[1] -- default to first preset
-        batches[#batches + 1] = create_batch_from_preset(preset)
-        selected_batch = #batches
-    end
-
-    im.EndChild(ctx)
-end
 
 local function draw_batch_config()
-    im.BeginChild(ctx, "batch_config", 0, -30, 1)
-
     if selected_batch < 1 or selected_batch > #batches then
         im.TextDisabled(ctx, "Select or add a batch to configure.")
-        im.EndChild(ctx)
         return
     end
 
     local batch = batches[selected_batch]
     local bid = "b" .. selected_batch .. "_"
 
-    -- Preset selector
+    -- ── NAME PRESET ──────────────────────────────────────────────────────────
     im.SeparatorText(ctx, "Name Preset")
 
-    -- Calculate widths for full-width layout
     local avail_w = im.GetContentRegionAvail(ctx)
-    local has_delete = not is_default_preset(batch.preset_name)
-    local num_btns = has_delete and 3 or 2
-    -- Get style items correctly, in reaper-imgui we need to extract them or just hardcode/use reasonable defaults
-    local item_spacing_x = 8 -- typical default
-    local btn_w = 40
-    local btns_total_w = (btn_w * num_btns) + (item_spacing_x * num_btns)
-    local combo_w = avail_w - btns_total_w
+    local btn_w   = 50
+    local n_btns  = core.naming.IsDefaultPreset(batch.preset_name, DEFAULT_PRESETS) and 2 or 3
+    local combo_w = avail_w - (btn_w * n_btns) - (8 * n_btns)
 
     im.SetNextItemWidth(ctx, combo_w)
     if im.BeginCombo(ctx, "##PresetCombo", batch.preset_name) then
         for _, p in ipairs(all_presets) do
             local is_selected = batch.preset_name == p.name
             if im.Selectable(ctx, p.name .. "##" .. p.name, is_selected) then
-                batch.preset_name = p.name
-                batch.delimiter = p.delimiter
-                batch.sections = deep_copy_sections(p.sections)
+                batch.preset_name   = p.name
+                batch.sections      = deep_copy_sections(p.sections)
                 batch.shared_values = {}
-                for k, _ in pairs(input_buffers) do
+                for k in pairs(input_buffers) do
                     if k:find("^" .. bid) then input_buffers[k] = nil end
                 end
                 sync_batch_groups(batch)
             end
-            
-            im.SameLine(ctx, 150)
-            draw_preset_layout(ctx, p.sections, p.delimiter)
         end
         im.EndCombo(ctx)
     end
 
     im.SameLine(ctx)
-    if im.Button(ctx, "Edit", btn_w, 0) then
-        for _, p in ipairs(all_presets) do
-            if p.name == batch.preset_name then
-                editing_preset = {
-                    name = p.name,
-                    delimiter = p.delimiter,
-                    sections = deep_copy_sections(p.sections),
-                }
-                edit_is_new = false
-                input_buffers["pe_delim"] = p.delimiter
-                for i, s in ipairs(editing_preset.sections) do
-                    input_buffers["pe_sec_" .. i] = s.label
-                end
-                break
-            end
-        end
+    if im.Button(ctx, "Save##preset", btn_w, 0) then
+        batch.save_dialog_name = batch.preset_name
+        input_buffers["save_name_" .. bid] = batch.preset_name
+        im.OpenPopup(ctx, "##save_preset_dialog")
     end
 
     im.SameLine(ctx)
-    if im.Button(ctx, "New", btn_w, 0) then
-        editing_preset = {
-            name = "",
-            delimiter = "_",
-            sections = { { type = "shared", label = "" } },
-        }
-        edit_is_new = true
-        edit_new_preset_name = ""
-        input_buffers["pe_name"] = ""
-        input_buffers["pe_delim"] = "_"
-        input_buffers["pe_sec_1"] = ""
+    if im.Button(ctx, "New##preset", btn_w, 0) then
+        -- Find a unique name
+        local base_name = "New Preset"
+        local new_name  = base_name
+        local suffix    = 2
+        local name_taken = true
+        while name_taken do
+            name_taken = false
+            for _, p in ipairs(all_presets) do
+                if p.name == new_name then name_taken = true; break end
+            end
+            if name_taken then new_name = base_name .. " " .. suffix; suffix = suffix + 1 end
+        end
+        local new_p = { name = new_name, sections = { { type = "input", label = "Name" } } }
+        all_presets[#all_presets + 1] = new_p
+        core.naming.SaveCustomPresets(PRESETS_SECTION, all_presets, DEFAULT_PRESETS)
+        batch.preset_name   = new_p.name
+        batch.sections      = deep_copy_sections(new_p.sections)
+        batch.shared_values = {}
+        sync_batch_groups(batch)
     end
 
-    if has_delete then
+    if not core.naming.IsDefaultPreset(batch.preset_name, DEFAULT_PRESETS) then
         im.SameLine(ctx)
-        if im.Button(ctx, "Delete", btn_w, 0) then
-            all_presets = delete_custom_preset(all_presets, batch.preset_name)
+        if im.Button(ctx, "Del##preset", btn_w, 0) then
+            all_presets = core.naming.DeleteCustomPreset(PRESETS_SECTION, all_presets, batch.preset_name, DEFAULT_PRESETS)
             local p = all_presets[1]
-            batch.preset_name = p.name
-            batch.delimiter = p.delimiter
-            batch.sections = deep_copy_sections(p.sections)
+            batch.preset_name   = p.name
+            batch.sections      = deep_copy_sections(p.sections)
             batch.shared_values = {}
             sync_batch_groups(batch)
         end
     end
 
-    im.Spacing(ctx)
-    im.Spacing(ctx)
-    im.SeparatorText(ctx, "Layout")
+    -- Save dialog popup
+    if im.BeginPopup(ctx, "##save_preset_dialog") then
+        im.Text(ctx, "Save preset as:")
+        im.SetNextItemWidth(ctx, 220)
+        local rv, val = im.InputText(ctx, "##save_name", get_buf("save_name_" .. bid, batch.save_dialog_name))
+        if rv then
+            batch.save_dialog_name = val
+            input_buffers["save_name_" .. bid] = val
+        end
 
-    -- Row 1: Root Node (Groups & Naming)
-    local draw_list = im.GetWindowDrawList(ctx)
-    local root_x, root_y = im.GetCursorScreenPos(ctx)
+        local name_exists = false
+        for _, p in ipairs(all_presets) do
+            if p.name == batch.save_dialog_name then name_exists = true; break end
+        end
+        local is_default = core.naming.IsDefaultPreset(batch.save_dialog_name, DEFAULT_PRESETS)
 
-    im.BeginGroup(ctx)
-    -- Align "Format:" with the "Groups" text (Input width 26 + default ItemSpacing 8)
-    local c_x = im.GetCursorPosX(ctx)
-    im.SetCursorPosX(ctx, c_x + 34)
-    im.TextDisabled(ctx, "Format:")
-    
-    im.SetCursorPosX(ctx, c_x)
-    im.SetNextItemWidth(ctx, 26)
-    local rv_g, val_g = im.InputInt(ctx, "##num_groups", batch.num_groups, 0, 0)
+        if name_exists then
+            im.TextColored(ctx, 0xFFAA44FF, "\xe2\x9a\xa0 \"" .. batch.save_dialog_name .. "\" already exists. Overwrite?")
+        end
+        im.Spacing(ctx)
+
+        if im.Button(ctx, "Cancel##save", 80, 0) then
+            im.CloseCurrentPopup(ctx)
+        end
+        im.SameLine(ctx)
+
+        local can_save = batch.save_dialog_name ~= "" and not is_default
+        if not can_save then im.BeginDisabled(ctx) end
+        local confirm_label = name_exists and "Overwrite" or "Save"
+        if im.Button(ctx, confirm_label .. "##save_confirm", 80, 0) then
+            local found = false
+            for idx, p in ipairs(all_presets) do
+                if p.name == batch.save_dialog_name then
+                    all_presets[idx] = { name = batch.save_dialog_name, sections = deep_copy_sections(batch.sections) }
+                    found = true
+                    break
+                end
+            end
+            if not found then
+                all_presets[#all_presets + 1] = { name = batch.save_dialog_name, sections = deep_copy_sections(batch.sections) }
+            end
+            batch.preset_name = batch.save_dialog_name
+            core.naming.SaveCustomPresets(PRESETS_SECTION, all_presets, DEFAULT_PRESETS)
+            im.CloseCurrentPopup(ctx)
+        end
+        if not can_save then im.EndDisabled(ctx) end
+        im.EndPopup(ctx)
+    end
+
+    -- ── Inline horizontal preset editor strip ────────────────────────────────
+    im.PushStyleColor(ctx, im.Col_ChildBg, 0x1A1A2AFF)
+    local strip_visible = im.BeginChild(ctx, "##preset_strip_" .. bid, -1, 34, im.ChildFlags_Border)
+    if strip_visible then
+
+    local settings = core.settings.Load()
+    im.TextDisabled(ctx, "delim:")
+    im.SameLine(ctx, 0, 4)
+    im.TextColored(ctx, 0x888888FF, settings.delimiter)
+    im.SameLine(ctx, 0, 8)
+    im.TextDisabled(ctx, "|")
+    im.SameLine(ctx, 0, 8)
+
+    local swap_a, swap_b, remove_idx = nil, nil, nil
+    for i, s in ipairs(batch.sections) do
+        im.PushID(ctx, bid .. "strip_" .. i)
+
+        local badge_color = s.type == "shared" and 0x1A3A1AFF or 0x1A2A3AFF
+        local text_color  = s.type == "shared" and 0x88FF88FF or 0x88CCFFFF
+        im.PushStyleColor(ctx, im.Col_Button,        badge_color)
+        im.PushStyleColor(ctx, im.Col_ButtonHovered, badge_color + 0x00101000)
+        im.PushStyleColor(ctx, im.Col_Text,          text_color)
+        if im.SmallButton(ctx, s.type == "shared" and "S" or "I") then
+            s.type = s.type == "shared" and "input" or "shared"
+            if s.type == "input" then batch.shared_values[s.label] = nil end
+            sync_batch_groups(batch)
+        end
+        im.PopStyleColor(ctx, 3)
+        im.SameLine(ctx, 0, 3)
+
+        im.SetNextItemWidth(ctx, 70)
+        local buf_id = bid .. "strip_" .. i
+        local rv_l, val_l = im.InputText(ctx, "##lbl", get_buf(buf_id, s.label))
+        if rv_l then
+            local old_label = s.label
+            s.label = val_l
+            input_buffers[buf_id] = val_l
+            if batch.shared_values[old_label] ~= nil then
+                batch.shared_values[val_l] = batch.shared_values[old_label]
+                batch.shared_values[old_label] = nil
+            end
+            for _, g in ipairs(batch.groups) do
+                if g[old_label] ~= nil then
+                    g[val_l] = g[old_label]
+                    g[old_label] = nil
+                end
+            end
+        end
+        im.SameLine(ctx, 0, 2)
+
+        if i > 1 then
+            if im.SmallButton(ctx, "<") then swap_a, swap_b = i, i - 1 end
+        else
+            im.SmallButton(ctx, " ")
+        end
+        im.SameLine(ctx, 0, 1)
+        if i < #batch.sections then
+            if im.SmallButton(ctx, ">") then swap_a, swap_b = i, i + 1 end
+        else
+            im.SmallButton(ctx, " ")
+        end
+        im.SameLine(ctx, 0, 2)
+
+        im.PushStyleColor(ctx, im.Col_Text, 0xFF6666FF)
+        if im.SmallButton(ctx, "x") then remove_idx = i end
+        im.PopStyleColor(ctx)
+
+        if i < #batch.sections then
+            im.SameLine(ctx, 0, 4)
+            im.TextColored(ctx, 0x666666FF, settings.delimiter)
+            im.SameLine(ctx, 0, 4)
+        end
+
+        im.PopID(ctx)
+    end
+
+    if swap_a and swap_b then
+        batch.sections[swap_a], batch.sections[swap_b] = batch.sections[swap_b], batch.sections[swap_a]
+        local ba = bid .. "strip_" .. swap_a
+        local bb = bid .. "strip_" .. swap_b
+        input_buffers[ba], input_buffers[bb] = input_buffers[bb], input_buffers[ba]
+    end
+    if remove_idx then
+        table.remove(batch.sections, remove_idx)
+        for i2, s in ipairs(batch.sections) do
+            input_buffers[bid .. "strip_" .. i2] = s.label
+        end
+        sync_batch_groups(batch)
+    end
+
+    im.SameLine(ctx, 0, 10)
+    local at_limit = #batch.sections >= MAX_SECTIONS
+    if at_limit then im.BeginDisabled(ctx) end
+    if im.SmallButton(ctx, "+ section") then
+        batch.sections[#batch.sections + 1] = { type = "input", label = "Name" }
+        input_buffers[bid .. "strip_" .. #batch.sections] = "Name"
+        sync_batch_groups(batch)
+    end
+    if at_limit then im.EndDisabled(ctx) end
+
+    end -- strip_visible
+    im.EndChild(ctx)
+    im.PopStyleColor(ctx)
+
+    -- ── TRACK LAYOUT ──────────────────────────────────────────────────────────
+    im.SeparatorText(ctx, "Track Layout")
+
+    local avail_lw = im.GetContentRegionAvail(ctx)
+    local spinner_w = 30
+
+    -- Spinners row
+    im.SetNextItemWidth(ctx, spinner_w)
+    local rv_g, val_g = im.InputInt(ctx, "##ng", batch.num_groups, 1, 1)
     if rv_g then
         batch.num_groups = math.max(1, math.min(MAX_GROUPS, val_g))
         sync_batch_groups(batch)
     end
-    -- Capture coordinates for the hierarchy line exactly at the vertical center of this InputInt
-    local _, root_item_y_min = im.GetItemRectMin(ctx)
-    local _, root_item_y_max = im.GetItemRectMax(ctx)
-    local root_y_center = (root_item_y_min + root_item_y_max) / 2
-    
-    im.SameLine(ctx)
-    im.Text(ctx, "Groups")
-    im.EndGroup(ctx)
-    
-    im.SameLine(ctx, 0, 30)
-    
-    for i, s in ipairs(batch.sections) do
-        im.PushID(ctx, "fmt_" .. i)
-        
-        im.BeginGroup(ctx)
-        -- Label Row
-        local color = s.type == "shared" and COLOR_SHARED or COLOR_INPUT
-        im.TextColored(ctx, color, "[" .. s.label .. "]")
-        
-        -- Input Row
-        if s.type == "shared" then
-            im.SetNextItemWidth(ctx, 80)
-            local buf_id = bid .. "sv_" .. s.label
-            local rv, val = im.InputText(ctx, "##" .. s.label, get_buf(buf_id, batch.shared_values[s.label] or ""))
-            if rv then
-                batch.shared_values[s.label] = val
-                input_buffers[buf_id] = val
-            end
-        else
-            -- No input box, just an empty space that aligns with the visual row height
-            -- Let's give it a consistent width, and ensure it respects the vertical layout
-            im.Dummy(ctx, 70, 22)
-        end
-        im.EndGroup(ctx)
-        
-        if i < #batch.sections then
-            im.SameLine(ctx, 0, 4)
-            im.BeginGroup(ctx)
-            im.Dummy(ctx, 1, 22) -- vertical spacer to push character down
-            im.TextColored(ctx, COLOR_DELIM, batch.delimiter)
-            im.EndGroup(ctx)
-            im.SameLine(ctx, 0, 4)
-        end
-        im.PopID(ctx)
-    end
+    im.SameLine(ctx) im.Text(ctx, "Groups")
 
-    -- Child Nodes (indented)
-    im.Indent(ctx, 30)
-    im.Spacing(ctx)
-    
-    local aux_x, aux_y = im.GetCursorScreenPos(ctx)
-    im.SetNextItemWidth(ctx, 26)
-    local rv_a, val_a = im.InputInt(ctx, "##num_aux", batch.num_aux, 0, 0)
+    im.SameLine(ctx, 0, 16)
+    im.SetNextItemWidth(ctx, spinner_w)
+    local rv_a, val_a = im.InputInt(ctx, "##na", batch.num_aux, 1, 1)
     if rv_a then batch.num_aux = math.max(0, math.min(MAX_AUX, val_a)) end
-    im.SameLine(ctx)
-    im.Text(ctx, "FX Aux Tracks")
-    local aux_r_min_x, aux_r_min_y = im.GetItemRectMin(ctx)
-    local aux_r_max_x, aux_r_max_y = im.GetItemRectMax(ctx)
-    
-    local aud_x, aud_y = im.GetCursorScreenPos(ctx)
-    im.SetNextItemWidth(ctx, 26)
-    local rv_au, val_au = im.InputInt(ctx, "##num_audio", batch.num_audio, 0, 0)
+    im.SameLine(ctx) im.Text(ctx, "Aux")
+
+    im.SameLine(ctx, 0, 16)
+    im.SetNextItemWidth(ctx, spinner_w)
+    local rv_au, val_au = im.InputInt(ctx, "##nau", batch.num_audio, 1, 1)
     if rv_au then batch.num_audio = math.max(0, math.min(MAX_CONTENT, val_au)) end
-    im.SameLine(ctx)
-    im.Text(ctx, "Audio Tracks")
-    local aud_r_min_x, aud_r_min_y = im.GetItemRectMin(ctx)
-    local aud_r_max_x, aud_r_max_y = im.GetItemRectMax(ctx)
-    
-    local mid_x, mid_y = im.GetCursorScreenPos(ctx)
-    im.SetNextItemWidth(ctx, 26)
-    local rv_mi, val_mi = im.InputInt(ctx, "##num_midi", batch.num_midi, 0, 0)
+    im.SameLine(ctx) im.Text(ctx, "Audio")
+
+    im.SameLine(ctx, 0, 16)
+    im.SetNextItemWidth(ctx, spinner_w)
+    local rv_mi, val_mi = im.InputInt(ctx, "##nmi", batch.num_midi, 1, 1)
     if rv_mi then batch.num_midi = math.max(0, math.min(MAX_CONTENT, val_mi)) end
-    im.SameLine(ctx)
-    im.Text(ctx, "MIDI Tracks")
-    local mid_r_min_x, mid_r_min_y = im.GetItemRectMin(ctx)
-    local mid_r_max_x, mid_r_max_y = im.GetItemRectMax(ctx)
+    im.SameLine(ctx) im.Text(ctx, "MIDI")
 
-    im.Unindent(ctx, 30)
-
-    -- Drawing Custom Hierarchy and Routing Lines
-    local HIER_COLOR = 0xFFFFFF88 
-    local ROUTE_COLOR = 0xEE77EEAA
-    local line_thick = 3.0
-    
-    -- Node centers
-    local h_line_x = aux_x - 15  -- Place the line within the indentation gap
-    local h_start_y = root_y_center
-    local aux_mid_y = (aux_r_min_y + aux_r_max_y) / 2
-    local aud_mid_y = (aud_r_min_y + aud_r_max_y) / 2
-    local mid_mid_y = (mid_r_min_y + mid_r_max_y) / 2
-    
-    -- Main vertical stem and branches
-    im.DrawList_AddLine(draw_list, h_line_x, h_start_y, h_line_x, mid_mid_y, HIER_COLOR, line_thick)
-    im.DrawList_AddLine(draw_list, h_line_x, aux_mid_y, aux_x - 4, aux_mid_y, HIER_COLOR, line_thick)
-    im.DrawList_AddLine(draw_list, h_line_x, aud_mid_y, aud_x - 4, aud_mid_y, HIER_COLOR, line_thick)
-    im.DrawList_AddLine(draw_list, h_line_x, mid_mid_y, mid_x - 4, mid_mid_y, HIER_COLOR, line_thick)
-
-    -- Group input sections table
-    local input_sections = {}
-    for _, s in ipairs(batch.sections) do
-        if s.type == "input" then
-            input_sections[#input_sections + 1] = s
-        end
+    -- Preview toggle (right-aligned)
+    local toggle_label = (batch.layout_preview_open ~= false) and "\xe2\x96\xbc Preview" or "\xe2\x96\xb6 Preview"
+    im.SameLine(ctx, avail_lw - 60)
+    if im.SmallButton(ctx, toggle_label) then
+        batch.layout_preview_open = not (batch.layout_preview_open ~= false)
     end
 
-    if #input_sections > 0 then
-        im.Spacing(ctx)
-        im.SeparatorText(ctx, "Groups")
+    -- Collapsible diagram
+    if batch.layout_preview_open ~= false then
+        local COLOR_AUX   = 0xFFCC66FF
+        local COLOR_AUDIO = 0x88CCFFFF
+        local COLOR_MIDI  = 0xCC88FFFF
 
-        -- Column count: # + input sections + preview
-        local col_count = 1 + #input_sections + 1
-        if im.BeginTable(ctx, "groups_table", col_count, im.TableFlags_Borders + im.TableFlags_RowBg + im.TableFlags_ScrollY, 0, math.min(batch.num_groups * 28 + 28, 300)) then
-            -- Headers
-            im.TableSetupColumn(ctx, "#", im.TableColumnFlags_WidthFixed, 30)
-            for _, s in ipairs(input_sections) do
-                im.TableSetupColumn(ctx, s.label, im.TableColumnFlags_WidthFixed, 160)
+        im.PushStyleColor(ctx, im.Col_ChildBg, 0x1A1A2AFF)
+        local diag_visible = im.BeginChild(ctx, "##layout_diagram_" .. bid, -1, 0, im.ChildFlags_AutoResizeY | im.ChildFlags_Border)
+        if diag_visible then
+
+        local preview_name = core.naming.ResolveGroupName(batch, 1)
+        if preview_name == "" then preview_name = "(unnamed)" end
+
+        if batch.num_groups > 1 then
+            im.TextDisabled(ctx, "1 of " .. batch.num_groups .. " groups shown")
+        end
+
+        im.Text(ctx, "\xf0\x9f\x93\x81 " .. preview_name)
+
+        local total   = batch.num_aux + batch.num_audio + batch.num_midi
+        local printed = 0
+
+        if total == 0 then
+            im.SameLine(ctx, 0, 0) im.NewLine(ctx)
+            im.TextDisabled(ctx, "  (no child tracks configured)")
+        end
+
+        for a = 1, batch.num_aux do
+            printed = printed + 1
+            local is_last = printed == total
+            local prefix  = is_last and "\xe2\x94\x94\xe2\x94\x80 " or "\xe2\x94\x9c\xe2\x94\x80 "
+            -- SameLine+NewLine: flush pending same-line state and advance cursor row
+            im.SameLine(ctx, 0, 0) im.NewLine(ctx)
+            im.TextColored(ctx, COLOR_AUX, prefix .. "Aux_" .. a)
+        end
+
+        local send_label = ""
+        if batch.num_aux > 0 then
+            local parts = {}
+            for a = 1, math.min(batch.num_aux, 3) do parts[#parts+1] = "Aux_" .. a end
+            if batch.num_aux > 3 then parts[#parts+1] = "..." end
+            send_label = "  \xe2\x86\x92 " .. table.concat(parts, ", ")
+        end
+
+        for c = 1, batch.num_audio + batch.num_midi do
+            printed = printed + 1
+            local is_last = printed == total
+            local prefix  = is_last and "\xe2\x94\x94\xe2\x94\x80 " or "\xe2\x94\x9c\xe2\x94\x80 "
+            local color   = c <= batch.num_audio and COLOR_AUDIO or COLOR_MIDI
+            local ltype   = c <= batch.num_audio and "Audio " or "MIDI "
+            local idx     = c <= batch.num_audio and c or (c - batch.num_audio)
+            im.SameLine(ctx, 0, 0) im.NewLine(ctx)
+            im.TextColored(ctx, color, prefix .. ltype .. idx)
+            if send_label ~= "" then
+                im.SameLine(ctx, 0, 0)
+                im.TextDisabled(ctx, send_label)
             end
-            im.TableSetupColumn(ctx, "Preview", im.TableColumnFlags_WidthStretch)
-            im.TableHeadersRow(ctx)
+        end
 
-            for gi = 1, batch.num_groups do
-                im.TableNextRow(ctx)
-                im.PushID(ctx, gi)
+        local track_total = (batch.num_aux + batch.num_audio + batch.num_midi) * batch.num_groups
+        local group_word  = batch.num_groups == 1 and "group" or "groups"
+        im.Spacing(ctx)
+        im.TextDisabled(ctx, "\xc3\x97 " .. batch.num_groups .. " " .. group_word .. " \xc2\xb7 " .. track_total .. " tracks total")
 
-                -- Index
+        end -- diag_visible
+        im.EndChild(ctx)
+        im.PopStyleColor(ctx)
+    end
+
+    -- ── GROUPS ─────────────────────────────────────────────────────────────────
+    im.SeparatorText(ctx, "Groups")
+
+    local col_count  = 1 + #batch.sections + 1  -- # + sections + Preview
+    local tbl_flags  = im.TableFlags_Borders | im.TableFlags_RowBg | im.TableFlags_ScrollY
+    local tbl_h      = math.min(batch.num_groups * 26 + 26, 260)
+    local settings_l = core.settings.Load()
+
+    if im.BeginTable(ctx, "##groups_" .. bid, col_count, tbl_flags, 0, tbl_h) then
+
+        im.TableSetupColumn(ctx, "#",       im.TableColumnFlags_WidthFixed,   24)
+        for _, s in ipairs(batch.sections) do
+            im.TableSetupColumn(ctx, s.label, im.TableColumnFlags_WidthFixed, 140)
+        end
+        im.TableSetupColumn(ctx, "Preview", im.TableColumnFlags_WidthStretch)
+
+        -- Custom header row with colored badges
+        im.TableNextRow(ctx, im.TableRowFlags_Headers)
+        im.TableNextColumn(ctx)
+        im.Text(ctx, "#")
+        for _, s in ipairs(batch.sections) do
+            im.TableNextColumn(ctx)
+            local col = s.type == "shared" and 0x88FF88FF or 0x88CCFFFF
+            im.TextColored(ctx, col, s.label)
+            im.SameLine(ctx, 0, 4)
+            im.PushStyleColor(ctx, im.Col_Text, col)
+            im.SmallButton(ctx, s.type == "shared" and "shared" or "input")
+            im.PopStyleColor(ctx)
+        end
+        im.TableNextColumn(ctx)
+        im.Text(ctx, "Preview")
+
+        -- Data rows
+        for gi = 1, batch.num_groups do
+            im.TableNextRow(ctx)
+            im.PushID(ctx, gi)
+
+            -- Index column
+            im.TableNextColumn(ctx)
+            im.TextDisabled(ctx, tostring(gi))
+
+            -- Section columns
+            for _, s in ipairs(batch.sections) do
                 im.TableNextColumn(ctx)
-                im.Text(ctx, tostring(gi))
 
-                -- Input fields
-                for _, s in ipairs(input_sections) do
-                    im.TableNextColumn(ctx)
+                if s.type == "shared" then
+                    local buf_id = bid .. "sv_" .. s.label
+                    local current = batch.shared_values[s.label] or ""
+                    im.PushStyleColor(ctx, im.Col_FrameBg, 0x1A2A1AFF)
+                    im.SetNextItemWidth(ctx, -1)
+                    local rv, val = im.InputText(ctx, "##sv_" .. s.label, get_buf(buf_id, current))
+                    if rv then
+                        batch.shared_values[s.label] = val
+                        input_buffers[buf_id] = val
+                    end
+                    im.PopStyleColor(ctx)
+                else
                     local buf_id = bid .. "grp_" .. gi .. "_" .. s.label
                     im.SetNextItemWidth(ctx, -1)
-                    local rv, val = im.InputText(ctx, "##" .. s.label, get_buf(buf_id, batch.groups[gi][s.label] or ""))
+                    local rv, val = im.InputText(ctx, "##" .. buf_id, get_buf(buf_id, batch.groups[gi][s.label] or ""))
                     if rv then
                         batch.groups[gi][s.label] = val
                         input_buffers[buf_id] = val
                     end
                 end
-
-                -- Preview
-                im.TableNextColumn(ctx)
-                local preview = resolve_group_name(batch, gi)
-                im.TextDisabled(ctx, preview)
-
-                im.PopID(ctx)
             end
 
-            im.EndTable(ctx)
+            -- Preview column
+            im.TableNextColumn(ctx)
+            local preview = core.naming.ResolveGroupName(batch, gi)
+            if preview == "" or preview == settings_l.delimiter:rep(#batch.sections - 1) then
+                im.TextDisabled(ctx, "(empty)")
+            else
+                im.TextColored(ctx, 0x4A9EFFFF, preview)
+            end
+
+            im.PopID(ctx)
         end
-    else
-        -- No input sections — just show preview
-        im.Spacing(ctx)
-        im.SeparatorText(ctx, "Preview")
-        for gi = 1, math.min(batch.num_groups, 8) do
-            local preview = resolve_group_name(batch, gi)
-            im.TextDisabled(ctx, tostring(gi) .. ": " .. preview)
-        end
-        if batch.num_groups > 8 then
-            im.TextDisabled(ctx, "... and " .. (batch.num_groups - 8) .. " more")
-        end
+
+        im.EndTable(ctx)
+    end
+end
+
+--------------------------------
+-- --- SETTINGS WINDOW ---
+--------------------------------
+local function draw_settings_window()
+    if not settings_open then return end
+
+    im.SetNextWindowSize(ctx, 420, 0, im.Cond_Appearing)
+    local vis, p_open = im.Begin(ctx, "ajsfx Settings###ajsfx_settings",
+        true, im.WindowFlags_AlwaysAutoResize)
+
+    if not p_open then
+        settings_open  = false
+        settings_state = core.settings.Load()  -- discard unsaved edits
+        if vis then im.End(ctx) end
+        return
+    end
+    if not vis then im.End(ctx); return end
+
+    -- ── Global Delimiter ──────────────────────────────────────────────────
+    im.SeparatorText(ctx, "Global Delimiter")
+    im.TextWrapped(ctx, "Used as the separator between name sections across all ajsfx scripts.")
+    im.Spacing(ctx)
+    im.SetNextItemWidth(ctx, 60)
+    local rv_d, val_d = im.InputText(ctx, "Delimiter", get_buf("st_delim", settings_state.delimiter))
+    if rv_d then
+        settings_state.delimiter = val_d
+        input_buffers["st_delim"] = val_d
     end
 
-    im.EndChild(ctx)
+    im.Spacing(ctx)
+
+    -- ── Version Label ─────────────────────────────────────────────────────
+    im.SeparatorText(ctx, "Version Label")
+    im.TextWrapped(ctx, "Prefix used when versioning scripts append version numbers (e.g. \"v\" produces v01, v02).")
+    im.Spacing(ctx)
+    im.SetNextItemWidth(ctx, 60)
+    local rv_vl, val_vl = im.InputText(ctx, "Version prefix", get_buf("st_vl", settings_state.version_label))
+    if rv_vl then
+        settings_state.version_label = val_vl
+        input_buffers["st_vl"] = val_vl
+    end
+
+    im.Spacing(ctx)
+
+    -- ── Custom Wildcards ──────────────────────────────────────────────────
+    im.SeparatorText(ctx, "Custom Wildcards")
+    im.TextWrapped(ctx, "Define your own wildcards using built-in ones. E.g. $mydate \xe2\x86\x92 $year$month$day")
+    im.Spacing(ctx)
+
+    local remove_wc = nil
+    if im.BeginTable(ctx, "##wc_table", 3,
+        im.TableFlags_Borders | im.TableFlags_RowBg, 0, 0) then
+        im.TableSetupColumn(ctx, "Name",    im.TableColumnFlags_WidthFixed,   100)
+        im.TableSetupColumn(ctx, "Pattern", im.TableColumnFlags_WidthStretch)
+        im.TableSetupColumn(ctx, "",        im.TableColumnFlags_WidthFixed,    30)
+        im.TableHeadersRow(ctx)
+
+        for wi, wc in ipairs(settings_state.custom_wildcards) do
+            im.TableNextRow(ctx)
+            im.PushID(ctx, wi)
+
+            im.TableNextColumn(ctx)
+            im.SetNextItemWidth(ctx, -1)
+            local rv_wn, val_wn = im.InputText(ctx, "##wn", get_buf("st_wn_" .. wi, wc.name))
+            if rv_wn then
+                wc.name = val_wn
+                input_buffers["st_wn_" .. wi] = val_wn
+            end
+
+            im.TableNextColumn(ctx)
+            im.SetNextItemWidth(ctx, -1)
+            local rv_wp, val_wp = im.InputText(ctx, "##wp", get_buf("st_wp_" .. wi, wc.pattern))
+            if rv_wp then
+                wc.pattern = val_wp
+                input_buffers["st_wp_" .. wi] = val_wp
+            end
+
+            im.TableNextColumn(ctx)
+            im.PushStyleColor(ctx, im.Col_Text, 0xFF6666FF)
+            if im.SmallButton(ctx, "x") then remove_wc = wi end
+            im.PopStyleColor(ctx)
+
+            im.PopID(ctx)
+        end
+        im.EndTable(ctx)
+    end
+
+    if remove_wc then
+        table.remove(settings_state.custom_wildcards, remove_wc)
+    end
+
+    im.Spacing(ctx)
+
+    -- New wildcard row
+    im.SetNextItemWidth(ctx, 100)
+    local rv_nn, val_nn = im.InputText(ctx, "##new_wc_name",
+        get_buf("st_new_wn", settings_new_wc_name))
+    if rv_nn then
+        settings_new_wc_name = val_nn
+        input_buffers["st_new_wn"] = val_nn
+    end
+    im.SameLine(ctx)
+    im.SetNextItemWidth(ctx, 160)
+    local rv_np, val_np = im.InputText(ctx, "##new_wc_pat",
+        get_buf("st_new_wp", settings_new_wc_pattern))
+    if rv_np then
+        settings_new_wc_pattern = val_np
+        input_buffers["st_new_wp"] = val_np
+    end
+    im.SameLine(ctx)
+    local can_add = settings_new_wc_name:sub(1, 1) == "$"
+        and settings_new_wc_name ~= ""
+        and settings_new_wc_pattern ~= ""
+        and not is_builtin_wildcard(settings_new_wc_name)
+    if not can_add then im.BeginDisabled(ctx) end
+    if im.Button(ctx, "+ Add") then
+        settings_state.custom_wildcards[#settings_state.custom_wildcards + 1] = {
+            name    = settings_new_wc_name,
+            pattern = settings_new_wc_pattern,
+        }
+        settings_new_wc_name    = ""
+        settings_new_wc_pattern = ""
+        input_buffers["st_new_wn"] = ""
+        input_buffers["st_new_wp"] = ""
+    end
+    if not can_add then im.EndDisabled(ctx) end
+
+    im.Spacing(ctx)
+    im.Separator(ctx)
+    im.Spacing(ctx)
+
+    if im.Button(ctx, "Save & Close", 120, 0) then
+        core.settings.Save(settings_state)
+        settings_open = false
+    end
+    im.SameLine(ctx)
+    if im.Button(ctx, "Cancel", 80, 0) then
+        -- Discard working copy, reload from saved state
+        settings_state = core.settings.Load()
+        settings_open  = false
+    end
+
+    im.End(ctx)
 end
 
 --------------------------------
@@ -1038,6 +955,9 @@ local function Loop()
         ctx = im.CreateContext('Project Builder')
     end
 
+    -- Invalidate settings cache once per frame so all Load() calls this frame share one read
+    core.settings.Invalidate()
+
     -- Styling
     im.PushStyleVar(ctx, im.StyleVar_FrameRounding, 4.0)
     im.PushStyleVar(ctx, im.StyleVar_WindowRounding, 8.0)
@@ -1046,44 +966,123 @@ local function Loop()
     im.PushStyleVar(ctx, im.StyleVar_ItemSpacing, 8, 8)
     im.PushStyleVar(ctx, im.StyleVar_FramePadding, 6, 4)
 
-    im.SetNextWindowSize(ctx, 700, 500, im.Cond_FirstUseEver)
+    im.SetNextWindowSize(ctx, 860, 540, im.Cond_FirstUseEver)
     local visible, open = im.Begin(ctx, "ajsfx Project Builder", true, WINDOW_FLAGS)
 
     if visible then
-        -- Two-column layout
-        draw_batch_list()
-        im.SameLine(ctx)
-        draw_batch_config()
+        -- Horizontal split: tab area (left) + output panel (right, fixed)
+        local PANEL_W = 200
 
-        -- Bottom buttons
-        im.Spacing(ctx)
-        local avail_w = im.GetContentRegionAvail(ctx)
+        -- ── Left: tabs ──────────────────────────────────────────────────────
+        local left_w      = im.GetContentRegionAvail(ctx) - PANEL_W - 6
+        local left_visible = im.BeginChild(ctx, "##left_area", left_w, -1, im.ChildFlags_None)
 
-        -- Right-align buttons
-        local btn_w = 100
-        local spacing = 10
-        im.SetCursorPosX(ctx, im.GetCursorPosX(ctx) + avail_w - (btn_w * 2 + spacing))
-
-        if im.Button(ctx, "Cancel", btn_w, 0) then
-            open = false
+        if left_visible and im.BeginTabBar(ctx, "##batches", im.TabBarFlags_None) then
+            local i = 1
+            while i <= #batches do
+                local b = batches[i]
+                local tab_label = "Batch " .. i .. " \xc2\xb7 " .. (b.preset_name ~= "" and b.preset_name or "?") .. "##tab" .. i
+                local visible_tab, p_tab_open = im.BeginTabItem(ctx, tab_label, true, im.TabItemFlags_None)
+                if not p_tab_open then
+                    table.remove(batches, i)
+                    if i < selected_batch then selected_batch = selected_batch - 1 end
+                    if selected_batch > #batches then selected_batch = #batches end
+                    if selected_batch < 1 then selected_batch = 0 end
+                    if visible_tab then im.EndTabItem(ctx) end
+                    -- don't increment i
+                else
+                    if visible_tab then
+                        selected_batch = i
+                        draw_batch_config()
+                        im.EndTabItem(ctx)
+                    end
+                    i = i + 1
+                end
+            end
+            if im.TabItemButton(ctx, "\xe2\x9e\x95 Add Batch", im.TabItemFlags_Trailing) then
+                batches[#batches + 1] = create_batch_from_preset(all_presets[1])
+                selected_batch = #batches
+            end
+            im.EndTabBar(ctx)
         end
+
+        im.EndChild(ctx)
+
+        -- ── Right: output panel ─────────────────────────────────────────────
         im.SameLine(ctx)
+        im.PushStyleColor(ctx, im.Col_ChildBg, 0x141420FF)
+        local panel_visible = im.BeginChild(ctx, "##output_panel", PANEL_W, -1, im.ChildFlags_Border)
+        if panel_visible then
+
+        im.TextDisabled(ctx, "OUTPUT PREVIEW")
+        local total_tracks = 0
+        for _, b in ipairs(batches) do
+            total_tracks = total_tracks + (b.num_aux + b.num_audio + b.num_midi) * b.num_groups
+        end
+        im.TextDisabled(ctx, tostring(total_tracks) .. " tracks total")
+        im.Separator(ctx)
+        im.Spacing(ctx)
+
+        for bi, b in ipairs(batches) do
+            local block_start_y = im.GetCursorPosY(ctx)
+            local sel_w, _ = im.GetContentRegionAvail(ctx)
+            local clicked = im.Selectable(ctx, "##batch_block_" .. bi, selected_batch == bi,
+                im.SelectableFlags_None, sel_w, 0)
+            if clicked then selected_batch = bi end
+            im.SetCursorPosY(ctx, block_start_y)
+
+            im.TextColored(ctx, 0xDDDDDDFF, "Batch " .. bi)
+            im.SameLine(ctx, 0, 4)
+            im.TextDisabled(ctx, "\xc2\xb7 " .. b.preset_name)
+            im.TextDisabled(ctx, b.num_aux .. " Aux \xc2\xb7 " .. b.num_audio .. " Audio"
+                .. (b.num_midi > 0 and (" \xc2\xb7 " .. b.num_midi .. " MIDI") or "")
+                .. " \xc2\xb7 " .. b.num_groups .. " groups")
+
+            local color = batch_color(bi)
+            for gi = 1, b.num_groups do
+                local name = core.naming.ResolveGroupName(b, gi)
+                if name ~= "" then
+                    im.TextColored(ctx, color, name)
+                end
+            end
+            im.Spacing(ctx)
+            im.Separator(ctx)
+            im.Spacing(ctx)
+        end
+
+        -- Spacer + gear + Generate anchored to bottom
+        local remaining_h = select(2, im.GetContentRegionAvail(ctx))
+        if remaining_h > 40 then
+            im.Dummy(ctx, 0, remaining_h - 40)
+        end
+
+        if im.Button(ctx, "\xe2\x9a\x99 Settings", -1, 0) then
+            settings_open           = true
+            settings_state          = core.settings.Load()
+            settings_new_wc_name    = ""
+            settings_new_wc_pattern = ""
+            input_buffers["st_new_wn"] = ""
+            input_buffers["st_new_wp"] = ""
+        end
+        im.Spacing(ctx)
 
         local can_generate = #batches > 0
         if not can_generate then im.BeginDisabled(ctx) end
-        if im.Button(ctx, "Generate", btn_w, 0) then
+        if im.Button(ctx, "\xe2\x9a\xa1 GENERATE", -1, 0) then
             if generate_tracks(batches) then
                 r.DeleteExtState(EXT_SECTION, "SESSION", true)
                 open = false
             end
         end
         if not can_generate then im.EndDisabled(ctx) end
-        im.End(ctx)
-    end
 
-    -- Draw preset editor (separate window)
-    draw_preset_editor()
-    
+        end -- panel_visible
+        im.EndChild(ctx)
+        im.PopStyleColor(ctx)
+    end
+    im.End(ctx)
+
+    draw_settings_window()
     im.PopStyleVar(ctx, 6)
 
     if open then

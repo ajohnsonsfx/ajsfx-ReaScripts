@@ -309,4 +309,202 @@ function core.CalculateGentleNormGain(required_gain_db, strength_pct)
   return apply_db, apply_linear
 end
 
+--------------------------------
+-- Wildcard Resolution
+--------------------------------
+
+function core.ResolveWildcards(str)
+  -- Resolve user-defined custom wildcards first (they may contain built-in wildcards)
+  local settings = core.settings.Load()
+  for _, wc in ipairs(settings.custom_wildcards) do
+    -- wc.name starts with "$" — escape for Lua pattern: "$" becomes "%$"
+    local pattern = "%" .. wc.name
+    local replacement = (wc.pattern:gsub("%%", "%%%%"))
+    str = str:gsub(pattern, replacement)
+  end
+
+  -- Resolve built-in wildcards (ordered longest-first to prevent partial matches)
+  local proj_name = r.GetProjectName(0, "")
+  proj_name = proj_name:match("(.+)%.[^.]+$") or proj_name
+
+  local replacements = {
+    { "monthname", os.date("%B")                                        },
+    { "computer",  os.getenv("COMPUTERNAME") or ""                     },
+    { "project",   proj_name                                            },
+    { "author",    select(2, r.GetSetProjectAuthor(0, false, "")) or "" },
+    { "minute",    os.date("%M")                                        },
+    { "hour12",    os.date("%I")                                        },
+    { "year2",     os.date("%y")                                        },
+    { "month",     os.date("%m")                                        },
+    { "year",      os.date("%Y")                                        },
+    { "hour",      os.date("%H")                                        },
+    { "user",      os.getenv("USERNAME") or os.getenv("USER") or ""    },
+    { "day",       os.date("%d")                                        },
+  }
+  for _, rep in ipairs(replacements) do
+    str = str:gsub("%$" .. rep[1], (rep[2]:gsub("%%", "%%%%")))
+  end
+  return str
+end
+
+--------------------------------
+-- Naming
+--------------------------------
+
+core.naming = {}
+core.naming.DEFAULT_SECTION = "ajsfx_Presets"
+
+function core.naming.SerializePreset(preset)
+  -- Format: type:label|type:label|...  (no delimiter — delimiter is global in settings)
+  local parts = {}
+  for _, s in ipairs(preset.sections) do
+    parts[#parts + 1] = s.type .. ":" .. s.label
+  end
+  return table.concat(parts, "|")
+end
+
+function core.naming.DeserializePreset(name, str)
+  local parts = {}
+  for part in str:gmatch("[^|]+") do
+    parts[#parts + 1] = part
+  end
+  if #parts < 1 then return nil end
+
+  -- Legacy migration: if first segment has no ":", it was the old delimiter field — discard it
+  local start = 1
+  if not parts[1]:find(":") then
+    start = 2
+  end
+
+  local preset = { name = name, sections = {} }
+  for i = start, #parts do
+    local stype, label = parts[i]:match("^(%w+):(.+)$")
+    if stype and label then
+      preset.sections[#preset.sections + 1] = { type = stype, label = label }
+    end
+  end
+  return preset
+end
+
+function core.naming.IsDefaultPreset(name, defaults)
+  for _, dp in ipairs(defaults) do
+    if dp.name == name then return true end
+  end
+  return false
+end
+
+function core.naming.LoadAllPresets(section, defaults)
+  local presets = {}
+  -- Deep-copy defaults first
+  for _, dp in ipairs(defaults) do
+    local p = { name = dp.name, sections = {} }
+    for _, s in ipairs(dp.sections) do
+      p.sections[#p.sections + 1] = { type = s.type, label = s.label }
+    end
+    presets[#presets + 1] = p
+  end
+  -- Load custom presets from ExtState
+  if r.HasExtState(section, "LIST") then
+    local list_str = r.GetExtState(section, "LIST")
+    for name in list_str:gmatch("[^|]+") do
+      if name ~= "" and not core.naming.IsDefaultPreset(name, defaults) then
+        local key = "P_" .. name
+        if r.HasExtState(section, key) then
+          local p = core.naming.DeserializePreset(name, r.GetExtState(section, key))
+          if p then
+            presets[#presets + 1] = p
+          end
+        end
+      end
+    end
+  end
+  return presets
+end
+
+function core.naming.SaveCustomPresets(section, presets, defaults)
+  local names = {}
+  for _, p in ipairs(presets) do
+    if not core.naming.IsDefaultPreset(p.name, defaults) then
+      names[#names + 1] = p.name
+      r.SetExtState(section, "P_" .. p.name, core.naming.SerializePreset(p), true)
+    end
+  end
+  r.SetExtState(section, "LIST", table.concat(names, "|"), true)
+end
+
+function core.naming.DeleteCustomPreset(section, presets, name, defaults)
+  if core.naming.IsDefaultPreset(name, defaults) then return presets end
+  r.DeleteExtState(section, "P_" .. name, true)
+  local new = {}
+  for _, p in ipairs(presets) do
+    if p.name ~= name then new[#new + 1] = p end
+  end
+  core.naming.SaveCustomPresets(section, new, defaults)
+  return new
+end
+
+function core.naming.ResolveGroupName(batch, group_index)
+  local settings = core.settings.Load()
+  local parts = {}
+  for _, section in ipairs(batch.sections) do
+    local value
+    if section.type == "shared" then
+      value = batch.shared_values[section.label] or ""
+    else
+      value = (batch.groups[group_index] and batch.groups[group_index][section.label]) or ""
+    end
+    parts[#parts + 1] = core.ResolveWildcards(value)
+  end
+  return table.concat(parts, settings.delimiter)
+end
+
+--------------------------------
+-- Settings
+--------------------------------
+
+core.settings = {}
+local SETTINGS_SECTION  = "ajsfx_UserSettings"
+local _settings_cache   = nil  -- cleared by Save(); valid for the lifetime of a defer frame
+
+function core.settings.Load()
+  if _settings_cache then return _settings_cache end
+  local s = {
+    delimiter        = "_",
+    custom_wildcards = {},
+    version_label    = "v",
+  }
+  if r.HasExtState(SETTINGS_SECTION, "delimiter") then
+    s.delimiter = r.GetExtState(SETTINGS_SECTION, "delimiter")
+  end
+  if r.HasExtState(SETTINGS_SECTION, "version_label") then
+    s.version_label = r.GetExtState(SETTINGS_SECTION, "version_label")
+  end
+  if r.HasExtState(SETTINGS_SECTION, "custom_wildcards") then
+    local raw = r.GetExtState(SETTINGS_SECTION, "custom_wildcards")
+    for line in raw:gmatch("[^\n]+") do
+      local name, pattern = line:match("^([^\t]+)\t(.+)$")
+      if name and pattern then
+        s.custom_wildcards[#s.custom_wildcards + 1] = { name = name, pattern = pattern }
+      end
+    end
+  end
+  _settings_cache = s
+  return s
+end
+
+function core.settings.Invalidate()
+  _settings_cache = nil
+end
+
+function core.settings.Save(s)
+  _settings_cache = nil  -- invalidate so next Load() re-reads from ExtState
+  r.SetExtState(SETTINGS_SECTION, "delimiter",        s.delimiter,     true)
+  r.SetExtState(SETTINGS_SECTION, "version_label",    s.version_label, true)
+  local lines = {}
+  for _, wc in ipairs(s.custom_wildcards) do
+    lines[#lines + 1] = wc.name .. "\t" .. wc.pattern
+  end
+  r.SetExtState(SETTINGS_SECTION, "custom_wildcards", table.concat(lines, "\n"), true)
+end
+
 return core
