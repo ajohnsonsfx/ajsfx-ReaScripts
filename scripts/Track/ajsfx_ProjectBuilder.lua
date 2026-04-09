@@ -432,7 +432,7 @@ local function draw_batch_config()
     im.SameLine(ctx)
     if im.Button(ctx, "Save##preset", btn_w, 0) then
         save_dialog_name = batch.preset_name
-        input_buffers["save_name"] = batch.preset_name
+        input_buffers["save_name_" .. bid] = batch.preset_name
         im.OpenPopup(ctx, "##save_preset_dialog")
     end
 
@@ -463,10 +463,10 @@ local function draw_batch_config()
     if im.BeginPopup(ctx, "##save_preset_dialog") then
         im.Text(ctx, "Save preset as:")
         im.SetNextItemWidth(ctx, 220)
-        local rv, val = im.InputText(ctx, "##save_name", get_buf("save_name", save_dialog_name))
+        local rv, val = im.InputText(ctx, "##save_name", get_buf("save_name_" .. bid, save_dialog_name))
         if rv then
             save_dialog_name = val
-            input_buffers["save_name"] = val
+            input_buffers["save_name_" .. bid] = val
         end
 
         local name_exists = false
@@ -510,7 +510,8 @@ local function draw_batch_config()
 
     -- ── Inline horizontal preset editor strip ────────────────────────────────
     im.PushStyleColor(ctx, im.Col_ChildBg, 0x1A1A2AFF)
-    im.BeginChild(ctx, "##preset_strip_" .. bid, -1, 34, im.ChildFlags_Border)
+    local strip_visible = im.BeginChild(ctx, "##preset_strip_" .. bid, -1, 34, im.ChildFlags_Border)
+    if strip_visible then
 
     local settings = core.settings.Load()
     im.TextDisabled(ctx, "delim:")
@@ -522,7 +523,7 @@ local function draw_batch_config()
 
     local swap_a, swap_b, remove_idx = nil, nil, nil
     for i, s in ipairs(batch.sections) do
-        im.PushID(ctx, "strip_" .. i)
+        im.PushID(ctx, bid .. "strip_" .. i)
 
         local badge_color = s.type == "shared" and 0x1A3A1AFF or 0x1A2A3AFF
         local text_color  = s.type == "shared" and 0x88FF88FF or 0x88CCFFFF
@@ -604,6 +605,7 @@ local function draw_batch_config()
         sync_batch_groups(batch)
     end
 
+    end -- strip_visible
     im.EndChild(ctx)
     im.PopStyleColor(ctx)
 
