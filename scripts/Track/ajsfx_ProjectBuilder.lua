@@ -59,6 +59,18 @@ local DEFAULT_PRESETS = {
   },
 }
 
+local BATCH_COLORS = {
+    0x88FF88FF, -- green
+    0x88CCFFFF, -- blue
+    0xFFCC66FF, -- amber
+    0xCC88FFFF, -- purple
+    0xFF8888FF, -- red
+    0x88FFFFFF, -- cyan
+}
+local function batch_color(i)
+    return BATCH_COLORS[((i - 1) % #BATCH_COLORS) + 1]
+end
+
 --------------------------------
 -- --- BATCH MANAGEMENT ---
 --------------------------------
@@ -342,6 +354,7 @@ local WINDOW_FLAGS = im.WindowFlags_None
 local all_presets    = core.naming.LoadAllPresets(PRESETS_SECTION, DEFAULT_PRESETS)
 local batches        = load_session() or {}
 local selected_batch = #batches > 0 and 1 or 0
+local settings_open = false
 
 -- Input buffers for ImGui (keyed by unique id)
 local input_buffers = {}
@@ -835,47 +848,99 @@ local function Loop()
     local visible, open = im.Begin(ctx, "ajsfx Project Builder", true, WINDOW_FLAGS)
 
     if visible then
-        -- Tab bar
+        -- Horizontal split: tab area (left) + output panel (right, fixed)
+        local PANEL_W = 200
+
+        -- ── Left: tabs ──────────────────────────────────────────────────────
+        local left_w = im.GetContentRegionAvail(ctx) - PANEL_W - 6
+        im.BeginChild(ctx, "##left_area", left_w, -1, im.ChildFlags_None)
+
         if im.BeginTabBar(ctx, "##batches", im.TabBarFlags_None) then
-            for i, b in ipairs(batches) do
+            local i = 1
+            while i <= #batches do
+                local b = batches[i]
                 local tab_label = "Batch " .. i .. " \xc2\xb7 " .. (b.preset_name ~= "" and b.preset_name or "?") .. "##tab" .. i
-                local tab_flags = im.TabItemFlags_None
-                local visible_tab, p_tab_open = im.BeginTabItem(ctx, tab_label, true, tab_flags)
+                local visible_tab, p_tab_open = im.BeginTabItem(ctx, tab_label, true, im.TabItemFlags_None)
                 if not p_tab_open then
-                    -- User clicked × on this tab — remove the batch
                     table.remove(batches, i)
                     if i < selected_batch then selected_batch = selected_batch - 1 end
                     if selected_batch > #batches then selected_batch = #batches end
                     if selected_batch < 1 then selected_batch = 0 end
                     if visible_tab then im.EndTabItem(ctx) end
-                    im.EndTabBar(ctx)
-                    goto continue_loop
-                end
-                if visible_tab then
-                    selected_batch = i
-                    draw_batch_config()
-                    im.EndTabItem(ctx)
+                    -- don't increment i
+                else
+                    if visible_tab then
+                        selected_batch = i
+                        draw_batch_config()
+                        im.EndTabItem(ctx)
+                    end
+                    i = i + 1
                 end
             end
-            -- Add Batch button as a non-closable tab
             if im.TabItemButton(ctx, "\xe2\x9e\x95 Add Batch", im.TabItemFlags_Trailing) then
-                local preset = all_presets[1]
-                batches[#batches + 1] = create_batch_from_preset(preset)
+                batches[#batches + 1] = create_batch_from_preset(all_presets[1])
                 selected_batch = #batches
             end
             im.EndTabBar(ctx)
         end
 
-        -- Temporary buttons (will move to output panel in Task 9)
-        im.Spacing(ctx)
-        local avail_w = im.GetContentRegionAvail(ctx)
-        local btn_w = 100
-        im.SetCursorPosX(ctx, im.GetCursorPosX(ctx) + avail_w - (btn_w * 2 + 10))
-        if im.Button(ctx, "Cancel", btn_w, 0) then open = false end
+        im.EndChild(ctx)
+
+        -- ── Right: output panel ─────────────────────────────────────────────
         im.SameLine(ctx)
+        im.PushStyleColor(ctx, im.Col_ChildBg, 0x141420FF)
+        im.BeginChild(ctx, "##output_panel", PANEL_W, -1, im.ChildFlags_Border)
+
+        im.TextDisabled(ctx, "OUTPUT PREVIEW")
+        local total_tracks = 0
+        for _, b in ipairs(batches) do
+            total_tracks = total_tracks + (b.num_aux + b.num_audio + b.num_midi) * b.num_groups
+        end
+        im.TextDisabled(ctx, tostring(total_tracks) .. " tracks total")
+        im.Separator(ctx)
+        im.Spacing(ctx)
+
+        for bi, b in ipairs(batches) do
+            local block_start_y = im.GetCursorPosY(ctx)
+            local sel_w, _ = im.GetContentRegionAvail(ctx)
+            local clicked = im.Selectable(ctx, "##batch_block_" .. bi, selected_batch == bi,
+                im.SelectableFlags_None, sel_w, 0)
+            if clicked then selected_batch = bi end
+            im.SetCursorPosY(ctx, block_start_y)
+
+            im.TextColored(ctx, 0xDDDDDDFF, "Batch " .. bi)
+            im.SameLine(ctx, 0, 4)
+            im.TextDisabled(ctx, "\xc2\xb7 " .. b.preset_name)
+            im.TextDisabled(ctx, b.num_aux .. " Aux \xc2\xb7 " .. b.num_audio .. " Audio"
+                .. (b.num_midi > 0 and (" \xc2\xb7 " .. b.num_midi .. " MIDI") or "")
+                .. " \xc2\xb7 " .. b.num_groups .. " groups")
+
+            local color = batch_color(bi)
+            for gi = 1, b.num_groups do
+                local name = core.naming.ResolveGroupName(b, gi)
+                if name ~= "" then
+                    im.TextColored(ctx, color, name)
+                end
+            end
+            im.Spacing(ctx)
+            im.Separator(ctx)
+            im.Spacing(ctx)
+        end
+
+        -- Spacer + gear + Generate anchored to bottom
+        local remaining_h = select(2, im.GetContentRegionAvail(ctx))
+        if remaining_h > 40 then
+            im.Dummy(ctx, 0, remaining_h - 40)
+        end
+
+        if im.Button(ctx, "\xe2\x9a\x99 Settings", -1, 0) then
+            settings_open = true
+        end
+        im.Spacing(ctx)
+
         local can_generate = #batches > 0
         if not can_generate then im.BeginDisabled(ctx) end
-        if im.Button(ctx, "Generate", btn_w, 0) then
+        if im.Button(ctx, "\xe2\x9a\xa1 GENERATE", -1, 0) then
             if generate_tracks(batches) then
                 r.DeleteExtState(EXT_SECTION, "SESSION", true)
                 open = false
@@ -883,7 +948,9 @@ local function Loop()
         end
         if not can_generate then im.EndDisabled(ctx) end
 
-        ::continue_loop::
+        im.EndChild(ctx)
+        im.PopStyleColor(ctx)
+
         im.End(ctx)
     end
 
