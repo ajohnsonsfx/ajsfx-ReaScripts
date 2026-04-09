@@ -93,7 +93,7 @@ local function create_batch_from_preset(preset)
     num_midi      = 0,
     groups        = {},
     layout_preview_open = true,
-    batch.save_dialog_name    = "",
+    save_dialog_name    = "",
   }
   batch.groups[1] = {}
   for _, s in ipairs(batch.sections) do
