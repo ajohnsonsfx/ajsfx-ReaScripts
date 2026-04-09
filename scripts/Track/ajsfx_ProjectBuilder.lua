@@ -732,40 +732,62 @@ local function draw_batch_config()
         im.PopStyleColor(ctx)
     end
 
-    -- Group input sections table
-    local input_sections = {}
-    for _, s in ipairs(batch.sections) do
-        if s.type == "input" then
-            input_sections[#input_sections + 1] = s
+    -- ── GROUPS ─────────────────────────────────────────────────────────────────
+    im.SeparatorText(ctx, "Groups")
+
+    local col_count = 1 + #batch.sections + 1  -- # + sections + Preview
+    local tbl_flags = im.TableFlags_Borders | im.TableFlags_RowBg | im.TableFlags_ScrollY
+    local tbl_h     = math.min(batch.num_groups * 26 + 26, 260)
+
+    if im.BeginTable(ctx, "##groups_" .. bid, col_count, tbl_flags, 0, tbl_h) then
+
+        im.TableSetupColumn(ctx, "#",       im.TableColumnFlags_WidthFixed,   24)
+        for _, s in ipairs(batch.sections) do
+            im.TableSetupColumn(ctx, s.label, im.TableColumnFlags_WidthFixed, 140)
         end
-    end
+        im.TableSetupColumn(ctx, "Preview", im.TableColumnFlags_WidthStretch)
 
-    if #input_sections > 0 then
-        im.Spacing(ctx)
-        im.SeparatorText(ctx, "Groups")
+        -- Custom header row with colored badges
+        im.TableNextRow(ctx, im.TableRowFlags_Headers)
+        im.TableNextColumn(ctx)
+        im.Text(ctx, "#")
+        for _, s in ipairs(batch.sections) do
+            im.TableNextColumn(ctx)
+            local col = s.type == "shared" and 0x88FF88FF or 0x88CCFFFF
+            im.TextColored(ctx, col, s.label)
+            im.SameLine(ctx, 0, 4)
+            im.PushStyleColor(ctx, im.Col_Text, col)
+            im.SmallButton(ctx, s.type == "shared" and "shared" or "input")
+            im.PopStyleColor(ctx)
+        end
+        im.TableNextColumn(ctx)
+        im.Text(ctx, "Preview")
 
-        -- Column count: # + input sections + preview
-        local col_count = 1 + #input_sections + 1
-        if im.BeginTable(ctx, "groups_table", col_count, im.TableFlags_Borders | im.TableFlags_RowBg | im.TableFlags_ScrollY, 0, math.min(batch.num_groups * 28 + 28, 300)) then
-            -- Headers
-            im.TableSetupColumn(ctx, "#", im.TableColumnFlags_WidthFixed, 30)
-            for _, s in ipairs(input_sections) do
-                im.TableSetupColumn(ctx, s.label, im.TableColumnFlags_WidthFixed, 160)
-            end
-            im.TableSetupColumn(ctx, "Preview", im.TableColumnFlags_WidthStretch)
-            im.TableHeadersRow(ctx)
+        -- Data rows
+        for gi = 1, batch.num_groups do
+            im.TableNextRow(ctx)
+            im.PushID(ctx, gi)
 
-            for gi = 1, batch.num_groups do
-                im.TableNextRow(ctx)
-                im.PushID(ctx, gi)
+            -- Index column
+            im.TableNextColumn(ctx)
+            im.TextDisabled(ctx, tostring(gi))
 
-                -- Index
+            -- Section columns
+            for _, s in ipairs(batch.sections) do
                 im.TableNextColumn(ctx)
-                im.Text(ctx, tostring(gi))
 
-                -- Input fields
-                for _, s in ipairs(input_sections) do
-                    im.TableNextColumn(ctx)
+                if s.type == "shared" then
+                    local buf_id = bid .. "sv_" .. s.label
+                    local current = batch.shared_values[s.label] or ""
+                    im.PushStyleColor(ctx, im.Col_FrameBg, 0x1A2A1AFF)
+                    im.SetNextItemWidth(ctx, -1)
+                    local rv, val = im.InputText(ctx, "##sv_" .. s.label, get_buf(buf_id, current))
+                    if rv then
+                        batch.shared_values[s.label] = val
+                        input_buffers[buf_id] = val
+                    end
+                    im.PopStyleColor(ctx)
+                else
                     local buf_id = bid .. "grp_" .. gi .. "_" .. s.label
                     im.SetNextItemWidth(ctx, -1)
                     local rv, val = im.InputText(ctx, "##" .. s.label, get_buf(buf_id, batch.groups[gi][s.label] or ""))
@@ -774,28 +796,22 @@ local function draw_batch_config()
                         input_buffers[buf_id] = val
                     end
                 end
-
-                -- Preview
-                im.TableNextColumn(ctx)
-                local preview = core.naming.ResolveGroupName(batch, gi)
-                im.TextDisabled(ctx, preview)
-
-                im.PopID(ctx)
             end
 
-            im.EndTable(ctx)
-        end
-    else
-        -- No input sections — just show preview
-        im.Spacing(ctx)
-        im.SeparatorText(ctx, "Preview")
-        for gi = 1, math.min(batch.num_groups, 8) do
+            -- Preview column
+            im.TableNextColumn(ctx)
             local preview = core.naming.ResolveGroupName(batch, gi)
-            im.TextDisabled(ctx, tostring(gi) .. ": " .. preview)
+            local settings_l = core.settings.Load()
+            if preview == "" or preview == settings_l.delimiter:rep(#batch.sections - 1) then
+                im.TextDisabled(ctx, "(empty)")
+            else
+                im.TextColored(ctx, 0x4A9EFFFF, preview)
+            end
+
+            im.PopID(ctx)
         end
-        if batch.num_groups > 8 then
-            im.TextDisabled(ctx, "... and " .. (batch.num_groups - 8) .. " more")
-        end
+
+        im.EndTable(ctx)
     end
 end
 
