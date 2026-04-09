@@ -355,6 +355,9 @@ local all_presets    = core.naming.LoadAllPresets(PRESETS_SECTION, DEFAULT_PRESE
 local batches        = load_session() or {}
 local selected_batch = #batches > 0 and 1 or 0
 local settings_open = false
+local settings_state = core.settings.Load()  -- working copy while window is open
+local settings_new_wc_name    = ""
+local settings_new_wc_pattern = ""
 
 -- Input buffers for ImGui (keyed by unique id)
 local input_buffers = {}
@@ -829,6 +832,158 @@ local function draw_batch_config()
 end
 
 --------------------------------
+-- --- SETTINGS WINDOW ---
+--------------------------------
+local function draw_settings_window()
+    if not settings_open then return end
+
+    im.SetNextWindowSize(ctx, 420, 0, im.Cond_Appearing)
+    local vis, p_open = im.Begin(ctx, "ajsfx Settings###ajsfx_settings",
+        true, im.WindowFlags_AlwaysAutoResize)
+
+    if not p_open then
+        settings_open = false
+        if vis then im.End(ctx) end
+        return
+    end
+    if not vis then im.End(ctx); return end
+
+    -- ── Global Delimiter ──────────────────────────────────────────────────
+    im.SeparatorText(ctx, "Global Delimiter")
+    im.TextWrapped(ctx, "Used as the separator between name sections across all ajsfx scripts.")
+    im.Spacing(ctx)
+    im.SetNextItemWidth(ctx, 60)
+    local rv_d, val_d = im.InputText(ctx, "Delimiter", get_buf("st_delim", settings_state.delimiter))
+    if rv_d then
+        settings_state.delimiter = val_d
+        input_buffers["st_delim"] = val_d
+    end
+
+    im.Spacing(ctx)
+
+    -- ── Version Label ─────────────────────────────────────────────────────
+    im.SeparatorText(ctx, "Version Label")
+    im.TextWrapped(ctx, "Prefix used when versioning scripts append version numbers (e.g. \"v\" produces v01, v02).")
+    im.Spacing(ctx)
+    im.SetNextItemWidth(ctx, 60)
+    local rv_vl, val_vl = im.InputText(ctx, "Version prefix", get_buf("st_vl", settings_state.version_label))
+    if rv_vl then
+        settings_state.version_label = val_vl
+        input_buffers["st_vl"] = val_vl
+    end
+
+    im.Spacing(ctx)
+
+    -- ── Custom Wildcards ──────────────────────────────────────────────────
+    im.SeparatorText(ctx, "Custom Wildcards")
+    im.TextWrapped(ctx, "Define your own wildcards using built-in ones. E.g. $mydate \xe2\x86\x92 $year$month$day")
+    im.Spacing(ctx)
+
+    local remove_wc = nil
+    if im.BeginTable(ctx, "##wc_table", 3,
+        im.TableFlags_Borders | im.TableFlags_RowBg, 0, 0) then
+        im.TableSetupColumn(ctx, "Name",    im.TableColumnFlags_WidthFixed,   100)
+        im.TableSetupColumn(ctx, "Pattern", im.TableColumnFlags_WidthStretch)
+        im.TableSetupColumn(ctx, "",        im.TableColumnFlags_WidthFixed,    30)
+        im.TableHeadersRow(ctx)
+
+        for wi, wc in ipairs(settings_state.custom_wildcards) do
+            im.TableNextRow(ctx)
+            im.PushID(ctx, wi)
+
+            im.TableNextColumn(ctx)
+            im.SetNextItemWidth(ctx, -1)
+            local rv_wn, val_wn = im.InputText(ctx, "##wn", get_buf("st_wn_" .. wi, wc.name))
+            if rv_wn then
+                wc.name = val_wn
+                input_buffers["st_wn_" .. wi] = val_wn
+            end
+
+            im.TableNextColumn(ctx)
+            im.SetNextItemWidth(ctx, -1)
+            local rv_wp, val_wp = im.InputText(ctx, "##wp", get_buf("st_wp_" .. wi, wc.pattern))
+            if rv_wp then
+                wc.pattern = val_wp
+                input_buffers["st_wp_" .. wi] = val_wp
+            end
+
+            im.TableNextColumn(ctx)
+            im.PushStyleColor(ctx, im.Col_Text, 0xFF6666FF)
+            if im.SmallButton(ctx, "x") then remove_wc = wi end
+            im.PopStyleColor(ctx)
+
+            im.PopID(ctx)
+        end
+        im.EndTable(ctx)
+    end
+
+    if remove_wc then
+        table.remove(settings_state.custom_wildcards, remove_wc)
+    end
+
+    im.Spacing(ctx)
+
+    -- New wildcard row
+    im.SetNextItemWidth(ctx, 100)
+    local rv_nn, val_nn = im.InputText(ctx, "##new_wc_name",
+        get_buf("st_new_wn", settings_new_wc_name))
+    if rv_nn then
+        settings_new_wc_name = val_nn
+        input_buffers["st_new_wn"] = val_nn
+    end
+    im.SameLine(ctx)
+    im.SetNextItemWidth(ctx, 160)
+    local rv_np, val_np = im.InputText(ctx, "##new_wc_pat",
+        get_buf("st_new_wp", settings_new_wc_pattern))
+    if rv_np then
+        settings_new_wc_pattern = val_np
+        input_buffers["st_new_wp"] = val_np
+    end
+    im.SameLine(ctx)
+    local BUILTIN_WILDCARDS = {
+        "$monthname","$computer","$project","$author","$minute",
+        "$hour12","$year2","$month","$year","$hour","$user","$day"
+    }
+    local function is_builtin(name)
+        for _, b in ipairs(BUILTIN_WILDCARDS) do if b == name then return true end end
+        return false
+    end
+    local can_add = settings_new_wc_name:sub(1, 1) == "$"
+        and settings_new_wc_name ~= ""
+        and settings_new_wc_pattern ~= ""
+        and not is_builtin(settings_new_wc_name)
+    if not can_add then im.BeginDisabled(ctx) end
+    if im.Button(ctx, "+ Add") then
+        settings_state.custom_wildcards[#settings_state.custom_wildcards + 1] = {
+            name    = settings_new_wc_name,
+            pattern = settings_new_wc_pattern,
+        }
+        settings_new_wc_name    = ""
+        settings_new_wc_pattern = ""
+        input_buffers["st_new_wn"] = ""
+        input_buffers["st_new_wp"] = ""
+    end
+    if not can_add then im.EndDisabled(ctx) end
+
+    im.Spacing(ctx)
+    im.Separator(ctx)
+    im.Spacing(ctx)
+
+    if im.Button(ctx, "Save & Close", 120, 0) then
+        core.settings.Save(settings_state)
+        settings_open = false
+    end
+    im.SameLine(ctx)
+    if im.Button(ctx, "Cancel", 80, 0) then
+        -- Discard working copy, reload from saved state
+        settings_state = core.settings.Load()
+        settings_open  = false
+    end
+
+    im.End(ctx)
+end
+
+--------------------------------
 -- --- MAIN LOOP ---
 --------------------------------
 local function Loop()
@@ -954,6 +1109,7 @@ local function Loop()
         im.End(ctx)
     end
 
+    draw_settings_window()
     im.PopStyleVar(ctx, 6)
 
     if open then
