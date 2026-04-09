@@ -670,7 +670,8 @@ local function draw_batch_config()
         local COLOR_MIDI  = 0xCC88FFFF
 
         im.PushStyleColor(ctx, im.Col_ChildBg, 0x1A1A2AFF)
-        im.BeginChild(ctx, "##layout_diagram_" .. bid, -1, 0, im.ChildFlags_AutoResizeY + im.ChildFlags_Border)
+        local diag_visible = im.BeginChild(ctx, "##layout_diagram_" .. bid, -1, 0, im.ChildFlags_AutoResizeY | im.ChildFlags_Border)
+        if diag_visible then
 
         local preview_name = core.naming.ResolveGroupName(batch, 1)
         if preview_name == "" then preview_name = "(unnamed)" end
@@ -684,10 +685,16 @@ local function draw_batch_config()
         local total   = batch.num_aux + batch.num_audio + batch.num_midi
         local printed = 0
 
+        if total == 0 then
+            im.SameLine(ctx, 0, 0) im.NewLine(ctx)
+            im.TextDisabled(ctx, "  (no child tracks configured)")
+        end
+
         for a = 1, batch.num_aux do
             printed = printed + 1
             local is_last = printed == total
             local prefix  = is_last and "\xe2\x94\x94\xe2\x94\x80 " or "\xe2\x94\x9c\xe2\x94\x80 "
+            -- SameLine+NewLine: flush pending same-line state and advance cursor row
             im.SameLine(ctx, 0, 0) im.NewLine(ctx)
             im.TextColored(ctx, COLOR_AUX, prefix .. "Aux_" .. a)
         end
@@ -716,9 +723,11 @@ local function draw_batch_config()
         end
 
         local track_total = (batch.num_aux + batch.num_audio + batch.num_midi) * batch.num_groups
+        local group_word  = batch.num_groups == 1 and "group" or "groups"
         im.Spacing(ctx)
-        im.TextDisabled(ctx, "\xc3\x97 " .. batch.num_groups .. " groups \xc2\xb7 " .. track_total .. " tracks total")
+        im.TextDisabled(ctx, "\xc3\x97 " .. batch.num_groups .. " " .. group_word .. " \xc2\xb7 " .. track_total .. " tracks total")
 
+        end -- diag_visible
         im.EndChild(ctx)
         im.PopStyleColor(ctx)
     end
@@ -737,7 +746,7 @@ local function draw_batch_config()
 
         -- Column count: # + input sections + preview
         local col_count = 1 + #input_sections + 1
-        if im.BeginTable(ctx, "groups_table", col_count, im.TableFlags_Borders + im.TableFlags_RowBg + im.TableFlags_ScrollY, 0, math.min(batch.num_groups * 28 + 28, 300)) then
+        if im.BeginTable(ctx, "groups_table", col_count, im.TableFlags_Borders | im.TableFlags_RowBg | im.TableFlags_ScrollY, 0, math.min(batch.num_groups * 28 + 28, 300)) then
             -- Headers
             im.TableSetupColumn(ctx, "#", im.TableColumnFlags_WidthFixed, 30)
             for _, s in ipairs(input_sections) do
