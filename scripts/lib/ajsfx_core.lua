@@ -463,9 +463,11 @@ end
 --------------------------------
 
 core.settings = {}
-local SETTINGS_SECTION = "ajsfx_UserSettings"
+local SETTINGS_SECTION  = "ajsfx_UserSettings"
+local _settings_cache   = nil  -- cleared by Save(); valid for the lifetime of a defer frame
 
 function core.settings.Load()
+  if _settings_cache then return _settings_cache end
   local s = {
     delimiter        = "_",
     custom_wildcards = {},
@@ -486,10 +488,16 @@ function core.settings.Load()
       end
     end
   end
+  _settings_cache = s
   return s
 end
 
+function core.settings.Invalidate()
+  _settings_cache = nil
+end
+
 function core.settings.Save(s)
+  _settings_cache = nil  -- invalidate so next Load() re-reads from ExtState
   r.SetExtState(SETTINGS_SECTION, "delimiter",        s.delimiter,     true)
   r.SetExtState(SETTINGS_SECTION, "version_label",    s.version_label, true)
   local lines = {}

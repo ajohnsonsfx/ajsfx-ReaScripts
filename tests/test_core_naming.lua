@@ -130,10 +130,12 @@ test("Custom wildcard resolved before built-in wildcards", function()
     end
     return ""
   end
+  core.settings.Invalidate()  -- bust cache so the new mock is picked up
   local result = core.ResolveWildcards("$mydate")
   local expected = os.date("%Y") .. os.date("%m")
   reaper.HasExtState = original_has
   reaper.GetExtState = original_get
+  core.settings.Invalidate()  -- bust cache so subsequent tests don't see mock data
   assert_eq(result, expected, "custom wildcard + built-in expansion")
 end)
 

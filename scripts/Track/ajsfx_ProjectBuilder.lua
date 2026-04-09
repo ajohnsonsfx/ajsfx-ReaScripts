@@ -955,6 +955,9 @@ local function Loop()
         ctx = im.CreateContext('Project Builder')
     end
 
+    -- Invalidate settings cache once per frame so all Load() calls this frame share one read
+    core.settings.Invalidate()
+
     -- Styling
     im.PushStyleVar(ctx, im.StyleVar_FrameRounding, 4.0)
     im.PushStyleVar(ctx, im.StyleVar_WindowRounding, 8.0)
@@ -971,10 +974,10 @@ local function Loop()
         local PANEL_W = 200
 
         -- ── Left: tabs ──────────────────────────────────────────────────────
-        local left_w = im.GetContentRegionAvail(ctx) - PANEL_W - 6
-        im.BeginChild(ctx, "##left_area", left_w, -1, im.ChildFlags_None)
+        local left_w      = im.GetContentRegionAvail(ctx) - PANEL_W - 6
+        local left_visible = im.BeginChild(ctx, "##left_area", left_w, -1, im.ChildFlags_None)
 
-        if im.BeginTabBar(ctx, "##batches", im.TabBarFlags_None) then
+        if left_visible and im.BeginTabBar(ctx, "##batches", im.TabBarFlags_None) then
             local i = 1
             while i <= #batches do
                 local b = batches[i]
@@ -1008,7 +1011,8 @@ local function Loop()
         -- ── Right: output panel ─────────────────────────────────────────────
         im.SameLine(ctx)
         im.PushStyleColor(ctx, im.Col_ChildBg, 0x141420FF)
-        im.BeginChild(ctx, "##output_panel", PANEL_W, -1, im.ChildFlags_Border)
+        local panel_visible = im.BeginChild(ctx, "##output_panel", PANEL_W, -1, im.ChildFlags_Border)
+        if panel_visible then
 
         im.TextDisabled(ctx, "OUTPUT PREVIEW")
         local total_tracks = 0
@@ -1072,6 +1076,7 @@ local function Loop()
         end
         if not can_generate then im.EndDisabled(ctx) end
 
+        end -- panel_visible
         im.EndChild(ctx)
         im.PopStyleColor(ctx)
     end
