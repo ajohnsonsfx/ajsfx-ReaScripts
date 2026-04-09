@@ -623,107 +623,105 @@ local function draw_batch_config()
     im.EndChild(ctx)
     im.PopStyleColor(ctx)
 
-    im.Spacing(ctx)
-    im.Spacing(ctx)
-    im.SeparatorText(ctx, "Layout")
+    -- ── TRACK LAYOUT ──────────────────────────────────────────────────────────
+    im.SeparatorText(ctx, "Track Layout")
 
-    -- Row 1: Root Node (Groups & Naming)
-    local draw_list = im.GetWindowDrawList(ctx)
-    local root_x, root_y = im.GetCursorScreenPos(ctx)
+    local avail_lw = im.GetContentRegionAvail(ctx)
+    local spinner_w = 30
 
-    im.BeginGroup(ctx)
-    -- Align "Format:" with the "Groups" text (Input width 26 + default ItemSpacing 8)
-    local c_x = im.GetCursorPosX(ctx)
-    im.SetCursorPosX(ctx, c_x + 34)
-    im.TextDisabled(ctx, "Format:")
-    
-    im.SetCursorPosX(ctx, c_x)
-    im.SetNextItemWidth(ctx, 26)
-    local rv_g, val_g = im.InputInt(ctx, "##num_groups", batch.num_groups, 0, 0)
+    -- Spinners row
+    im.SetNextItemWidth(ctx, spinner_w)
+    local rv_g, val_g = im.InputInt(ctx, "##ng", batch.num_groups, 1, 1)
     if rv_g then
         batch.num_groups = math.max(1, math.min(MAX_GROUPS, val_g))
         sync_batch_groups(batch)
     end
-    -- Capture coordinates for the hierarchy line exactly at the vertical center of this InputInt
-    local _, root_item_y_min = im.GetItemRectMin(ctx)
-    local _, root_item_y_max = im.GetItemRectMax(ctx)
-    local root_y_center = (root_item_y_min + root_item_y_max) / 2
-    
-    im.SameLine(ctx)
-    im.Text(ctx, "Groups")
-    im.EndGroup(ctx)
-    
-    im.SameLine(ctx, 0, 30)
-    
-    for i, s in ipairs(batch.sections) do
-        im.PushID(ctx, "fmt_" .. i)
-        
-        im.BeginGroup(ctx)
-        -- Label Row
-        local color = s.type == "shared" and COLOR_SHARED or COLOR_INPUT
-        im.TextColored(ctx, color, "[" .. s.label .. "]")
-        
-        -- Input Row
-        if s.type == "shared" then
-            im.SetNextItemWidth(ctx, 80)
-            local buf_id = bid .. "sv_" .. s.label
-            local rv, val = im.InputText(ctx, "##" .. s.label, get_buf(buf_id, batch.shared_values[s.label] or ""))
-            if rv then
-                batch.shared_values[s.label] = val
-                input_buffers[buf_id] = val
-            end
-        else
-            -- No input box, just an empty space that aligns with the visual row height
-            -- Let's give it a consistent width, and ensure it respects the vertical layout
-            im.Dummy(ctx, 70, 22)
-        end
-        im.EndGroup(ctx)
-        
-        if i < #batch.sections then
-            im.SameLine(ctx, 0, 4)
-            im.BeginGroup(ctx)
-            im.Dummy(ctx, 1, 22) -- vertical spacer to push character down
-            im.TextColored(ctx, COLOR_DELIM, core.settings.Load().delimiter)
-            im.EndGroup(ctx)
-            im.SameLine(ctx, 0, 4)
-        end
-        im.PopID(ctx)
+    im.SameLine(ctx) im.Text(ctx, "Groups")
+
+    im.SameLine(ctx, 0, 16)
+    im.SetNextItemWidth(ctx, spinner_w)
+    local rv_a, val_a = im.InputInt(ctx, "##na", batch.num_aux, 1, 1)
+    if rv_a then batch.num_aux = math.max(0, math.min(MAX_AUX, val_a)) end
+    im.SameLine(ctx) im.Text(ctx, "Aux")
+
+    im.SameLine(ctx, 0, 16)
+    im.SetNextItemWidth(ctx, spinner_w)
+    local rv_au, val_au = im.InputInt(ctx, "##nau", batch.num_audio, 1, 1)
+    if rv_au then batch.num_audio = math.max(0, math.min(MAX_CONTENT, val_au)) end
+    im.SameLine(ctx) im.Text(ctx, "Audio")
+
+    im.SameLine(ctx, 0, 16)
+    im.SetNextItemWidth(ctx, spinner_w)
+    local rv_mi, val_mi = im.InputInt(ctx, "##nmi", batch.num_midi, 1, 1)
+    if rv_mi then batch.num_midi = math.max(0, math.min(MAX_CONTENT, val_mi)) end
+    im.SameLine(ctx) im.Text(ctx, "MIDI")
+
+    -- Preview toggle (right-aligned)
+    local toggle_label = (batch.layout_preview_open ~= false) and "\xe2\x96\xbc Preview" or "\xe2\x96\xb6 Preview"
+    im.SameLine(ctx, avail_lw - 60)
+    if im.SmallButton(ctx, toggle_label) then
+        batch.layout_preview_open = not (batch.layout_preview_open ~= false)
     end
 
-    -- Child Nodes (indented)
-    im.Indent(ctx, 30)
-    im.Spacing(ctx)
-    
-    local aux_x, aux_y = im.GetCursorScreenPos(ctx)
-    im.SetNextItemWidth(ctx, 26)
-    local rv_a, val_a = im.InputInt(ctx, "##num_aux", batch.num_aux, 0, 0)
-    if rv_a then batch.num_aux = math.max(0, math.min(MAX_AUX, val_a)) end
-    im.SameLine(ctx)
-    im.Text(ctx, "FX Aux Tracks")
-    local aux_r_min_x, aux_r_min_y = im.GetItemRectMin(ctx)
-    local aux_r_max_x, aux_r_max_y = im.GetItemRectMax(ctx)
-    
-    local aud_x, aud_y = im.GetCursorScreenPos(ctx)
-    im.SetNextItemWidth(ctx, 26)
-    local rv_au, val_au = im.InputInt(ctx, "##num_audio", batch.num_audio, 0, 0)
-    if rv_au then batch.num_audio = math.max(0, math.min(MAX_CONTENT, val_au)) end
-    im.SameLine(ctx)
-    im.Text(ctx, "Audio Tracks")
-    local aud_r_min_x, aud_r_min_y = im.GetItemRectMin(ctx)
-    local aud_r_max_x, aud_r_max_y = im.GetItemRectMax(ctx)
-    
-    local mid_x, mid_y = im.GetCursorScreenPos(ctx)
-    im.SetNextItemWidth(ctx, 26)
-    local rv_mi, val_mi = im.InputInt(ctx, "##num_midi", batch.num_midi, 0, 0)
-    if rv_mi then batch.num_midi = math.max(0, math.min(MAX_CONTENT, val_mi)) end
-    im.SameLine(ctx)
-    im.Text(ctx, "MIDI Tracks")
-    local mid_r_min_x, mid_r_min_y = im.GetItemRectMin(ctx)
-    local mid_r_max_x, mid_r_max_y = im.GetItemRectMax(ctx)
+    -- Collapsible diagram
+    if batch.layout_preview_open ~= false then
+        local COLOR_AUX   = 0xFFCC66FF
+        local COLOR_AUDIO = 0x88CCFFFF
+        local COLOR_MIDI  = 0xCC88FFFF
 
-    im.Unindent(ctx, 30)
+        im.PushStyleColor(ctx, im.Col_ChildBg, 0x1A1A2AFF)
+        im.BeginChild(ctx, "##layout_diagram_" .. bid, -1, 0, im.ChildFlags_AutoResizeY + im.ChildFlags_Border)
 
+        local preview_name = core.naming.ResolveGroupName(batch, 1)
+        if preview_name == "" then preview_name = "(unnamed)" end
 
+        if batch.num_groups > 1 then
+            im.TextDisabled(ctx, "1 of " .. batch.num_groups .. " groups shown")
+        end
+
+        im.Text(ctx, "\xf0\x9f\x93\x81 " .. preview_name)
+
+        local total   = batch.num_aux + batch.num_audio + batch.num_midi
+        local printed = 0
+
+        for a = 1, batch.num_aux do
+            printed = printed + 1
+            local is_last = printed == total
+            local prefix  = is_last and "\xe2\x94\x94\xe2\x94\x80 " or "\xe2\x94\x9c\xe2\x94\x80 "
+            im.SameLine(ctx, 0, 0) im.NewLine(ctx)
+            im.TextColored(ctx, COLOR_AUX, prefix .. "Aux_" .. a)
+        end
+
+        local send_label = ""
+        if batch.num_aux > 0 then
+            local parts = {}
+            for a = 1, math.min(batch.num_aux, 3) do parts[#parts+1] = "Aux_" .. a end
+            if batch.num_aux > 3 then parts[#parts+1] = "..." end
+            send_label = "  \xe2\x86\x92 " .. table.concat(parts, ", ")
+        end
+
+        for c = 1, batch.num_audio + batch.num_midi do
+            printed = printed + 1
+            local is_last = printed == total
+            local prefix  = is_last and "\xe2\x94\x94\xe2\x94\x80 " or "\xe2\x94\x9c\xe2\x94\x80 "
+            local color   = c <= batch.num_audio and COLOR_AUDIO or COLOR_MIDI
+            local ltype   = c <= batch.num_audio and "Audio " or "MIDI "
+            local idx     = c <= batch.num_audio and c or (c - batch.num_audio)
+            im.SameLine(ctx, 0, 0) im.NewLine(ctx)
+            im.TextColored(ctx, color, prefix .. ltype .. idx)
+            if send_label ~= "" then
+                im.SameLine(ctx, 0, 0)
+                im.TextDisabled(ctx, send_label)
+            end
+        end
+
+        local track_total = (batch.num_aux + batch.num_audio + batch.num_midi) * batch.num_groups
+        im.Spacing(ctx)
+        im.TextDisabled(ctx, "\xc3\x97 " .. batch.num_groups .. " groups \xc2\xb7 " .. track_total .. " tracks total")
+
+        im.EndChild(ctx)
+        im.PopStyleColor(ctx)
+    end
 
     -- Group input sections table
     local input_sections = {}
