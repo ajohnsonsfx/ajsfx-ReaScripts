@@ -242,28 +242,49 @@ function pvx.RunPVXAsync(argv, scratch_dir, on_done, on_cancel, on_error, poll_r
 
   local launch_ok
   if is_win then
-    -- Windows: write a bat that runs pvx SYNCHRONOUSLY (no inner start /B).
-    -- The bat itself is launched as the background process, so it blocks waiting
-    -- for pvx to finish, then writes the real exit code to done.txt.
+    -- Windows: two-file approach.
+    --
+    -- pvx_run.bat  — runs pvx synchronously, writes done.txt when done.
+    --                Sets HOME=%USERPROFILE% (pvx requires HOME; not set on Windows).
+    --
+    -- pvx_launch.vbs — WScript.Shell.Run(cmd, 0, False):
+    --                   0     = fully hidden window (no flicker, no taskbar entry)
+    --                   False = async, returns immediately
+    --                  VBScript sidesteps all the cmd.exe / PowerShell inline-
+    --                  quoting layers that make nested process launch unreliable.
     local bat     = scratch_dir .. "/pvx_run.bat"
+    local vbs     = scratch_dir .. "/pvx_launch.vbs"
     local log_win  = log_file:gsub("/", "\\")
     local done_win = done_file:gsub("/", "\\")
     local bat_win  = bat:gsub("/", "\\")
+    local vbs_win  = vbs:gsub("/", "\\")
 
-    local f = io.open(bat, "w")
-    if not f then
+    -- Write the bat
+    local fb = io.open(bat, "w")
+    if not fb then
       on_error("Cannot write launcher batch file: " .. bat)
       return
     end
-    -- pvx runs directly (blocking from the bat's perspective)
-    f:write("@echo off\r\n")
-    f:write(cmd_str .. ' > "' .. log_win .. '" 2>&1\r\n')
-    f:write('echo %ERRORLEVEL% > "' .. done_win .. '"\r\n')
-    f:close()
+    fb:write("@echo off\r\n")
+    fb:write("set HOME=%USERPROFILE%\r\n")
+    fb:write(cmd_str .. ' > "' .. log_win .. '" 2>&1\r\n')
+    fb:write('echo %ERRORLEVEL% > "' .. done_win .. '"\r\n')
+    fb:close()
 
-    -- Launch the bat detached: cmd /c start "" /B returns immediately while
-    -- the bat keeps running pvx in the background.
-    launch_ok = os.execute('cmd /c start "" /B "' .. bat_win .. '"')
+    -- Write the VBScript launcher
+    local fv = io.open(vbs, "w")
+    if not fv then
+      on_error("Cannot write VBScript launcher: " .. vbs)
+      return
+    end
+    -- Chr(34) = double-quote; keeps the bat path safe without nested escaping
+    fv:write('Set oShell = CreateObject("WScript.Shell")\r\n')
+    fv:write('oShell.Run "cmd /c " & Chr(34) & "' ..
+      bat_win:gsub('"', '""') .. '" & Chr(34), 0, False\r\n')
+    fv:close()
+
+    -- //nologo = no startup banner, //B = batch mode (suppress UI dialogs)
+    launch_ok = os.execute('wscript.exe //nologo //B "' .. vbs_win .. '"')
   else
     -- Unix: subshell captures PID and writes done sentinel
     local shell_cmd = string.format(
@@ -341,10 +362,8 @@ function pvx.RunPVXAsync(argv, scratch_dir, on_done, on_cancel, on_error, poll_r
     -- Timeout
     if elapsed > timeout_s then
       cancel_process()
+      ctx = nil
       on_cancel()
-      if ctx and im.ValidatePtr(ctx, 'ImGui_Context*') then
-        im.DestroyContext(ctx)
-      end
       return
     end
 
@@ -356,9 +375,9 @@ function pvx.RunPVXAsync(argv, scratch_dir, on_done, on_cancel, on_error, poll_r
       local lf = io.open(log_file, "r")
       local log_txt = lf and lf:read("*a") or ""
       if lf then lf:close() end
-      if ctx and im.ValidatePtr(ctx, 'ImGui_Context*') then
-        im.DestroyContext(ctx)
-      end
+      -- Don't call im.DestroyContext — not exposed by the imgui wrapper;
+      -- the context is cleaned up automatically when the script ends.
+      ctx = nil
       on_done(code, log_txt)
       return
     end
@@ -379,18 +398,14 @@ function pvx.RunPVXAsync(argv, scratch_dir, on_done, on_cancel, on_error, poll_r
       if im.Button(ctx, "Cancel") or not open then
         cancel_process()
         im.End(ctx)
-        if ctx and im.ValidatePtr(ctx, 'ImGui_Context*') then
-          im.DestroyContext(ctx)
-        end
+        ctx = nil
         on_cancel()
         return
       end
       im.End(ctx)
     elseif not open then
       cancel_process()
-      if ctx and im.ValidatePtr(ctx, 'ImGui_Context*') then
-        im.DestroyContext(ctx)
-      end
+      ctx = nil
       on_cancel()
       return
     end

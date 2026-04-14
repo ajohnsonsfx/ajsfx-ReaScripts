@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 - **PVX Time-Varying Pitch/Stretch**: New feature — apply animated pitch and time-stretch curves to a single audio item using the pvx phase-vocoder CLI.
   - `scripts/FX/ajsfx_PVXHost.jsfx` — pass-through JSFX exposing Pitch (semitones) and Stretch (log₂ factor) sliders as REAPER automation targets.
+  - `scripts/Items/ajsfx_PVX_Install.lua` — one-click installer: detects Python 3, creates venv, pip-installs pvx, saves binary path to Settings.
   - `scripts/Items/ajsfx_PVX_Render.lua` — three-stage render pipeline (pre-PVX FX bake → pvx async → post-chain bake); imports result as `pvx_v<n>` take.
   - `scripts/Items/ajsfx_PVX_Preview.lua` — non-mutating preview via SWS `CF_Preview_PlayEx`; uses time selection or cursor window.
   - `scripts/Items/ajsfx_PVX_PrepareItem.lua` — converts MIDI/empty items to audio takes and inserts PVX Host automatically.

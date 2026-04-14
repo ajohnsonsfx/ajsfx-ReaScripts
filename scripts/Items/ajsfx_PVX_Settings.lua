@@ -56,6 +56,15 @@ local status_msg = ""
 -- Helpers
 -- -----------------------------------------------------------------------
 
+-- Exact filenames that pvx scratch produces — never wildcard-delete.
+local SCRATCH_FILES = {
+  "pvx_run.bat", "pvx_launch.vbs",
+  "pvx_out.wav", "preview_pvx_out.wav",
+  "pitch.csv", "stretch.csv",
+  "preview_pitch.csv", "preview_stretch.csv",
+  "log.txt", "done.txt", "pid.txt",
+}
+
 local function ClearScratch()
   local scratch = pvx_lib.ResolveScratchDir(cfg)
   if scratch == "" then
@@ -63,18 +72,22 @@ local function ClearScratch()
     return
   end
 
-  local os_name = r.GetOS()
-  local removed = 0
+  -- Confirm before deleting anything
+  local confirm = r.ShowMessageBox(
+    "Delete pvx temp files from:\n" .. scratch ..
+    "\n\nOnly known pvx filenames are removed (no wildcard delete).",
+    "Clear Scratch", 1)  -- 1 = OK / Cancel
+  if confirm ~= 1 then return end
 
-  if os_name:find("Win") then
-    local path = scratch:gsub("/", "\\")
-    -- Remove contents but keep the directory
-    local result = os.execute('del /Q /S "' .. path .. '\\*" 2>NUL')
-    status_msg = "Scratch cleared (Windows)."
-  else
-    local result = os.execute("rm -f '" .. scratch .. "'/* 2>/dev/null")
-    status_msg = "Scratch cleared."
+  local removed = 0
+  for _, name in ipairs(SCRATCH_FILES) do
+    local path = scratch .. "/" .. name
+    if os.remove(path) then
+      removed = removed + 1
+    end
   end
+
+  status_msg = string.format("Cleared %d file(s) from scratch.", removed)
 end
 
 local function CheckPVXVersion()

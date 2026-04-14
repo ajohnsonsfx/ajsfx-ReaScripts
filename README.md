@@ -44,6 +44,7 @@ Apply smoothly-animated pitch and time-stretch curves to a single audio item, pr
 
 **Workflow:**
 
+0. **Install pvx (first time only):** Run `ajsfx_PVX_Install` from the Action List. It detects Python 3, creates a venv, pip-installs pvx, and saves the path automatically. Requires Python 3.8+ on your PATH.
 1. **(Optional) Prepare a MIDI or empty item first:** Run `ajsfx_PVX_PrepareItem` to render it to an audio take and insert the PVX Host automatically.
 2. **Add PVX Host to your audio item's Take FX chain** (or skip to step 3 if PrepareItem did it).
 3. **Draw envelopes:** Right-click the Pitch or Stretch slider in the Take FX window → *Show take envelope* → draw your curve.
@@ -62,6 +63,7 @@ Apply smoothly-animated pitch and time-stretch curves to a single audio item, pr
 
 **Scripts:**
 
+- **scripts/Items/ajsfx_PVX_Install.lua** — One-click installer: detects Python 3, creates a venv, pip-installs pvx, saves the binary path to Settings.
 - **scripts/Items/ajsfx_PVX_Render.lua** — Applies pitch/stretch envelopes via pvx; adds a new take `pvx_v<n>` on the source item.
 - **scripts/Items/ajsfx_PVX_Preview.lua** — Previews pvx output for a time selection or cursor window; no project mutation. Requires SWS.
 - **scripts/Items/ajsfx_PVX_PrepareItem.lua** — Renders a MIDI or empty item to audio and inserts the PVX Host JSFX on the new take.
