@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **PVX Time-Varying Pitch/Stretch**: New feature — apply animated pitch and time-stretch curves to a single audio item using the pvx phase-vocoder CLI.
+  - `scripts/FX/ajsfx_PVXHost.jsfx` — pass-through JSFX exposing Pitch (semitones) and Stretch (log₂ factor) sliders as REAPER automation targets.
+  - `scripts/Items/ajsfx_PVX_Render.lua` — three-stage render pipeline (pre-PVX FX bake → pvx async → post-chain bake); imports result as `pvx_v<n>` take.
+  - `scripts/Items/ajsfx_PVX_Preview.lua` — non-mutating preview via SWS `CF_Preview_PlayEx`; uses time selection or cursor window.
+  - `scripts/Items/ajsfx_PVX_PrepareItem.lua` — converts MIDI/empty items to audio takes and inserts PVX Host automatically.
+  - `scripts/Items/ajsfx_PVX_Settings.lua` — ImGui settings panel (binary path, scratch dir, poll rate, preview seconds, timeout, Clear Scratch).
+  - `scripts/lib/ajsfx_pvx.lua` — shared pvx helper library (pure + REAPER-coupled functions).
+  - `tests/test_pvx.lua` — unit tests for all pure helpers.
 - **Unit Tests**: Added `tests/test_core.lua` with tests for color conversion, depth guard, razor edit parsing, toggle mute helpers, and config loading.
 - **Core Library**: Added `core.Error()` for unified error reporting (console + message box), `core.ColorToRGBA()`/`core.RGBAToColor()` for color format conversion, `core.LoadMediaCounterConfig()` for shared config loading, `core.ToggleMuteItems()`/`core.ToggleMuteTracks()` for DRY mute toggle logic.
 

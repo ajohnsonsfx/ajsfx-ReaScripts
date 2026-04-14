@@ -1,0 +1,25 @@
+desc:ajsfx PVX Host
+// @description ajsfx PVX Host
+// @author ajsfx
+// @version 0.1
+// @about Placeholder FX exposing automation lanes for PVX Render/Preview.
+
+slider1:0<-24,24,0.01>Pitch (semitones)
+slider2:0<-2,2,0.001>Stretch (log2 factor: 0=1x, +1=2x, -1=0.5x)
+slider3:0<0,2,1{Linear,Cubic,Sinc}>Interp
+slider4:1<0,2,1{Off,Loose,Strict}>Phase Lock
+slider5:1<0,1,1{Off,On}>Preserve Transients
+
+@init
+ext_tail_size = 0;
+
+@sample
+// pass-through
+
+@gfx 320 60
+gfx_clear = 0;
+gfx_x = 10; gfx_y = 10;
+gfx_set(0.8, 0.8, 0.8, 1);
+gfx_drawstr("Draw envelopes on Pitch and Stretch.");
+gfx_y += 14;
+gfx_drawstr("Run 'ajsfx PVX Render' or 'Preview' from Action List.");
