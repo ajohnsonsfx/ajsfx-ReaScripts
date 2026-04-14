@@ -1,5 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ajsfx" commit="498764ffcf155342c7f89e7416587c6bf89edd72">
+<index version="1" name="ajsfx" commit="3e3c2e011877e4db8132c68d3adaf452e1ba9f0f">
+  <category name="scripts/FX">
+    <reapack name="ajsfx_PVXHost.jsfx" type="effect" desc="ajsfx PVX Host">
+      <metadata>
+        <description><![CDATA[{\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier;}}
+{\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
+\widowctrl\hyphauto
+
+{\pard \ql \f0 \sa180 \li0 \fi0 Placeholder FX exposing automation lanes for PVX Render/Preview.\par}
+}
+]]></description>
+      </metadata>
+      <version name="0.1" author="ajsfx" time="2026-04-14T04:44:13Z">
+        <source>https://github.com/ajohnsonsfx/ajsfx/raw/226de6287a5166466ce8e68ae5264e7ab9e7065b/scripts/FX/ajsfx_PVXHost.jsfx</source>
+      </version>
+    </reapack>
+  </category>
   <category name="scripts/Items">
     <reapack name="ajsfx_GentleNormalizer.lua" type="script" desc="Gentle Normalizer">
       <metadata>
@@ -14,6 +30,24 @@
       <version name="1.2" author="ajsfx" time="2026-03-30T22:24:20Z">
         <source main="main">https://github.com/ajohnsonsfx/ajsfx/raw/498764ffcf155342c7f89e7416587c6bf89edd72/scripts/Items/ajsfx_GentleNormalizer.lua</source>
         <source file="../lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx/raw/498764ffcf155342c7f89e7416587c6bf89edd72/scripts/lib/ajsfx_core.lua</source>
+      </version>
+    </reapack>
+    <reapack name="ajsfx_PVX_Install.lua" type="script" desc="ajsfx PVX Install">
+      <metadata>
+        <description><![CDATA[{\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier;}}
+{\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
+\widowctrl\hyphauto
+
+{\pard \ql \f0 \sa180 \li0 \fi0 Installs the pvx phase-vocoder CLI into an isolated venv and saves the binary path to ajsfx PVX Settings. Requires Python 3.8+ on PATH and an internet connection. Opens a visible terminal window showing installation progress.\par}
+}
+]]></description>
+      </metadata>
+      <version name="0.1" author="ajsfx" time="2026-04-14T22:03:20Z">
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx/raw/e7e9c6455b83c63dcfe04a7ea0898ec3fc8ee0fc/scripts/Items/ajsfx_PVX_Install.lua</source>
+      </version>
+      <version name="0.2" author="ajsfx" time="2026-04-14T22:03:25Z">
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx/raw/f2596dffbef9901fa753a0df201198bf155ca4b6/scripts/Items/ajsfx_PVX_Install.lua</source>
+        <source file="../lib/ajsfx_pvx.lua">https://github.com/ajohnsonsfx/ajsfx/raw/f2596dffbef9901fa753a0df201198bf155ca4b6/scripts/lib/ajsfx_pvx.lua</source>
       </version>
     </reapack>
   </category>
