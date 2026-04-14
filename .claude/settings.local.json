@@ -11,7 +11,14 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:pixtur.github.io)",
       "WebFetch(domain:deepwiki.com)",
-      "Bash(curl -s \"https://raw.githubusercontent.com/cfillion/reaimgui/master/api/window.cpp\")"
+      "Bash(curl -s \"https://raw.githubusercontent.com/cfillion/reaimgui/master/api/window.cpp\")",
+      "Bash(mkdir -p \"D:/GitHub/ajohnsonsfx/ajsfx/docs/superpowers/plans\")",
+      "Bash(mkdir -p \"D:/GitHub/ajohnsonsfx/ajsfx/tests\")",
+      "Bash(lua -e ':*)",
+      "Bash(lua:*)",
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "mcp__plugin_context7_context7__query-docs",
+      "Bash(xargs grep:*)"
     ]
   }
 }
