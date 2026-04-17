@@ -7,7 +7,6 @@
 --        installation progress.
 -- @provides
 --   [main] .
---   [nomain] ../lib/ajsfx_pvx.lua
 
 local r = reaper
 

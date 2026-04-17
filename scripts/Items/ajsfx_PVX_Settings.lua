@@ -5,9 +5,6 @@
 --        path, scratch directory, poll rate, preview duration, and render timeout.
 -- @provides
 --   [main] .
---   [nomain] ../lib/ajsfx_core.lua
---   [nomain] ../lib/ajsfx_pvx.lua
---   [nomain] ../FX/ajsfx_PVXHost.jsfx
 
 local r = reaper
 

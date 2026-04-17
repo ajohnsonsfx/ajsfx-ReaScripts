@@ -4,7 +4,6 @@
 -- @changelog Moved settings to a separate script
 -- @provides
 --   [main] .
---   [nomain] ../lib/ajsfx_core.lua
 
 local r = reaper
 

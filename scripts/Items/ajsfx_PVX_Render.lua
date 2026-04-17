@@ -5,9 +5,6 @@
 --        Renders a new take on the source item. Requires ajsfx PVX Host on the take FX chain.
 -- @provides
 --   [main] .
---   [nomain] ../lib/ajsfx_core.lua
---   [nomain] ../lib/ajsfx_pvx.lua
---   [nomain] ../FX/ajsfx_PVXHost.jsfx
 
 local r = reaper
 

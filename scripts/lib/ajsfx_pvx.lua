@@ -2,7 +2,6 @@
 -- @author ajsfx
 -- @version 0.1
 -- @about Shared helpers for ajsfx PVX Render/Preview scripts
--- @noindex
 
 local r = reaper
 

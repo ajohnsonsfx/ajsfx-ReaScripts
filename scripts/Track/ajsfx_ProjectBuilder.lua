@@ -4,7 +4,6 @@
 -- @about Scaffold multi-group track architectures from a GUI — folder tracks with FX aux routing and section-based naming.
 -- @provides
 --   [main] .
---   [nomain] ../lib/ajsfx_core.lua
 
 local r = reaper
 

@@ -4,7 +4,6 @@
 -- @about Automates track versioning: Duplicates selected tracks, increments version/date on the original, and archives the duplicate in an "Old" folder. Configurable via ExtState.
 -- @provides
 --   [main] .
---   [nomain] ../lib/ajsfx_core.lua
 -- TODO: Create a separate script for adding the initial date and version to tracks that don't have it, so users can easily adopt this workflow on existing projects.
 -- TODO: Create a managemenet window that allows the user to define the date format, whether to mute archived tracks, and the name of the archive folder. This would be a more user-friendly way to configure the script than editing ExtState directly.
 -- TODO: The user management window should allow the user to enable or disable different steps in the process - maybe they don't want to rename, or maybe they don't want to move the folder automatically. This would make the script more flexible for different workflows.

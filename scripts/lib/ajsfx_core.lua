@@ -2,7 +2,6 @@
 -- @author ajsfx
 -- @version 1.1
 -- @about Shared functions for ajsfx scripts
--- @noindex
 
 local r = reaper
 

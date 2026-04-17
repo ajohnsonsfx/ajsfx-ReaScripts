@@ -7,9 +7,6 @@
 --        Also creates and shows the Pitch and Stretch envelope lanes automatically.
 -- @provides
 --   [main] .
---   [nomain] ../lib/ajsfx_core.lua
---   [nomain] ../lib/ajsfx_pvx.lua
---   [nomain] ../FX/ajsfx_PVXHost.jsfx
 
 local r = reaper
 

@@ -4,7 +4,6 @@
 -- @about Sets the length of all selected media items to match the length of the first selected item.
 -- @provides
 --   [main] .
---   [nomain] ../lib/ajsfx_core.lua
 
 local r = reaper
 local script_path = debug.getinfo(1, "S").source:match("@?(.*[\\/])")
