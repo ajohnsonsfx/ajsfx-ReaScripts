@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ajsfx" commit="1b7217d924cb13497ee3eefc09c3844ff9ac73c3">
+<index version="1" name="ajsfx" commit="e6b2a223d6b8bd4709f9cc7e0b9081549816e162">
   <category name="ajsfx/pvx">
     <reapack name="ajsfx_PVXHost.jsfx" type="effect" desc="ajsfx PVX Host">
       <metadata>
@@ -82,6 +82,9 @@
       </metadata>
       <version name="0.2" author="ajsfx" time="2026-04-17T07:34:27Z">
         <source main="main">https://github.com/ajohnsonsfx/ajsfx/raw/5d2bb76005a4acf522785174176ae2d286063e21/scripts/Items/ajsfx_PVX_PrepareItem.lua</source>
+      </version>
+      <version name="0.3" author="ajsfx" time="2026-04-21T00:26:54Z">
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx/raw/e6b2a223d6b8bd4709f9cc7e0b9081549816e162/scripts/Items/ajsfx_PVX_PrepareItem.lua</source>
       </version>
     </reapack>
     <reapack name="ajsfx_PVX_Preview.lua" type="script" desc="ajsfx PVX Preview">
