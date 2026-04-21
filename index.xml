@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ajsfx" commit="e6b2a223d6b8bd4709f9cc7e0b9081549816e162">
+<index version="1" name="ajsfx" commit="8d1ec5b3a5959c17da3fbbbe45190c09c086fa6b">
   <category name="ajsfx/pvx">
     <reapack name="ajsfx_PVXHost.jsfx" type="effect" desc="ajsfx PVX Host">
       <metadata>
