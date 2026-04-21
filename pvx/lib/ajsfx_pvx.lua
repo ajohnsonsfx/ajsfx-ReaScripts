@@ -1,7 +1,9 @@
 -- @description ajsfx PVX Shared Library
 -- @author ajsfx
--- @version 0.1
--- @about Shared helpers for ajsfx PVX Render/Preview scripts
+-- @version 0.2
+-- @about Shared helpers for ajsfx PVX Render/Preview scripts.
+--        Venv path is now derived from this file's install location
+--        (Scripts/<repo>/pvx/lib/) instead of a hardcoded string.
 
 local r = reaper
 
@@ -505,10 +507,19 @@ end
 -- Installation helpers
 --------------------------------
 
--- Expected pvx binary path in the shared ajsfx-Scripts venv.
+-- Locate the Scripts/<repo>/ directory this lib is installed under, so the
+-- installer and readiness check agree on one venv location regardless of
+-- what ReaPack repo name the user imported under.
+local function GetScriptsDir()
+  local res_base = r.GetResourcePath():gsub("\\", "/")
+  local lib_path = debug.getinfo(1, "S").source:sub(2):gsub("\\", "/")
+  return lib_path:match("^(.-)/pvx/lib/") or (res_base .. "/Scripts/ajsfx-ReaScripts")
+end
+
+-- Expected pvx binary path in the shared venv (sibling of pvx/).
 function pvx.GetDefaultVenvBin()
   local is_win = r.GetOS():find("Win") ~= nil
-  local base   = r.GetResourcePath():gsub("\\", "/") .. "/Scripts/ajsfx-Scripts/venv"
+  local base   = GetScriptsDir() .. "/venv"
   if is_win then
     return (base .. "/Scripts/pvx.exe"):gsub("/", "\\")
   else
@@ -518,7 +529,7 @@ end
 
 -- Resolve the pvx binary path to use for a subprocess launch.
 -- Prefers cfg.pvx_binary if it exists on disk; otherwise falls back to the
--- default ajsfx-Scripts venv binary if that exists. Returns nil if neither
+-- default venv binary if that exists. Returns nil if neither
 -- path resolves to an actual file. Single source of truth — IsPVXReady and
 -- every argv builder should call this so they can't disagree.
 function pvx.GetPVXBinary(cfg)
@@ -558,14 +569,8 @@ end
 -- on_done(pvx_bin_path) : called when install completes; binary path is saved to ExtState.
 -- on_error(msg)         : called on failure.
 function pvx.RunInstallAsync(on_done, on_error)
-  local is_win     = r.GetOS():find("Win") ~= nil
-  local res_base   = r.GetResourcePath():gsub("\\", "/")
-  -- Locate this library file so the venv lives alongside our scripts, regardless
-  -- of what name the user imported the ReaPack repo under (debug.getinfo returns
-  -- e.g. "@C:/.../Scripts/ajsfx/scripts/lib/ajsfx_pvx.lua").
-  local lib_path    = debug.getinfo(1, "S").source:sub(2):gsub("\\", "/")
-  local scripts_dir = lib_path:match("^(.-)/scripts/lib/") or
-                      (res_base .. "/Scripts/ajsfx")
+  local is_win      = r.GetOS():find("Win") ~= nil
+  local scripts_dir = GetScriptsDir()
   local venv_path   = scripts_dir .. "/venv"
   local pip_path    = venv_path .. (is_win and "/Scripts/pip.exe" or "/bin/pip")
   local pvx_bin     = venv_path .. (is_win and "/Scripts/pvx.exe" or "/bin/pvx")

@@ -1,10 +1,12 @@
 -- @description ajsfx PVX Settings
 -- @author ajsfx
--- @version 0.1
+-- @version 0.2
 -- @about Settings panel for ajsfx PVX Render/Preview. Configure the pvx binary
 --        path, scratch directory, poll rate, preview duration, and render timeout.
 -- @provides
 --   [main] .
+--   lib/ajsfx_pvx.lua
+--   ../lib/ajsfx_core.lua > lib/ajsfx_core.lua
 
 local r = reaper
 

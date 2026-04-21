@@ -3,18 +3,18 @@
 ## Repository Layout
 ```
 ajsfx/
-├── scripts/
-│   ├── Items/                                   # Media item scripts
-│   ├── Track/                                   # Track management scripts
-│   └── lib/
-│       └── ajsfx_core.lua                       # Shared core library
+├── Items/                                       # Media item scripts
+├── Track/                                       # Track management scripts
+├── pvx/                                         # PVX pitch/stretch scripts + JSFX host
+│   └── lib/ajsfx_pvx.lua                        # PVX helpers + self-locating venv
+├── lib/
+│   └── ajsfx_core.lua                           # Shared core library
 ├── docs/                                        # Sound design reference docs
-├── CHANGELOG.md
 ├── README.md
 └── .gitignore
 ```
 
-## Shared Core Library (`scripts/lib/ajsfx_core.lua`)
+## Shared Core Library (`lib/ajsfx_core.lua`)
 All scripts (except the ImGui-heavy ones) require this library. It provides:
 
 | Function | Description |

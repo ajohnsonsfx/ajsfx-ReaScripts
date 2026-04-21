@@ -20,7 +20,7 @@ end
 reaper = {}
 
 -- Load pvx library (run from repo root: lua tests/test_pvx.lua)
-package.path = package.path .. ";scripts/lib/?.lua"
+package.path = package.path .. ";pvx/lib/?.lua"
 local pvx = require("ajsfx_pvx")
 
 print("\n=== ajsfx_pvx.lua Unit Tests ===\n")

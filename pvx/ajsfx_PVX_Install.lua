@@ -1,12 +1,14 @@
 -- @description ajsfx PVX Install
 -- @author ajsfx
--- @version 0.2
+-- @version 0.3
 -- @about Installs the pvx phase-vocoder CLI into an isolated venv and saves
 --        the binary path to ajsfx PVX Settings. Requires Python 3.8+ on PATH
 --        and an internet connection. Opens a visible terminal window showing
 --        installation progress.
 -- @provides
 --   [main] .
+--   lib/ajsfx_pvx.lua
+--   ../lib/ajsfx_core.lua > lib/ajsfx_core.lua
 
 local r = reaper
 

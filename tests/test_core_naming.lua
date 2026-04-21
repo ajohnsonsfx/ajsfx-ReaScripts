@@ -14,7 +14,7 @@ reaper = {
 }
 
 -- ── Load core ───────────────────────────────────────────────────────────────
-package.path = package.path .. ";scripts/lib/?.lua"
+package.path = package.path .. ";lib/?.lua"
 local core = require("ajsfx_core")
 
 -- ── Minimal test runner ─────────────────────────────────────────────────────

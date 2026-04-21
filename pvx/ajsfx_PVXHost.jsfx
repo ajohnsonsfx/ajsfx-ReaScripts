@@ -1,7 +1,7 @@
 desc:ajsfx PVX Host
 // @description ajsfx PVX Host
 // @author ajsfx
-// @version 0.2
+// @version 0.3
 // @about Placeholder FX exposing automation lanes for PVX Render/Preview.
 
 slider1:0<-24,24,0.01>Pitch (semitones)

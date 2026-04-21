@@ -1,12 +1,14 @@
 -- @description ajsfx PVX PrepareItem
 -- @author ajsfx
--- @version 0.3
+-- @version 0.4
 -- @about Prepares any selected item for PVX processing:
 --        MIDI/empty → renders to audio first (action 41999), then adds PVX Host.
 --        Existing audio take → adds PVX Host directly (no re-render needed).
 --        Also creates and shows the Pitch and Stretch envelope lanes automatically.
 -- @provides
 --   [main] .
+--   lib/ajsfx_pvx.lua
+--   ../lib/ajsfx_core.lua > lib/ajsfx_core.lua
 
 local r = reaper
 
@@ -104,20 +106,14 @@ if already_has_host then
 end
 
 if not host_fx_idx then
-  -- Try by desc first (works after REAPER has scanned the Effects folder).
-  -- Fall back to a direct path reference so the JSFX can be added immediately
-  -- after a ReaPack install without requiring a manual FX rescan.
+  -- Resolved by JSFX desc line ("desc:ajsfx PVX Host"), so this is
+  -- independent of where the .jsfx file lives on disk.
   local added_idx = r.TakeFX_AddByName(take, "JS: ajsfx PVX Host", 0, -1)
-  if added_idx < 0 then
-    added_idx = r.TakeFX_AddByName(take, "JS: ajsfx/ajsfx/pvx/ajsfx_PVXHost", 0, -1)
-  end
   if added_idx < 0 then
     core.Error("Could not add 'ajsfx PVX Host' to the take FX chain.\n\n" ..
                "To fix:\n" ..
-               "1. In ReaPack, install/reinstall 'ajsfx PVX Host' (v0.2+).\n" ..
-               "   Import this repo with name 'ajsfx' so it installs to:\n" ..
-               "   Effects/ajsfx/ajsfx/pvx/ajsfx_PVXHost.jsfx\n" ..
-               "2. Rescan REAPER plugins:\n" ..
+               "1. In ReaPack, install/reinstall 'ajsfx PVX Host'.\n" ..
+               "2. Rescan REAPER plug-ins:\n" ..
                "   Options > Preferences > Plug-ins > Re-scan\n" ..
                "3. Re-run this script.")
     return

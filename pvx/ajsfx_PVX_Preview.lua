@@ -1,11 +1,13 @@
 -- @description ajsfx PVX Preview
 -- @author ajsfx
--- @version 0.1
+-- @version 0.2
 -- @about Previews the pvx-processed output for the selected audio item without
 --        mutating the project. Uses a time selection if present, otherwise previews
 --        N seconds around the edit cursor. Requires SWS extension for playback.
 -- @provides
 --   [main] .
+--   lib/ajsfx_pvx.lua
+--   ../lib/ajsfx_core.lua > lib/ajsfx_core.lua
 
 local r = reaper
 

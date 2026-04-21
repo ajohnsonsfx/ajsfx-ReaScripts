@@ -1,10 +1,12 @@
 -- @description ajsfx PVX Render
 -- @author ajsfx
--- @version 0.1
+-- @version 0.2
 -- @about Applies time-varying pitch/stretch to the selected audio item via pvx.
 --        Renders a new take on the source item. Requires ajsfx PVX Host on the take FX chain.
 -- @provides
 --   [main] .
+--   lib/ajsfx_pvx.lua
+--   ../lib/ajsfx_core.lua > lib/ajsfx_core.lua
 
 local r = reaper
 
