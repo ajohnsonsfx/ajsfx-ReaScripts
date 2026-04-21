@@ -634,8 +634,19 @@ function pvx.RunInstallAsync(on_done, on_error)
     fb:write("echo You can close this window.\r\n")
     fb:close()
 
-    -- Launch visible cmd window (/k keeps it open so user can read output)
-    local ok = os.execute('start "ajsfx PVX Install" cmd /k "' .. bat_win .. '"')
+    -- VBScript launcher: style=1 (normal visible window), async.
+    -- os.execute → system() creates a hidden cmd.exe; 'start' from within it
+    -- doesn't reliably produce a visible window. WScript.Shell.Run bypasses
+    -- that chain and sets the window style directly.
+    local vbs     = scripts_dir .. "/pvx_install.vbs"
+    local vbs_win = native(vbs)
+    local fv = io.open(vbs, "w")
+    if not fv then on_error("Cannot write installer launcher: " .. vbs); return end
+    fv:write('Set oShell = CreateObject("WScript.Shell")\r\n')
+    fv:write('oShell.Run "cmd /k " & Chr(34) & "' ..
+      bat_win:gsub('"', '""') .. '" & Chr(34), 1, False\r\n')
+    fv:close()
+    local ok = os.execute('wscript.exe //nologo //B "' .. vbs_win .. '"')
     if not ok then on_error("Failed to launch installer window."); return end
   else
     local sh = scripts_dir .. "/pvx_install.sh"
