@@ -560,7 +560,12 @@ end
 function pvx.RunInstallAsync(on_done, on_error)
   local is_win     = r.GetOS():find("Win") ~= nil
   local res_base   = r.GetResourcePath():gsub("\\", "/")
-  local scripts_dir = res_base .. "/Scripts/ajsfx-Scripts"
+  -- Locate this library file so the venv lives alongside our scripts, regardless
+  -- of what name the user imported the ReaPack repo under (debug.getinfo returns
+  -- e.g. "@C:/.../Scripts/ajsfx/scripts/lib/ajsfx_pvx.lua").
+  local lib_path    = debug.getinfo(1, "S").source:sub(2):gsub("\\", "/")
+  local scripts_dir = lib_path:match("^(.-)/scripts/lib/") or
+                      (res_base .. "/Scripts/ajsfx")
   local venv_path   = scripts_dir .. "/venv"
   local pip_path    = venv_path .. (is_win and "/Scripts/pip.exe" or "/bin/pip")
   local pvx_bin     = venv_path .. (is_win and "/Scripts/pvx.exe" or "/bin/pvx")
@@ -616,7 +621,7 @@ function pvx.RunInstallAsync(on_done, on_error)
     fb:write("  echo.\r\n")
     fb:write(")\r\n")
     fb:write("echo Upgrading pip...\r\n")
-    fb:write('"' .. venv_python_win .. '" -m pip install --upgrade pip --quiet\r\n')
+    fb:write('"' .. venv_python_win .. '" -m pip install --upgrade pip\r\n')
     fb:write("echo.\r\n")
     fb:write("echo Installing pvx from GitHub...\r\n")
     fb:write("echo (This may take a minute)\r\n")
@@ -663,7 +668,7 @@ function pvx.RunInstallAsync(on_done, on_error)
     sf:write("fi\n")
     local venv_python = venv_path .. "/bin/python"
     sf:write("echo 'Upgrading pip...'\n")
-    sf:write("'" .. venv_python .. "' -m pip install --upgrade pip --quiet\n")
+    sf:write("'" .. venv_python .. "' -m pip install --upgrade pip\n")
     sf:write("echo 'Installing pvx from GitHub...'\n")
     sf:write("'" .. pip_path .. "' install " .. zip_url .. " --disable-pip-version-check\n")
     sf:write("echo $? > '" .. done_file .. "'\n")
@@ -687,15 +692,27 @@ function pvx.RunInstallAsync(on_done, on_error)
   local function poll()
     local f = io.open(done_file, "r")
     if f then
-      local code = tonumber((f:read("*l") or "1"):match("%d+")) or 1
+      local content = f:read("*a") or ""
       f:close()
+      -- File may exist but still be flushing (empty or whitespace) — keep polling
+      local code_str = content:match("(%-?%d+)")
+      if not code_str then
+        if r.time_precise() - start_time > timeout then
+          on_error("Installation timed out; done file never populated.")
+          return
+        end
+        r.defer(poll)
+        return
+      end
+      local code = tonumber(code_str)
       os.remove(done_file)
       if code == 0 then
         local bin = is_win and native(pvx_bin) or pvx_bin
         r.SetExtState("ajsfx_pvx", "pvx_binary", bin, true)
         on_done(bin)
       else
-        on_error("pvx installation failed. Check the installer window for details.")
+        on_error("pvx installation failed (exit code " .. tostring(code) ..
+                 "). Check the installer window for details.")
       end
       return
     end

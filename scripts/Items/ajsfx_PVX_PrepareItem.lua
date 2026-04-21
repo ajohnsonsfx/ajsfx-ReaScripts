@@ -109,15 +109,15 @@ if not host_fx_idx then
   -- after a ReaPack install without requiring a manual FX rescan.
   local added_idx = r.TakeFX_AddByName(take, "JS: ajsfx PVX Host", 0, -1)
   if added_idx < 0 then
-    added_idx = r.TakeFX_AddByName(take, "JS: ajsfx/pvx/ajsfx_PVXHost", 0, -1)
+    added_idx = r.TakeFX_AddByName(take, "JS: ajsfx/ajsfx/pvx/ajsfx_PVXHost", 0, -1)
   end
   if added_idx < 0 then
     core.Error("Could not add 'ajsfx PVX Host' to the take FX chain.\n\n" ..
                "To fix:\n" ..
                "1. In ReaPack, install/reinstall 'ajsfx PVX Host' (v0.2+).\n" ..
-               "   It must install to: Effects/ajsfx/pvx/ajsfx_PVXHost.jsfx\n" ..
-               "   (NOT the Scripts folder — uninstall any old v0.1 first)\n" ..
-               "2. After reinstalling, rescan REAPER plugins:\n" ..
+               "   Import this repo with name 'ajsfx' so it installs to:\n" ..
+               "   Effects/ajsfx/ajsfx/pvx/ajsfx_PVXHost.jsfx\n" ..
+               "2. Rescan REAPER plugins:\n" ..
                "   Options > Preferences > Plug-ins > Re-scan\n" ..
                "3. Re-run this script.")
     return
