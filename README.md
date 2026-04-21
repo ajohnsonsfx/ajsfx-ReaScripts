@@ -17,7 +17,7 @@ A personal toolkit for REAPER — custom ReaScripts and sound design reference d
 2. In REAPER, go to **Extensions → ReaPack → Import repositories...**
 3. Paste this URL and click OK:
    ```
-   https://github.com/ajohnsonsfx/ajsfx/raw/main/index.xml
+   https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/main/index.xml
    ```
 4. Go to **Extensions → ReaPack → Browse packages...**
 5. Search for "ajsfx-ReaScripts" and install the scripts you want.
