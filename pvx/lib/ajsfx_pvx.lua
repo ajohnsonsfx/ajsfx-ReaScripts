@@ -1,6 +1,6 @@
 -- @description ajsfx PVX Shared Library
 -- @author ajsfx
--- @version 0.2
+-- @version 0.3
 -- @about Shared helpers for ajsfx PVX Render/Preview scripts.
 --        Venv path is now derived from this file's install location
 --        (Scripts/<repo>/pvx/lib/) instead of a hardcoded string.
@@ -47,16 +47,20 @@ function pvx.ShouldEmitCurve(has_envelope, slider_value, default_value)
 end
 
 -- Build the pvx argv table from a config table.
--- CLI: pvx voc <input> [--pitch CSV] [--stretch CSV] [--interp MODE] --output <output>
+-- CLI: pvx voc <input> [--pitch CSV] [--stretch CSV] [--interp MODE]
+--      [--phase-locking off|identity] [--transient-preserve] --output <output>
 -- config fields:
---   input         (string)     — path to input WAV
---   output        (string)     — path to output WAV
---   pitch_csv     (string|nil) — path to pitch CSV; omitted if nil
---   stretch_csv   (string|nil) — path to stretch CSV; omitted if nil
---   interp        (number)     — 0=linear, 1=cubic, 2=polynomial
+--   input          (string)       — path to input WAV
+--   output         (string)       — path to output WAV
+--   pitch_csv      (string|nil)   — path to pitch CSV; omitted if nil
+--   stretch_csv    (string|nil)   — path to stretch CSV; omitted if nil
+--   interp         (number)       — 0=linear, 1=cubic, 2=s_curve
+--   phase_lock     (number|nil)   — 0=off, 1=identity; nil = pvx default (identity)
+--   preserve_trans (number|nil)   — 0=off, 1=on (emits bare --transient-preserve)
 -- Returns: array of strings (argv, NOT pre-joined; argv[1] is "pvx" placeholder)
 function pvx.BuildArgv(config)
-  local interp_names = { [0]="linear", [1]="cubic", [2]="polynomial" }
+  local interp_names     = { [0]="linear", [1]="cubic", [2]="s_curve" }
+  local phase_lock_names = { [0]="off",    [1]="identity" }
 
   local argv = {
     "pvx",   -- placeholder; caller replaces with real binary path
@@ -74,6 +78,16 @@ function pvx.BuildArgv(config)
   if config.stretch_csv then
     argv[#argv + 1] = "--stretch"
     argv[#argv + 1] = config.stretch_csv
+  end
+
+  if config.phase_lock ~= nil and phase_lock_names[config.phase_lock] then
+    argv[#argv + 1] = "--phase-locking"
+    argv[#argv + 1] = phase_lock_names[config.phase_lock]
+  end
+
+  -- --transient-preserve is a store_true boolean flag (no value).
+  if config.preserve_trans and config.preserve_trans ~= 0 then
+    argv[#argv + 1] = "--transient-preserve"
   end
 
   return argv
@@ -198,6 +212,68 @@ function pvx.BakeTakeViaAction41999(item, bypass_fx_indices)
 
   local wav_path = r.GetMediaSourceFileName(src, "")
   return wav_path, new_take
+end
+
+-- Sample a Take FX parameter envelope and emit it as a CSV for pvx.
+-- Builds a flat 2-point curve at the slider value when no envelope exists.
+-- Skips (returns nil, nil) when the curve is redundant — no envelope AND
+-- slider sitting at default_val.
+--
+-- transform (optional): function applied to each raw envelope value before
+-- writing. Used for log2 stretch slider values → linear stretch factors.
+--
+-- Returns:
+--   (csv_path, nil)   — file written, flag should be emitted
+--   (nil,      nil)   — curve skipped, flag should be omitted
+--   (nil,      err)   — I/O failure; caller should surface to the user
+function pvx.SampleAndEmitCurve(take, host_fx, param_idx, item_pos, item_len,
+                                rate_hz, scratch_dir, filename, default_val, transform)
+  local samples    = pvx.SampleEnvelope(take, host_fx, param_idx, item_pos, item_len, rate_hz)
+  local slider_val = r.TakeFX_GetParam(take, host_fx, param_idx)
+  local has_env    = samples ~= nil
+  if not samples then
+    samples = { {0.0, slider_val}, {item_len, slider_val} }
+  end
+  if not pvx.ShouldEmitCurve(has_env, slider_val, default_val) then
+    return nil, nil
+  end
+  if transform then
+    local transformed = {}
+    for _, pair in ipairs(samples) do
+      transformed[#transformed + 1] = { pair[1], transform(pair[2]) }
+    end
+    samples = transformed
+  end
+  local path = scratch_dir .. "/" .. filename
+  local f = io.open(path, "w")
+  if not f then return nil, "Cannot write CSV to: " .. path end
+  f:write(pvx.FormatCSV(samples, rate_hz))
+  f:close()
+  return path, nil
+end
+
+-- Create a directory (mkdir -p equivalent) on the current OS.
+function pvx.EnsureDir(path)
+  if r.GetOS():find("Win") then
+    os.execute('mkdir "' .. path:gsub("/", "\\") .. '" 2>NUL')
+  else
+    os.execute("mkdir -p '" .. path .. "'")
+  end
+end
+
+-- Delete a specific take handle from an item (leaves source file on disk).
+-- Runs action 40129 ("Item: Delete active take from items") on the targeted take.
+function pvx.DeleteTake(item, take)
+  local n = r.GetMediaItemNumTakes(item)
+  for i = 0, n - 1 do
+    if r.GetMediaItemTake(item, i) == take then
+      r.SelectAllMediaItems(0, false)
+      r.SetMediaItemSelected(item, true)
+      r.SetActiveTake(take)
+      r.Main_OnCommand(40129, 0)
+      return
+    end
+  end
 end
 
 -- Spawn pvx asynchronously (detached process) with an ImGui cancel window.
@@ -462,24 +538,26 @@ function pvx.LoadConfig()
     return default
   end
   return {
-    pvx_binary    = get("pvx_binary",    "pvx"),
-    scratch_dir   = get("scratch_dir",   ""),
-    poll_rate     = tonumber(get("poll_rate",   "10")),
-    preview_secs  = tonumber(get("preview_secs","2.0")),
-    timeout_s     = tonumber(get("timeout_s",  "300")),
-    pvx_version   = get("pvx_version",   ""),
+    pvx_binary       = get("pvx_binary",    "pvx"),
+    scratch_dir      = get("scratch_dir",   ""),
+    poll_rate        = tonumber(get("poll_rate",        "10"))  or 10,
+    preview_secs     = tonumber(get("preview_secs",     "2.0")) or 2.0,
+    timeout_s        = tonumber(get("timeout_s",        "300")) or 300,
+    envelope_rate_hz = tonumber(get("envelope_rate_hz", "50"))  or 50,
+    pvx_version      = get("pvx_version",   ""),
   }
 end
 
 -- Save PVX config to ExtState.
 function pvx.SaveConfig(cfg)
   local section = "ajsfx_pvx"
-  r.SetExtState(section, "pvx_binary",   tostring(cfg.pvx_binary   or "pvx"),    true)
-  r.SetExtState(section, "scratch_dir",  tostring(cfg.scratch_dir  or ""),       true)
-  r.SetExtState(section, "poll_rate",    tostring(cfg.poll_rate    or 10),       true)
-  r.SetExtState(section, "preview_secs", tostring(cfg.preview_secs or 2.0),      true)
-  r.SetExtState(section, "timeout_s",    tostring(cfg.timeout_s    or 300),      true)
-  r.SetExtState(section, "pvx_version",  tostring(cfg.pvx_version  or ""),       true)
+  r.SetExtState(section, "pvx_binary",       tostring(cfg.pvx_binary       or "pvx"), true)
+  r.SetExtState(section, "scratch_dir",      tostring(cfg.scratch_dir      or ""),    true)
+  r.SetExtState(section, "poll_rate",        tostring(cfg.poll_rate        or 10),    true)
+  r.SetExtState(section, "preview_secs",     tostring(cfg.preview_secs     or 2.0),   true)
+  r.SetExtState(section, "timeout_s",        tostring(cfg.timeout_s        or 300),   true)
+  r.SetExtState(section, "envelope_rate_hz", tostring(cfg.envelope_rate_hz or 50),    true)
+  r.SetExtState(section, "pvx_version",      tostring(cfg.pvx_version      or ""),    true)
 end
 
 -- Resolve the scratch directory for pvx temp files.

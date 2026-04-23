@@ -18,7 +18,8 @@
       "Bash(lua:*)",
       "mcp__plugin_context7_context7__resolve-library-id",
       "mcp__plugin_context7_context7__query-docs",
-      "Bash(xargs grep:*)"
+      "Bash(xargs grep:*)",
+      "Bash(bash run_tests.sh)"
     ]
   }
 }

@@ -69,8 +69,7 @@ This project uses a standard `dev` to `main` workflow for versioning and release
 
 ### Versioning & Release Process
 1.  **Work in `dev`**: All development starts in the `dev` branch.
-2.  **Test in REAPER**: Ensure all scripts and changes are thoroughly tested within the REAPER environment.
+2.  **Test**: `./run_tests.sh` must pass; also exercise changes in REAPER.
 3.  **Bump `@version` tags**: Update the `@version` metadata tag in the script headers for any modified scripts.
 4.  **Merge `dev` into `main`**: Once changes are stable and tested, merge the `dev` branch into `main`.
-5.  **Run `reapack-index`**: Execute the `reapack-index` command to update the `index.xml` file.
-6.  **Commit and Push**: Commit the changes to `main` (including the updated `index.xml`) and push to the remote repository.
+5.  **CI handles the rest**: `.github/workflows/reapack.yml` runs the test suite and, on success, rebuilds `index.xml` via `reapack-index --rebuild --commit` and pushes it back to `main`. No manual `reapack-index` step is required post-merge; if CI's test job fails, fix the regression before the index will update.

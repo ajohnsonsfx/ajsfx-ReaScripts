@@ -233,6 +233,16 @@ function core.LoadMediaCounterConfig()
   return cfg
 end
 
+-- Save Media Item Counter config to ExtState. Mirrors LoadMediaCounterConfig.
+function core.SaveMediaCounterConfig(cfg)
+  r.SetExtState(MEDIA_COUNTER_SECTION, "FONT_SIZE",         tostring(cfg.FONT_SIZE),         true)
+  r.SetExtState(MEDIA_COUNTER_SECTION, "TEXT_COLOR",        tostring(cfg.TEXT_COLOR),        true)
+  r.SetExtState(MEDIA_COUNTER_SECTION, "HORIZONTAL_OFFSET", tostring(cfg.HORIZONTAL_OFFSET), true)
+  r.SetExtState(MEDIA_COUNTER_SECTION, "VERTICAL_ALIGN",    tostring(cfg.VERTICAL_ALIGN),    true)
+  r.SetExtState(MEDIA_COUNTER_SECTION, "H_ALIGN",           tostring(cfg.H_ALIGN),           true)
+  r.SetExtState(MEDIA_COUNTER_SECTION, "REFRESH_RATE",      tostring(cfg.REFRESH_RATE),      true)
+end
+
 --------------------------------
 -- Toggle Mute Helpers
 --------------------------------

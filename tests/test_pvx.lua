@@ -121,13 +121,69 @@ test("basic config: pvx placeholder, voc subcommand, --output, --interp", functi
   assert(has_interp, "Missing --interp flag")
 end)
 
-test("no --phase-lock or --preserve-transients in argv", function()
+test("omits phase/transient flags when not in config", function()
   local cfg = { input = "in.wav", output = "out.wav", interp = 0 }
   local argv = pvx.BuildArgv(cfg)
   for _, v in ipairs(argv) do
-    assert(v ~= "--phase-lock",          "--phase-lock should not appear")
-    assert(v ~= "--preserve-transients", "--preserve-transients should not appear")
+    assert(v ~= "--phase-locking",       "--phase-locking should not appear")
+    assert(v ~= "--transient-preserve",  "--transient-preserve should not appear")
   end
+end)
+
+test("phase_lock=0 emits --phase-locking off", function()
+  local cfg = { input = "in.wav", output = "out.wav", interp = 0, phase_lock = 0 }
+  local argv = pvx.BuildArgv(cfg)
+  local found = false
+  for i, v in ipairs(argv) do
+    if v == "--phase-locking" then found = true; assert(argv[i+1] == "off") end
+  end
+  assert(found, "--phase-locking flag not found")
+end)
+
+test("phase_lock=1 emits --phase-locking identity", function()
+  local cfg = { input = "in.wav", output = "out.wav", interp = 0, phase_lock = 1 }
+  local argv = pvx.BuildArgv(cfg)
+  local found = false
+  for i, v in ipairs(argv) do
+    if v == "--phase-locking" then found = true; assert(argv[i+1] == "identity") end
+  end
+  assert(found, "--phase-locking flag not found")
+end)
+
+test("preserve_trans=1 emits bare --transient-preserve (no value)", function()
+  local cfg = { input = "in.wav", output = "out.wav", interp = 0, preserve_trans = 1 }
+  local argv = pvx.BuildArgv(cfg)
+  local idx = nil
+  for i, v in ipairs(argv) do
+    if v == "--transient-preserve" then idx = i end
+  end
+  assert(idx, "--transient-preserve not emitted")
+  -- Boolean flag: the next token (if any) must NOT look like a value for this flag
+  local next_tok = argv[idx + 1]
+  if next_tok then
+    assert(next_tok:sub(1, 2) == "--", "--transient-preserve must not take a value; got: " .. next_tok)
+  end
+end)
+
+test("preserve_trans=0 does not emit --transient-preserve", function()
+  local cfg = { input = "in.wav", output = "out.wav", interp = 0, preserve_trans = 0 }
+  local argv = pvx.BuildArgv(cfg)
+  for _, v in ipairs(argv) do
+    assert(v ~= "--transient-preserve", "--transient-preserve should not appear when preserve_trans=0")
+  end
+end)
+
+test("interp=2 maps to s_curve (polynomial removed)", function()
+  local cfg = { input = "in.wav", output = "out.wav", interp = 2 }
+  local argv = pvx.BuildArgv(cfg)
+  local found = false
+  for i, v in ipairs(argv) do
+    if v == "--interp" then
+      found = true
+      assert(argv[i+1] == "s_curve", "interp 2 should map to s_curve, got: " .. tostring(argv[i+1]))
+    end
+  end
+  assert(found, "--interp flag not found")
 end)
 
 test("pitch_csv adds --pitch flag", function()
@@ -210,6 +266,51 @@ end)
 test("non-matching names ignored", function()
   local name = pvx.BumpTakeVersion({"pvx_version2", "pvx_v"}, "pvx_v")
   assert(name == "pvx_v1", "Got: " .. name)
+end)
+
+-- --- GetPVXBinary (resolver with venv fallback) ---
+print("\nGetPVXBinary:")
+
+-- Mock the pvx environment: replace GetDefaultVenvBin with a stub and
+-- pretend only `existing` paths exist on disk for the duration of fn.
+local orig_open        = io.open
+local orig_default_venv = pvx.GetDefaultVenvBin
+local function with_env(venv_path, existing, fn)
+  local set = {}
+  for _, p in ipairs(existing) do set[p] = true end
+  io.open = function(path, _)
+    if set[path] then return { close = function() end } end
+    return nil
+  end
+  pvx.GetDefaultVenvBin = function() return venv_path end
+  local ok, err = pcall(fn)
+  io.open = orig_open
+  pvx.GetDefaultVenvBin = orig_default_venv
+  if not ok then error(err, 0) end
+end
+
+test("returns nil when neither config bin nor venv bin exists", function()
+  with_env("/fake/venv/pvx.exe", {}, function()
+    assert(pvx.GetPVXBinary({ pvx_binary = "pvx" }) == nil)
+  end)
+end)
+
+test("falls back to venv bin when config bin is default placeholder", function()
+  with_env("/fake/venv/pvx.exe", { "/fake/venv/pvx.exe" }, function()
+    assert(pvx.GetPVXBinary({ pvx_binary = "pvx" }) == "/fake/venv/pvx.exe")
+  end)
+end)
+
+test("prefers explicit config bin when it exists on disk", function()
+  with_env("/fake/venv/pvx.exe", { "/custom/pvx.exe", "/fake/venv/pvx.exe" }, function()
+    assert(pvx.GetPVXBinary({ pvx_binary = "/custom/pvx.exe" }) == "/custom/pvx.exe")
+  end)
+end)
+
+test("falls through to venv when explicit config bin is missing on disk", function()
+  with_env("/fake/venv/pvx.exe", { "/fake/venv/pvx.exe" }, function()
+    assert(pvx.GetPVXBinary({ pvx_binary = "/missing/pvx.exe" }) == "/fake/venv/pvx.exe")
+  end)
 end)
 
 -- --- Summary ---

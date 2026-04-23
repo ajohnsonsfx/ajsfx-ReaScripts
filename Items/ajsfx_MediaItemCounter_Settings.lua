@@ -1,6 +1,6 @@
 -- @description Media Item Counter Settings
 -- @author ajsfx
--- @version 1.3
+-- @version 1.4
 -- @about Settings panel for ajsfx_MediaItemCounter
 -- @provides
 --   [main] .
@@ -28,7 +28,6 @@ local ctx = im.CreateContext('Item Counter Settings')
 --------------------------------
 -- --- CONSTANTS & DEFAULTS ---
 --------------------------------
-local EXT_SECTION = "ajsfx_MediaItemCounter"
 local PRESETS_SECTION = "ajsfx_MediaItemCounter_Presets"
 local DEFAULT_CONFIG = core.MEDIA_COUNTER_DEFAULTS
 
@@ -45,15 +44,6 @@ local function CloneConfig(src)
         H_ALIGN = src.H_ALIGN or 0,
         REFRESH_RATE = src.REFRESH_RATE or 30
     }
-end
-
-local function SaveConfig(cfg)
-    r.SetExtState(EXT_SECTION, "FONT_SIZE", tostring(cfg.FONT_SIZE), true)
-    r.SetExtState(EXT_SECTION, "TEXT_COLOR", tostring(cfg.TEXT_COLOR), true)
-    r.SetExtState(EXT_SECTION, "HORIZONTAL_OFFSET", tostring(cfg.HORIZONTAL_OFFSET), true)
-    r.SetExtState(EXT_SECTION, "VERTICAL_ALIGN", tostring(cfg.VERTICAL_ALIGN), true)
-    r.SetExtState(EXT_SECTION, "H_ALIGN", tostring(cfg.H_ALIGN), true)
-    r.SetExtState(EXT_SECTION, "REFRESH_RATE", tostring(cfg.REFRESH_RATE), true)
 end
 
 local Config = core.LoadMediaCounterConfig()
@@ -277,7 +267,7 @@ function loop()
         local reset_tc, _ = CheckDoubleClickReset(DEFAULT_CONFIG.TEXT_COLOR, Config.TEXT_COLOR)
         if reset_tc then Config.TEXT_COLOR = DEFAULT_CONFIG.TEXT_COLOR; changed = true end
         
-        if changed then SaveConfig(Config) end
+        if changed then core.SaveMediaCounterConfig(Config) end
         im.End(ctx)
     end
     

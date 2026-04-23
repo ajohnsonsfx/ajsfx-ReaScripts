@@ -35,12 +35,13 @@ end
 local ctx = im.CreateContext('PVX Settings')
 
 local DEFAULT_CONFIG = {
-  pvx_binary    = "pvx",
-  scratch_dir   = "",
-  poll_rate     = 10,
-  preview_secs  = 2.0,
-  timeout_s     = 300,
-  pvx_version   = "",
+  pvx_binary       = "pvx",
+  scratch_dir      = "",
+  poll_rate        = 10,
+  preview_secs     = 2.0,
+  timeout_s        = 300,
+  envelope_rate_hz = 50,
+  pvx_version      = "",
 }
 
 local cfg = pvx_lib.LoadConfig()
@@ -160,6 +161,13 @@ local function loop()
     im.TextDisabled(ctx, "  Auto-cancel after this many seconds (default: 300)")
 
     im.Spacing(ctx)
+
+    -- Envelope sample rate
+    local rv_env, new_env = im.SliderInt(ctx, "Envelope Rate (Hz)", cfg.envelope_rate_hz, 10, 200)
+    if rv_env then cfg.envelope_rate_hz = new_env end
+    im.TextDisabled(ctx, "  Pitch/stretch envelope samples per second (default: 50)")
+
+    im.Spacing(ctx)
     im.Separator(ctx)
     im.Spacing(ctx)
 
@@ -170,14 +178,8 @@ local function loop()
     end
     im.SameLine(ctx)
     if im.Button(ctx, "Reset to Defaults") then
-      cfg = {
-        pvx_binary    = DEFAULT_CONFIG.pvx_binary,
-        scratch_dir   = DEFAULT_CONFIG.scratch_dir,
-        poll_rate     = DEFAULT_CONFIG.poll_rate,
-        preview_secs  = DEFAULT_CONFIG.preview_secs,
-        timeout_s     = DEFAULT_CONFIG.timeout_s,
-        pvx_version   = DEFAULT_CONFIG.pvx_version,
-      }
+      cfg = {}
+      for k, v in pairs(DEFAULT_CONFIG) do cfg[k] = v end
       pvx_lib.SaveConfig(cfg)
       status_msg = "Reset to defaults."
     end

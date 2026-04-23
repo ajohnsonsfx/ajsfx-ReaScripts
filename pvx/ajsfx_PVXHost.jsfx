@@ -1,13 +1,13 @@
 desc:ajsfx PVX Host
 // @description ajsfx PVX Host
 // @author ajsfx
-// @version 0.3
+// @version 0.4
 // @about Placeholder FX exposing automation lanes for PVX Render/Preview.
 
 slider1:0<-24,24,0.01>Pitch (semitones)
 slider2:0<-2,2,0.001>Stretch (log2 factor: 0=1x, +1=2x, -1=0.5x)
-slider3:0<0,2,1{Linear,Cubic,Sinc}>Interp
-slider4:1<0,2,1{Off,Loose,Strict}>Phase Lock
+slider3:0<0,2,1{Linear,Cubic,S-Curve}>Interp
+slider4:1<0,1,1{Off,On}>Phase Lock (identity mode)
 slider5:1<0,1,1{Off,On}>Preserve Transients
 
 @init

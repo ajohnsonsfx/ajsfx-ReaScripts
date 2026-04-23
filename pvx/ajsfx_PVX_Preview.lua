@@ -1,9 +1,10 @@
 -- @description ajsfx PVX Preview
 -- @author ajsfx
--- @version 0.2
+-- @version 0.3
 -- @about Previews the pvx-processed output for the selected audio item without
---        mutating the project. Uses a time selection if present, otherwise previews
---        N seconds around the edit cursor. Requires SWS extension for playback.
+--        mutating the project. Currently processes the full item; playback seeks
+--        to the edit cursor (or time-selection start) so you hear the window of
+--        interest. Requires SWS extension for playback.
 -- @provides
 --   [main] .
 --   lib/ajsfx_pvx.lua
@@ -17,7 +18,6 @@ package.path = script_path .. "?.lua;" .. script_path .. "../?.lua;" .. package.
 local core = require("lib.ajsfx_core")
 local pvx  = require("lib.ajsfx_pvx")
 
-local SAMPLE_RATE_HZ = 50
 local MAX_PREVIEW_SECS = 10.0
 
 -- Track the current preview source so re-invoke stops previous playback
@@ -44,32 +44,6 @@ local function StopPreview()
   if _current_preview then
     r.CF_Preview_StopAll()
     _current_preview = nil
-  end
-end
-
--- -----------------------------------------------------------------------
--- Helpers shared with Render (inlined to keep scripts self-contained)
--- -----------------------------------------------------------------------
-
-local function EnsureDir(path)
-  local os_name = r.GetOS()
-  if os_name:find("Win") then
-    os.execute('mkdir "' .. path:gsub("/", "\\") .. '" 2>NUL')
-  else
-    os.execute("mkdir -p '" .. path .. "'")
-  end
-end
-
-local function DeleteTake(item, take)
-  local n = r.GetMediaItemNumTakes(item)
-  for i = 0, n - 1 do
-    if r.GetMediaItemTake(item, i) == take then
-      r.SelectAllMediaItems(0, false)
-      r.SetMediaItemSelected(item, true)
-      r.SetActiveTake(take)
-      r.Main_OnCommand(40129, 0) -- Item: Delete active take
-      return
-    end
   end
 end
 
@@ -145,16 +119,10 @@ end
 -- Stage 1: bake preview window (pre-PVX FX only)
 -- -----------------------------------------------------------------------
 
-local function BakePreviewWindow(item, take, host_fx, t_local_start, t_local_end)
-  -- Temporarily trim item to the window using time selection + split/render approach
-  -- Simpler: restrict envelope sampling to [t_local_start, t_local_end] and
-  -- let pvx receive a pre-trimmed WAV. We produce the trimmed WAV by:
-  --   1. Setting time selection to the window
-  --   2. Using action 41999 which respects time selection when items overlap it
-  -- NOTE: 41999 renders the full item; we trim post-pvx by passing time offsets
-  -- to pvx. For the pre-bake we produce the full item WAV and let pvx trim via
-  -- --start / --end flags.  This avoids project mutation (no split needed).
-
+local function BakePreviewWindow(item, take, host_fx)
+  -- Action 41999 renders the full item; pvx processes the full baked audio,
+  -- and we seek to the preview window at playback time. Input-range trimming
+  -- (to avoid processing audio the user will never hear) is a future optimization.
   local fx_count = r.TakeFX_GetCount(take)
   local bypass_indices = {}
   for i = host_fx, fx_count - 1 do
@@ -180,7 +148,8 @@ if not item then return end
 
 StopPreview()
 
-local config = pvx.LoadConfig()
+local config  = pvx.LoadConfig()
+local rate_hz = config.envelope_rate_hz
 
 if not pvx.IsPVXReady(config) then
   local ok = r.ShowMessageBox(
@@ -190,8 +159,7 @@ if not pvx.IsPVXReady(config) then
     "pvx required", 1)
   if ok == 1 then
     pvx.RunInstallAsync(
-      function(pvx_bin)
-        config.pvx_binary = pvx_bin
+      function(_)
         r.MB("pvx installed!\n\nRe-run ajsfx PVX Preview to audition your item.",
              "pvx installed", 0)
       end,
@@ -202,68 +170,37 @@ if not pvx.IsPVXReady(config) then
 end
 
 local scratch = pvx.ResolveScratchDir(config)
-EnsureDir(scratch)
+pvx.EnsureDir(scratch)
 
-local t_start, t_end, item_pos = GetPreviewWindow(item, config)
+local t_start, _, item_pos = GetPreviewWindow(item, config)
 if not t_start then return end
 
 local item_len = r.GetMediaItemInfo_Value(item, "D_LENGTH")
 
 -- Stage 1: bake
-local wav1, bake_take, err1 = BakePreviewWindow(item, take, host_fx, t_start, t_end)
+local wav1, bake_take, err1 = BakePreviewWindow(item, take, host_fx)
 if not wav1 then
   core.Error("Preview failed (Stage 1):\n" .. (err1 or "unknown error"))
   return
 end
 if bake_take then
-  DeleteTake(item, bake_take)
+  pvx.DeleteTake(item, bake_take)
 end
 
--- Sample envelopes for the full item (pvx will use --start/--end to trim)
--- TakeFX_GetParam returns (value, minval, maxval) — capture only the first.
-local pitch_samples = pvx.SampleEnvelope(take, host_fx, 0, item_pos, item_len, SAMPLE_RATE_HZ)
-local pitch_val     = r.TakeFX_GetParam(take, host_fx, 0)
-local has_pitch_env = pitch_samples ~= nil
-if not pitch_samples then
-  pitch_samples = { {0.0, pitch_val}, {item_len, pitch_val} }
-end
+local pitch_csv, pitch_err = pvx.SampleAndEmitCurve(
+  take, host_fx, 0, item_pos, item_len, rate_hz,
+  scratch, "preview_pitch.csv", 0.0, nil)
+if pitch_err then core.Error(pitch_err); return end
 
-local stretch_samples = pvx.SampleEnvelope(take, host_fx, 1, item_pos, item_len, SAMPLE_RATE_HZ)
-local stretch_val     = r.TakeFX_GetParam(take, host_fx, 1)
-local has_stretch_env = stretch_samples ~= nil
-if not stretch_samples then
-  stretch_samples = { {0.0, stretch_val}, {item_len, stretch_val} }
-end
+local stretch_csv, stretch_err = pvx.SampleAndEmitCurve(
+  take, host_fx, 1, item_pos, item_len, rate_hz,
+  scratch, "preview_stretch.csv", 0.0, pvx.Log2StretchToFactor)
+if stretch_err then core.Error(stretch_err); return end
 
-local interp_val  = r.TakeFX_GetParam(take, host_fx, 2)
-local phase_val   = r.TakeFX_GetParam(take, host_fx, 3)
-local trans_val   = r.TakeFX_GetParam(take, host_fx, 4)
-
--- Write CSVs
-local pitch_csv   = nil
-local stretch_csv = nil
-
-if pvx.ShouldEmitCurve(has_pitch_env, pitch_val, 0.0) then
-  pitch_csv = scratch .. "/preview_pitch.csv"
-  local f = io.open(pitch_csv, "w")
-  if f then
-    f:write(pvx.FormatCSV(pitch_samples, SAMPLE_RATE_HZ))
-    f:close()
-  end
-end
-
-if pvx.ShouldEmitCurve(has_stretch_env, stretch_val, 0.0) then
-  stretch_csv = scratch .. "/preview_stretch.csv"
-  local linear_samples = {}
-  for _, pair in ipairs(stretch_samples) do
-    linear_samples[#linear_samples + 1] = { pair[1], pvx.Log2StretchToFactor(pair[2]) }
-  end
-  local f = io.open(stretch_csv, "w")
-  if f then
-    f:write(pvx.FormatCSV(linear_samples, SAMPLE_RATE_HZ))
-    f:close()
-  end
-end
+-- Static params from sliders 3-5 (TakeFX_GetParam returns value, min, max)
+local interp_val = r.TakeFX_GetParam(take, host_fx, 2)
+local phase_val  = r.TakeFX_GetParam(take, host_fx, 3)
+local trans_val  = r.TakeFX_GetParam(take, host_fx, 4)
 
 local wav2 = scratch .. "/preview_pvx_out.wav"
 
@@ -276,14 +213,13 @@ local argv = pvx.BuildArgv({
   pitch_csv      = pitch_csv,
   stretch_csv    = stretch_csv,
 })
-argv[1] = config.pvx_binary or "pvx"
 
--- Append --start / --end to restrict pvx output to the preview window
--- (pvx is expected to support these flags for time-range output)
-argv[#argv + 1] = "--start"
-argv[#argv + 1] = string.format("%.6f", t_start)
-argv[#argv + 1] = "--end"
-argv[#argv + 1] = string.format("%.6f", t_end)
+local bin = pvx.GetPVXBinary(config)
+if not bin then
+  core.Error("pvx binary not found (ajsfx_pvx.GetPVXBinary returned nil).")
+  return
+end
+argv[1] = bin
 
 pvx.RunPVXAsync(
   argv, scratch,
@@ -294,7 +230,8 @@ pvx.RunPVXAsync(
       return
     end
 
-    -- Play via SWS preview bus (no project mutation)
+    -- Play via SWS preview bus (no project mutation). Seek to t_start so the
+    -- user hears the requested window first.
     local src = r.PCM_Source_CreateFromFile(wav2)
     if not src then
       core.Error("Could not load pvx preview output: " .. wav2)
@@ -309,6 +246,7 @@ pvx.RunPVXAsync(
 
     _current_preview = preview
     r.CF_Preview_SetValue(preview, "D_VOLUME", 1.0)
+    r.CF_Preview_SetValue(preview, "D_POSITION", t_start)
     r.CF_Preview_PlayEx(preview, 0)  -- 0 = play on preview bus
   end,
   function()

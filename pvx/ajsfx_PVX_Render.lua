@@ -1,6 +1,6 @@
 -- @description ajsfx PVX Render
 -- @author ajsfx
--- @version 0.2
+-- @version 0.3
 -- @about Applies time-varying pitch/stretch to the selected audio item via pvx.
 --        Renders a new take on the source item. Requires ajsfx PVX Host on the take FX chain.
 -- @provides
@@ -15,8 +15,6 @@ if not script_path then script_path = "" end
 package.path = script_path .. "?.lua;" .. script_path .. "../?.lua;" .. package.path
 local core = require("lib.ajsfx_core")
 local pvx  = require("lib.ajsfx_pvx")
-
-local SAMPLE_RATE_HZ = 50  -- envelope samples per second
 
 -- -----------------------------------------------------------------------
 -- Helpers
@@ -34,33 +32,6 @@ local function CollectTakeNames(item)
     end
   end
   return names
-end
-
--- Ensure scratch dir exists (mkdir -p equivalent)
-local function EnsureDir(path)
-  local os_name = r.GetOS()
-  if os_name:find("Win") then
-    os.execute('mkdir "' .. path:gsub("/", "\\") .. '" 2>NUL')
-  else
-    os.execute("mkdir -p '" .. path .. "'")
-  end
-end
-
--- Delete a take from an item by take handle (does not touch the source file)
-local function DeleteTake(item, take)
-  -- REAPER 6.44+ has GetSetMediaItemTakeInfo with delete semantics,
-  -- but the cross-version approach is to remove via SWS or direct
-  -- MediaItem_SelectTake + action. Use the built-in:
-  local n = r.GetMediaItemNumTakes(item)
-  for i = 0, n - 1 do
-    if r.GetMediaItemTake(item, i) == take then
-      r.SelectAllMediaItems(0, false)
-      r.SetMediaItemSelected(item, true)
-      r.SetActiveTake(take)
-      r.Main_OnCommand(40129, 0) -- Item: Delete active take from items
-      return
-    end
-  end
 end
 
 -- -----------------------------------------------------------------------
@@ -131,54 +102,22 @@ end
 local function Stage2_RunPVX(item, take, host_fx, wav1, scratch_dir, config, on_done, on_cancel)
   local item_pos = r.GetMediaItemInfo_Value(item, "D_POSITION")
   local item_len = r.GetMediaItemInfo_Value(item, "D_LENGTH")
+  local rate_hz  = config.envelope_rate_hz
 
-  -- Sample pitch envelope (param 0)
-  -- TakeFX_GetParam returns (value, minval, maxval) — capture only the first.
-  local pitch_samples = pvx.SampleEnvelope(take, host_fx, 0, item_pos, item_len, SAMPLE_RATE_HZ)
-  local pitch_val     = r.TakeFX_GetParam(take, host_fx, 0)
-  local has_pitch_env = pitch_samples ~= nil
-  -- If no envelope, build a flat 2-point array at the slider value
-  if not pitch_samples then
-    pitch_samples = { {0.0, pitch_val}, {item_len, pitch_val} }
-  end
+  local pitch_csv, err1 = pvx.SampleAndEmitCurve(
+    take, host_fx, 0, item_pos, item_len, rate_hz,
+    scratch_dir, "pitch.csv", 0.0, nil)
+  if err1 then return false, err1 end
 
-  -- Sample stretch envelope (param 1)
-  local stretch_samples = pvx.SampleEnvelope(take, host_fx, 1, item_pos, item_len, SAMPLE_RATE_HZ)
-  local stretch_val     = r.TakeFX_GetParam(take, host_fx, 1)
-  local has_stretch_env = stretch_samples ~= nil
-  if not stretch_samples then
-    stretch_samples = { {0.0, stretch_val}, {item_len, stretch_val} }
-  end
+  local stretch_csv, err2 = pvx.SampleAndEmitCurve(
+    take, host_fx, 1, item_pos, item_len, rate_hz,
+    scratch_dir, "stretch.csv", 0.0, pvx.Log2StretchToFactor)
+  if err2 then return false, err2 end
 
-  -- Get static params from sliders 3-5
-  local interp_val  = r.TakeFX_GetParam(take, host_fx, 2)
-  local phase_val   = r.TakeFX_GetParam(take, host_fx, 3)
-  local trans_val   = r.TakeFX_GetParam(take, host_fx, 4)
-
-  -- Write CSV files if needed
-  local pitch_csv   = nil
-  local stretch_csv = nil
-
-  if pvx.ShouldEmitCurve(has_pitch_env, pitch_val, 0.0) then
-    pitch_csv = scratch_dir .. "/pitch.csv"
-    local f = io.open(pitch_csv, "w")
-    if not f then return false, "Cannot write pitch.csv to: " .. pitch_csv end
-    f:write(pvx.FormatCSV(pitch_samples, SAMPLE_RATE_HZ))
-    f:close()
-  end
-
-  if pvx.ShouldEmitCurve(has_stretch_env, stretch_val, 0.0) then
-    stretch_csv = scratch_dir .. "/stretch.csv"
-    -- Convert log2 stretch values to linear factors before writing
-    local linear_samples = {}
-    for _, pair in ipairs(stretch_samples) do
-      linear_samples[#linear_samples + 1] = { pair[1], pvx.Log2StretchToFactor(pair[2]) }
-    end
-    local f = io.open(stretch_csv, "w")
-    if not f then return false, "Cannot write stretch.csv to: " .. stretch_csv end
-    f:write(pvx.FormatCSV(linear_samples, SAMPLE_RATE_HZ))
-    f:close()
-  end
+  -- Static params from sliders 3-5 (TakeFX_GetParam returns value, min, max)
+  local interp_val = r.TakeFX_GetParam(take, host_fx, 2)
+  local phase_val  = r.TakeFX_GetParam(take, host_fx, 3)
+  local trans_val  = r.TakeFX_GetParam(take, host_fx, 4)
 
   local wav2 = scratch_dir .. "/pvx_out.wav"
 
@@ -192,8 +131,13 @@ local function Stage2_RunPVX(item, take, host_fx, wav1, scratch_dir, config, on_
     stretch_csv   = stretch_csv,
   })
 
-  -- Replace the first "pvx" token with the configured binary path
-  argv[1] = config.pvx_binary or "pvx"
+  -- Resolve the pvx binary via the single-source-of-truth helper; IsPVXReady
+  -- was checked by caller, so GetPVXBinary should always return a valid path.
+  local bin = pvx.GetPVXBinary(config)
+  if not bin then
+    return false, "pvx binary not found (ajsfx_pvx.GetPVXBinary returned nil)"
+  end
+  argv[1] = bin
 
   pvx.RunPVXAsync(
     argv, scratch_dir,
@@ -215,47 +159,32 @@ end
 -- Stage 3 + Import
 -- -----------------------------------------------------------------------
 
-local function Stage3_AndImport(item, take, host_fx, wav2, scratch_dir)
-  -- Check for post-PVX FX (any FX after PVX Host)
-  local fx_count = r.TakeFX_GetCount(take)
+local function Stage3_AndImport(item, take, host_fx, wav2)
+  -- Post-PVX Take FX bake is not implemented. If any FX sit after the Host,
+  -- abort before mutating the project so the user knows to move them.
+  local fx_count      = r.TakeFX_GetCount(take)
   local post_fx_count = fx_count - host_fx - 1
-
-  local final_wav = wav2
-
   if post_fx_count > 0 then
-    -- Import wav2 as a temp take, bake post-chain via 41999, then remove temp take
-    local temp_track_added = false
-    local temp_item = nil
-
-    -- We need a scratch track to host the temp item with the post-FX chain
-    -- Strategy: insert a hidden track, add the item there, copy post-FX, bake, clean up
-    -- For v1 simplicity: if post-PVX FX exist, warn and skip post-bake
-    -- (full post-bake via hidden track is complex; flag for v1.1)
-    core.Print("Warning: Post-PVX Take FX detected (" .. post_fx_count ..
-      " FX after PVX Host). Post-chain bake is not yet implemented. " ..
-      "The import will use the raw pvx output. Move post-chain FX to a track for now.")
-    -- final_wav stays as wav2
+    core.Error(("Post-PVX Take FX detected (%d FX after PVX Host).\n\n" ..
+      "Post-chain bake is not implemented. Move those FX to a track " ..
+      "(or remove them) and re-run Render."):format(post_fx_count))
+    return
   end
 
-  -- Import final_wav as a new take
+  -- Import wav2 as a new take
   local take_names = CollectTakeNames(item)
   local new_name   = pvx.BumpTakeVersion(take_names, "pvx_v")
 
   core.Transaction("ajsfx PVX Render: " .. new_name, function()
-    -- Insert new source file as a take on the item
-    -- REAPER API: AddMediaItemTake then set source
     local new_take = r.AddTakeToMediaItem(item)
     if not new_take then error("Failed to add take to item") end
 
-    local source = r.PCM_Source_CreateFromFile(final_wav)
-    if not source then error("Failed to load rendered file: " .. final_wav) end
+    local source = r.PCM_Source_CreateFromFile(wav2)
+    if not source then error("Failed to load rendered file: " .. wav2) end
 
     r.GetSetMediaItemTakeInfo_String(new_take, "P_NAME", new_name, true)
     r.SetMediaItemTake_Source(new_take, source)
     r.SetActiveTake(new_take)
-
-    -- Clear FX chain on the new take (it inherits none, but be explicit)
-    r.TakeFX_SetEnabled(new_take, 0, false) -- no-op if no FX, harmless
 
     r.UpdateItemInProject(item)
   end)
@@ -278,8 +207,7 @@ if not pvx.IsPVXReady(config) then
     "pvx required", 1)
   if ok == 1 then
     pvx.RunInstallAsync(
-      function(pvx_bin)
-        config.pvx_binary = pvx_bin
+      function(_)
         r.MB("pvx installed!\n\nRe-run ajsfx PVX Render to process your item.",
              "pvx installed", 0)
       end,
@@ -289,8 +217,8 @@ if not pvx.IsPVXReady(config) then
   return
 end
 
-local scratch    = pvx.ResolveScratchDir(config)
-EnsureDir(scratch)
+local scratch = pvx.ResolveScratchDir(config)
+pvx.EnsureDir(scratch)
 
 -- Stage 1
 local wav1, bake_take, err1 = Stage1_PreBake(item, take, host_fx)
@@ -301,7 +229,7 @@ end
 
 -- Remove the scratch take that 41999 adds to the item (keep only the file)
 if bake_take then
-  DeleteTake(item, bake_take)
+  pvx.DeleteTake(item, bake_take)
 end
 
 -- Stage 2 (async) → on completion → Stage 3 + import
@@ -313,7 +241,7 @@ local ok2, err2 = Stage2_RunPVX(item, take, host_fx, wav1, scratch, config,
         "pvx exited with code %d.\n\nLog:\n%s", exit_code, log_txt or ""))
       return
     end
-    Stage3_AndImport(item, take, host_fx, wav2, scratch)
+    Stage3_AndImport(item, take, host_fx, wav2)
   end,
   function()
     -- User cancelled or timed out — leave scratch dir for debugging
