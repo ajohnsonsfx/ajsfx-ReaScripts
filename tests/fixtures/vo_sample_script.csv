@@ -1,0 +1,7 @@
+LineID,Speaker,Type,Text,AudioAsset
+NPC_001,Guard,Dialogue,"Halt! Who goes there?",vo_guard_halt_01
+NPC_002,Guard,Dialogue,"Open the north gate, quickly.",vo_guard_gate_01
+NPC_003,Guard,Barks,"Intruder in the courtyard!",vo_guard_bark_01
+NPC_004,Guard,Dialogue,"You'll need 3 keys for that door.",TO RECORD
+PLR_001,Hero,Dialogue,"I have business with the captain.",vo_hero_captain_01
+PLR_002,Hero,Dialogue,"Stand aside, or I'll move you myself.",vo_hero_aside_01

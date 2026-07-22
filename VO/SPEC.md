@@ -224,18 +224,31 @@ and no audio. This mirrors how `pvx/lib/ajsfx_pvx.lua` separates its pure helper
 | `vo.MapColumns(header, mapping)` | Resolve configured column names to indices |
 | `vo.BuildScriptLines(rows, cols, filters)` | Apply skip values and Speaker/Type filters |
 | `vo.Normalize(text, subs)` | Lowercase, strip punctuation/apostrophes, expand numbers, apply substitutions |
+| `vo.NumberToWords(n)` / `vo.NumberToOrdinalWords(n)` | Cardinal/ordinal expansion for 0–9999 |
 | `vo.Tokenize(s)` | Whitespace tokenizer |
 | `vo.ParseWhisperCSV(text)` | Word rows → `{t0, t1, text}` with ms → seconds |
+| `vo.BuildWordTokens(words, cfg)` | Normalized token stream; carries each word's times onto every token it expands into |
+| `vo.Opt(cfg, key)` | Config read with documented fallback (`vo.DEFAULTS`) |
 | `vo.Levenshtein(a, b)` | Token-level edit distance |
-| `vo.BuildIndex(lines)` | IDF-weighted inverted index over script tokens |
+| `vo.BuildIndex(lines, cfg)` | IDF-weighted inverted index over script tokens |
 | `vo.FindCandidates(words, lines, index, cfg)` | Anchor-driven candidate spans with scores |
+| `vo.Classify(score, margin, cfg)` | `match` / `review` / reject |
 | `vo.SelectSpans(candidates, cfg)` | Non-overlapping selection |
 | `vo.FindGaps(words, spans)` | Unconsumed word runs → unmatched spans |
+| `vo.ApplyPadding(spans, cfg, bounds)` | Pre/post pad with neighbour and item-bound clamping |
 | `vo.AssignNames(spans, cfg)` | Duplicate grouping, take numbering, routing, naming |
-| `vo.SanitizeName(s)` | Filesystem-safe names |
+| `vo.SanitizeName(s, max_len)` | Filesystem-safe names |
 | `vo.BuildPlan(lines, words, cfg)` | Composes all of the above |
+| `vo.EscapeCSVField(s)` / `vo.FormatCSVRow(fields)` | RFC4180 output escaping |
 | `vo.BuildReport(plan, lines)` | Report CSV string |
+| `vo.DTWPresetForModel(path)` | Model filename → `-dtw` preset, or nil |
 | `vo.BuildWhisperArgv(cfg, audio, out_prefix)` | Backend command line |
+
+Two functions were added during implementation that this table originally lacked.
+`BuildWordTokens` exists because normalization is not token-count preserving —
+`"42"` is one recognizer word but two tokens — so timings must be carried onto
+each expanded token or every span containing a number drifts. `Classify` was
+split out of `SelectSpans` so the threshold edges are testable directly.
 
 **REAPER-coupled layer**
 
@@ -277,6 +290,14 @@ therefore a *result* of matching rather than an input to it.
 4. **Score each candidate.** Token-level Levenshtein over a window of ±30% of the line
    length: `score = 1 − dist / max(#line, #window)`. The runner-up line's score at the
    same position gives `margin`, which detects genuinely ambiguous near-duplicate lines.
+
+   The winning window is then **shrunk to the tightest range preserving that score**.
+   A candidate's start is derived from its anchor's offset within the line, so any word
+   the recognizer drops *before* the anchor pushes the start one token early — onto the
+   tail of the previous line. Left un-trimmed that phantom token overlaps the preceding
+   span, and step 5 rejects the whole line for overlapping. A shorter window scoring the
+   same is strictly better regardless: it excludes audio that is not part of the line,
+   which tightens the cut as well as the match.
 
 5. **Select non-overlapping spans** greedily by score (interval scheduling), tie-broken
    by margin.
@@ -421,6 +442,17 @@ Stated plainly rather than assumed working:
 - **Region creation and Region Render Matrix delivery** require a real project.
 - **Collision behaviour of identically-named regions** in the Render Matrix is expected
   to append `-01`, `-02` to output files, but is unverified.
+- **`-dtw` presets for the `.en` models are unverified**, so `BuildWhisperArgv` emits the
+  flag only for the presets confirmed against upstream source (§3.2). An English-only
+  model therefore runs *without* DTW — less precise word boundaries, but it runs, which
+  is the right failure direction given an unknown preset makes whisper-cli abort. Confirm
+  the `.en` preset names in the first manual test and widen the table if they hold.
+- **Number readings are cardinal only.** `1999` normalizes to "one thousand nine hundred
+  ninety nine", not "nineteen ninety nine", and the recognizer will usually produce the
+  latter. Year and other non-cardinal readings are not guessed; the substitution table is
+  the documented override, which is why substitutions are applied *before* number
+  expansion. Whether game VO scripts contain enough bare years to justify a year heuristic
+  is a judgement call for the repo owner, not something to infer.
 
 ---
 
@@ -445,10 +477,12 @@ Stated plainly rather than assumed working:
 
 ## 12. Implementation phases
 
-1. **Groundwork** — feature branch `feature/vo-script-match`; add the missing MIT
-   `LICENSE` (`README.md` linked to one that did not exist); write this spec.
-   *Pause for review.*
-2. **Pure layer, test-first** — `VO/lib/ajsfx_vo.lua` + `tests/test_vo.lua`.
+1. ~~**Groundwork**~~ — *done.* Feature branch `feature/vo-script-match`; added the
+   missing MIT `LICENSE` (`README.md` linked to one that did not exist); wrote this spec.
+2. ~~**Pure layer, test-first**~~ — *done.* `VO/lib/ajsfx_vo.lua` + `tests/test_vo.lua`
+   (161 tests) + `tests/fixtures/vo_sample_script.csv`. Every function in the pure-layer
+   table above is implemented and covered, including all eight toggle combinations and a
+   deterministic synthetic-transcript generator driving `BuildPlan` end-to-end.
 3. **Backend + Settings** — argv builder, async runner, cache, Settings panel.
 4. **Apply layer + main action** — track creation, split/move/rename, optional regions,
    run dialog wiring, report.
@@ -456,6 +490,15 @@ Stated plainly rather than assumed working:
 
 Release follows `.agents/standards.md`: `@version` and `@changelog` on every script,
 CI rebuilds `index.xml` on merge to `main`. **`index.xml` is never hand-edited.**
+
+> **Note on library indexing.** `VO/lib/ajsfx_vo.lua` carries `@noindex`. Without it,
+> `reapack-index` publishes a shared library as its own installable package — `index.xml`
+> currently lists `pvx/lib/ajsfx_pvx.lua` as a `pvx/lib` package with `main="main"`, which
+> also registers the library in REAPER's action list as a script that does nothing when
+> run. The library still ships correctly via the main script's `@provides`. The existing
+> `pvx/lib` package is left alone deliberately: it is already published, so removing it
+> would withdraw a package from users who have it installed — a call for the repo owner,
+> not a drive-by fix.
 
 > **Note on branching.** `.agents/standards.md` describes a `dev` → `main` workflow, but
 > `origin/dev` is currently **68 commits behind `main`** and still carries the obsolete
