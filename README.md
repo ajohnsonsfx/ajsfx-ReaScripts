@@ -85,6 +85,45 @@ Apply smoothly-animated pitch and time-stretch curves to a single audio item, pr
 
 ---
 
+### Dialogue / VO
+
+#### VO ScriptMatch
+
+Script-matched cut-and-name for game VO delivery. Given a recorded session and a
+CSV script listing each line's text and its required asset filename, it cuts the
+session into one clip per line and names each clip with the correct asset name.
+
+This is **not** a transcription tool. The script already exists, so the problem is
+matching, not recognition — confidence is measured against your script, never
+reported by the recognizer, and it is never a judgement of the performance.
+
+- **VO/ajsfx_VO_ScriptMatch.lua** — Select the session item(s), pick your script
+  CSV, and cut. Clips are routed to **Selects**, **Alts** and **Review** tracks
+  created below the source track, and a report CSV is written next to the project.
+- **VO/ajsfx_VO_Settings.lua** — Speech backend, matching thresholds, destination
+  track names, CSV column mapping, and the substitution table.
+
+What it handles: lines recorded out of script order, multiple takes of a line,
+slates, false starts and chatter between takes, and rows not yet recorded. What it
+refuses to do: guess. Low-confidence and unmatched audio goes to **Review** with a
+flagged name rather than being given an asset name it might not deserve.
+
+**Runs fully locally and offline.** Transcription is done by
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT) invoked as an
+external process. No dialogue text or audio ever leaves your machine — the
+matching path contains no network code at all. The only network feature is an
+opt-in button that opens the model download page in your browser.
+
+**Setup:** install [ReaImGui](https://github.com/cfillion/reaimgui), get a
+`whisper-cli` binary and a `ggml-*.bin` model, then point **ajsfx VO Settings** at
+both. Model weights are never distributed with this repository.
+
+See **[VO/SPEC.md](VO/SPEC.md)** for the design and its stated limitations, and
+**[VO/MANUAL_TEST.md](VO/MANUAL_TEST.md)** for the REAPER-in-the-loop test
+procedure.
+
+---
+
 ## Sound Design Docs
 
 Reference guides and notes for sound design and REAPER workflow. See the **[docs/](docs/)** folder.

@@ -16,10 +16,12 @@ local function test(name, fn)
   end
 end
 
--- Minimal REAPER API mock (pure helpers don't need it, but require() needs the global)
-reaper = {}
-
-package.path = package.path .. ";VO/lib/?.lua"
+-- The mock must install the global `reaper` BEFORE ajsfx_vo captures it, since
+-- the module does `local r = reaper` at load time. Later mock.reset() calls are
+-- safe: the installed closures resolve mock.extstate at call time.
+package.path = package.path .. ";VO/lib/?.lua;tests/?.lua"
+local mock = require("mock_reaper")
+mock.reset()
 local vo = require("ajsfx_vo")
 
 print("\n=== ajsfx_vo.lua Unit Tests ===\n")
@@ -1339,6 +1341,299 @@ test("a review span does not count as a match for the no-match section", functio
                     dest = "review", name = "REVIEW_vo_guard_halt_01_s0.60" } }
   local tail = vo.BuildReport(plan, lines):match("SCRIPT LINES WITH NO MATCH(.*)$")
   assert(tail:find("NPC_001", 1, true), "A review-only line still needs flagging as unmatched")
+end)
+
+--------------------------------
+-- QuoteArg
+--------------------------------
+print("\nQuoteArg:")
+
+test("Windows: a plain path is wrapped in double quotes", function()
+  assert(vo.QuoteArg("C:/a b/x.wav", "Windows") == '"C:/a b/x.wav"', vo.QuoteArg("C:/a b/x.wav", "Windows"))
+end)
+
+test("Windows: interior double quotes are escaped", function()
+  assert(vo.QuoteArg('a"b', "Windows") == '"a\\"b"', vo.QuoteArg('a"b', "Windows"))
+end)
+
+test("POSIX: a plain path is wrapped in single quotes", function()
+  assert(vo.QuoteArg("/a b/x.wav", "Other") == "'/a b/x.wav'", vo.QuoteArg("/a b/x.wav", "Other"))
+end)
+
+test("POSIX: interior single quotes are escaped", function()
+  assert(vo.QuoteArg("it's", "Other") == "'it'\\''s'", vo.QuoteArg("it's", "Other"))
+end)
+
+--------------------------------
+-- CacheKey
+--------------------------------
+print("\nCacheKey:")
+
+local CACHE_CFG = { whisper_model = "/m/ggml-base.bin", whisper_language = "en" }
+
+test("the same inputs always produce the same key", function()
+  local a = vo.CacheKey("/audio/take.wav", 1024, CACHE_CFG)
+  local b = vo.CacheKey("/audio/take.wav", 1024, CACHE_CFG)
+  assert(a == b, a .. " ~= " .. b)
+end)
+
+test("a different source path produces a different key", function()
+  assert(vo.CacheKey("/audio/a.wav", 1024, CACHE_CFG) ~= vo.CacheKey("/audio/b.wav", 1024, CACHE_CFG),
+    "Key ignored the source path")
+end)
+
+test("a re-recorded file of a different size invalidates the key", function()
+  assert(vo.CacheKey("/a.wav", 1024, CACHE_CFG) ~= vo.CacheKey("/a.wav", 2048, CACHE_CFG),
+    "Key ignored the file size")
+end)
+
+test("changing the model invalidates the key", function()
+  local other = { whisper_model = "/m/ggml-small.bin", whisper_language = "en" }
+  assert(vo.CacheKey("/a.wav", 1024, CACHE_CFG) ~= vo.CacheKey("/a.wav", 1024, other),
+    "Key ignored the model")
+end)
+
+test("changing the language invalidates the key", function()
+  local other = { whisper_model = "/m/ggml-base.bin", whisper_language = "de" }
+  assert(vo.CacheKey("/a.wav", 1024, CACHE_CFG) ~= vo.CacheKey("/a.wav", 1024, other),
+    "Key ignored the language")
+end)
+
+test("the key is safe to use as a filename", function()
+  local k = vo.CacheKey("C:/Sessions/take 01.wav", 999, CACHE_CFG)
+  assert(k:match("^vo_%x+$"), "Unsafe cache key: " .. k)
+end)
+
+--------------------------------
+-- LoadConfig / SaveConfig
+--------------------------------
+print("\nConfig:")
+
+test("an empty ExtState yields documented defaults", function()
+  mock.reset()
+  local cfg = vo.LoadConfig()
+  assert(cfg.accept_threshold == 0.80, "accept: " .. tostring(cfg.accept_threshold))
+  assert(cfg.review_floor == 0.55, "floor: " .. tostring(cfg.review_floor))
+  assert(cfg.track_selects == "Selects", "selects: " .. tostring(cfg.track_selects))
+  assert(cfg.create_regions == false, "regions should default off")
+  assert(cfg.whisper_language == "en", "language: " .. tostring(cfg.whisper_language))
+end)
+
+test("numbers round-trip through save and load", function()
+  mock.reset()
+  local cfg = vo.LoadConfig()
+  cfg.accept_threshold = 0.72
+  cfg.pre_pad = 0.4
+  cfg.whisper_threads = 12
+  vo.SaveConfig(cfg)
+
+  local back = vo.LoadConfig()
+  assert(math.abs(back.accept_threshold - 0.72) < 1e-9, "accept: " .. back.accept_threshold)
+  assert(math.abs(back.pre_pad - 0.4) < 1e-9, "pre_pad: " .. back.pre_pad)
+  assert(back.whisper_threads == 12, "threads: " .. tostring(back.whisper_threads))
+end)
+
+test("booleans round-trip rather than becoming truthy strings", function()
+  mock.reset()
+  local cfg = vo.LoadConfig()
+  cfg.create_regions = true
+  cfg.force_retranscribe = false
+  vo.SaveConfig(cfg)
+
+  local back = vo.LoadConfig()
+  assert(back.create_regions == true, "create_regions: " .. tostring(back.create_regions))
+  assert(back.force_retranscribe == false, "force_retranscribe: " .. tostring(back.force_retranscribe))
+end)
+
+test("strings round-trip", function()
+  mock.reset()
+  local cfg = vo.LoadConfig()
+  cfg.whisper_model = "C:/models/ggml-medium.bin"
+  cfg.track_review = "Needs Checking"
+  vo.SaveConfig(cfg)
+
+  local back = vo.LoadConfig()
+  assert(back.whisper_model == "C:/models/ggml-medium.bin", back.whisper_model)
+  assert(back.track_review == "Needs Checking", back.track_review)
+end)
+
+test("the column mapping round-trips", function()
+  mock.reset()
+  local cfg = vo.LoadConfig()
+  assert(cfg.column_mapping.asset == "AudioAsset", "default asset column")
+  cfg.column_mapping.asset = "Filename"
+  cfg.column_mapping.text  = "Dialogue"
+  vo.SaveConfig(cfg)
+
+  local back = vo.LoadConfig()
+  assert(back.column_mapping.asset == "Filename", back.column_mapping.asset)
+  assert(back.column_mapping.text == "Dialogue", back.column_mapping.text)
+  assert(back.column_mapping.line_id == "LineID", "untouched column changed")
+end)
+
+test("skip values round-trip and default to TO RECORD", function()
+  mock.reset()
+  local cfg = vo.LoadConfig()
+  assert(#cfg.skip_values == 1 and cfg.skip_values[1] == "TO RECORD", "default skip values")
+  cfg.skip_values = { "TO RECORD", "HOLD", "CUT" }
+  vo.SaveConfig(cfg)
+
+  local back = vo.LoadConfig()
+  assert(#back.skip_values == 3, "count: " .. #back.skip_values)
+  assert(back.skip_values[3] == "CUT", back.skip_values[3])
+end)
+
+test("the substitution table round-trips", function()
+  mock.reset()
+  local cfg = vo.LoadConfig()
+  cfg.substitutions = { hp = "hit points", ["1999"] = "nineteen ninety nine" }
+  vo.SaveConfig(cfg)
+
+  local back = vo.LoadConfig()
+  assert(back.substitutions.hp == "hit points", tostring(back.substitutions.hp))
+  assert(back.substitutions["1999"] == "nineteen ninety nine", tostring(back.substitutions["1999"]))
+end)
+
+test("an empty substitution table round-trips as empty", function()
+  mock.reset()
+  local cfg = vo.LoadConfig()
+  cfg.substitutions = {}
+  vo.SaveConfig(cfg)
+  local back = vo.LoadConfig()
+  assert(next(back.substitutions) == nil, "Expected no substitutions")
+end)
+
+test("a loaded config drives Normalize and BuildWhisperArgv directly", function()
+  mock.reset()
+  local cfg = vo.LoadConfig()
+  cfg.substitutions = { hp = "hit points" }
+  cfg.whisper_model = "/m/ggml-base.bin"
+  vo.SaveConfig(cfg)
+
+  local back = vo.LoadConfig()
+  assert(vo.Normalize("my hp", back.substitutions) == "my hit points", "config did not reach Normalize")
+  local argv = vo.BuildWhisperArgv(back, "in.wav", "out")
+  assert(argv_value(argv, "-dtw") == "base", "config did not reach BuildWhisperArgv")
+end)
+
+--------------------------------
+-- MapWordsToProject
+--------------------------------
+print("\nMapWordsToProject:")
+
+-- An item at project position 10s, 4s long, playing its source from 0s at 1x.
+local function item_at(pos, length, start_offs, playrate)
+  return { pos = pos, length = length, start_offs = start_offs or 0, playrate = playrate or 1.0 }
+end
+
+test("source time maps to project time through the item position", function()
+  local w = vo.MapWordsToProject({ { t0 = 2.0, t1 = 2.5, text = "x" } }, item_at(10, 4))
+  assert(#w == 1, "Expected 1 word, got " .. #w)
+  assert(near(w[1].t0, 12.0), "t0: " .. w[1].t0)
+  assert(near(w[1].t1, 12.5), "t1: " .. w[1].t1)
+end)
+
+test("the take's start offset is subtracted", function()
+  local w = vo.MapWordsToProject({ { t0 = 7.0, t1 = 7.5, text = "x" } }, item_at(10, 4, 5.0))
+  assert(near(w[1].t0, 12.0), "t0: " .. w[1].t0)
+end)
+
+test("playrate compresses source time into project time", function()
+  local w = vo.MapWordsToProject({ { t0 = 4.0, t1 = 5.0, text = "x" } }, item_at(10, 4, 0, 2.0))
+  assert(near(w[1].t0, 12.0), "t0: " .. w[1].t0)
+  assert(near(w[1].t1, 12.5), "t1: " .. w[1].t1)
+end)
+
+test("words before the visible source range are dropped", function()
+  -- Item shows source 5s..9s; a word at 1s is trimmed off the front of the item.
+  local w = vo.MapWordsToProject({ { t0 = 1.0, t1 = 1.5, text = "x" } }, item_at(10, 4, 5.0))
+  assert(#w == 0, "Expected the word to be dropped, got " .. #w)
+end)
+
+test("words after the visible source range are dropped", function()
+  local w = vo.MapWordsToProject({ { t0 = 20.0, t1 = 20.5, text = "x" } }, item_at(10, 4, 5.0))
+  assert(#w == 0, "Expected the word to be dropped, got " .. #w)
+end)
+
+test("a word is kept or dropped by its midpoint, not its edges", function()
+  -- Source range is 0s..4s. This word straddles the end: midpoint 3.9 is inside.
+  local w = vo.MapWordsToProject({ { t0 = 3.8, t1 = 4.0, text = "x" } }, item_at(10, 4))
+  assert(#w == 1, "A word mostly inside the item should be kept")
+  -- This one straddles with midpoint 4.1, outside.
+  local w2 = vo.MapWordsToProject({ { t0 = 4.0, t1 = 4.2, text = "x" } }, item_at(10, 4))
+  assert(#w2 == 0, "A word mostly outside the item should be dropped")
+end)
+
+test("word text and ordering are preserved", function()
+  local w = vo.MapWordsToProject({
+    { t0 = 0.0, t1 = 0.5, text = "one" },
+    { t0 = 1.0, t1 = 1.5, text = "two" },
+  }, item_at(10, 4))
+  assert(#w == 2 and w[1].text == "one" and w[2].text == "two", "Order or text lost")
+end)
+
+test("a stretched item scales its visible source range too", function()
+  -- At 2x playrate a 4s item consumes 8s of source, so a word at 7s is inside.
+  local w = vo.MapWordsToProject({ { t0 = 7.0, t1 = 7.2, text = "x" } }, item_at(10, 4, 0, 2.0))
+  assert(#w == 1, "Expected the word to be kept, got " .. #w)
+  assert(near(w[1].t0, 13.5), "t0: " .. w[1].t0)
+end)
+
+--------------------------------
+-- Substitution text (Settings panel editing)
+--------------------------------
+print("\nSubstitution text:")
+
+test("a simple mapping parses", function()
+  local subs = vo.ParseSubstitutionText("hp = hit points")
+  assert(subs.hp == "hit points", tostring(subs.hp))
+end)
+
+test("surrounding whitespace is trimmed from both sides", function()
+  local subs = vo.ParseSubstitutionText("   hp   =   hit points   ")
+  assert(subs.hp == "hit points", "[" .. tostring(subs.hp) .. "]")
+end)
+
+test("keys are lowercased to match normalized tokens", function()
+  local subs = vo.ParseSubstitutionText("HP = hit points")
+  assert(subs.hp == "hit points", "Key was not folded: " .. tostring(next(subs)))
+end)
+
+test("a value may contain equals signs", function()
+  local subs = vo.ParseSubstitutionText("eq = equals = sign")
+  assert(subs.eq == "equals = sign", tostring(subs.eq))
+end)
+
+test("blank lines and lines without a separator are ignored", function()
+  local subs = vo.ParseSubstitutionText("hp = hit points\n\nnonsense\n\nmp = magic")
+  assert(subs.hp == "hit points" and subs.mp == "magic", "valid lines lost")
+  assert(subs.nonsense == nil, "invalid line kept")
+end)
+
+test("a line with an empty key is ignored", function()
+  local subs = vo.ParseSubstitutionText(" = orphaned")
+  assert(next(subs) == nil, "Expected no substitutions")
+end)
+
+test("empty text yields an empty table", function()
+  assert(next(vo.ParseSubstitutionText("")) == nil, "Expected empty")
+  assert(next(vo.ParseSubstitutionText(nil)) == nil, "Expected empty")
+end)
+
+test("formatting is sorted so the panel does not reshuffle between opens", function()
+  local text = vo.FormatSubstitutionText({ zulu = "z", alpha = "a", mike = "m" })
+  assert(text == "alpha = a\nmike = m\nzulu = z", "[" .. text .. "]")
+end)
+
+test("format and parse round-trip", function()
+  local original = { hp = "hit points", ["1999"] = "nineteen ninety nine" }
+  local back = vo.ParseSubstitutionText(vo.FormatSubstitutionText(original))
+  assert(back.hp == "hit points", tostring(back.hp))
+  assert(back["1999"] == "nineteen ninety nine", tostring(back["1999"]))
+end)
+
+test("an empty table formats to an empty string", function()
+  assert(vo.FormatSubstitutionText({}) == "", "Expected empty string")
 end)
 
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))

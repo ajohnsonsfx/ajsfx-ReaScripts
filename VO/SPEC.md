@@ -344,8 +344,13 @@ Speaker/Type filter, and the three per-session toggles.
 
 ### The single network path
 
-The Settings panel offers an **opt-in model download** button that fetches a ggml model
-from Hugging Face. This is the only code in the tool that touches the network. It is:
+The Settings panel offers an **opt-in model download** button. As implemented it
+**opens the Hugging Face model page in the user's browser** rather than downloading the
+file itself: shipping an untested downloader — with its own TLS, redirect, resume and
+partial-file failure modes — buys little over the browser the user already has, and the
+browser makes the network operation visible rather than hidden inside a REAPER script.
+The user-facing contract is unchanged. This is the only code in the tool that touches
+the network at all. It is:
 
 - never triggered automatically,
 - clearly labelled in the UI as a network operation,
@@ -483,10 +488,18 @@ Stated plainly rather than assumed working:
    (161 tests) + `tests/fixtures/vo_sample_script.csv`. Every function in the pure-layer
    table above is implemented and covered, including all eight toggle combinations and a
    deterministic synthetic-transcript generator driving `BuildPlan` end-to-end.
-3. **Backend + Settings** — argv builder, async runner, cache, Settings panel.
-4. **Apply layer + main action** — track creation, split/move/rename, optional regions,
-   run dialog wiring, report.
-5. **Docs** — README section, `VO/MANUAL_TEST.md`, sample dataset.
+3. ~~**Backend + Settings**~~ — *done.* Argv builder, `-dtw` preset mapping, shell
+   quoting, cache key, schema-driven `LoadConfig`/`SaveConfig`, detached async runner
+   with progress and cancel, `ajsfx_VO_Settings.lua`.
+4. ~~**Apply layer + main action**~~ — *done.* `CollectSourceSpans`,
+   `MapWordsToProject`, `EnsureTrackBelow`, `ApplyPlan`, and
+   `ajsfx_VO_ScriptMatch.lua` with the run dialog, per-project CSV memory, and report.
+5. ~~**Docs**~~ — *done.* README section, `VO/MANUAL_TEST.md`, sample dataset.
+
+**Remaining work is verification, not implementation:** everything in §10 needs a
+REAPER session. `VO/MANUAL_TEST.md` is the procedure, ordered so the highest-risk
+assumption — the shape of whisper-cli's CSV — is checked first, before any of the
+REAPER-side behaviour is worth testing.
 
 Release follows `.agents/standards.md`: `@version` and `@changelog` on every script,
 CI rebuilds `index.xml` on merge to `main`. **`index.xml` is never hand-edited.**

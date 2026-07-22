@@ -1009,4 +1009,652 @@ function vo.BuildReport(plan, lines)
   return table.concat(out, "\n") .. "\n"
 end
 
+--------------------------------
+-- Pure layer: shell quoting
+--------------------------------
+
+-- Quote a single argv entry for the platform shell.
+-- Deliberately duplicated from pvx.QuoteArg rather than shared: SPEC.md §11
+-- keeps the subprocess plumbing per-tool until both are exercised in REAPER.
+function vo.QuoteArg(s, os_name)
+  s = tostring(s or "")
+  if os_name == "Windows" then
+    s = s:gsub('"', '\\"')
+    return '"' .. s .. '"'
+  end
+  s = s:gsub("'", "'\\''")
+  return "'" .. s .. "'"
+end
+
+--------------------------------
+-- Pure layer: transcription cache key
+--------------------------------
+
+-- Key a cached transcript by everything that could change its content: the
+-- source file (path and size), the model, and the decode parameters. Threshold
+-- changes deliberately do NOT invalidate it — re-running after tuning a
+-- threshold is what the cache is for.
+-- Returns: a short filename-safe string.
+function vo.CacheKey(source_path, file_size, cfg)
+  local material = table.concat({
+    tostring(source_path or ""),
+    tostring(file_size or 0),
+    tostring(cfg and cfg.whisper_model or ""),
+    tostring(cfg and cfg.whisper_language or ""),
+    tostring(vo.DTWPresetForModel(cfg and cfg.whisper_model) or ""),
+  }, "\0")
+
+  -- FNV-1a, 32-bit. Not cryptographic — this only needs to change when the
+  -- inputs change, and collisions merely cost a re-transcription.
+  local hash = 2166136261
+  for i = 1, #material do
+    hash = hash ~ material:byte(i)
+    hash = (hash * 16777619) & 0xFFFFFFFF
+  end
+
+  return string.format("vo_%08x", hash)
+end
+
+--------------------------------
+-- Pure layer: substitution table as editable text
+--------------------------------
+
+-- Parse the Settings panel's substitution box: one "from = to" per line.
+-- Keys are folded to lowercase because they are matched against tokens that
+-- have already been through Normalize. Only the first "=" separates, so a
+-- replacement may itself contain one.
+function vo.ParseSubstitutionText(text)
+  local subs = {}
+  for line in tostring(text or ""):gmatch("[^\n]+") do
+    local from, to = line:match("^([^=]*)=(.*)$")
+    if from then
+      from, to = fold(from), trim(to)
+      if from ~= "" then subs[from] = to end
+    end
+  end
+  return subs
+end
+
+-- Render the substitution table back to editable text, sorted so the panel
+-- shows a stable order rather than reshuffling on every open.
+function vo.FormatSubstitutionText(subs)
+  local keys = {}
+  for from in pairs(subs or {}) do keys[#keys + 1] = from end
+  table.sort(keys)
+
+  local lines = {}
+  for _, from in ipairs(keys) do
+    lines[#lines + 1] = from .. " = " .. tostring(subs[from])
+  end
+  return table.concat(lines, "\n")
+end
+
+--------------------------------
+-- Coupled layer: configuration
+--------------------------------
+
+vo.EXT_SECTION = "ajsfx_vo"
+
+-- One declarative schema drives both load and save, so the two cannot drift
+-- apart as fields are added.
+vo.CONFIG_SCHEMA = {
+  { key = "whisper_bin",        kind = "string", default = "whisper-cli" },
+  { key = "whisper_model",      kind = "string", default = "" },
+  { key = "whisper_threads",    kind = "number", default = 4 },
+  { key = "whisper_language",   kind = "string", default = "en" },
+  { key = "scratch_dir",        kind = "string", default = "" },
+  { key = "timeout_s",          kind = "number", default = 1800 },
+  { key = "force_retranscribe", kind = "bool",   default = false },
+
+  { key = "accept_threshold",   kind = "number", default = vo.DEFAULTS.accept_threshold },
+  { key = "review_floor",       kind = "number", default = vo.DEFAULTS.review_floor },
+  { key = "margin_threshold",   kind = "number", default = vo.DEFAULTS.margin_threshold },
+  { key = "anchor_count",       kind = "number", default = vo.DEFAULTS.anchor_count },
+  { key = "pre_pad",            kind = "number", default = vo.DEFAULTS.pre_pad },
+  { key = "post_pad",           kind = "number", default = vo.DEFAULTS.post_pad },
+
+  { key = "track_selects",      kind = "string", default = "Selects" },
+  { key = "track_alts",         kind = "string", default = "Alts" },
+  { key = "track_review",       kind = "string", default = "Review" },
+  { key = "create_regions",     kind = "bool",   default = false },
+
+  { key = "review_prefix",      kind = "string", default = vo.DEFAULTS.review_prefix },
+  { key = "unmatched_prefix",   kind = "string", default = vo.DEFAULTS.unmatched_prefix },
+}
+
+-- Load settings from ExtState, falling back to documented defaults.
+function vo.LoadConfig()
+  local function get(key)
+    if r.HasExtState(vo.EXT_SECTION, key) then
+      return r.GetExtState(vo.EXT_SECTION, key)
+    end
+    return nil
+  end
+
+  local cfg = {}
+  for _, field in ipairs(vo.CONFIG_SCHEMA) do
+    local raw = get(field.key)
+    if raw == nil or raw == "" then
+      cfg[field.key] = field.default
+    elseif field.kind == "number" then
+      cfg[field.key] = tonumber(raw) or field.default
+    elseif field.kind == "bool" then
+      cfg[field.key] = (raw == "1")
+    else
+      cfg[field.key] = raw
+    end
+  end
+
+  cfg.column_mapping = {}
+  for field, default_name in pairs(vo.DEFAULT_COLUMN_MAPPING) do
+    local raw = get("col_" .. field)
+    cfg.column_mapping[field] = (raw and raw ~= "") and raw or default_name
+  end
+
+  cfg.skip_values = {}
+  local skip_raw = get("skip_values")
+  if skip_raw and skip_raw ~= "" then
+    for v in skip_raw:gmatch("[^\n]+") do
+      cfg.skip_values[#cfg.skip_values + 1] = v
+    end
+  else
+    for _, v in ipairs(vo.DEFAULT_SKIP_VALUES) do
+      cfg.skip_values[#cfg.skip_values + 1] = v
+    end
+  end
+
+  cfg.substitutions = {}
+  local subs_raw = get("substitutions")
+  if subs_raw and subs_raw ~= "" then
+    for line in subs_raw:gmatch("[^\n]+") do
+      local from, to = line:match("^([^\t]*)\t(.*)$")
+      if from and from ~= "" then cfg.substitutions[from] = to end
+    end
+  end
+
+  return cfg
+end
+
+-- Persist settings to ExtState. Mirrors LoadConfig via the shared schema.
+function vo.SaveConfig(cfg)
+  local function set(key, value)
+    r.SetExtState(vo.EXT_SECTION, key, tostring(value), true)
+  end
+
+  for _, field in ipairs(vo.CONFIG_SCHEMA) do
+    local value = cfg[field.key]
+    if value == nil then value = field.default end
+    if field.kind == "bool" then
+      set(field.key, value and "1" or "0")
+    else
+      set(field.key, value)
+    end
+  end
+
+  for field, default_name in pairs(vo.DEFAULT_COLUMN_MAPPING) do
+    set("col_" .. field,
+        (cfg.column_mapping and cfg.column_mapping[field]) or default_name)
+  end
+
+  set("skip_values", table.concat(cfg.skip_values or vo.DEFAULT_SKIP_VALUES, "\n"))
+
+  local subs = {}
+  for from, to in pairs(cfg.substitutions or {}) do
+    subs[#subs + 1] = from .. "\t" .. to
+  end
+  table.sort(subs) -- deterministic serialization
+  set("substitutions", table.concat(subs, "\n"))
+end
+
+--------------------------------
+-- Pure layer: source time -> project time
+--------------------------------
+
+-- Map words from source-file time into project time for one item, keeping only
+-- those whose midpoint falls inside the item's visible source range.
+-- The midpoint rule matters: a word straddling the item edge belongs to
+-- whichever side holds most of it, and using an edge instead would let the same
+-- word be claimed by two adjacent items.
+-- item: { pos, length, start_offs, playrate }
+function vo.MapWordsToProject(words, item)
+  local playrate = item.playrate or 1.0
+  if playrate <= 0 then playrate = 1.0 end
+
+  local src_start = item.start_offs or 0
+  local src_end   = src_start + (item.length or 0) * playrate
+
+  local out = {}
+  for _, w in ipairs(words or {}) do
+    local midpoint = (w.t0 + w.t1) / 2
+    if midpoint >= src_start and midpoint <= src_end then
+      out[#out + 1] = {
+        t0   = item.pos + (w.t0 - src_start) / playrate,
+        t1   = item.pos + (w.t1 - src_start) / playrate,
+        text = w.text,
+      }
+    end
+  end
+  return out
+end
+
+--------------------------------
+-- Coupled layer: filesystem helpers
+--------------------------------
+
+function vo.FileExists(path)
+  if not path or path == "" then return false end
+  local f = io.open(path, "rb")
+  if f then f:close() return true end
+  return false
+end
+
+function vo.FileSize(path)
+  local f = io.open(path, "rb")
+  if not f then return nil end
+  local size = f:seek("end")
+  f:close()
+  return size
+end
+
+function vo.IsWindows()
+  return (r.GetOS() or ""):find("Win") ~= nil
+end
+
+-- Scratch directory for transcripts and launcher files. Prefers the configured
+-- path, then a folder beside the project, then the system temp dir.
+function vo.ResolveScratchDir(cfg)
+  if cfg and cfg.scratch_dir and cfg.scratch_dir ~= "" then
+    return cfg.scratch_dir
+  end
+
+  local ok, proj_path = pcall(function()
+    return select(2, r.EnumProjects(-1, ""))
+  end)
+  if ok and proj_path and proj_path ~= "" then
+    local dir = proj_path:match("^(.*)[/\\][^/\\]*$")
+    if dir and dir ~= "" then return dir .. "/vo_scratch" end
+  end
+
+  local tmp = os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp"
+  return tmp .. "/vo_scratch"
+end
+
+function vo.EnsureDir(path)
+  if not path or path == "" then return false end
+  if r.RecursiveCreateDirectory then
+    r.RecursiveCreateDirectory(path, 0)
+  end
+  return true
+end
+
+-- Is the speech backend usable? Returns ok, message.
+-- Checked before any project mutation so a misconfigured backend can never
+-- leave a half-cut session behind.
+function vo.IsBackendReady(cfg)
+  local bin = cfg and cfg.whisper_bin or ""
+  if bin == "" then
+    return false, "No whisper-cli path is set. Open ajsfx VO Settings."
+  end
+  -- A bare command name is resolved by the shell via PATH, so it can't be
+  -- stat'd here; only an explicit path is checked for existence.
+  if bin:find("[/\\]") and not vo.FileExists(bin) then
+    return false, "whisper-cli not found at:\n" .. bin
+  end
+
+  local model = cfg and cfg.whisper_model or ""
+  if model == "" then
+    return false, "No Whisper model is set. Open ajsfx VO Settings."
+  end
+  if not vo.FileExists(model) then
+    return false, "Whisper model not found at:\n" .. model
+  end
+
+  return true, "Ready"
+end
+
+--------------------------------
+-- Coupled layer: async transcription
+--------------------------------
+
+-- Run whisper-cli detached, with an ImGui progress window and a working Cancel.
+-- Deliberately duplicated from pvx.RunPVXAsync (SPEC.md §11): extracting a
+-- shared runner while neither tool has been exercised in REAPER would risk
+-- breaking the one that currently works.
+-- UNVERIFIED outside REAPER — see SPEC.md §10.
+function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error)
+  local timeout_s = (cfg and cfg.timeout_s) or 1800
+
+  local log_file  = scratch_dir .. "/whisper_log.txt"
+  local done_file = scratch_dir .. "/whisper_done.txt"
+  os.remove(done_file)
+
+  local is_win = vo.IsWindows()
+
+  local quoted = {}
+  for _, a in ipairs(argv) do
+    quoted[#quoted + 1] = vo.QuoteArg(a, is_win and "Windows" or "Other")
+  end
+  local cmd_str = table.concat(quoted, " ")
+
+  local exe_name = (argv[1]:match("[/\\]([^/\\]+)$") or argv[1])
+  if is_win and not exe_name:lower():find("%.exe$") then
+    exe_name = exe_name .. ".exe"
+  end
+
+  local launched
+  if is_win then
+    -- Same two-file launch as PVX: a .bat runs the command and writes the exit
+    -- code, and a .vbs starts the .bat fully hidden and asynchronously. The
+    -- VBScript hop sidesteps the nested cmd.exe quoting that makes a direct
+    -- detached launch unreliable.
+    local bat, vbs = scratch_dir .. "/vo_run.bat", scratch_dir .. "/vo_launch.vbs"
+    local log_win, done_win = log_file:gsub("/", "\\"), done_file:gsub("/", "\\")
+
+    local fb = io.open(bat, "w")
+    if not fb then on_error("Cannot write launcher batch file: " .. bat) return end
+    fb:write("@echo off\r\n")
+    fb:write(cmd_str .. ' > "' .. log_win .. '" 2>&1\r\n')
+    fb:write('echo %ERRORLEVEL% > "' .. done_win .. '"\r\n')
+    fb:close()
+
+    local fv = io.open(vbs, "w")
+    if not fv then on_error("Cannot write VBScript launcher: " .. vbs) return end
+    fv:write('Set oShell = CreateObject("WScript.Shell")\r\n')
+    fv:write('oShell.Run "cmd /c " & Chr(34) & "' ..
+             bat:gsub("/", "\\"):gsub('"', '""') .. '" & Chr(34), 0, False\r\n')
+    fv:close()
+
+    launched = os.execute('wscript.exe //nologo //B "' .. vbs:gsub("/", "\\") .. '"')
+  else
+    launched = os.execute(string.format("(%s > %s 2>&1; echo $? > %s) &",
+      cmd_str,
+      vo.QuoteArg(log_file, "Other"),
+      vo.QuoteArg(done_file, "Other")))
+  end
+
+  if not launched then
+    on_error("Failed to launch whisper-cli")
+    return
+  end
+
+  local function read_log()
+    local lf = io.open(log_file, "r")
+    if not lf then return "" end
+    local text = lf:read("a")
+    lf:close()
+    return text or ""
+  end
+
+  local function finished()
+    local f = io.open(done_file, "r")
+    if not f then return nil end
+    local code = tonumber(f:read("l")) or -1
+    f:close()
+    return code
+  end
+
+  local ok_im, im = pcall(function()
+    package.path = r.ImGui_GetBuiltinPath() .. '/?.lua;' .. package.path
+    return require('imgui')('0.9.3')
+  end)
+
+  if not ok_im then
+    -- No ReaImGui: block without UI rather than failing outright.
+    local deadline = r.time_precise() + timeout_s
+    while true do
+      local code = finished()
+      if code then on_done(code, read_log()) return end
+      if r.time_precise() > deadline then on_cancel() return end
+    end
+  end
+
+  local ctx        = im.CreateContext('VO ScriptMatch')
+  local start_time = r.time_precise()
+  local cancelled  = false
+  local spinner    = { "|", "/", "-", "\\" }
+  local spin       = 0
+
+  local function kill()
+    if is_win then
+      os.execute('taskkill /F /IM "' .. exe_name .. '" > NUL 2>&1')
+    else
+      os.execute("pkill -f " .. vo.QuoteArg(exe_name, "Other") .. " 2>/dev/null")
+    end
+    cancelled = true
+  end
+
+  local function poll()
+    if cancelled then return end
+
+    local elapsed = r.time_precise() - start_time
+    if elapsed > timeout_s then
+      kill(); on_cancel(); return
+    end
+
+    local code = finished()
+    if code then on_done(code, read_log()) return end
+
+    spin = (spin % #spinner) + 1
+    if not (ctx and im.ValidatePtr(ctx, 'ImGui_Context*')) then
+      ctx = im.CreateContext('VO ScriptMatch')
+    end
+
+    im.SetNextWindowSize(ctx, 460, 150, im.Cond_FirstUseEver)
+    local visible, open = im.Begin(ctx, 'ajsfx VO — Transcribing', true,
+      im.WindowFlags_NoCollapse)
+
+    local pressed_cancel = false
+    if visible then
+      im.Text(ctx, spinner[spin] .. "  Transcribing session audio…")
+      im.Spacing(ctx)
+      im.TextDisabled(ctx, string.format("%.0fs elapsed (timeout %ds)", elapsed, timeout_s))
+      im.Spacing(ctx)
+      im.TextDisabled(ctx, "Nothing in the project is changed until this finishes.")
+      im.Spacing(ctx)
+      im.Separator(ctx)
+      im.Spacing(ctx)
+      pressed_cancel = im.Button(ctx, "Cancel")
+    end
+
+    -- Always End after Begin; skipping it corrupts ImGui's push/pop stack.
+    im.End(ctx)
+
+    if pressed_cancel or not open then
+      kill(); on_cancel(); return
+    end
+
+    r.defer(poll)
+  end
+
+  r.defer(poll)
+end
+
+-- Transcribe a list of unique source files in sequence, reusing cached
+-- transcripts. Calls on_done(map) with path -> word array.
+-- UNVERIFIED outside REAPER — see SPEC.md §10.
+function vo.TranscribeSources(cfg, sources, on_done, on_cancel, on_error)
+  local scratch = vo.ResolveScratchDir(cfg)
+  vo.EnsureDir(scratch)
+
+  local results = {}
+  local index   = 0
+
+  local function step()
+    index = index + 1
+    if index > #sources then
+      on_done(results)
+      return
+    end
+
+    local source    = sources[index]
+    local key       = vo.CacheKey(source.path, source.size, cfg)
+    local prefix    = scratch .. "/" .. key
+    local csv_path  = prefix .. ".csv"
+
+    if not cfg.force_retranscribe and vo.FileExists(csv_path) then
+      local f = io.open(csv_path, "r")
+      results[source.path] = vo.ParseWhisperCSV(f:read("a"))
+      f:close()
+      step()
+      return
+    end
+
+    local argv = vo.BuildWhisperArgv(cfg, source.path, prefix)
+    vo.RunWhisperAsync(cfg, argv, scratch,
+      function(code, log)
+        if code ~= 0 then
+          local tail = log:sub(-1500)
+          on_error(string.format("whisper-cli exited with code %d for:\n%s\n\n%s",
+                                 code, source.path, tail))
+          return
+        end
+        local f = io.open(csv_path, "r")
+        if not f then
+          on_error("whisper-cli reported success but wrote no CSV:\n" .. csv_path)
+          return
+        end
+        results[source.path] = vo.ParseWhisperCSV(f:read("a"))
+        f:close()
+        step()
+      end,
+      on_cancel,
+      on_error)
+  end
+
+  step()
+end
+
+--------------------------------
+-- Coupled layer: project inspection
+--------------------------------
+
+-- Inspect the selected items. Items that cannot be transcribed are returned
+-- with a `skip` reason rather than aborting the run, so the report can list
+-- them and the rest of the session still processes.
+function vo.CollectSourceSpans()
+  local items = {}
+  for i = 0, r.CountSelectedMediaItems(0) - 1 do
+    local item = r.GetSelectedMediaItem(0, i)
+    local take = r.GetActiveTake(item)
+    local info = { item = item, pos = r.GetMediaItemInfo_Value(item, "D_POSITION") }
+
+    if not take then
+      info.skip = "no active take"
+    elseif r.TakeIsMIDI(take) then
+      info.skip = "MIDI take"
+    else
+      local source   = r.GetMediaItemTake_Source(take)
+      local path     = source and r.GetMediaSourceFileName(source, "") or ""
+      local playrate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
+
+      if path == "" then
+        info.skip = "take has no source file"
+      elseif playrate <= 0 then
+        info.skip = "reversed or zero playrate"
+      elseif math.abs(playrate - 1.0) > 1e-6 then
+        -- MapWordsToProject handles playrate correctly and is unit-tested for
+        -- it, but SPEC.md §8 keeps v1 conservative until that path has been
+        -- exercised against a real stretched item in REAPER.
+        info.skip = string.format("playrate %.3f is not 1.0", playrate)
+      else
+        info.path       = path
+        info.length     = r.GetMediaItemInfo_Value(item, "D_LENGTH")
+        info.start_offs = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS")
+        info.playrate   = playrate
+        info.track      = r.GetMediaItem_Track(item)
+      end
+    end
+
+    items[#items + 1] = info
+  end
+
+  table.sort(items, function(a, b) return (a.pos or 0) < (b.pos or 0) end)
+  return items
+end
+
+-- Find a track by name, or create one directly below `track`.
+function vo.EnsureTrackBelow(track, name)
+  for i = 0, r.CountTracks(0) - 1 do
+    local candidate = r.GetTrack(0, i)
+    local _, existing = r.GetSetMediaTrackInfo_String(candidate, "P_NAME", "", false)
+    if existing == name then return candidate end
+  end
+
+  -- IP_TRACKNUMBER is 1-based, so it is already the 0-based index *after* this
+  -- track — exactly where the new one belongs.
+  local insert_at = math.floor(r.GetMediaTrackInfo_Value(track, "IP_TRACKNUMBER"))
+  r.InsertTrackAtIndex(insert_at, true)
+  local created = r.GetTrack(0, insert_at)
+  r.GetSetMediaTrackInfo_String(created, "P_NAME", name, true)
+  return created
+end
+
+--------------------------------
+-- Coupled layer: apply
+--------------------------------
+
+-- Find the item on `track` that contains `time`.
+local function ItemContaining(track, time)
+  for i = 0, r.CountTrackMediaItems(track) - 1 do
+    local item = r.GetTrackMediaItem(track, i)
+    local pos  = r.GetMediaItemInfo_Value(item, "D_POSITION")
+    local stop = pos + r.GetMediaItemInfo_Value(item, "D_LENGTH")
+    if time >= pos - 1e-9 and time < stop - 1e-9 then return item end
+  end
+  return nil
+end
+
+-- Split the session and move each span to its destination track, named.
+-- Splitting rather than copying is deliberate (SPEC.md §4): with the pieces
+-- physically removed it is obvious what has been pulled and what has not.
+-- Caller wraps this in core.Transaction so the whole run is one undo step.
+-- UNVERIFIED outside REAPER — see SPEC.md §10.
+-- Returns: applied count, array of failure strings.
+function vo.ApplyPlan(plan, cfg, source_track)
+  local dest_names = {
+    selects = cfg.track_selects or "Selects",
+    alts    = cfg.track_alts    or "Alts",
+    review  = cfg.track_review  or "Review",
+  }
+
+  local tracks  = {}
+  local applied = 0
+  local failures = {}
+
+  for _, span in ipairs(plan) do
+    local item = ItemContaining(source_track, span.start)
+    if not item then
+      failures[#failures + 1] =
+        string.format("%s: no item at %.3fs", span.name or "(unnamed)", span.start)
+    else
+      -- Split twice: the middle piece is the span.
+      local right = r.SplitMediaItem(item, span.start)
+      local piece = right or item
+      r.SplitMediaItem(piece, span.stop)
+
+      local dest_name = dest_names[span.dest] or dest_names.review
+      if not tracks[span.dest] then
+        tracks[span.dest] = vo.EnsureTrackBelow(source_track, dest_name)
+      end
+
+      if r.MoveMediaItemToTrack(piece, tracks[span.dest]) then
+        local take = r.GetActiveTake(piece)
+        if take then
+          r.GetSetMediaItemTakeInfo_String(take, "P_NAME", span.name, true)
+        end
+        if cfg.create_regions and span.dest == "selects" then
+          r.AddProjectMarker2(0, true, span.start, span.stop, span.name, -1, 0)
+        end
+        applied = applied + 1
+      else
+        failures[#failures + 1] =
+          string.format("%s: could not move to %s", span.name or "(unnamed)", dest_name)
+      end
+    end
+  end
+
+  r.UpdateArrange()
+  return applied, failures
+end
+
 return vo
