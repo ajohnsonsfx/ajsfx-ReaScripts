@@ -6,6 +6,17 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+
+# The build job rebuilds index.xml from scratch and pushes it back to main. Two
+# runs overlapping means the older one's push is rejected non-fast-forward and
+# the run goes red for no real reason — and a red run that doesn't mean anything
+# is worse than none, because it trains you to stop reading them. Superseding the
+# in-flight run is correct here: --rebuild regenerates the whole index anyway, so
+# only the newest run's output is ever wanted.
+concurrency:
+  group: reapack-index
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
