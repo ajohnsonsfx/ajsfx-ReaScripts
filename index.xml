@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ajsfx-ReaScripts" commit="69d3459bba10e4b886a70616bb336d8256b21261">
+<index version="1" name="ajsfx-ReaScripts" commit="471d3e6b5ad6d5633aba2e09efc0aef0562f3255">
   <category name="Items">
     <reapack name="ajsfx_GentleNormalizer.lua" type="script" desc="Gentle Normalizer">
       <metadata>
@@ -33,6 +33,9 @@
       </metadata>
       <version name="1.3" author="ajsfx" time="2026-04-21T18:36:30Z">
         <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/8375050c39681be2c4758deae5a5b29474f11f17/Items/ajsfx_MediaItemCounter_Settings.lua</source>
+      </version>
+      <version name="1.4" author="ajsfx" time="2026-04-23T16:52:23Z">
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/8280b2626326bd51ec391c6a953f0cf14b6dfa41/Items/ajsfx_MediaItemCounter_Settings.lua</source>
       </version>
     </reapack>
     <reapack name="ajsfx_SetAllSelectedItemsLengthToFirstSelectedItem.lua" type="script" desc="Set All Selected Items Length To First Selected Item">
@@ -167,6 +170,9 @@
       <version name="0.3" author="ajsfx" time="2026-04-21T18:37:36Z">
         <source>https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/69d3459bba10e4b886a70616bb336d8256b21261/pvx/ajsfx_PVXHost.jsfx</source>
       </version>
+      <version name="0.4" author="ajsfx" time="2026-04-23T16:52:23Z">
+        <source>https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/8280b2626326bd51ec391c6a953f0cf14b6dfa41/pvx/ajsfx_PVXHost.jsfx</source>
+      </version>
     </reapack>
   </category>
   <category name="pvx/lib">
@@ -185,6 +191,9 @@
       </version>
       <version name="0.2" author="ajsfx" time="2026-04-21T18:37:36Z">
         <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/69d3459bba10e4b886a70616bb336d8256b21261/pvx/lib/ajsfx_pvx.lua</source>
+      </version>
+      <version name="0.3" author="ajsfx" time="2026-04-23T16:52:23Z">
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/8280b2626326bd51ec391c6a953f0cf14b6dfa41/pvx/lib/ajsfx_pvx.lua</source>
       </version>
     </reapack>
   </category>
@@ -271,6 +280,25 @@
       </metadata>
       <version name="1.0" author="ajsfx" time="2026-04-21T18:36:30Z">
         <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/8375050c39681be2c4758deae5a5b29474f11f17/Track/ajsfx_TrackVersioning.lua</source>
+      </version>
+    </reapack>
+  </category>
+  <category name="VO">
+    <reapack name="ajsfx_VO_ScriptMatch.lua" type="script" desc="ajsfx VO ScriptMatch">
+      <metadata>
+        <description><![CDATA[{\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier;}}
+{\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
+\widowctrl\hyphauto
+
+{\pard \ql \f0 \sa180 \li0 \fi0 Cut a recorded VO session into one clip per script line and name each clip with its delivery asset name. Reads a CSV script, transcribes the selected items locally with whisper.cpp, matches spoken spans against the script, and routes the results to Selects / Alts / Review tracks. Low-confidence and unmatched audio is flagged, never guessed. Configure the backend in "ajsfx VO Settings". See VO/SPEC.md.\par}
+}
+]]></description>
+      </metadata>
+      <version name="0.1" author="ajsfx" time="2026-07-22T05:59:09Z">
+        <changelog><![CDATA[Initial release: script-matched cut-and-name for game VO delivery]]></changelog>
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/471d3e6b5ad6d5633aba2e09efc0aef0562f3255/VO/ajsfx_VO_ScriptMatch.lua</source>
+        <source file="lib/ajsfx_vo.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/471d3e6b5ad6d5633aba2e09efc0aef0562f3255/VO/lib/ajsfx_vo.lua</source>
+        <source file="lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/471d3e6b5ad6d5633aba2e09efc0aef0562f3255/lib/ajsfx_core.lua</source>
       </version>
     </reapack>
   </category>
