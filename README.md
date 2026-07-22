@@ -4,6 +4,7 @@ A personal toolkit for REAPER — custom ReaScripts and sound design reference d
 
 - **[Items/](Items/)**, **[Track/](Track/)** — Lua ReaScripts for track and item management
 - **[pvx/](pvx/)** — PVX time-varying pitch/stretch scripts + JSFX host
+- **[VO/](VO/)** — VO ScriptMatch: script-matched cut-and-name for game dialogue delivery
 - **[lib/](lib/)** — Shared `ajsfx_core` helper library
 - **[docs/](docs/)** — Sound design guides and workflow references
 
