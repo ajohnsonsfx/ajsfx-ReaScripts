@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ajsfx-ReaScripts" commit="471d3e6b5ad6d5633aba2e09efc0aef0562f3255">
+<index version="1" name="ajsfx-ReaScripts" commit="9dd74af0659dc7be6e6be191e692eb9ebe9fbd81">
   <category name="Items">
     <reapack name="ajsfx_GentleNormalizer.lua" type="script" desc="Gentle Normalizer">
       <metadata>
@@ -299,6 +299,15 @@
         <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/471d3e6b5ad6d5633aba2e09efc0aef0562f3255/VO/ajsfx_VO_ScriptMatch.lua</source>
         <source file="lib/ajsfx_vo.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/471d3e6b5ad6d5633aba2e09efc0aef0562f3255/VO/lib/ajsfx_vo.lua</source>
         <source file="lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/471d3e6b5ad6d5633aba2e09efc0aef0562f3255/lib/ajsfx_core.lua</source>
+      </version>
+      <version name="0.2" author="ajsfx" time="2026-07-22T06:22:40Z">
+        <changelog><![CDATA[Ship the Settings action in this package. In 0.1 it was a separate
+package that reapack-index dropped, because both packages claimed
+lib/ajsfx_vo.lua and only one may provide a given file.]]></changelog>
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/9dd74af0659dc7be6e6be191e692eb9ebe9fbd81/VO/ajsfx_VO_ScriptMatch.lua</source>
+        <source main="main" file="ajsfx_VO_Settings.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/9dd74af0659dc7be6e6be191e692eb9ebe9fbd81/VO/ajsfx_VO_Settings.lua</source>
+        <source file="lib/ajsfx_vo.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/9dd74af0659dc7be6e6be191e692eb9ebe9fbd81/VO/lib/ajsfx_vo.lua</source>
+        <source file="lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/9dd74af0659dc7be6e6be191e692eb9ebe9fbd81/lib/ajsfx_core.lua</source>
       </version>
     </reapack>
   </category>
