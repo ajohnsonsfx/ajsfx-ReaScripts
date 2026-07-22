@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 # Run all Lua tests for ajsfx-Scripts.
-# Finds lua.exe from PATH or common install locations.
+# Uses $LUA if set, otherwise finds lua from PATH or common install locations.
+#
+# CI sets LUA explicitly so the run never depends on update-alternatives having
+# pointed /usr/bin/lua at the right version — the runner image manages that link
+# itself, and fighting it broke the pipeline for months.
 
-LUA=""
-
-if command -v lua &>/dev/null; then
+if [ -n "$LUA" ]; then
+    if ! command -v "$LUA" &>/dev/null && [ ! -x "$LUA" ]; then
+        echo "ERROR: LUA is set to '$LUA' but that interpreter was not found."
+        exit 1
+    fi
+elif command -v lua &>/dev/null; then
     LUA="lua"
 else
     for candidate in \
