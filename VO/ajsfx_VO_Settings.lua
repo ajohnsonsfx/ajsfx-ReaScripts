@@ -1,14 +1,14 @@
 -- @description ajsfx VO Settings
 -- @author ajsfx
 -- @version 0.1
--- @changelog Initial release: settings panel for VO ScriptMatch
+-- @noindex
 -- @about Settings panel for ajsfx VO ScriptMatch. Configure the speech backend,
 --        matching thresholds, destination tracks, script CSV column mapping and
 --        the substitution table. See VO/SPEC.md for the design.
--- @provides
---   [main] .
---   lib/ajsfx_vo.lua
---   ../lib/ajsfx_core.lua > lib/ajsfx_core.lua
+--
+--        Not its own ReaPack package: it is shipped as a second [main] action by
+--        ajsfx_VO_ScriptMatch.lua. Only one package may provide lib/ajsfx_vo.lua,
+--        and two packages claiming it made reapack-index drop this one silently.
 
 local r = reaper
 

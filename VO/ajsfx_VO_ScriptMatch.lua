@@ -1,7 +1,9 @@
 -- @description ajsfx VO ScriptMatch
 -- @author ajsfx
--- @version 0.1
--- @changelog Initial release: script-matched cut-and-name for game VO delivery
+-- @version 0.2
+-- @changelog Ship the Settings action in this package. In 0.1 it was a separate
+--            package that reapack-index dropped, because both packages claimed
+--            lib/ajsfx_vo.lua and only one may provide a given file.
 -- @about Cut a recorded VO session into one clip per script line and name each
 --        clip with its delivery asset name. Reads a CSV script, transcribes the
 --        selected items locally with whisper.cpp, matches spoken spans against
@@ -10,6 +12,7 @@
 --        Configure the backend in "ajsfx VO Settings". See VO/SPEC.md.
 -- @provides
 --   [main] .
+--   [main] ajsfx_VO_Settings.lua
 --   lib/ajsfx_vo.lua
 --   ../lib/ajsfx_core.lua > lib/ajsfx_core.lua
 
