@@ -61,14 +61,22 @@ If using a shared library, explicitly provide the script itself:
 
 ## Branching & Release Workflow
 
-This project uses a standard `dev` to `main` workflow for versioning and releases via ReaPack.
+This project uses short-lived feature branches merged into `main`, which is the
+release branch for ReaPack.
 
 ### Branches
-- **`main`**: The stable branch. This branch is used for ReaPack releases. It should always contain working, tested code.
-- **`dev`**: The active development branch. Daily work, new features, and experimentation happen here.
+- **`main`**: The only long-lived branch. Publishes to ReaPack, so it should always contain working, tested code.
+- **`feature/<name>`**: Short-lived. Branch from `main`, merge back when done, delete.
+
+> There used to be a long-lived `dev` branch. It fell 77 commits behind `main`
+> while still carrying the pre-`Items/`/`Track/`/`pvx/` layout, so its test suite
+> no longer ran against the tree at all — and because nothing merged from it, the
+> documented workflow silently stopped describing reality. It was deleted on
+> 2026-07-22 after confirming it held no commits that were not already in `main`.
+> Don't reintroduce a long-lived branch without a reason to maintain it.
 
 ### Versioning & Release Process
-1.  **Work in `dev`**: All development starts in the `dev` branch.
+1.  **Branch from `main`**: `git switch -c feature/<name> main`.
 2.  **Test**: `./run_tests.sh` must pass; also exercise changes in REAPER.
 3.  **Bump `@version` tags**: Update the `@version` metadata tag in the script headers for any modified scripts.
 4.  **Add `@changelog` to each modified script**: Immediately below the `@version` line in the script header, add or update the `@changelog` tag with a plain-English summary of what changed in this version. CI extracts this tag and writes it into `index.xml` — without it, ReaPack shows a blank changelog to users.
@@ -76,5 +84,21 @@ This project uses a standard `dev` to `main` workflow for versioning and release
     -- @version 0.5
     -- @changelog Fix fallback path for TakeFX when no track FX present
     ```
-5.  **Merge `dev` into `main`**: Once changes are stable and tested, merge the `dev` branch into `main`.
+5.  **Merge into `main`**: Once changes are stable and tested, merge the feature branch into `main` and delete it.
 6.  **CI handles the rest**: `.github/workflows/reapack.yml` runs the test suite and, on success, rebuilds `index.xml` via `reapack-index --rebuild --commit` and pushes it back to `main`. No manual `reapack-index` step is required post-merge; if CI's test job fails, fix the regression before the index will update.
+7.  **Check the run actually succeeded**: `gh run list --limit 1`. A red CI job means nothing published, and the failure is silent from the repo's point of view — the pipeline sat broken from April to July 2026 without anyone noticing, so no releases went out in that window despite commits landing on `main`.
+
+### Packaging traps that fail quietly
+
+Both of these produce a **warning** from `reapack-index`, not an error, so the
+build still reports success while shipping something wrong. Read the build log,
+don't just check the green tick.
+
+- **Only one package may `@provides` a given file.** If two scripts in a category
+  both provide the same shared library, one package is dropped from `index.xml`
+  entirely. Ship them as a single package with multiple `[main]` entries instead
+  (see `VO/ajsfx_VO_ScriptMatch.lua`).
+- **A library without `@noindex` becomes its own package**, and with `main="main"`
+  it also registers in REAPER's action list as a script that does nothing when
+  run. `pvx/lib/ajsfx_pvx.lua` is in this state; it is left alone only because it
+  is already published and withdrawing it would affect existing installs.
