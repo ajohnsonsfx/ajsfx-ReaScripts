@@ -45,11 +45,27 @@ local bin_choice    = 0       -- 0-based index into vo.BINARY_CATALOG (im.Combo)
 local model_choice  = 0       -- 0-based index into vo.MODEL_CATALOG
 local device_text   = "unknown — run Check"
 local busy          = false   -- guards against concurrent downloads
+local busy_kind     = nil     -- "bin" | "model" while a download runs (for the button label)
+local busy_id       = nil     -- key/name being downloaded (label + install-state suppression)
+
+-- ExtState section holding the resolved whisper-cli.exe path per binary build,
+-- written on a successful install so "installed" can be detected cheaply
+-- without walking the folder every frame.
+local BSTATE = "ajsfx_vo_backend"
 
 local function describe_device(d)
   if d.device == "CUDA" then return "CUDA — " .. (d.name or "NVIDIA GPU")
   elseif d.device == "CPU" then return "CPU only"
   else return "unknown (probe failed)" end
+end
+
+-- Resolved whisper-cli.exe for an installed binary build, or nil. Cheap: reads
+-- the persisted path and confirms the file still exists (catches a deleted or
+-- partially-removed install, which the Repair button then re-fetches).
+local function binary_installed_path(key)
+  local p = r.GetExtState(BSTATE, "exe_" .. key)
+  if p ~= "" and vo.FileExists(p) then return p end
+  return nil
 end
 
 -- Whisper models live here; this is the only URL the tool knows about.
@@ -135,48 +151,94 @@ local function DrawBackend()
   local bin_dir   = vo.ResolveBinDir(res_root)
   local model_dir = vo.ResolveModelsDir(res_root)
 
+  -- Each binary build extracts into its own subfolder so switching CUDA
+  -- versions can't mix DLLs, and Repair can wipe just that build.
+  local function start_bin_dl(b)
+    local sub = bin_dir .. "/" .. b.key
+    r.RecursiveCreateDirectory(sub, 0)
+    local zip = sub .. "/" .. b.asset
+    busy = true; busy_kind = "bin"; busy_id = b.key
+    status = "Downloading " .. b.label .. "…"
+    local function reset() busy = false; busy_kind = nil; busy_id = nil end
+    vo.RunDownloadAsync(cfg, vo.BinaryDownloadURL(b.key), zip, b.expected_bytes,
+      function()  -- on_done
+        local ok, entries = vo.ExtractZip(zip, sub)
+        os.remove(zip)
+        if not ok then
+          status = tostring(entries)  -- on failure, entries holds the error message
+        else
+          local exe = vo.LocateWhisperCliExe(entries)
+          if exe then
+            r.SetExtState(BSTATE, "exe_" .. b.key, exe, true)
+            cfg.whisper_bin = exe; vo.SaveConfig(cfg)
+            if select(1, vo.IsBackendReady(cfg)) then
+              status = "Installed " .. b.label .. ". Checking device…"
+              vo.ProbeBackendDevice(cfg, function(d) device_text = describe_device(d); status = "" end)
+            else
+              status = "Installed " .. b.label .. ". Set a model, then press Check device."
+            end
+          else
+            status = "Downloaded, but whisper-cli.exe was not found in the archive."
+          end
+        end
+        reset()
+      end,
+      function() status = "Download cancelled. Nothing was changed."; reset() end,
+      function(msg) status = msg; reset() end)
+  end
+
+  local function start_model_dl(m)
+    r.RecursiveCreateDirectory(model_dir, 0)
+    local dest = model_dir .. "/" .. m.filename
+    busy = true; busy_kind = "model"; busy_id = m.name
+    status = "Downloading " .. m.label .. "…"
+    local function reset() busy = false; busy_kind = nil; busy_id = nil end
+    vo.RunDownloadAsync(cfg, vo.ModelDownloadURL(m.name), dest, m.expected_bytes,
+      function() cfg.whisper_model = dest; vo.SaveConfig(cfg)
+                 status = "Installed " .. m.name .. " model."; reset() end,
+      function() status = "Download cancelled. Nothing was changed."; reset() end,
+      function(msg) status = msg; reset() end)
+  end
+
+  -- A model reads as installed only when its file exists AND it is not the one
+  -- currently downloading (curl creates the file up front, so existence alone
+  -- would flip the button to "Use downloaded" mid-download).
+  local function model_ready(name)
+    if busy_kind == "model" and busy_id == name then return false end
+    return vo.ModelIsInstalled(model_dir, name)
+  end
+
   -- GPU binary (Windows only)
   if vo.IsWindows() then
     local bin_labels = {}
-    for _, b in ipairs(vo.BINARY_CATALOG) do bin_labels[#bin_labels + 1] = b.label end
+    for _, b in ipairs(vo.BINARY_CATALOG) do
+      local mark = binary_installed_path(b.key) and "  [installed]" or ""
+      bin_labels[#bin_labels + 1] = b.label .. mark
+    end
     local _cb
     _cb, bin_choice = im.Combo(ctx, "GPU binary", bin_choice,
       table.concat(bin_labels, "\0") .. "\0\0")
+    local b = vo.BINARY_CATALOG[bin_choice + 1]
+    local b_inst = binary_installed_path(b.key)
     im.SameLine(ctx)
-    -- Capture the disabled state BEFORE the button: the click handler flips
-    -- `busy` true in this same frame, so re-reading it at EndDisabled would
-    -- unbalance the ImGui stack ("EndDisabled too many times").
+    -- Capture the disabled state BEFORE the buttons: a click flips `busy` true
+    -- in this same frame, so re-reading it at EndDisabled would unbalance the
+    -- ImGui stack ("EndDisabled too many times").
     local dis_bin = busy
     if dis_bin then im.BeginDisabled(ctx) end
-    if im.Button(ctx, "Get##bin") then
-      local b = vo.BINARY_CATALOG[bin_choice + 1]
-      r.RecursiveCreateDirectory(bin_dir, 0)
-      local zip = bin_dir .. "/" .. b.asset
-      busy = true; status = "Downloading " .. b.label .. "…"
-      vo.RunDownloadAsync(cfg, vo.BinaryDownloadURL(b.key), zip, b.expected_bytes,
-        function()  -- on_done
-          local ok, entries = vo.ExtractZip(zip, bin_dir)
-          os.remove(zip)
-          if not ok then
-            status = tostring(entries)  -- on failure, entries holds the error message
-          else
-            local exe = vo.LocateWhisperCliExe(entries)
-            if exe then
-              cfg.whisper_bin = exe; vo.SaveConfig(cfg)
-              if select(1, vo.IsBackendReady(cfg)) then
-                status = "Installed whisper-cli. Checking device…"
-                vo.ProbeBackendDevice(cfg, function(d) device_text = describe_device(d); status = "" end)
-              else
-                status = "Installed whisper-cli. Set a model, then press Check device."
-              end
-            else
-              status = "Downloaded, but whisper-cli.exe was not found in the archive."
-            end
-          end
-          busy = false
-        end,
-        function() status = "Download cancelled. Nothing was changed."; busy = false end,
-        function(msg) status = msg; busy = false end)
+    if busy and busy_kind == "bin" then
+      im.Button(ctx, "Downloading…##bin")
+    elseif b_inst then
+      if im.Button(ctx, "Use downloaded##bin") then
+        cfg.whisper_bin = b_inst; vo.SaveConfig(cfg); status = "Using " .. b.label .. "."
+        if select(1, vo.IsBackendReady(cfg)) then
+          vo.ProbeBackendDevice(cfg, function(d) device_text = describe_device(d) end)
+        end
+      end
+      im.SameLine(ctx)
+      if im.Button(ctx, "Repair##bin") then start_bin_dl(b) end
+    else
+      if im.Button(ctx, "Get##bin") then start_bin_dl(b) end
     end
     if dis_bin then im.EndDisabled(ctx) end
   else
@@ -185,31 +247,29 @@ local function DrawBackend()
 
   -- Model
   local model_labels = {}
-  for _, m in ipairs(vo.MODEL_CATALOG) do
-    local mark = vo.ModelIsInstalled(model_dir, m.name) and "  [installed]" or ""
-    model_labels[#model_labels + 1] = m.label .. mark
+  for _, mm in ipairs(vo.MODEL_CATALOG) do
+    local mark = model_ready(mm.name) and "  [installed]" or ""
+    model_labels[#model_labels + 1] = mm.label .. mark
   end
   local _cm
   _cm, model_choice = im.Combo(ctx, "Model", model_choice,
     table.concat(model_labels, "\0") .. "\0\0")
   local m = vo.MODEL_CATALOG[model_choice + 1]
-  local m_installed = vo.ModelIsInstalled(model_dir, m.name)
+  local m_inst = model_ready(m.name)
   im.SameLine(ctx)
   local dis_model = busy
   if dis_model then im.BeginDisabled(ctx) end
-  if im.Button(ctx, (m_installed and "Use downloaded##model" or "Get##model")) then
-    r.RecursiveCreateDirectory(model_dir, 0)
-    local dest = model_dir .. "/" .. m.filename
-    if m_installed then
-      cfg.whisper_model = dest; vo.SaveConfig(cfg); status = "Selected " .. m.name .. "."
-    else
-      busy = true; status = "Downloading " .. m.label .. "…"
-      vo.RunDownloadAsync(cfg, vo.ModelDownloadURL(m.name), dest, m.expected_bytes,
-        function() cfg.whisper_model = dest; vo.SaveConfig(cfg)
-                   status = "Installed " .. m.name .. " model."; busy = false end,
-        function() status = "Download cancelled. Nothing was changed."; busy = false end,
-        function(msg) status = msg; busy = false end)
+  if busy and busy_kind == "model" then
+    im.Button(ctx, "Downloading…##model")
+  elseif m_inst then
+    if im.Button(ctx, "Use downloaded##model") then
+      cfg.whisper_model = model_dir .. "/" .. m.filename; vo.SaveConfig(cfg)
+      status = "Selected " .. m.name .. "."
     end
+    im.SameLine(ctx)
+    if im.Button(ctx, "Repair##model") then start_model_dl(m) end
+  else
+    if im.Button(ctx, "Get##model") then start_model_dl(m) end
   end
   if dis_model then im.EndDisabled(ctx) end
 

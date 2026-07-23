@@ -225,12 +225,20 @@ Open **ajsfx VO Settings → Speech backend → Download backend & models**.
 - [ ] **GPU binary:** with CUDA 12.4 selected, press **Get**. A progress window
       shows downloaded/total and a working **Cancel**.
 - [ ] On completion the whisper-cli path field fills in automatically, pointing
-      at the extracted `whisper-cli.exe`. Confirm the file exists there.
-- [ ] **Model:** pick `base`, press **Get**. After it completes the model path
-      fills in and the model shows **[installed]** in the dropdown.
-- [ ] Re-open the model dropdown: the button now reads **Use downloaded**;
-      pressing it just sets the path with no download.
+      at the extracted `whisper-cli.exe` (under `Resources/whisper-bin/<build>/`).
+      Confirm the file exists there.
+- [ ] While the binary downloads, its button reads **Downloading…** and is greyed;
+      when done, the build shows **[installed]** in the dropdown and the button
+      pair becomes **Use downloaded** + **Repair**.
+- [ ] **Repair:** press **Repair** on the installed build → it re-downloads and
+      re-extracts that build (use this if the folder is corrupted or missing DLLs).
+- [ ] **Model:** pick `base`, press **Get**. While downloading, the button reads
+      **Downloading…** (it must NOT flip to "Use downloaded" until the download
+      actually completes). After it completes the model path fills in and the
+      model shows **[installed]**, with **Use downloaded** + **Repair** buttons.
 - [ ] **Backend ready** turns green once both are set.
+- [ ] No `EndDisabled()` / ImGui stack error appears in the console when clicking
+      any Get / Use downloaded / Repair button.
 
 ## 11. GPU device check
 
