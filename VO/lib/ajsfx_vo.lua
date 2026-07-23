@@ -964,15 +964,26 @@ end
 -- Pure layer: backend acquisition paths & checks
 --------------------------------
 
--- Storage lives under REAPER's resource path so it is shared across projects.
--- Pure over the injected resource path so it can be unit-tested; callers pass
--- r.GetResourcePath().
-function vo.ResolveModelsDir(resource_path)
-  return (resource_path or "") .. "/whisper-models"
+-- Downloads live under the plugin's own folder, not loose in the resource
+-- root. Given the VO script directory (…/Scripts/<repo>/VO/), return
+-- …/Scripts/<repo>/Resources — deriving the repo folder from the install path
+-- so the name is never hardcoded (mirrors how PVX derives its venv dir).
+-- Pure over the passed directory for unit-testing; the caller supplies its own
+-- dir from debug.getinfo.
+function vo.PluginResourceRoot(script_dir)
+  local dir = (script_dir or ""):gsub("[/\\]+$", "")   -- strip trailing separators
+  dir = dir:gsub("[/\\][^/\\]+$", "")                  -- drop the VO segment -> repo root
+  return dir .. "/Resources"
 end
 
-function vo.ResolveBinDir(resource_path)
-  return (resource_path or "") .. "/whisper-bin"
+-- Model/binary storage under the plugin resource root (from PluginResourceRoot).
+-- Pure over the injected base so it can be unit-tested.
+function vo.ResolveModelsDir(resource_root)
+  return (resource_root or "") .. "/whisper-models"
+end
+
+function vo.ResolveBinDir(resource_root)
+  return (resource_root or "") .. "/whisper-bin"
 end
 
 -- A download is valid when it reaches at least ~95% of the expected size. This

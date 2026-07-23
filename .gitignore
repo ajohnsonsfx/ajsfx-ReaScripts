@@ -5,3 +5,5 @@
 *.RPP-bak
 *.code-workspace
 .superpowers/
+# Downloaded whisper-cli binaries and ggml models (VO backend acquisition)
+/Resources/

@@ -1704,9 +1704,19 @@ local function write_sized_file(bytes)
   return path
 end
 
-test("ResolveModelsDir/ResolveBinDir append under the resource path", function()
+test("ResolveModelsDir/ResolveBinDir append under the resource root", function()
   assert(vo.ResolveModelsDir("C:/RPR") == "C:/RPR/whisper-models", vo.ResolveModelsDir("C:/RPR"))
   assert(vo.ResolveBinDir("C:/RPR")    == "C:/RPR/whisper-bin",    vo.ResolveBinDir("C:/RPR"))
+end)
+
+test("PluginResourceRoot drops the VO segment and points at <repo>/Resources", function()
+  assert(vo.PluginResourceRoot("C:/x/Scripts/ajsfx-ReaScripts/VO/") ==
+    "C:/x/Scripts/ajsfx-ReaScripts/Resources",
+    vo.PluginResourceRoot("C:/x/Scripts/ajsfx-ReaScripts/VO/"))
+  -- tolerates a missing trailing separator and backslashes
+  assert(vo.PluginResourceRoot("C:\\x\\ajsfx-ReaScripts\\VO") ==
+    "C:\\x\\ajsfx-ReaScripts/Resources",
+    vo.PluginResourceRoot("C:\\x\\ajsfx-ReaScripts\\VO"))
 end)
 
 test("VerifyDownloadSize passes at/above the 95% floor", function()

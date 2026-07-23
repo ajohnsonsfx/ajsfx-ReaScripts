@@ -131,9 +131,9 @@ local function DrawBackend()
   im.Spacing(ctx)
   im.SeparatorText(ctx, "Download backend & models")
 
-  local res       = r.GetResourcePath()
-  local bin_dir   = vo.ResolveBinDir(res)
-  local model_dir = vo.ResolveModelsDir(res)
+  local res_root  = vo.PluginResourceRoot(script_path)
+  local bin_dir   = vo.ResolveBinDir(res_root)
+  local model_dir = vo.ResolveModelsDir(res_root)
 
   -- GPU binary (Windows only)
   if vo.IsWindows() then
