@@ -130,7 +130,11 @@ local function DrawBackend()
     _cb, bin_choice = im.Combo(ctx, "GPU binary", bin_choice,
       table.concat(bin_labels, "\0") .. "\0\0")
     im.SameLine(ctx)
-    if busy then im.BeginDisabled(ctx) end
+    -- Capture the disabled state BEFORE the button: the click handler flips
+    -- `busy` true in this same frame, so re-reading it at EndDisabled would
+    -- unbalance the ImGui stack ("EndDisabled too many times").
+    local dis_bin = busy
+    if dis_bin then im.BeginDisabled(ctx) end
     if im.Button(ctx, "Get##bin") then
       local b = vo.BINARY_CATALOG[bin_choice + 1]
       r.RecursiveCreateDirectory(bin_dir, 0)
@@ -161,7 +165,7 @@ local function DrawBackend()
         function() status = "Download cancelled. Nothing was changed."; busy = false end,
         function(msg) status = msg; busy = false end)
     end
-    if busy then im.EndDisabled(ctx) end
+    if dis_bin then im.EndDisabled(ctx) end
   else
     im.TextDisabled(ctx, "GPU binary download is Windows-only. Use Browse above on this OS.")
   end
@@ -178,7 +182,8 @@ local function DrawBackend()
   local m = vo.MODEL_CATALOG[model_choice + 1]
   local m_installed = vo.ModelIsInstalled(model_dir, m.name)
   im.SameLine(ctx)
-  if busy then im.BeginDisabled(ctx) end
+  local dis_model = busy
+  if dis_model then im.BeginDisabled(ctx) end
   if im.Button(ctx, (m_installed and "Use downloaded##model" or "Get##model")) then
     r.RecursiveCreateDirectory(model_dir, 0)
     local dest = model_dir .. "/" .. m.filename
@@ -193,19 +198,20 @@ local function DrawBackend()
         function(msg) status = msg; busy = false end)
     end
   end
-  if busy then im.EndDisabled(ctx) end
+  if dis_model then im.EndDisabled(ctx) end
 
   -- Device readout
   im.Spacing(ctx)
   im.Text(ctx, "Device: " .. device_text)
   im.SameLine(ctx)
   local ready = select(1, vo.IsBackendReady(cfg))
-  if (not ready) or busy then im.BeginDisabled(ctx) end
+  local dis_check = (not ready) or busy
+  if dis_check then im.BeginDisabled(ctx) end
   if im.Button(ctx, "Check device") then
     status = "Probing device…"
     vo.ProbeBackendDevice(cfg, function(d) device_text = describe_device(d); status = "" end)
   end
-  if (not ready) or busy then im.EndDisabled(ctx) end
+  if dis_check then im.EndDisabled(ctx) end
   if not ready then
     im.TextDisabled(ctx, "Check needs both a whisper-cli binary and a model set.")
   end
