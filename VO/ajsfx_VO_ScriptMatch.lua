@@ -114,8 +114,18 @@ local ctx = im.CreateContext('VO ScriptMatch')
 local _, remembered = r.GetProjExtState(0, PROJ_SECTION, "script_csv")
 local state = {
   csv_path         = remembered or "",
-  speaker          = "",
-  type             = "",
+  loaded_path      = nil,        -- path last read into header/rows (nil = none yet)
+  restored         = false,      -- first successful load restored §5.3 precedence
+  header           = nil,        -- array of column-name strings from the CSV header
+  rows             = nil,        -- data rows (header removed)
+  header_error     = "",         -- unreadable / no data / bad header -> run disabled
+  mapping          = {},         -- role -> header column name
+  skip_text        = "",         -- skip tokens, one per line (part of the layout)
+  layout_name      = "",         -- selected preset name ("" = unsaved/inline)
+  layout_dirty     = false,      -- mapping edited away from the named preset
+  excluded         = {},         -- folded character key -> true when unchecked
+  distinct         = nil,        -- vo.DistinctCharacters for the mapped speaker column
+  distinct_col     = nil,        -- header column distinct was built for (change detection)
   use_alts_track   = cfg.use_alts_track or false,
   suffix_alt_names = cfg.suffix_alt_names or false,
   primary_last     = true,
@@ -141,6 +151,219 @@ if #usable == 0 then
   r.MB("None of the selected items can be transcribed:\n\n" ..
        table.concat(skipped, "\n"), "ajsfx VO ScriptMatch", 0)
   return
+end
+
+-- -----------------------------------------------------------------------
+-- Layout / CSV dialog helpers
+-- -----------------------------------------------------------------------
+
+local ALL_ROLES = { "line_id", "text", "asset", "speaker", "type" }
+
+local ROLE_LABEL = {
+  line_id = "LineID",
+  text    = "Text",
+  asset   = "Filename/AudioAsset",
+  speaker = "Character",
+  type    = "Type",
+}
+
+-- Skip-tokens box -> trimmed, non-empty token list (mirrors Settings' Apply()).
+local function ParseSkipLines(text)
+  local out = {}
+  for v in tostring(text or ""):gmatch("[^\n]+") do
+    local t = v:match("^%s*(.-)%s*$")
+    if t ~= "" then out[#out + 1] = t end
+  end
+  return out
+end
+
+-- Resolve a remembered column name to the actual header entry (exact first, then
+-- case/space-insensitive), or nil when the column is absent from this header.
+local function HeaderMatch(colname)
+  if not colname or colname == "" then return nil end
+  local header = state.header or {}
+  for _, h in ipairs(header) do if h == colname then return h end end
+  local want = tostring(colname):lower():gsub("^%s*(.-)%s*$", "%1")
+  for _, h in ipairs(header) do
+    if h:lower():gsub("^%s*(.-)%s*$", "%1") == want then return h end
+  end
+  return nil
+end
+
+-- (Re)build the character multi-select from the mapped speaker column. Existing
+-- exclusions are keyed by folded character key, so they survive a rebuild; new
+-- characters default to included. Cleared when no character column is mapped.
+local function RebuildDistinct()
+  local spk = state.mapping.speaker
+  if not spk then
+    state.distinct, state.distinct_col = nil, nil
+    return
+  end
+  local idx
+  for i, h in ipairs(state.header or {}) do if h == spk then idx = i; break end end
+  if not idx then
+    state.distinct, state.distinct_col = nil, nil
+    return
+  end
+  state.distinct     = vo.DistinctCharacters(state.rows or {}, idx)
+  state.distinct_col = spk
+end
+
+-- Adopt a layout table (mapping + skip_values) against the current header: a
+-- remembered column present in the header is selected, an absent one unmapped.
+local function ApplyLayoutTable(layout)
+  local m = {}
+  for _, role in ipairs(ALL_ROLES) do
+    m[role] = HeaderMatch(layout.mapping and layout.mapping[role])
+  end
+  state.mapping   = m
+  state.skip_text = table.concat(layout.skip_values or vo.DEFAULT_SKIP_VALUES, "\n")
+end
+
+-- Re-intersect the current mapping against a freshly loaded header (CSV swap):
+-- keep columns that still exist, drop those that vanished. Skip tokens are kept.
+local function ReintersectMapping()
+  local m = {}
+  for _, role in ipairs(ALL_ROLES) do
+    m[role] = HeaderMatch(state.mapping and state.mapping[role])
+  end
+  state.mapping = m
+end
+
+-- Restore the layout on open by SPEC §5.3 precedence: named preset (if it still
+-- exists) -> inline per-.rpp layout -> auto-detect from the header.
+local function RestoreLayoutFromMemory()
+  local layout, name
+  local _, ln = r.GetProjExtState(0, PROJ_SECTION, "layout_name")
+  if ln and ln ~= "" then
+    local preset = vo.LoadLayoutPreset(ln)
+    if preset then layout, name = preset, ln end
+  end
+  if not layout then
+    local _, inline = r.GetProjExtState(0, PROJ_SECTION, "layout")
+    if inline and inline ~= "" then layout, name = vo.DeserializeLayout(inline), "" end
+  end
+  if not layout then
+    layout, name = { mapping = vo.AutoDetectMapping(state.header) }, ""
+  end
+  ApplyLayoutTable(layout)
+  state.layout_name  = name
+  state.layout_dirty = false
+end
+
+-- Read, parse and header-validate a CSV path into dialog state. `restore` true
+-- on the first successful load (apply §5.3 precedence); false on a mid-session
+-- path change (keep the current mapping, dropping columns the new header lacks).
+local function LoadCSV(path, restore)
+  state.loaded_path  = path
+  state.header       = nil
+  state.rows         = nil
+  state.header_error = ""
+  state.distinct, state.distinct_col = nil, nil
+
+  if not path or path == "" then return end
+
+  local text = ReadFile(path)
+  if not text then
+    state.header_error = "Cannot read the script CSV:\n" .. path
+    return
+  end
+
+  local rows = vo.ParseCSV(text)
+  if #rows < 1 then
+    state.header_error = "The script CSV is empty."
+    return
+  end
+
+  local header = table.remove(rows, 1)
+  local ok, err = vo.ValidateHeaderNames(header)
+  if not ok then
+    state.header_error = err
+    return
+  end
+
+  state.header, state.rows = header, rows
+  if #rows == 0 then
+    state.header_error = "The script CSV has no data rows."
+  end
+
+  if restore then RestoreLayoutFromMemory() else ReintersectMapping() end
+  RebuildDistinct()
+  state.restored = true
+end
+
+-- The current dialog mapping + skip tokens as a layout table for save/persist.
+local function CurrentLayout()
+  local mapping = {}
+  for _, role in ipairs(ALL_ROLES) do mapping[role] = state.mapping[role] end
+  return { mapping = mapping, skip_values = ParseSkipLines(state.skip_text) }
+end
+
+-- Save the current layout under `name`, confirming an overwrite first.
+local function DoSave(name)
+  local ok, reason = vo.ValidatePresetName(name)
+  if not ok then state.message = reason; return end
+  local exists = false
+  for _, n in ipairs(vo.ListLayoutPresets()) do if n == name then exists = true; break end end
+  if exists and r.MB("A layout preset named \"" .. name .. "\" already exists.\n" ..
+                     "Overwrite it?", "Overwrite layout preset", 4) ~= 6 then
+    return
+  end
+  if vo.SaveLayoutPreset(name, CurrentLayout()) then
+    state.layout_name, state.layout_dirty = name, false
+    state.message = "Saved layout preset \"" .. name .. "\"."
+  else
+    state.message = "Could not save the layout preset."
+  end
+end
+
+-- Load a named preset into the dialog (mapping + skip + character list).
+local function LoadPresetByName(name)
+  local layout = vo.LoadLayoutPreset(name)
+  if not layout then state.message = "Preset not found: " .. name; return end
+  ApplyLayoutTable(layout)
+  state.layout_name, state.layout_dirty = name, false
+  RebuildDistinct()
+end
+
+-- Any mapping/skip edit deviates from the named preset -> mark unsaved.
+local function MarkDirty()
+  state.layout_dirty = true
+  state.layout_name  = ""
+end
+
+-- One role dropdown. Options are the header columns; optional roles lead with
+-- (none). Editing marks the layout unsaved and rebuilds the character list when
+-- the speaker column moves. Combo items are the double-null-terminated form with
+-- a 0-based index, so header lookups add 1 (and subtract the (none) offset).
+local function RoleCombo(role, optional)
+  local items, base = {}, 0
+  if optional then items[1], base = "(none)", 1 end
+  for _, h in ipairs(state.header) do items[#items + 1] = h end
+
+  local cur = optional and 0 or -1
+  local mapped = state.mapping[role]
+  if mapped then
+    for i, h in ipairs(state.header) do
+      if h == mapped then cur = (i - 1) + base; break end
+    end
+  end
+
+  local label = ROLE_LABEL[role] .. (optional and "" or " *")
+  local cch, sel = im.Combo(ctx, label, cur, table.concat(items, "\0") .. "\0\0")
+  if cch and sel ~= cur then
+    local newcol
+    if optional and sel == 0 then
+      newcol = nil
+    else
+      newcol = state.header[sel - base + 1]
+    end
+    if state.mapping[role] ~= newcol then
+      state.mapping[role] = newcol
+      MarkDirty()
+      if role == "speaker" then RebuildDistinct() end
+    end
+  end
 end
 
 -- -----------------------------------------------------------------------
@@ -178,36 +401,49 @@ local function Finish(plan, lines)
 end
 
 local function Run()
-  local csv_text = ReadFile(state.csv_path)
-  if not csv_text then
-    state.message = "Cannot read the script CSV:\n" .. state.csv_path
+  if not state.header then
+    state.message = (state.header_error ~= "" and state.header_error)
+                    or "Load a script CSV first."
+    return
+  end
+  if state.header_error ~= "" then
+    state.message = state.header_error
     return
   end
 
-  local rows = vo.ParseCSV(csv_text)
-  if #rows < 2 then
-    state.message = "The script CSV has no data rows."
-    return
+  local cols, err = vo.MapColumns(state.header, state.mapping)
+  if not cols then state.message = err; return end
+
+  -- Character filter -> folded include-set + canonicalizer. Applied only when a
+  -- character column is mapped AND it actually carries values; otherwise the
+  -- filter is inert (nil speakers => all lines, no canonical rewrite).
+  local speakers, canon
+  if state.distinct and #state.distinct > 0 then
+    canon    = vo.CanonicalizeMap(state.distinct)
+    speakers = {}
+    local any = false
+    for _, d in ipairs(state.distinct) do
+      if not state.excluded[d.key] then speakers[d.key] = true; any = true end
+    end
+    if not any then state.message = "No characters selected."; return end
   end
 
-  local header = table.remove(rows, 1)
-  local cols, err = vo.MapColumns(header, cfg.column_mapping)
-  if not cols then
-    state.message = err
-    return
-  end
-
-  local lines = vo.BuildScriptLines(rows, cols, {
-    skip_values = cfg.skip_values,
-    speaker     = state.speaker,
-    type        = state.type,
+  local lines = vo.BuildScriptLines(state.rows, cols, {
+    skip_values  = ParseSkipLines(state.skip_text),
+    speakers     = speakers,
+    canonicalize = canon,
   })
   if #lines == 0 then
     state.message = "No script lines survived the filters."
     return
   end
 
+  -- Persist per-.rpp: CSV path, the inline layout, and the selected preset name
+  -- (empty while the mapping is unsaved) — SPEC §5.3.
   r.SetProjExtState(0, PROJ_SECTION, "script_csv", state.csv_path)
+  r.SetProjExtState(0, PROJ_SECTION, "layout", vo.SerializeLayout(CurrentLayout()))
+  r.SetProjExtState(0, PROJ_SECTION, "layout_name",
+                    state.layout_dirty and "" or (state.layout_name or ""))
 
   cfg.use_alts_track   = state.use_alts_track
   cfg.suffix_alt_names = state.suffix_alt_names
@@ -271,7 +507,7 @@ local function loop()
     ctx = im.CreateContext('VO ScriptMatch')
   end
 
-  im.SetNextWindowSize(ctx, 500, 400, im.Cond_FirstUseEver)
+  im.SetNextWindowSize(ctx, 520, 560, im.Cond_FirstUseEver)
   local visible, open = im.Begin(ctx, 'ajsfx VO ScriptMatch', true)
 
   local pressed_run = false
@@ -280,6 +516,9 @@ local function loop()
     im.TextDisabled(ctx, string.format("%d item(s) selected, %d skipped.", #usable, #skipped))
     im.Spacing(ctx)
 
+    -- Script CSV path. A change (typed or browsed) reloads the header + rows;
+    -- the first successful load restores the layout by §5.3 precedence, later
+    -- loads keep the current mapping against the new header.
     local changed
     changed, state.csv_path = im.InputText(ctx, "Script CSV", state.csv_path)
     im.SameLine(ctx)
@@ -287,27 +526,140 @@ local function loop()
       local ok, path = r.GetUserFileNameForRead(state.csv_path, "Select the session script", "csv")
       if ok then state.csv_path = path end
     end
+    if state.csv_path ~= state.loaded_path then
+      LoadCSV(state.csv_path, not state.restored)
+    end
 
-    im.Spacing(ctx)
-    im.SeparatorText(ctx, "Filters")
-    changed, state.speaker = im.InputText(ctx, "Speaker", state.speaker)
-    changed, state.type    = im.InputText(ctx, "Type",    state.type)
-    im.TextDisabled(ctx, "Leave blank to use every line in the script.")
+    if state.header then
+      -- Layout -----------------------------------------------------------
+      im.Spacing(ctx)
+      im.SeparatorText(ctx, "Layout")
 
+      local preset_names = vo.ListLayoutPresets()
+      local preset_items = { "(unsaved)" }
+      for _, n in ipairs(preset_names) do preset_items[#preset_items + 1] = n end
+      local preset_cur = 0
+      if state.layout_name ~= "" and not state.layout_dirty then
+        for i, n in ipairs(preset_names) do
+          if n == state.layout_name then preset_cur = i; break end
+        end
+      end
+      local pchanged, psel = im.Combo(ctx, "Preset", preset_cur,
+        table.concat(preset_items, "\0") .. "\0\0")
+      if pchanged and psel ~= preset_cur then
+        if psel == 0 then
+          state.layout_name, state.layout_dirty = "", true
+        else
+          LoadPresetByName(preset_names[psel])
+        end
+      end
+
+      if im.Button(ctx, "Save") then
+        if state.layout_name ~= "" then
+          DoSave(state.layout_name)
+        else
+          local ok, name = r.GetUserInputs("Save layout preset", 1,
+            "Preset name:,extrawidth=180", "")
+          if ok then DoSave(name) end
+        end
+      end
+      im.SameLine(ctx)
+      if im.Button(ctx, "Save As...") then
+        local ok, name = r.GetUserInputs("Save layout preset as", 1,
+          "Preset name:,extrawidth=180", state.layout_name)
+        if ok then DoSave(name) end
+      end
+      im.SameLine(ctx)
+      -- Capture the disabled state BEFORE the button: Delete clears layout_name
+      -- in this same frame, so gating EndDisabled on a re-read would unbalance
+      -- the ImGui stack (see Settings dis_bin/dis_model/dis_check).
+      local dis_del = (state.layout_name == "")
+      if dis_del then im.BeginDisabled(ctx) end
+      if im.Button(ctx, "Delete") then
+        local nm = state.layout_name
+        if nm ~= "" and r.MB("Delete layout preset \"" .. nm .. "\"?",
+                             "Delete layout preset", 4) == 6 then
+          vo.DeleteLayoutPreset(nm)
+          state.layout_name, state.layout_dirty = "", true
+          state.message = "Deleted layout preset \"" .. nm .. "\"."
+        end
+      end
+      if dis_del then im.EndDisabled(ctx) end
+
+      im.Spacing(ctx)
+      RoleCombo("line_id", false)
+      RoleCombo("text",    false)
+      RoleCombo("asset",   false)
+      RoleCombo("speaker", true)
+      RoleCombo("type",    true)
+
+      im.Spacing(ctx)
+      im.TextDisabled(ctx, "Skip tokens — one per line. A row whose Filename cell\n" ..
+                           "matches is not yet recorded and is excluded.")
+      local skchanged
+      skchanged, state.skip_text = im.InputTextMultiline(ctx, "##skip", state.skip_text, 380, 54)
+      if skchanged then MarkDirty() end
+
+      -- Character filter -------------------------------------------------
+      if state.distinct and #state.distinct > 0 then
+        im.Spacing(ctx)
+        im.SeparatorText(ctx, "Character filter")
+        im.TextDisabled(ctx, "Unchecked characters are excluded from this run.")
+        for _, d in ipairs(state.distinct) do
+          local included = not state.excluded[d.key]
+          local cbch, val = im.Checkbox(ctx, d.display .. "##char_" .. d.key, included)
+          if cbch then
+            state.excluded[d.key] = (not val) or nil
+          end
+        end
+      end
+    elseif state.header_error ~= "" then
+      im.Spacing(ctx)
+      im.TextColored(ctx, 0xDD6666FF, state.header_error)
+    else
+      im.Spacing(ctx)
+      im.TextDisabled(ctx, "Choose a script CSV to map its columns.")
+    end
+
+    -- This session --------------------------------------------------------
     im.Spacing(ctx)
     im.SeparatorText(ctx, "This session")
-    changed, state.use_alts_track = im.Checkbox(ctx, "Send non-primary takes to the Alts track", state.use_alts_track)
-    changed, state.suffix_alt_names = im.Checkbox(ctx, "Suffix non-primary takes (_tk01, _tk02…)", state.suffix_alt_names)
-    changed, state.primary_last = im.Checkbox(ctx, "The last take of a line is the primary", state.primary_last)
+    local sch
+    sch, state.use_alts_track   = im.Checkbox(ctx, "Send non-primary takes to the Alts track", state.use_alts_track)
+    sch, state.suffix_alt_names = im.Checkbox(ctx, "Suffix non-primary takes (_tk01, _tk02…)", state.suffix_alt_names)
+    sch, state.primary_last     = im.Checkbox(ctx, "The last take of a line is the primary", state.primary_last)
     im.TextDisabled(ctx, "Uncheck the last box if the first read is usually the keeper.")
 
     im.Spacing(ctx)
     im.Separator(ctx)
     im.Spacing(ctx)
 
+    -- Run is blocked until the CSV is valid and every required role is mapped.
+    local run_error
+    if not state.header then
+      run_error = (state.header_error ~= "" and state.header_error) or "Load a script CSV."
+    elseif state.header_error ~= "" then
+      run_error = state.header_error
+    else
+      for _, role in ipairs({ "line_id", "text", "asset" }) do
+        if not state.mapping[role] then
+          run_error = "Map the required column: " .. ROLE_LABEL[role]
+          break
+        end
+      end
+    end
+
+    local dis_run = (run_error ~= nil)
+    if dis_run then im.BeginDisabled(ctx) end
     pressed_run = im.Button(ctx, "Transcribe and cut")
+    if dis_run then im.EndDisabled(ctx) end
     im.SameLine(ctx)
     im.TextDisabled(ctx, "Nothing changes until transcription finishes.")
+
+    if run_error then
+      im.Spacing(ctx)
+      im.TextColored(ctx, 0xDDAA33FF, run_error)
+    end
 
     if state.message ~= "" then
       im.Spacing(ctx)
@@ -326,5 +678,8 @@ local function loop()
 
   if open then r.defer(loop) end
 end
+
+-- Load any remembered CSV once up front so the first frame shows its columns.
+LoadCSV(state.csv_path, true)
 
 r.defer(loop)
