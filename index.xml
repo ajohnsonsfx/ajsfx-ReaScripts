@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ajsfx-ReaScripts" commit="74a580d4412ad85cf1e008dc60ba5ab4bbc3451c">
+<index version="1" name="ajsfx-ReaScripts" commit="3821159ba78105d6bf31e0bfd9caaebab8c3a7e0">
   <category name="Items">
     <reapack name="ajsfx_GentleNormalizer.lua" type="script" desc="Gentle Normalizer">
       <metadata>
@@ -52,6 +52,10 @@
         <changelog><![CDATA[Initial release]]></changelog>
         <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/5df5dae76610ea8984e5fc5efe5c1e86abaa70cb/Items/ajsfx_MoveCursorToLeftEdgeOfFirstUnmutedItemOnTrack.lua</source>
       </version>
+      <version name="1.1" author="ajsfx" time="2026-07-23T04:47:42Z">
+        <changelog><![CDATA[Refresh the arrange view after moving the edit cursor]]></changelog>
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/3821159ba78105d6bf31e0bfd9caaebab8c3a7e0/Items/ajsfx_MoveCursorToLeftEdgeOfFirstUnmutedItemOnTrack.lua</source>
+      </version>
     </reapack>
     <reapack name="ajsfx_MoveCursorToRightEdgeOfLastItemOnTrack.lua" type="script" desc="Move cursor to right edge of last item on track">
       <metadata>
@@ -67,6 +71,10 @@
         <changelog><![CDATA[Initial release]]></changelog>
         <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/5df5dae76610ea8984e5fc5efe5c1e86abaa70cb/Items/ajsfx_MoveCursorToRightEdgeOfLastItemOnTrack.lua</source>
       </version>
+      <version name="1.1" author="ajsfx" time="2026-07-23T04:47:42Z">
+        <changelog><![CDATA[Refresh the arrange view after moving the edit cursor]]></changelog>
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/3821159ba78105d6bf31e0bfd9caaebab8c3a7e0/Items/ajsfx_MoveCursorToRightEdgeOfLastItemOnTrack.lua</source>
+      </version>
     </reapack>
     <reapack name="ajsfx_MoveCursorToRightEdgeOfLastUnmutedItemOnTrack.lua" type="script" desc="Move cursor to right edge of last unmuted item on track">
       <metadata>
@@ -81,6 +89,10 @@
       <version name="1.0" author="ajsfx" time="2026-07-23T04:20:22Z">
         <changelog><![CDATA[Initial release]]></changelog>
         <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/5df5dae76610ea8984e5fc5efe5c1e86abaa70cb/Items/ajsfx_MoveCursorToRightEdgeOfLastUnmutedItemOnTrack.lua</source>
+      </version>
+      <version name="1.1" author="ajsfx" time="2026-07-23T04:47:42Z">
+        <changelog><![CDATA[Refresh the arrange view after moving the edit cursor]]></changelog>
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/3821159ba78105d6bf31e0bfd9caaebab8c3a7e0/Items/ajsfx_MoveCursorToRightEdgeOfLastUnmutedItemOnTrack.lua</source>
       </version>
     </reapack>
     <reapack name="ajsfx_SetAllSelectedItemsLengthToFirstSelectedItem.lua" type="script" desc="Set All Selected Items Length To First Selected Item">
