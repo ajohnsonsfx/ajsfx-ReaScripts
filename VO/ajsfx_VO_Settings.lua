@@ -1,11 +1,12 @@
 -- @description ajsfx VO Settings
 -- @author ajsfx
--- @version 0.2
--- @changelog Add backend/model download and GPU device detection (see VO/SPEC-backend-acquisition.md)
+-- @version 0.3
+-- @changelog Move CSV column mapping/skip out to ScriptMatch; keep substitutions
 -- @noindex
 -- @about Settings panel for ajsfx VO ScriptMatch. Configure the speech backend,
---        matching thresholds, destination tracks, script CSV column mapping and
---        the substitution table. See VO/SPEC.md for the design.
+--        matching thresholds, destination tracks, and the substitution table.
+--        Script CSV column mapping and character filtering live in
+--        ajsfx VO ScriptMatch itself. See VO/SPEC.md for the design.
 --
 --        Not its own ReaPack package: it is shipped as a second [main] action by
 --        ajsfx_VO_ScriptMatch.lua. Only one package may provide lib/ajsfx_vo.lua,
@@ -350,20 +351,6 @@ end
 
 local function DrawScript()
   local changed
-  im.TextDisabled(ctx, "Column names as they appear in your script CSV header.")
-  changed, cfg.column_mapping.line_id = im.InputText(ctx, "LineID column",     cfg.column_mapping.line_id)
-  changed, cfg.column_mapping.text    = im.InputText(ctx, "Text column",       cfg.column_mapping.text)
-  changed, cfg.column_mapping.asset   = im.InputText(ctx, "AudioAsset column", cfg.column_mapping.asset)
-  changed, cfg.column_mapping.speaker = im.InputText(ctx, "Speaker column",    cfg.column_mapping.speaker)
-  changed, cfg.column_mapping.type    = im.InputText(ctx, "Type column",       cfg.column_mapping.type)
-
-  im.Spacing(ctx)
-  im.SeparatorText(ctx, "Skip values")
-  im.TextDisabled(ctx, "One per line. Rows whose AudioAsset matches are not yet\nrecorded and are excluded from matching.")
-  changed, skip_text = im.InputTextMultiline(ctx, "##skip", skip_text, 380, 60)
-
-  im.Spacing(ctx)
-  im.SeparatorText(ctx, "Substitutions")
   im.TextDisabled(ctx, "One \"from = to\" per line, applied to both the script and the\n" ..
                        "transcript. Use this to fix any reading the matcher gets wrong,\n" ..
                        "e.g. \"1999 = nineteen ninety nine\" or \"hp = hit points\".")
@@ -395,7 +382,7 @@ local function loop()
     end
     if im.CollapsingHeader(ctx, 'Matching') then DrawMatching() end
     if im.CollapsingHeader(ctx, 'Output')   then DrawOutput()   end
-    if im.CollapsingHeader(ctx, 'Script CSV') then DrawScript()  end
+    if im.CollapsingHeader(ctx, 'Substitutions') then DrawScript()  end
     if im.CollapsingHeader(ctx, 'Advanced') then DrawAdvanced() end
 
     im.Spacing(ctx)

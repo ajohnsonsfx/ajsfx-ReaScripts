@@ -1,7 +1,7 @@
 -- @description ajsfx VO ScriptMatch
 -- @author ajsfx
--- @version 0.3
--- @changelog Add in-Settings download of a CUDA whisper-cli binary and models (incl. large-v3-turbo), GPU device detection, per-build install state with Repair, progress labels, and buttons to open the download folders
+-- @version 0.4
+-- @changelog Move CSV mapping/filtering into ScriptMatch: header-driven dropdowns, named layout presets, multi-select character filter, per-character track routing
 -- @about Cut a recorded VO session into one clip per script line and name each
 --        clip with its delivery asset name. Reads a CSV script, transcribes the
 --        selected items locally with whisper.cpp, matches spoken spans against
@@ -414,18 +414,28 @@ local function Run()
   local cols, err = vo.MapColumns(state.header, state.mapping)
   if not cols then state.message = err; return end
 
-  -- Character filter -> folded include-set + canonicalizer. Applied only when a
-  -- character column is mapped AND it actually carries values; otherwise the
-  -- filter is inert (nil speakers => all lines, no canonical rewrite).
+  -- Character filter -> folded include-set + canonicalizer. Canonicalization
+  -- applies whenever a character column carries values. The include-set itself
+  -- stays nil (inert -> keep every row, including blank-character ones) unless
+  -- the user has actually excluded at least one character; only then does it
+  -- become the include-set of checked characters, which also makes a
+  -- blank-character row (speaker_key == nil) fail the include-set test in
+  -- BuildScriptLines and get dropped, as intended once filtering is active.
   local speakers, canon
   if state.distinct and #state.distinct > 0 then
-    canon    = vo.CanonicalizeMap(state.distinct)
-    speakers = {}
-    local any = false
+    canon = vo.CanonicalizeMap(state.distinct)
+    local any_excluded = false
     for _, d in ipairs(state.distinct) do
-      if not state.excluded[d.key] then speakers[d.key] = true; any = true end
+      if state.excluded[d.key] then any_excluded = true; break end
     end
-    if not any then state.message = "No characters selected."; return end
+    if any_excluded then
+      speakers = {}
+      local any_included = false
+      for _, d in ipairs(state.distinct) do
+        if not state.excluded[d.key] then speakers[d.key] = true; any_included = true end
+      end
+      if not any_included then state.message = "No characters selected."; return end
+    end
   end
 
   local lines = vo.BuildScriptLines(state.rows, cols, {

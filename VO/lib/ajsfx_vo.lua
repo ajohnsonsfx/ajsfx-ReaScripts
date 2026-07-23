@@ -1,7 +1,7 @@
 -- @description ajsfx VO Shared Library
 -- @author ajsfx
--- @version 0.2
--- @changelog Add backend/model download and GPU device detection (see VO/SPEC-backend-acquisition.md)
+-- @version 0.3
+-- @changelog CSV layout presets, character canonicalization/filter, per-character track routing
 -- @noindex
 -- @about Shared logic for ajsfx VO ScriptMatch.
 --        Split into a pure layer (parsing, normalization, matching, naming —

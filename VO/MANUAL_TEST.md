@@ -261,6 +261,131 @@ Open **ajsfx VO Settings → Speech backend → Download backend & models**.
 
 ---
 
+## 13. CSV layout, presets & character routing (ScriptMatch)
+
+Covers the CSV column-mapping/preset/filter rework described in
+[SPEC-csv-layout-filtering.md](SPEC-csv-layout-filtering.md). The pure logic
+(`DistinctCharacters`, `AutoDetectMapping`, serialize/deserialize, `CharacterTrackName`,
+the `BuildScriptLines` include-set) is unit-tested in `tests/test_vo.lua`; this section is
+the REAPER-side, dialog-and-routing half.
+
+Use `tests/fixtures/vo_sample_script.csv` (§2) for a Character-bearing CSV, and make (or
+reuse) a copy with the `Speaker` column removed/renamed for the no-character-column cases.
+
+### 13.1 Header-driven dropdowns
+
+- [ ] Browse to the sample CSV. Each role combo (**LineID**, **Text**,
+      **Filename/AudioAsset**, **Character**, **Type**) lists the CSV's actual header
+      column names, not hand-typed text.
+- [ ] On first load with no remembered layout, the roles are **auto-detected** correctly
+      from the sample header (LineID/Text/AudioAsset/Speaker/Type all pre-selected).
+- [ ] Unmap a **required** role (LineID, Text, or Filename/AudioAsset) by selecting a
+      different column, then pick `(none)` is not offered for it — required combos have
+      no `(none)` entry, only optional ones (Character, Type) do.
+- [ ] Pick `(none)` for **Character** → the **Character filter** section disappears, and
+      the dropdown editing marks the Preset combo `(unsaved)`.
+
+### 13.2 Missing required role disables the run
+
+- [ ] Load a CSV whose header lacks a column that looks like AudioAsset (rename it in a
+      scratch copy). Auto-detect leaves **Filename/AudioAsset** unmapped.
+- [ ] **Transcribe and cut** is disabled (greyed) and the message reads
+      `Map the required column: Filename/AudioAsset`.
+- [ ] Map any column to it → the button enables and the message clears.
+
+### 13.3 Layout presets — Save / Save As / Load / Delete
+
+- [ ] With the sample CSV mapped, press **Save**. Since no preset is selected yet, a
+      REAPER text-input dialog asks for a name — enter `TestGame` and confirm.
+- [ ] The **Preset** dropdown now shows `TestGame` selected (not `(unsaved)`).
+- [ ] Change the **Type** mapping to `(none)` → the dropdown reverts to `(unsaved)`
+      (layout is dirty).
+- [ ] Press **Save** again (layout dirty, name still `TestGame` conceptually unset) →
+      prompts for a name; **Save As...** always prompts, pre-filled with the current name.
+      Save As under the same name `TestGame` → confirmation dialog
+      **"A layout preset named 'TestGame' already exists. Overwrite it?"** appears; confirm.
+- [ ] Restart the dialog (close and reopen ScriptMatch, or switch the CSV path away and
+      back). Select `TestGame` from the **Preset** dropdown → the saved mapping (Type =
+      none) is restored.
+- [ ] Press **Delete** with `TestGame` selected → confirmation prompt, then the dropdown
+      falls back to `(unsaved)` and the mapping stays as it was (not cleared).
+- [ ] With no preset selected (`(unsaved)`), **Delete** is disabled (greyed).
+
+### 13.4 Per-`.rpp` restore, including a column that vanished
+
+- [ ] With a layout mapped (no saved preset — `(unsaved)`), close ScriptMatch, save the
+      `.rpp`, close and reopen the project, and reopen ScriptMatch. The **CSV path** and
+      the **mapping** are restored automatically (the inline per-project layout, §5.3).
+- [ ] Now point the CSV path at a copy of the sample with the `Type` column removed
+      entirely. The dialog reloads the header: **Type** falls back to `(none)` (its
+      remembered column no longer exists), while **LineID/Text/AudioAsset/Character**
+      — still present in the new header — keep their prior mappings.
+- [ ] Repeat with a named preset selected instead of inline: save `.rpp`, reopen, confirm
+      the preset name is still selected and its mapping (re-intersected against whatever
+      header is currently loaded) is applied.
+
+### 13.5 Character multi-select narrows the run
+
+- [ ] With Character mapped to `Speaker` on the sample CSV, the **Character filter**
+      section lists `Guard` and `Hero`, both checked.
+- [ ] Uncheck **Hero**, run. Only the Guard lines (NPC_001/002/003) are cut; the Hero
+      reads land on Review as unmatched (same as the free-text filter's old behavior,
+      §5).
+- [ ] Uncheck **both** Guard and Hero → **Transcribe and cut** proceeds only as far as
+      showing **"No characters selected."** in the message area; nothing runs.
+
+### 13.6 Default (nothing excluded) still processes blank-character rows
+
+This is the item verified as part of Task 6's review fix — confirm it directly:
+
+- [ ] Add one row to a scratch copy of the sample CSV with a **blank Character cell**
+      (e.g. a new `LineID` `NPC_005`, blank Speaker, some Text/AudioAsset, and record that
+      line in the session audio too).
+- [ ] Map Character to the Speaker column. Leave **every character checked** (the
+      default — nothing excluded).
+- [ ] Run. The blank-Character row is **still processed**: it is matched/cut like any
+      other line, and it lands on a **plain** track (`Selects`/`Alts`/`Review`, not a
+      `<Character>_...` track), because a row with no character never gets a per-character
+      destination.
+- [ ] Now uncheck any one real character (e.g. Hero) and run again. The blank-Character
+      row is **dropped** this time — once the filter is actually active (something
+      excluded), a row with no character key fails the include-set test. This confirms the
+      filter is inert until the user excludes at least one character, and only then treats
+      a blank cell as "not in the include-set."
+
+### 13.7 Per-character track routing
+
+- [ ] With Character mapped and both Guard and Hero checked, run the full sample. Confirm
+      tracks named exactly `Guard_Selects` and `Hero_Selects` are created (not a shared
+      `Selects`), each holding only that character's matched clips.
+- [ ] If a low-confidence Guard line lands on Review, confirm the track is
+      `Guard_Review`, not plain `Review`.
+- [ ] A character with **no clips routed to Alts** this run → no `<Character>_Alts` track
+      is created at all (tracks are created lazily, only when actually populated).
+
+### 13.8 No character column → plain tracks
+
+- [ ] Load a CSV with no Character-like column at all (or map Character to `(none)`).
+      The **Character filter** section is hidden entirely.
+- [ ] Run. All matched clips land on the plain `Selects`/`Alts`/`Review` tracks (today's
+      pre-feature behavior) — no per-character tracks appear anywhere.
+
+### 13.9 Unmatched slate → plain Review
+
+- [ ] Even with Character mapped and routing active, an unmatched span (the slate /
+      chatter, which never had a script line and therefore never had a character) still
+      lands on plain `Review`, not `<something>_Review`. Confirm this in both the §13.6
+      and §13.7 runs above — no `UNMATCHED_...` clip ever appears on a per-character track.
+
+### Known minor (not a bug to chase)
+
+- A **comma** typed into a preset name via **Save**/**Save As...** is truncated by
+  REAPER's `GetUserInputs` (it treats commas as its own field separator). Use a preset
+  name without commas; `ValidatePresetName` does not special-case this because the
+  dialog itself never delivers the comma to Lua.
+
+---
+
 ## Recording results
 
 Note anything that differs from the expectations above directly in
