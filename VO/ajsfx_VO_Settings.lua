@@ -40,6 +40,17 @@ local subs_text = vo.FormatSubstitutionText(cfg.substitutions)
 local skip_text = table.concat(cfg.skip_values, "\n")
 local status    = ""
 
+local bin_choice    = 0       -- 0-based index into vo.BINARY_CATALOG (im.Combo)
+local model_choice  = 0       -- 0-based index into vo.MODEL_CATALOG
+local device_text   = "unknown — run Check"
+local busy          = false   -- guards against concurrent downloads
+
+local function describe_device(d)
+  if d.device == "CUDA" then return "CUDA — " .. (d.name or "NVIDIA GPU")
+  elseif d.device == "CPU" then return "CPU only"
+  else return "unknown (probe failed)" end
+end
+
 -- Whisper models live here; this is the only URL the tool knows about.
 local MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/tree/main"
 
@@ -104,13 +115,113 @@ local function DrawBackend()
   end
 
   im.Spacing(ctx)
-  if im.Button(ctx, "Open model downloads in browser") then
+  im.SeparatorText(ctx, "Download backend & models")
+
+  local res       = r.GetResourcePath()
+  local bin_dir   = vo.ResolveBinDir(res)
+  local model_dir = vo.ResolveModelsDir(res)
+
+  -- GPU binary (Windows only)
+  if vo.IsWindows() then
+    local bin_labels = {}
+    for _, b in ipairs(vo.BINARY_CATALOG) do bin_labels[#bin_labels + 1] = b.label end
+    local _cb
+    _cb, bin_choice = im.Combo(ctx, "GPU binary", bin_choice,
+      table.concat(bin_labels, "\0") .. "\0\0")
+    im.SameLine(ctx)
+    if busy then im.BeginDisabled(ctx) end
+    if im.Button(ctx, "Get##bin") then
+      local b = vo.BINARY_CATALOG[bin_choice + 1]
+      r.RecursiveCreateDirectory(bin_dir, 0)
+      local zip = bin_dir .. "/" .. b.asset
+      busy = true; status = "Downloading " .. b.label .. "…"
+      vo.RunDownloadAsync(cfg, vo.BinaryDownloadURL(b.key), zip, b.expected_bytes,
+        function()  -- on_done
+          local ok, entries = vo.ExtractZip(zip, bin_dir)
+          os.remove(zip)
+          if not ok then
+            status = tostring(entries)  -- on failure, entries holds the error message
+          else
+            local exe = vo.LocateWhisperCliExe(entries)
+            if exe then
+              cfg.whisper_bin = exe; vo.SaveConfig(cfg)
+              if select(1, vo.IsBackendReady(cfg)) then
+                status = "Installed whisper-cli. Checking device…"
+                vo.ProbeBackendDevice(cfg, function(d) device_text = describe_device(d); status = "" end)
+              else
+                status = "Installed whisper-cli. Set a model, then press Check device."
+              end
+            else
+              status = "Downloaded, but whisper-cli.exe was not found in the archive."
+            end
+          end
+          busy = false
+        end,
+        function() status = "Download cancelled. Nothing was changed."; busy = false end,
+        function(msg) status = msg; busy = false end)
+    end
+    if busy then im.EndDisabled(ctx) end
+  else
+    im.TextDisabled(ctx, "GPU binary download is Windows-only. Use Browse above on this OS.")
+  end
+
+  -- Model
+  local model_labels = {}
+  for _, m in ipairs(vo.MODEL_CATALOG) do
+    local mark = vo.ModelIsInstalled(model_dir, m.name) and "  [installed]" or ""
+    model_labels[#model_labels + 1] = m.label .. mark
+  end
+  local _cm
+  _cm, model_choice = im.Combo(ctx, "Model", model_choice,
+    table.concat(model_labels, "\0") .. "\0\0")
+  local m = vo.MODEL_CATALOG[model_choice + 1]
+  local m_installed = vo.ModelIsInstalled(model_dir, m.name)
+  im.SameLine(ctx)
+  if busy then im.BeginDisabled(ctx) end
+  if im.Button(ctx, (m_installed and "Use downloaded##model" or "Get##model")) then
+    r.RecursiveCreateDirectory(model_dir, 0)
+    local dest = model_dir .. "/" .. m.filename
+    if m_installed then
+      cfg.whisper_model = dest; vo.SaveConfig(cfg); status = "Selected " .. m.name .. "."
+    else
+      busy = true; status = "Downloading " .. m.label .. "…"
+      vo.RunDownloadAsync(cfg, vo.ModelDownloadURL(m.name), dest, m.expected_bytes,
+        function() cfg.whisper_model = dest; vo.SaveConfig(cfg)
+                   status = "Installed " .. m.name .. " model."; busy = false end,
+        function() status = "Download cancelled. Nothing was changed."; busy = false end,
+        function(msg) status = msg; busy = false end)
+    end
+  end
+  if busy then im.EndDisabled(ctx) end
+
+  -- Device readout
+  im.Spacing(ctx)
+  im.Text(ctx, "Device: " .. device_text)
+  im.SameLine(ctx)
+  local ready = select(1, vo.IsBackendReady(cfg))
+  if (not ready) or busy then im.BeginDisabled(ctx) end
+  if im.Button(ctx, "Check device") then
+    status = "Probing device…"
+    vo.ProbeBackendDevice(cfg, function(d) device_text = describe_device(d); status = "" end)
+  end
+  if (not ready) or busy then im.EndDisabled(ctx) end
+  if not ready then
+    im.TextDisabled(ctx, "Check needs both a whisper-cli binary and a model set.")
+  end
+
+  -- Fallback: manual browser download (for missing curl, or non-Windows binary).
+  im.Spacing(ctx)
+  if im.Button(ctx, "Open downloads in browser") then
     OpenURL(MODEL_URL)
     status = "Opened the model download page in your browser."
   end
-  im.TextDisabled(ctx, "Network: opens huggingface.co in your browser so you can\n" ..
-                       "download a model manually. No dialogue text or audio ever\n" ..
-                       "leaves this machine, and matching contains no network code.")
+
+  im.Spacing(ctx)
+  im.TextDisabled(ctx, "Downloads contact github.com (whisper-cli) and huggingface.co\n" ..
+                       "(model weights) to fetch public files. No audio or dialogue text\n" ..
+                       "is ever sent, and matching contains no network code.\n" ..
+                       "The GPU build needs a recent NVIDIA driver; a fresh .exe may trip\n" ..
+                       "SmartScreen once. Use Check device to confirm CUDA is active.")
 end
 
 local function DrawMatching()
