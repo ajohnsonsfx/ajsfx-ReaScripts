@@ -1679,5 +1679,67 @@ test("FormatBytes scales into human units", function()
   assert(vo.FormatBytes(677887125) == "646.5 MB", vo.FormatBytes(677887125))
 end)
 
+--------------------------------
+-- Backend acquisition: paths, size checks, exe locator
+--------------------------------
+print("Backend acquisition — paths & filesystem helpers:")
+
+-- Write a file of exactly `bytes` length; returns its path.
+local function write_sized_file(bytes)
+  local path = os.tmpname()
+  local f = assert(io.open(path, "wb"))
+  if bytes > 0 then f:write(string.rep("x", bytes)) end
+  f:close()
+  return path
+end
+
+test("ResolveModelsDir/ResolveBinDir append under the resource path", function()
+  assert(vo.ResolveModelsDir("C:/RPR") == "C:/RPR/whisper-models", vo.ResolveModelsDir("C:/RPR"))
+  assert(vo.ResolveBinDir("C:/RPR")    == "C:/RPR/whisper-bin",    vo.ResolveBinDir("C:/RPR"))
+end)
+
+test("VerifyDownloadSize passes at/above the 95% floor", function()
+  local p = write_sized_file(1000)
+  assert(vo.VerifyDownloadSize(p, 1000) == true, "exact size should pass")
+  assert(vo.VerifyDownloadSize(p, 1050) == true, "95% floor should pass")
+  os.remove(p)
+end)
+
+test("VerifyDownloadSize fails a truncated/error-page download", function()
+  local p = write_sized_file(10)          -- tiny HTML error page saved as .bin
+  assert(vo.VerifyDownloadSize(p, 1000) == false, "truncated should fail")
+  os.remove(p)
+end)
+
+test("VerifyDownloadSize fails when the file is missing", function()
+  assert(vo.VerifyDownloadSize("nope/does-not-exist.bin", 1000) == false)
+end)
+
+test("ModelIsInstalled reflects whether the model file is present", function()
+  local dir = os.tmpname() .. "_models"
+  os.execute((package.config:sub(1,1) == '\\'
+    and ('mkdir "' .. dir .. '" 2>NUL')
+    or  ('mkdir -p "' .. dir .. '" 2>/dev/null')))
+  assert(vo.ModelIsInstalled(dir, "base") == false, "absent model must read as not installed")
+  local f = assert(io.open(dir .. "/ggml-base.bin", "wb")); f:write("stub"); f:close()
+  assert(vo.ModelIsInstalled(dir, "base") == true, "present model must read as installed")
+  os.remove(dir .. "/ggml-base.bin")
+end)
+
+test("LocateWhisperCliExe finds the exe case-insensitively in a nested listing", function()
+  local entries = {
+    "C:/RPR/whisper-bin/README.txt",
+    "C:/RPR/whisper-bin/Release/Whisper-CLI.exe",
+    "C:/RPR/whisper-bin/Release/ggml.dll",
+  }
+  assert(vo.LocateWhisperCliExe(entries) == "C:/RPR/whisper-bin/Release/Whisper-CLI.exe",
+    tostring(vo.LocateWhisperCliExe(entries)))
+end)
+
+test("LocateWhisperCliExe returns nil when absent or empty", function()
+  assert(vo.LocateWhisperCliExe({ "a/b.dll" }) == nil)
+  assert(vo.LocateWhisperCliExe({}) == nil)
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

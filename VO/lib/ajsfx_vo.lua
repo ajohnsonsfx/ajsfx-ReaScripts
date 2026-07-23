@@ -956,6 +956,48 @@ function vo.FormatBytes(n)
 end
 
 --------------------------------
+-- Pure layer: backend acquisition paths & checks
+--------------------------------
+
+-- Storage lives under REAPER's resource path so it is shared across projects.
+-- Pure over the injected resource path so it can be unit-tested; callers pass
+-- r.GetResourcePath().
+function vo.ResolveModelsDir(resource_path)
+  return (resource_path or "") .. "/whisper-models"
+end
+
+function vo.ResolveBinDir(resource_path)
+  return (resource_path or "") .. "/whisper-bin"
+end
+
+-- A download is valid when it reaches at least ~95% of the expected size. This
+-- catches truncated transfers and HTML error pages saved under the target name.
+-- With no/zero expected size, any non-empty file passes.
+function vo.VerifyDownloadSize(path, expected)
+  local actual = vo.FileSize(path)
+  if not actual then return false end
+  if not expected or expected <= 0 then return actual > 0 end
+  return actual >= math.floor(expected * 0.95)
+end
+
+-- True when the model file is present in dir. Existence only: download-time
+-- VerifyDownloadSize already guards integrity, and re-checking size here would
+-- force a multi-GB read every UI frame. Corruption is caught on next use.
+function vo.ModelIsInstalled(dir, name)
+  return vo.FileExists(dir .. "/ggml-" .. name .. ".bin")
+end
+
+-- Find whisper-cli.exe in a flat listing of extracted paths (case-insensitive).
+-- Pure over the listing so the caller supplies whatever directory walk it used.
+function vo.LocateWhisperCliExe(entries)
+  for _, p in ipairs(entries or {}) do
+    local base = p:match("[^/\\]+$") or p
+    if base:lower() == "whisper-cli.exe" then return p end
+  end
+  return nil
+end
+
+--------------------------------
 -- Pure layer: plan composition
 --------------------------------
 
