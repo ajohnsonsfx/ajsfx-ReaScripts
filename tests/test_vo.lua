@@ -168,8 +168,8 @@ test("rows with empty text or empty asset are dropped", function()
   end
 end)
 
-test("speaker filter keeps only that speaker", function()
-  local lines = vo.BuildScriptLines(rows(), COLS, { speaker = "NPC" })
+test("character include-set keeps only included characters", function()
+  local lines = vo.BuildScriptLines(rows(), COLS, { speakers = { npc = true } })
   assert(#lines == 2, "Expected 2 NPC lines, got " .. #lines)
   for _, l in ipairs(lines) do
     assert(l.speaker == "NPC", "Non-NPC line leaked: " .. tostring(l.speaker))
@@ -182,8 +182,8 @@ test("type filter keeps only that type", function()
   assert(lines[1].line_id == "NPC_003", "Wrong line: " .. tostring(lines[1].line_id))
 end)
 
-test("filters are case-insensitive and whitespace-tolerant", function()
-  local lines = vo.BuildScriptLines(rows(), COLS, { speaker = " player " })
+test("character include-set matches on folded key (case/space-insensitive)", function()
+  local lines = vo.BuildScriptLines(rows(), COLS, { speakers = { player = true } })
   assert(#lines == 1, "Expected 1 Player line, got " .. #lines)
   assert(lines[1].line_id == "PLR_001", "Wrong line: " .. tostring(lines[1].line_id))
 end)
@@ -196,7 +196,7 @@ end)
 
 test("missing optional speaker column leaves speaker nil and filter inert", function()
   local cols = { line_id = 1, text = 4, asset = 5 }
-  local lines = vo.BuildScriptLines(rows(), cols, { speaker = "NPC" })
+  local lines = vo.BuildScriptLines(rows(), cols, { speakers = { npc = true } })
   assert(#lines == 3, "Speaker filter should be inert without the column, got " .. #lines)
   assert(lines[1].speaker == nil, "speaker should be nil")
 end)
@@ -1876,6 +1876,58 @@ end)
 test("DeserializeLayout of empty/garbage yields an empty layout", function()
   local l = vo.DeserializeLayout("")
   assert(next(l.mapping) == nil and #l.skip_values == 0)
+end)
+
+--------------------------------
+-- CSV layout — track name, filter, threading
+--------------------------------
+print("\nCSV layout — track name, filter, threading:")
+
+test("CharacterTrackName prefixes with a sanitized character or falls back to base", function()
+  assert(vo.CharacterTrackName("Guard", "Selects") == "Guard_Selects")
+  assert(vo.CharacterTrackName("", "Review") == "Review")
+  assert(vo.CharacterTrackName(nil, "Alts") == "Alts")
+  assert(vo.CharacterTrackName("Guard/M", "Selects") == vo.SanitizeName("Guard/M") .. "_Selects")
+end)
+
+test("BuildScriptLines keeps only included characters and canonicalizes speaker", function()
+  local cols = { line_id=1, text=2, asset=3, speaker=4 }
+  local rows = {
+    { "L1","hi","a1","Guard" },
+    { "L2","yo","a2","guard" },   -- same character, different case
+    { "L3","hey","a3","Hero" },
+  }
+  local lines = vo.BuildScriptLines(rows, cols, {
+    speakers = { guard = true },              -- include only Guard
+    canonicalize = { guard = "Guard", hero = "Hero" },
+  })
+  assert(#lines == 2, "#lines="..#lines)
+  assert(lines[1].speaker == "Guard" and lines[2].speaker == "Guard", "canonicalized")
+end)
+
+test("BuildScriptLines nil speakers keeps all; empty keeps none", function()
+  local cols = { line_id=1, text=2, asset=3, speaker=4 }
+  local rows = { { "L1","hi","a1","Guard" }, { "L2","yo","a2","Hero" } }
+  assert(#vo.BuildScriptLines(rows, cols, { canonicalize={guard="Guard",hero="Hero"} }) == 2)
+  assert(#vo.BuildScriptLines(rows, cols, { speakers = {}, canonicalize={} }) == 0)
+end)
+
+test("a matched span carries the canonical character; unmatched carries nil", function()
+  local lines = {
+    { line_id="L1", text="open the gate", asset="g1", speaker="Guard" },
+  }
+  -- words that match the one line, plus a stray unmatched word (a slate)
+  local words = {
+    { t0=0.0, t1=0.4, text="open" }, { t0=0.4, t1=0.8, text="the" }, { t0=0.8, t1=1.2, text="gate" },
+    { t0=5.0, t1=5.4, text="slate" },
+  }
+  local plan = vo.BuildPlan(lines, words, { accept_threshold=0.5, review_floor=0.3, margin_threshold=0.0, anchor_count=1 })
+  local matched, unmatched
+  for _, s in ipairs(plan) do
+    if s.kind == "match" then matched = s elseif s.kind == "unmatched" then unmatched = s end
+  end
+  assert(matched and matched.character == "Guard", "matched character: " .. tostring(matched and matched.character))
+  assert(unmatched and unmatched.character == nil, "unmatched should have no character")
 end)
 
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))

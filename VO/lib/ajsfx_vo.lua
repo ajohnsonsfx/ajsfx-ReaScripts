@@ -264,21 +264,30 @@ function vo.BuildScriptLines(rows, cols, filters)
     skip[fold(v)] = true
   end
 
-  local want_speaker = filters.speaker and fold(filters.speaker) or nil
-  local want_type    = filters.type    and fold(filters.type)    or nil
-  if want_speaker == "" then want_speaker = nil end
-  if want_type    == "" then want_type    = nil end
+  local speakers  = filters.speakers                 -- folded-key set, or nil = all
+  local canon     = filters.canonicalize or {}
+  local want_type = filters.type and fold(filters.type) or nil
+  if want_type == "" then want_type = nil end
 
   local lines = {}
   for i, row in ipairs(rows or {}) do
     local text    = trim(row[cols.text])
     local asset   = trim(row[cols.asset])
-    local speaker = cols.speaker and trim(row[cols.speaker]) or nil
-    local ltype   = cols.type    and trim(row[cols.type])    or nil
+    local ltype   = cols.type and trim(row[cols.type]) or nil
+
+    local speaker_raw = cols.speaker and trim(row[cols.speaker]) or nil
+    local speaker_key = speaker_raw and fold(speaker_raw) or nil
+    local speaker     = speaker_raw and (canon[speaker_key] or speaker_raw) or nil
 
     local keep = text ~= "" and asset ~= "" and not skip[fold(asset)]
-    if keep and want_speaker and speaker then keep = fold(speaker) == want_speaker end
-    if keep and want_type    and ltype   then keep = fold(ltype)   == want_type    end
+    -- Character filter applies ONLY when a character column is mapped: with no
+    -- column the filter is inert (keep all — preserves the "filter inert without
+    -- the column" contract); with a column, a row whose character is empty or
+    -- not in the include-set is dropped.
+    if keep and speakers and cols.speaker then
+      keep = (speaker_key ~= nil) and speakers[speaker_key] == true
+    end
+    if keep and want_type and ltype then keep = fold(ltype) == want_type end
 
     if keep then
       lines[#lines + 1] = {
@@ -685,9 +694,10 @@ function vo.FindCandidates(word_tokens, lines, index, cfg)
               start    = word_tokens[i0].t0,
               stop     = word_tokens[i1].t1,
               score    = best_score,
-              line_idx = line_idx,
-              line_id  = lines[line_idx].line_id,
-              asset    = lines[line_idx].asset,
+              line_idx  = line_idx,
+              line_id   = lines[line_idx].line_id,
+              asset     = lines[line_idx].asset,
+              character = lines[line_idx].speaker,
             }
           end
         end
@@ -836,6 +846,15 @@ function vo.SanitizeName(s, max_len)
   if RESERVED_DEVICE_NAMES[stem:lower()] then s = "_" .. s end
 
   return s
+end
+
+-- Track name for a character bucket: "<Character>_<Base>" when a character is
+-- present, else the base name. The character is sanitized like a clip name.
+function vo.CharacterTrackName(character, base)
+  if character and character ~= "" then
+    return vo.SanitizeName(character) .. "_" .. base
+  end
+  return base
 end
 
 --------------------------------
