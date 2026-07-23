@@ -1447,6 +1447,46 @@ function vo.SaveConfig(cfg)
 end
 
 --------------------------------
+-- Coupled layer: layout presets
+--------------------------------
+
+local LAYOUT_SECTION = "ajsfx_vo_layouts"
+
+-- Names of saved layout presets, in the order they were first saved.
+function vo.ListLayoutPresets()
+  local raw = r.GetExtState(LAYOUT_SECTION, "__names__")
+  local names = {}
+  for n in (raw or ""):gmatch("[^\n]+") do names[#names + 1] = n end
+  return names
+end
+
+-- Persist a layout under `name`. Refuses (and stores nothing) for an invalid
+-- name — see ValidatePresetName for the rules the ExtState key must satisfy.
+function vo.SaveLayoutPreset(name, layout)
+  local ok = vo.ValidatePresetName(name)
+  if not ok then return false end
+  r.SetExtState(LAYOUT_SECTION, "preset:" .. name, vo.SerializeLayout(layout), true)
+  local names, seen = vo.ListLayoutPresets(), false
+  for _, n in ipairs(names) do if n == name then seen = true break end end
+  if not seen then names[#names + 1] = name end
+  r.SetExtState(LAYOUT_SECTION, "__names__", table.concat(names, "\n"), true)
+  return true
+end
+
+-- Load a previously saved layout, or nil if `name` was never saved.
+function vo.LoadLayoutPreset(name)
+  if not r.HasExtState(LAYOUT_SECTION, "preset:" .. name) then return nil end
+  return vo.DeserializeLayout(r.GetExtState(LAYOUT_SECTION, "preset:" .. name))
+end
+
+function vo.DeleteLayoutPreset(name)
+  r.DeleteExtState(LAYOUT_SECTION, "preset:" .. name, true)
+  local kept = {}
+  for _, n in ipairs(vo.ListLayoutPresets()) do if n ~= name then kept[#kept + 1] = n end end
+  r.SetExtState(LAYOUT_SECTION, "__names__", table.concat(kept, "\n"), true)
+end
+
+--------------------------------
 -- Pure layer: source time -> project time
 --------------------------------
 
@@ -2063,7 +2103,7 @@ function vo.ApplyPlan(plan, cfg, source_track)
     review  = cfg.track_review  or "Review",
   }
 
-  local tracks  = {}
+  local tracks  = {}     -- full track name -> MediaTrack
   local applied = 0
   local failures = {}
 
@@ -2078,12 +2118,13 @@ function vo.ApplyPlan(plan, cfg, source_track)
       local piece = right or item
       r.SplitMediaItem(piece, span.stop)
 
-      local dest_name = dest_names[span.dest] or dest_names.review
-      if not tracks[span.dest] then
-        tracks[span.dest] = vo.EnsureTrackBelow(source_track, dest_name)
+      local base      = dest_names[span.dest] or dest_names.review
+      local full_name = vo.CharacterTrackName(span.character, base)
+      if not tracks[full_name] then
+        tracks[full_name] = vo.EnsureTrackBelow(source_track, full_name)
       end
 
-      if r.MoveMediaItemToTrack(piece, tracks[span.dest]) then
+      if r.MoveMediaItemToTrack(piece, tracks[full_name]) then
         local take = r.GetActiveTake(piece)
         if take then
           r.GetSetMediaItemTakeInfo_String(take, "P_NAME", span.name, true)
@@ -2094,7 +2135,7 @@ function vo.ApplyPlan(plan, cfg, source_track)
         applied = applied + 1
       else
         failures[#failures + 1] =
-          string.format("%s: could not move to %s", span.name or "(unnamed)", dest_name)
+          string.format("%s: could not move to %s", span.name or "(unnamed)", full_name)
       end
     end
   end

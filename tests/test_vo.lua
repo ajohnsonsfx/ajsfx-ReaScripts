@@ -1930,5 +1930,45 @@ test("a matched span carries the canonical character; unmatched carries nil", fu
   assert(unmatched and unmatched.character == nil, "unmatched should have no character")
 end)
 
+--------------------------------
+-- CSV layout — layout preset storage (ExtState)
+--------------------------------
+print("\nCSV layout — layout presets (ExtState):")
+
+test("SaveLayoutPreset/ListLayoutPresets/LoadLayoutPreset/DeleteLayoutPreset round-trip", function()
+  mock.reset()
+  local layout = {
+    mapping = { line_id = "Cue ID", text = "VO, Text", asset = "File Name", speaker = "Character" },
+    skip_values = { "TO RECORD", "HOLD" },
+  }
+  assert(vo.SaveLayoutPreset("Ubisoft VO", layout) == true, "SaveLayoutPreset should return true")
+
+  local names = vo.ListLayoutPresets()
+  local found = false
+  for _, n in ipairs(names) do if n == "Ubisoft VO" then found = true end end
+  assert(found, "Expected preset name in ListLayoutPresets")
+
+  local back = vo.LoadLayoutPreset("Ubisoft VO")
+  assert(back and back.mapping.line_id == "Cue ID", "mapping did not round-trip")
+  assert(back.mapping.text == "VO, Text", "mapping with comma did not round-trip: " .. tostring(back.mapping.text))
+  assert(#back.skip_values == 2 and back.skip_values[2] == "HOLD", "skip_values did not round-trip")
+
+  assert(vo.LoadLayoutPreset("No Such Preset") == nil, "Expected nil for an unknown preset")
+
+  vo.DeleteLayoutPreset("Ubisoft VO")
+  for _, n in ipairs(vo.ListLayoutPresets()) do
+    assert(n ~= "Ubisoft VO", "Expected name gone from ListLayoutPresets after delete")
+  end
+  assert(vo.LoadLayoutPreset("Ubisoft VO") == nil, "Expected preset gone after delete")
+end)
+
+test("SaveLayoutPreset refuses an invalid name and stores nothing", function()
+  mock.reset()
+  local ok = vo.SaveLayoutPreset("bad=name", { mapping = {}, skip_values = {} })
+  assert(ok == false, "Expected false for an invalid preset name")
+  assert(#vo.ListLayoutPresets() == 0, "Expected no names stored for a refused save")
+  assert(vo.LoadLayoutPreset("bad=name") == nil, "Expected nothing stored under the bad name")
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
