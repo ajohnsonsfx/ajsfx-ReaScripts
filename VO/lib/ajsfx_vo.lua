@@ -905,6 +905,57 @@ function vo.BuildWhisperArgv(cfg, audio, out_prefix)
 end
 
 --------------------------------
+-- Pure layer: backend acquisition catalogs
+--------------------------------
+
+-- Pinned whisper.cpp release. Binary URLs target this tag exactly; bumping it
+-- is a deliberate, tested change (a silent asset rename would break downloads).
+vo.WHISPER_RELEASE = "v1.9.1"
+
+-- Multilingual, DTW-verified models only. .en variants are excluded because
+-- their DTW presets are unverified (VO/SPEC.md §10) and this tool depends on
+-- sharp word boundaries. expected_bytes are approximate (well-known ggml sizes)
+-- and used only as a truncation floor; the binary sizes below are exact.
+vo.MODEL_CATALOG = {
+  { name = "base",     filename = "ggml-base.bin",     label = "base (multilingual, ~148 MB)",     expected_bytes = 147951465  },
+  { name = "small",    filename = "ggml-small.bin",    label = "small (multilingual, ~488 MB)",    expected_bytes = 487601967  },
+  { name = "medium",   filename = "ggml-medium.bin",   label = "medium (multilingual, ~1.5 GB)",   expected_bytes = 1533763059 },
+  { name = "large-v3", filename = "ggml-large-v3.bin", label = "large-v3 (multilingual, ~3.1 GB)", expected_bytes = 3095033483 },
+}
+
+-- Prebuilt CUDA whisper-cli builds from the pinned release. Both bundle their
+-- CUDA runtime DLLs and depend only on a recent NVIDIA driver. Sizes verified
+-- via the GitHub API.
+vo.BINARY_CATALOG = {
+  { key = "cuda-12.4", asset = "whisper-cublas-12.4.0-bin-x64.zip", label = "CUDA 12.4 (recommended, ~678 MB)", expected_bytes = 677887125 },
+  { key = "cuda-11.8", asset = "whisper-cublas-11.8.0-bin-x64.zip", label = "CUDA 11.8 (older drivers, ~279 MB)", expected_bytes = 278557654 },
+}
+
+function vo.ModelDownloadURL(name)
+  return "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-" .. name .. ".bin"
+end
+
+function vo.BinaryDownloadURL(key)
+  for _, b in ipairs(vo.BINARY_CATALOG) do
+    if b.key == key then
+      return "https://github.com/ggml-org/whisper.cpp/releases/download/" ..
+             vo.WHISPER_RELEASE .. "/" .. b.asset
+    end
+  end
+  return nil
+end
+
+-- Human-readable byte size for the UI.
+function vo.FormatBytes(n)
+  if not n or n < 0 then return "?" end
+  local units = { "B", "KB", "MB", "GB", "TB" }
+  local i, v = 1, n
+  while v >= 1024 and i < #units do v = v / 1024; i = i + 1 end
+  if i == 1 then return string.format("%d %s", v, units[i]) end
+  return string.format("%.1f %s", v, units[i])
+end
+
+--------------------------------
 -- Pure layer: plan composition
 --------------------------------
 

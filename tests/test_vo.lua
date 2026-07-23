@@ -1636,5 +1636,48 @@ test("an empty table formats to an empty string", function()
   assert(vo.FormatSubstitutionText({}) == "", "Expected empty string")
 end)
 
+--------------------------------
+-- Backend acquisition: catalogs & URLs
+--------------------------------
+print("Backend acquisition — catalogs & URLs:")
+
+test("model download URL uses the HuggingFace resolve path", function()
+  assert(vo.ModelDownloadURL("base") ==
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+    vo.ModelDownloadURL("base"))
+end)
+
+test("binary download URL is pinned to the release tag", function()
+  assert(vo.BinaryDownloadURL("cuda-12.4") ==
+    "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-cublas-12.4.0-bin-x64.zip",
+    tostring(vo.BinaryDownloadURL("cuda-12.4")))
+end)
+
+test("binary download URL is nil for an unknown key", function()
+  assert(vo.BinaryDownloadURL("nope") == nil)
+end)
+
+test("every offered model has a verified DTW preset", function()
+  assert(#vo.MODEL_CATALOG == 4, "expected 4 models, got " .. #vo.MODEL_CATALOG)
+  for _, m in ipairs(vo.MODEL_CATALOG) do
+    assert(vo.DTWPresetForModel(m.filename) ~= nil,
+      "no DTW preset for " .. m.filename)
+    assert(m.expected_bytes and m.expected_bytes > 0, "bad size for " .. m.name)
+  end
+end)
+
+test("binary catalog carries the exact verified asset sizes", function()
+  local by_key = {}
+  for _, b in ipairs(vo.BINARY_CATALOG) do by_key[b.key] = b end
+  assert(by_key["cuda-12.4"].expected_bytes == 677887125, "12.4 size drift")
+  assert(by_key["cuda-11.8"].expected_bytes == 278557654, "11.8 size drift")
+end)
+
+test("FormatBytes scales into human units", function()
+  assert(vo.FormatBytes(512) == "512 B", vo.FormatBytes(512))
+  assert(vo.FormatBytes(1536) == "1.5 KB", vo.FormatBytes(1536))
+  assert(vo.FormatBytes(677887125) == "646.5 MB", vo.FormatBytes(677887125))
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
