@@ -19,4 +19,5 @@ core.Transaction("Move cursor to left edge of first unmuted item on track", func
   local pos = core.GetFirstItemStart(tracks, true)
   if not pos then return end
   r.SetEditCurPos(pos, true, false)
+  r.UpdateArrange()
 end)

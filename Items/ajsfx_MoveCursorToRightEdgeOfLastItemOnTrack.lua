@@ -19,4 +19,5 @@ core.Transaction("Move cursor to right edge of last item on track", function()
   local pos = core.GetLastItemEnd(tracks, false)
   if not pos then return end
   r.SetEditCurPos(pos, true, false)
+  r.UpdateArrange()
 end)
