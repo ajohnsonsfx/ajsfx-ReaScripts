@@ -1854,5 +1854,29 @@ test("ValidatePresetName enforces the naming rules", function()
   assert((vo.ValidatePresetName(string.rep("x", 65))) == false)
 end)
 
+--------------------------------
+-- CSV layout — serialize/deserialize
+--------------------------------
+print("\nCSV layout — serialize:")
+
+test("SerializeLayout/DeserializeLayout round-trip incl. spaces and commas", function()
+  local layout = {
+    mapping = { line_id="Cue ID", text="VO, Text", asset="File Name", speaker="Character" },
+    skip_values = { "TO RECORD", "HOLD" },
+  }
+  local back = vo.DeserializeLayout(vo.SerializeLayout(layout))
+  assert(back.mapping.line_id == "Cue ID", back.mapping.line_id)
+  assert(back.mapping.text == "VO, Text", back.mapping.text)
+  assert(back.mapping.asset == "File Name")
+  assert(back.mapping.speaker == "Character")
+  assert(back.mapping.type == nil, "type should stay unmapped")
+  assert(#back.skip_values == 2 and back.skip_values[1] == "TO RECORD" and back.skip_values[2] == "HOLD")
+end)
+
+test("DeserializeLayout of empty/garbage yields an empty layout", function()
+  local l = vo.DeserializeLayout("")
+  assert(next(l.mapping) == nil and #l.skip_values == 0)
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

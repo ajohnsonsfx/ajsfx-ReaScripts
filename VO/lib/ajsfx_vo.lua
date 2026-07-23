@@ -179,6 +179,34 @@ function vo.ValidatePresetName(name)
   return true
 end
 
+-- Tab-delimited, line-based. Header names are tab/newline-validated on load, so
+-- splitting each line on its FIRST tab is unambiguous.
+function vo.SerializeLayout(layout)
+  layout = layout or {}
+  local lines = {}
+  for _, role in ipairs({ "line_id", "text", "asset", "speaker", "type" }) do
+    local col = layout.mapping and layout.mapping[role]
+    if col and col ~= "" then lines[#lines + 1] = role .. "\t" .. col end
+  end
+  for _, tok in ipairs(layout.skip_values or {}) do
+    if tok ~= "" then lines[#lines + 1] = "skip\t" .. tok end
+  end
+  return table.concat(lines, "\n")
+end
+
+function vo.DeserializeLayout(text)
+  local layout = { mapping = {}, skip_values = {} }
+  for line in tostring(text or ""):gmatch("[^\n]+") do
+    local k, v = line:match("^([^\t]+)\t(.*)$")
+    if k == "skip" then
+      if v ~= "" then layout.skip_values[#layout.skip_values + 1] = v end
+    elseif k then
+      layout.mapping[k] = v
+    end
+  end
+  return layout
+end
+
 -- Resolve configured column names to 1-based indices in the header row.
 -- Matching is case-insensitive and tolerant of surrounding whitespace.
 -- Returns: cols table, or nil plus an error message listing the headers found.
