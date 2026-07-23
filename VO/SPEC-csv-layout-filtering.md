@@ -87,7 +87,7 @@ character collapses to one filter entry and one track set.
 | `vo.AutoDetectMapping(header)` | Best-guess `role→columnName` by case-insensitive match of header names against a per-role **alias set** (speaker ⇐ {speaker, character, char, actor}; asset ⇐ {audioasset, filename, asset, file, wav, output}; text ⇐ {text, line, dialogue, vo}; line_id ⇐ {lineid, id, line_id, cue}; type ⇐ {type, category, kind}). Unmatched roles omitted. |
 | `vo.SerializeLayout(layout)` / `vo.DeserializeLayout(text)` | Round-trip a layout to/from a tab-delimited, line-based string (`role\tcolumnName`, `skip\ttoken`). **Import validation (below) guarantees no mapped column name contains a tab or newline**, so the encoding is unambiguous. |
 | `vo.ValidateHeaderNames(header)` | Returns ok / error: rejects header column names containing a tab or newline (unsupportable in the layout encoding, and pathological in real CSVs). Called on load. |
-| `vo.ValidatePresetName(name)` | Non-empty, ≤ 64 chars, no newline/tab; not the reserved token `__names__`. |
+| `vo.ValidatePresetName(name)` | Non-empty, ≤ 64 chars, no newline/tab/`=` (the name becomes part of the ExtState **key** `preset:<name>`, and REAPER persists ExtState as `key=value`); not the reserved token `__names__`. |
 | `vo.CharacterTrackName(character, base)` | `SanitizeName(character).."_"..base` when `character` is a non-empty string, else `base`. |
 | **`vo.BuildScriptLines` (changed)** | Character filter becomes an **include-set**: `filters.speakers = { [foldedKey]=true }` (nil ⇒ all; empty table ⇒ none). Each kept line's `speaker` is rewritten to its **canonical display** form (via a `filters.canonicalize` map) so downstream routing is spelling-stable. The existing `skip_values` and `type` filter behavior is retained unchanged (ScriptMatch simply passes no `type` filter). |
 | **plan composition (changed)** | Candidates already carry `line_idx` (ajsfx_vo.lua:589); attach `character = lines[line_idx].speaker` (already canonical from BuildScriptLines) onto each candidate, carried through `SelectSpans`/`AssignNames` to the final span. Gap/unmatched spans carry `character = nil`. |
@@ -178,7 +178,9 @@ backward compatibility; nothing else reads it once the layout system is in place
   character filter section is hidden.
 - Character filter with everything unchecked → "No characters selected", nothing runs.
 - Character spelled inconsistently (`Guard`/`guard`) → collapsed to one canonical filter
-  entry and one track set (§3 canonicalization).
+  entry and one track set (§3 canonicalization). (Two names differing only by a character
+  `SanitizeName` maps to `_` — e.g. `Guard M` vs `Guard/M` — still share one track; character
+  names rarely carry such separators, so this is accepted.)
 - Save/Save As onto an existing preset name → confirmation prompt before overwrite; invalid
   name → rejected with the `ValidatePresetName` reason.
 - Deleting the active preset → dropdown falls back to `(unsaved)` with the inline mapping
@@ -215,6 +217,8 @@ lands on plain `Review`, not `<Character>_Review`.
   dialogue together), and/or route Types to separate tracks or sub-tracks. Design open; the
   Type column is already mapped so the data is available when this is picked up.
 - **Preset rename.** Save As + Delete suffices for now.
+- **Character in the run report.** `BuildReport` currently omits the destination
+  character/track; a column could be added when the report is next revised.
 
 ---
 
