@@ -1,6 +1,7 @@
 -- @description ajsfx VO Shared Library
 -- @author ajsfx
--- @version 0.1
+-- @version 0.2
+-- @changelog Add backend/model download and GPU device detection (see VO/SPEC-backend-acquisition.md)
 -- @noindex
 -- @about Shared logic for ajsfx VO ScriptMatch.
 --        Split into a pure layer (parsing, normalization, matching, naming —
@@ -1000,7 +1001,7 @@ end
 -- Read the active compute backend out of a captured whisper-cli log. whisper
 -- only initializes its device when a model loads, so this is fed the log of a
 -- real (tiny) run. Keys on "CUDA"; pulls the name from a "Device N: <name>"
--- line. Confirmed against real output on first run — see VO/SPEC.md §9.
+-- line. To be confirmed against real output on first run — see VO/SPEC.md §9.
 function vo.ParseBackendFromLog(text)
   text = text or ""
   if text:find("CUDA") then

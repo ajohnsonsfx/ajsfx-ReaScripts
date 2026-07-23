@@ -218,6 +218,38 @@ Once the above passes, try a real session: a full script and 10+ minutes of audi
 
 ---
 
+## 10. Backend & model download (Settings)
+
+Open **ajsfx VO Settings → Speech backend → Download backend & models**.
+
+- [ ] **GPU binary:** with CUDA 12.4 selected, press **Get**. A progress window
+      shows downloaded/total and a working **Cancel**.
+- [ ] On completion the whisper-cli path field fills in automatically, pointing
+      at the extracted `whisper-cli.exe`. Confirm the file exists there.
+- [ ] **Model:** pick `base`, press **Get**. After it completes the model path
+      fills in and the model shows **[installed]** in the dropdown.
+- [ ] Re-open the model dropdown: the button now reads **Use downloaded**;
+      pressing it just sets the path with no download.
+- [ ] **Backend ready** turns green once both are set.
+
+## 11. GPU device check
+
+- [ ] Press **Check device**. Expected: `Device: CUDA — <your GPU>`.
+- [ ] If it reads `CPU only` despite the CUDA build, your NVIDIA driver or GPU
+      may be too old for the 12.4 runtime — note it in SPEC §9 and try the
+      CUDA 11.8 build.
+
+## 12. Download failure handling
+
+- [ ] Press **Cancel** mid-download → "Download cancelled. Nothing was changed",
+      and no partial file remains in `whisper-bin/` or `whisper-models/`.
+- [ ] Temporarily rename `curl` off PATH (or test on pre-1803 Windows) → a clear
+      message, and the browser-download fallback still works.
+- [ ] Confirm the size check: interrupt a model download so a tiny partial file
+      is left, then re-run — the tool re-downloads rather than accepting it.
+
+---
+
 ## Recording results
 
 Note anything that differs from the expectations above directly in

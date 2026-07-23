@@ -1,6 +1,7 @@
 -- @description ajsfx VO Settings
 -- @author ajsfx
--- @version 0.1
+-- @version 0.2
+-- @changelog Add backend/model download and GPU device detection (see VO/SPEC-backend-acquisition.md)
 -- @noindex
 -- @about Settings panel for ajsfx VO ScriptMatch. Configure the speech backend,
 --        matching thresholds, destination tracks, script CSV column mapping and

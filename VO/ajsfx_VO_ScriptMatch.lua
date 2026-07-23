@@ -1,9 +1,7 @@
 -- @description ajsfx VO ScriptMatch
 -- @author ajsfx
--- @version 0.2
--- @changelog Ship the Settings action in this package. In 0.1 it was a separate
---            package that reapack-index dropped, because both packages claimed
---            lib/ajsfx_vo.lua and only one may provide a given file.
+-- @version 0.3
+-- @changelog Add in-Settings download of a CUDA whisper-cli binary and models, with GPU device detection
 -- @about Cut a recorded VO session into one clip per script line and name each
 --        clip with its delivery asset name. Reads a CSV script, transcribes the
 --        selected items locally with whisper.cpp, matches spoken spans against
