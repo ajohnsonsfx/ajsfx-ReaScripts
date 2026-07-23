@@ -1,7 +1,7 @@
 -- @description Move cursor to left edge of first unmuted item on track
 -- @author ajsfx
--- @version 1.0
--- @changelog Initial release
+-- @version 1.1
+-- @changelog Refresh the arrange view after moving the edit cursor
 -- @about Moves the cursor to the left edge of the first unmuted item on selected tracks. Does nothing if no track is selected.
 -- @provides
 --   [main] .

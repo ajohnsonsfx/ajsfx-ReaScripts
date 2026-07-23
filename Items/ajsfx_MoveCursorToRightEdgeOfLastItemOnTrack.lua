@@ -1,7 +1,7 @@
 -- @description Move cursor to right edge of last item on track
 -- @author ajsfx
--- @version 1.0
--- @changelog Initial release
+-- @version 1.1
+-- @changelog Refresh the arrange view after moving the edit cursor
 -- @about Moves the cursor to the right edge of the last item on selected tracks. Does nothing if no track is selected.
 -- @provides
 --   [main] .
