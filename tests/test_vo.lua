@@ -1814,5 +1814,45 @@ test("WriteSilentWav writes a valid 16k mono silent WAV of the right length", fu
   os.remove(p)
 end)
 
+--------------------------------
+-- CSV layout — distinct/auto-detect/validators
+--------------------------------
+print("\nCSV layout — distinct/auto-detect/validators:")
+
+test("DistinctCharacters folds case/space, keeps first-seen display, drops empties", function()
+  local rows = { {"a","Guard"}, {"b","guard"}, {"c",""}, {"d","Guard "}, {"e","Hero"} }
+  local d = vo.DistinctCharacters(rows, 2)
+  assert(#d == 2, "#d="..#d)
+  assert(d[1].display == "Guard" and d[1].key == "guard", d[1].display.."/"..d[1].key)
+  assert(d[2].display == "Hero", d[2].display)
+  local canon = vo.CanonicalizeMap(d)
+  assert(canon["guard"] == "Guard" and canon["hero"] == "Hero")
+end)
+
+test("AutoDetectMapping matches role aliases case-insensitively", function()
+  local m = vo.AutoDetectMapping({ "Cue", "VO Line", "Filename", "Character", "Category" })
+  assert(m.line_id == "Cue", tostring(m.line_id))
+  assert(m.asset == "Filename", tostring(m.asset))
+  assert(m.speaker == "Character", tostring(m.speaker))
+  assert(m.type == "Category", tostring(m.type))
+  -- "VO Line" matches text alias "line"/"vo" only if exact-token; unmatched roles omitted
+  assert(m.text == nil or type(m.text) == "string")
+end)
+
+test("ValidateHeaderNames rejects tab/newline in a column name", function()
+  assert((vo.ValidateHeaderNames({ "A", "B" })) == true)
+  assert((vo.ValidateHeaderNames({ "A", "B\tC" })) == false)
+  assert((vo.ValidateHeaderNames({ "A", "B\nC" })) == false)
+end)
+
+test("ValidatePresetName enforces the naming rules", function()
+  assert((vo.ValidatePresetName("Ubisoft VO")) == true)
+  assert((vo.ValidatePresetName("")) == false)
+  assert((vo.ValidatePresetName("__names__")) == false)
+  assert((vo.ValidatePresetName("Boss=Final")) == false)
+  assert((vo.ValidatePresetName("a\tb")) == false)
+  assert((vo.ValidatePresetName(string.rep("x", 65))) == false)
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

@@ -108,6 +108,77 @@ vo.DEFAULT_COLUMN_MAPPING = {
   type    = "Type",
 }
 
+-- Distinct character values, de-duplicated by case-insensitive key (first-seen
+-- display wins), empties skipped. Order = first appearance.
+function vo.DistinctCharacters(rows, col_index)
+  local seen, out = {}, {}
+  for _, row in ipairs(rows or {}) do
+    local raw = trim(row[col_index] or "")
+    if raw ~= "" then
+      local key = fold(raw)
+      if not seen[key] then
+        seen[key] = true
+        out[#out + 1] = { key = key, display = raw }
+      end
+    end
+  end
+  return out
+end
+
+function vo.CanonicalizeMap(distinct)
+  local m = {}
+  for _, d in ipairs(distinct or {}) do m[d.key] = d.display end
+  return m
+end
+
+-- Per-role header aliases (folded). Role sets are disjoint so a header word
+-- can only claim one role.
+vo.ROLE_ALIASES = {
+  line_id = { "lineid", "line_id", "id", "cue" },
+  text    = { "text", "line", "dialogue", "vo" },
+  asset   = { "audioasset", "filename", "asset", "file", "wav", "output" },
+  speaker = { "speaker", "character", "char", "actor" },
+  type    = { "type", "category", "kind" },
+}
+
+-- Best-guess role -> header column name by folded alias match. Unmatched omitted.
+function vo.AutoDetectMapping(header)
+  local by_alias = {}
+  for _, h in ipairs(header or {}) do
+    local f = fold(h)
+    if by_alias[f] == nil then by_alias[f] = h end
+  end
+  local mapping = {}
+  for _, role in ipairs({ "line_id", "text", "asset", "speaker", "type" }) do
+    for _, alias in ipairs(vo.ROLE_ALIASES[role]) do
+      if by_alias[alias] then mapping[role] = by_alias[alias]; break end
+    end
+  end
+  return mapping
+end
+
+-- Header column names must not contain a tab or newline (the layout encoding is
+-- tab/line delimited). Returns ok, errmsg.
+function vo.ValidateHeaderNames(header)
+  for _, h in ipairs(header or {}) do
+    if tostring(h):find("[\t\n\r]") then
+      return false, "Column name contains a tab or newline, which is unsupported: " .. tostring(h)
+    end
+  end
+  return true
+end
+
+-- Preset name rules. The name becomes part of the ExtState key `preset:<name>`,
+-- and REAPER persists ExtState as key=value, so `=` is forbidden too.
+function vo.ValidatePresetName(name)
+  name = name or ""
+  if name == "" then return false, "Enter a preset name." end
+  if #name > 64 then return false, "Preset name is too long (max 64)." end
+  if name == "__names__" then return false, "That name is reserved." end
+  if name:find("[\t\n\r=]") then return false, "Preset name cannot contain tab, newline, or '='." end
+  return true
+end
+
 -- Resolve configured column names to 1-based indices in the header row.
 -- Matching is case-insensitive and tolerant of surrounding whitespace.
 -- Returns: cols table, or nil plus an error message listing the headers found.
