@@ -1,0 +1,1 @@
+Ideas for scripts (check reapack first)
