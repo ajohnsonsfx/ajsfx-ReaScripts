@@ -230,10 +230,11 @@ local function DrawBackend()
       im.Button(ctx, "Downloading…##bin")
     elseif b_inst then
       if im.Button(ctx, "Use downloaded##bin") then
-        cfg.whisper_bin = b_inst; vo.SaveConfig(cfg); status = "Using " .. b.label .. "."
-        if select(1, vo.IsBackendReady(cfg)) then
-          vo.ProbeBackendDevice(cfg, function(d) device_text = describe_device(d) end)
-        end
+        -- Just point at the install, like the model's Use downloaded. Device
+        -- detection is the explicit Check device button, not a side effect of
+        -- selection (probing runs whisper-cli and would pop a progress window).
+        cfg.whisper_bin = b_inst; vo.SaveConfig(cfg)
+        status = "Using " .. b.label .. ". Press Check device to confirm GPU."
       end
       im.SameLine(ctx)
       if im.Button(ctx, "Repair##bin") then start_bin_dl(b) end
