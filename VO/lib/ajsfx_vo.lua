@@ -860,6 +860,9 @@ end
 vo.DTW_PRESETS = {
   tiny = "tiny", base = "base", small = "small", medium = "medium",
   ["large-v1"] = "large.v1", ["large-v2"] = "large.v2", ["large-v3"] = "large.v3",
+  -- Verified against ggml-org/whisper.cpp v1.9.1 examples/cli/cli.cpp:
+  -- params.dtw == "large.v3.turbo" -> WHISPER_AHEADS_LARGE_V3_TURBO.
+  ["large-v3-turbo"] = "large.v3.turbo",
 }
 
 -- Map a ggml model path to its DTW preset, or nil when there isn't a known one.
@@ -920,8 +923,9 @@ vo.WHISPER_RELEASE = "v1.9.1"
 vo.MODEL_CATALOG = {
   { name = "base",     filename = "ggml-base.bin",     label = "base (multilingual, ~148 MB)",     expected_bytes = 147951465  },
   { name = "small",    filename = "ggml-small.bin",    label = "small (multilingual, ~488 MB)",    expected_bytes = 487601967  },
-  { name = "medium",   filename = "ggml-medium.bin",   label = "medium (multilingual, ~1.5 GB)",   expected_bytes = 1533763059 },
-  { name = "large-v3", filename = "ggml-large-v3.bin", label = "large-v3 (multilingual, ~3.1 GB)", expected_bytes = 3095033483 },
+  { name = "medium",         filename = "ggml-medium.bin",         label = "medium (multilingual, ~1.5 GB)",           expected_bytes = 1533763059 },
+  { name = "large-v3-turbo", filename = "ggml-large-v3-turbo.bin", label = "large-v3-turbo (multilingual, ~1.6 GB)",   expected_bytes = 1624555275 },
+  { name = "large-v3",       filename = "ggml-large-v3.bin",       label = "large-v3 (multilingual, ~3.1 GB)",         expected_bytes = 3095033483 },
 }
 
 -- Prebuilt CUDA whisper-cli builds from the pinned release. Both bundle their

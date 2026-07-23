@@ -1,7 +1,7 @@
 -- @description ajsfx VO ScriptMatch
 -- @author ajsfx
 -- @version 0.3
--- @changelog Add in-Settings download of a CUDA whisper-cli binary and models, with GPU device detection
+-- @changelog Add in-Settings download of a CUDA whisper-cli binary and models (incl. large-v3-turbo), GPU device detection, and buttons to open the download folders
 -- @about Cut a recorded VO session into one clip per script line and name each
 --        clip with its delivery asset name. Reads a CSV script, transcribes the
 --        selected items locally with whisper.cpp, matches spoken spans against

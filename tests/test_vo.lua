@@ -1658,12 +1658,23 @@ test("binary download URL is nil for an unknown key", function()
 end)
 
 test("every offered model has a verified DTW preset", function()
-  assert(#vo.MODEL_CATALOG == 4, "expected 4 models, got " .. #vo.MODEL_CATALOG)
+  assert(#vo.MODEL_CATALOG == 5, "expected 5 models, got " .. #vo.MODEL_CATALOG)
   for _, m in ipairs(vo.MODEL_CATALOG) do
     assert(vo.DTWPresetForModel(m.filename) ~= nil,
       "no DTW preset for " .. m.filename)
     assert(m.expected_bytes and m.expected_bytes > 0, "bad size for " .. m.name)
   end
+end)
+
+test("large-v3-turbo is offered and maps to its verified DTW preset", function()
+  local found
+  for _, m in ipairs(vo.MODEL_CATALOG) do
+    if m.name == "large-v3-turbo" then found = m end
+  end
+  assert(found, "large-v3-turbo missing from MODEL_CATALOG")
+  assert(found.expected_bytes == 1624555275, "turbo size drift")
+  assert(vo.DTWPresetForModel("ggml-large-v3-turbo.bin") == "large.v3.turbo",
+    tostring(vo.DTWPresetForModel("ggml-large-v3-turbo.bin")))
 end)
 
 test("binary catalog carries the exact verified asset sizes", function()

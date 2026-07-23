@@ -65,6 +65,19 @@ local function OpenURL(url)
   end
 end
 
+-- Reveal a download folder in the OS file manager. Creates it first so the
+-- open succeeds even before anything has been downloaded there.
+local function OpenFolder(path)
+  r.RecursiveCreateDirectory(path, 0)
+  if r.CF_ShellExecute then
+    r.CF_ShellExecute(path)
+  elseif vo.IsWindows() then
+    os.execute('start "" "' .. path:gsub("/", "\\") .. '"')
+  else
+    os.execute('open "' .. path .. '" 2>/dev/null || xdg-open "' .. path .. '"')
+  end
+end
+
 local function Apply()
   cfg.substitutions = vo.ParseSubstitutionText(subs_text)
   cfg.skip_values = {}
@@ -214,6 +227,20 @@ local function DrawBackend()
   if dis_check then im.EndDisabled(ctx) end
   if not ready then
     im.TextDisabled(ctx, "Check needs both a whisper-cli binary and a model set.")
+  end
+
+  -- Reveal the download folders in the OS file manager for manual management.
+  im.Spacing(ctx)
+  if im.Button(ctx, "Open models folder") then
+    OpenFolder(model_dir)
+    status = "Opened the models folder."
+  end
+  if vo.IsWindows() then
+    im.SameLine(ctx)
+    if im.Button(ctx, "Open binary folder") then
+      OpenFolder(bin_dir)
+      status = "Opened the whisper-cli binary folder."
+    end
   end
 
   -- Fallback: manual browser download (for missing curl, or non-Windows binary).
