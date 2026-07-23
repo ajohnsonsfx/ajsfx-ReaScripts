@@ -1770,5 +1770,21 @@ test("ParseBackendFromLog handles empty/nil input as CPU", function()
   assert(vo.ParseBackendFromLog(nil).device == "CPU")
 end)
 
+--------------------------------
+-- Backend acquisition: silent WAV writer (pure)
+--------------------------------
+print("Backend acquisition — WriteSilentWav:")
+
+test("WriteSilentWav writes a valid 16k mono silent WAV of the right length", function()
+  local p = os.tmpname()
+  assert(vo.WriteSilentWav(p, 0.5) == true)
+  local f = assert(io.open(p, "rb")); local b = f:read("a"); f:close()
+  assert(b:sub(1, 4) == "RIFF", "missing RIFF")
+  assert(b:sub(9, 12) == "WAVE", "missing WAVE")
+  -- 16000 Hz * 0.5 s * 2 bytes/sample + 44-byte header
+  assert(#b == 44 + 16000, "unexpected size " .. #b)
+  os.remove(p)
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

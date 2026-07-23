@@ -1576,6 +1576,212 @@ function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error
   r.defer(poll)
 end
 
+-- Download a URL to dest_path with a progress window and working Cancel.
+-- Detached curl via the same two-file launch as RunWhisperAsync; deliberately
+-- parallel to it rather than a shared refactor (VO/SPEC.md §11).
+-- curl -L follows the HF/GitHub redirects; --fail turns HTTP errors into a
+-- non-zero exit instead of saving an error page.
+-- UNVERIFIED outside REAPER — see VO/SPEC.md §9.
+function vo.RunDownloadAsync(cfg, url, dest_path, expected_bytes, on_done, on_cancel, on_error)
+  local scratch = vo.ResolveScratchDir(cfg)
+  vo.EnsureDir(scratch)
+  local timeout_s = 3600  -- generous fixed cap; large models/binaries take a while
+  local is_win    = vo.IsWindows()
+
+  local log_file  = scratch .. "/vo_download_log.txt"
+  local done_file = scratch .. "/vo_download_done.txt"
+  os.remove(done_file)
+
+  local argv = { "curl", "-L", "--fail", "-o", dest_path, url }
+  local quoted = {}
+  for _, a in ipairs(argv) do
+    quoted[#quoted + 1] = vo.QuoteArg(a, is_win and "Windows" or "Other")
+  end
+  local cmd_str = table.concat(quoted, " ")
+
+  local launched
+  if is_win then
+    local bat, vbs = scratch .. "/vo_dl.bat", scratch .. "/vo_dl.vbs"
+    local log_win, done_win = log_file:gsub("/", "\\"), done_file:gsub("/", "\\")
+    local fb = io.open(bat, "w")
+    if not fb then on_error("Cannot write launcher batch file: " .. bat) return end
+    fb:write("@echo off\r\n")
+    fb:write(cmd_str .. ' > "' .. log_win .. '" 2>&1\r\n')
+    fb:write('echo %ERRORLEVEL% > "' .. done_win .. '"\r\n')
+    fb:close()
+    local fv = io.open(vbs, "w")
+    if not fv then on_error("Cannot write VBScript launcher: " .. vbs) return end
+    fv:write('Set oShell = CreateObject("WScript.Shell")\r\n')
+    fv:write('oShell.Run "cmd /c " & Chr(34) & "' ..
+             bat:gsub("/", "\\"):gsub('"', '""') .. '" & Chr(34), 0, False\r\n')
+    fv:close()
+    launched = os.execute('wscript.exe //nologo //B "' .. vbs:gsub("/", "\\") .. '"')
+  else
+    launched = os.execute(string.format("(%s > %s 2>&1; echo $? > %s) &",
+      cmd_str, vo.QuoteArg(log_file, "Other"), vo.QuoteArg(done_file, "Other")))
+  end
+  if not launched then on_error("Failed to launch curl") return end
+
+  local function finished()
+    local f = io.open(done_file, "r")
+    if not f then return nil end
+    local code = tonumber(f:read("l")) or -1
+    f:close()
+    return code
+  end
+
+  local function read_log()
+    local lf = io.open(log_file, "r")
+    if not lf then return "" end
+    local t = lf:read("a") or ""
+    lf:close()
+    return #t > 600 and ("…" .. t:sub(-600)) or t
+  end
+
+  local function fail_partial(msg)
+    os.remove(dest_path)
+    local tail = read_log()
+    on_error(tail ~= "" and (msg .. "\n" .. tail) or msg)
+  end
+
+  local ok_im, im = pcall(function()
+    package.path = r.ImGui_GetBuiltinPath() .. '/?.lua;' .. package.path
+    return require('imgui')('0.9.3')
+  end)
+
+  local start_time = r.time_precise()
+
+  if not ok_im then
+    -- No ReaImGui: block without UI.
+    while true do
+      local code = finished()
+      if code then
+        if code == 0 and vo.VerifyDownloadSize(dest_path, expected_bytes) then on_done()
+        else fail_partial("Download failed or incomplete (curl exit " .. code .. ").") end
+        return
+      end
+      if r.time_precise() - start_time > timeout_s then fail_partial("Download timed out.") return end
+    end
+  end
+
+  local ctx       = im.CreateContext('VO Download')
+  local cancelled = false
+  local spinner   = { "|", "/", "-", "\\" }
+  local spin      = 0
+
+  local function kill()
+    if is_win then os.execute('taskkill /F /IM curl.exe > NUL 2>&1')
+    else os.execute("pkill -f curl 2>/dev/null") end
+    cancelled = true
+  end
+
+  local function poll()
+    if cancelled then return end
+    local elapsed = r.time_precise() - start_time
+    if elapsed > timeout_s then kill(); fail_partial("Download timed out.") return end
+
+    local code = finished()
+    if code then
+      if code == 0 and vo.VerifyDownloadSize(dest_path, expected_bytes) then on_done()
+      else fail_partial("Download failed or incomplete (curl exit " .. code .. ").") end
+      return
+    end
+
+    spin = (spin % #spinner) + 1
+    if not (ctx and im.ValidatePtr(ctx, 'ImGui_Context*')) then
+      ctx = im.CreateContext('VO Download')
+    end
+    im.SetNextWindowSize(ctx, 460, 160, im.Cond_FirstUseEver)
+    local visible, open = im.Begin(ctx, 'ajsfx VO — Downloading', true, im.WindowFlags_NoCollapse)
+    local pressed_cancel = false
+    if visible then
+      local got = vo.FileSize(dest_path)
+      im.Text(ctx, spinner[spin] .. "  Downloading…")
+      im.Spacing(ctx)
+      im.TextDisabled(ctx, string.format("%s of ~%s",
+        got and vo.FormatBytes(got) or "0 B", vo.FormatBytes(expected_bytes)))
+      im.Spacing(ctx)
+      im.TextDisabled(ctx, string.format("%.0fs elapsed (timeout %ds)", elapsed, timeout_s))
+      im.Spacing(ctx); im.Separator(ctx); im.Spacing(ctx)
+      pressed_cancel = im.Button(ctx, "Cancel")
+    end
+    im.End(ctx)  -- always End after Begin
+    if pressed_cancel or not open then kill(); os.remove(dest_path); on_cancel() return end
+    r.defer(poll)
+  end
+
+  r.defer(poll)
+end
+
+-- Extract a zip into dest_dir and return the list of extracted file paths.
+-- tar ships with Windows 10 >= 1803 and reads zip; PowerShell Expand-Archive is
+-- the fallback. UNVERIFIED outside REAPER — see VO/SPEC.md §9.
+function vo.ExtractZip(zip_path, dest_dir)
+  vo.EnsureDir(dest_dir)
+  local is_win = vo.IsWindows()
+  local q = function(s) return vo.QuoteArg(s, is_win and "Windows" or "Other") end
+
+  local ok = os.execute(string.format("tar -xf %s -C %s", q(zip_path), q(dest_dir)))
+  if not ok and is_win then
+    ok = os.execute(string.format(
+      'powershell -NoProfile -Command "Expand-Archive -Force -Path %s -DestinationPath %s"',
+      q(zip_path), q(dest_dir)))
+  end
+  if not ok then return false, "Could not extract " .. zip_path end
+
+  -- Walk dest_dir for a file listing.
+  local entries = {}
+  local lister = is_win
+    and ('dir /b /s ' .. ('"' .. dest_dir:gsub("/", "\\") .. '"'))
+    or  ('find ' .. q(dest_dir) .. ' -type f')
+  local p = io.popen(lister)
+  if p then
+    for line in p:lines() do
+      local trimmed = line:match("^%s*(.-)%s*$")
+      if trimmed ~= "" then entries[#entries + 1] = trimmed:gsub("\\", "/") end
+    end
+    p:close()
+  end
+  return true, entries
+end
+
+-- Run a tiny real transcription of a generated silent WAV to force whisper to
+-- initialize its device, then read the backend out of the log.
+-- UNVERIFIED outside REAPER — see VO/SPEC.md §9.
+function vo.ProbeBackendDevice(cfg, on_result)
+  local scratch = vo.ResolveScratchDir(cfg)
+  vo.EnsureDir(scratch)
+  local wav = scratch .. "/vo_probe.wav"
+  vo.WriteSilentWav(wav, 1.0)  -- 1s of silence; defined below
+
+  local argv = vo.BuildWhisperArgv(cfg, wav, scratch .. "/vo_probe")
+
+  -- Reuse the whisper runner so device init + log capture match a real run.
+  vo.RunWhisperAsync(cfg, argv, scratch,
+    function(_code, log) on_result(vo.ParseBackendFromLog(log or "")) end,
+    function() on_result({ device = "unknown" }) end,
+    function(_msg) on_result({ device = "unknown" }) end)
+end
+
+-- Minimal 16-bit mono 16kHz WAV of `seconds` of silence (whisper resamples
+-- internally, so 16kHz is fine). Pure file writer.
+function vo.WriteSilentWav(path, seconds)
+  local rate, bits, ch = 16000, 16, 1
+  local n = math.floor(rate * (seconds or 0.2))
+  local data_bytes = n * (bits // 8) * ch
+  local function u32(v) return string.char(v&255,(v>>8)&255,(v>>16)&255,(v>>24)&255) end
+  local function u16(v) return string.char(v&255,(v>>8)&255) end
+  local f = io.open(path, "wb")
+  if not f then return false end
+  f:write("RIFF"); f:write(u32(36 + data_bytes)); f:write("WAVE")
+  f:write("fmt "); f:write(u32(16)); f:write(u16(1)); f:write(u16(ch))
+  f:write(u32(rate)); f:write(u32(rate * ch * (bits//8)))
+  f:write(u16(ch * (bits//8))); f:write(u16(bits))
+  f:write("data"); f:write(u32(data_bytes)); f:write(string.rep("\0", data_bytes))
+  f:close()
+  return true
+end
+
 -- Transcribe a list of unique source files in sequence, reusing cached
 -- transcripts. Calls on_done(map) with path -> word array.
 -- UNVERIFIED outside REAPER — see SPEC.md §10.
