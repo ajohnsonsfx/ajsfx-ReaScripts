@@ -1741,5 +1741,34 @@ test("LocateWhisperCliExe returns nil when absent or empty", function()
   assert(vo.LocateWhisperCliExe({}) == nil)
 end)
 
+--------------------------------
+-- Backend acquisition: device log parser
+--------------------------------
+print("\nBackend acquisition — device log parser:")
+
+test("ParseBackendFromLog reports CUDA and the device name", function()
+  local log = table.concat({
+    "whisper_init_from_file_with_params_no_state: loading model",
+    "ggml_cuda_init: found 1 CUDA devices:",
+    "  Device 0: NVIDIA GeForce RTX 4070, compute capability 8.9",
+    "whisper_backend_init_gpu: using CUDA0 backend",
+  }, "\n")
+  local d = vo.ParseBackendFromLog(log)
+  assert(d.device == "CUDA", d.device)
+  assert(d.name == "NVIDIA GeForce RTX 4070", tostring(d.name))
+end)
+
+test("ParseBackendFromLog reports CPU when no CUDA lines are present", function()
+  local log = "whisper_backend_init: using CPU backend\nsystem_info: n_threads = 8"
+  local d = vo.ParseBackendFromLog(log)
+  assert(d.device == "CPU", d.device)
+  assert(d.name == nil)
+end)
+
+test("ParseBackendFromLog handles empty/nil input as CPU", function()
+  assert(vo.ParseBackendFromLog("").device == "CPU")
+  assert(vo.ParseBackendFromLog(nil).device == "CPU")
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
