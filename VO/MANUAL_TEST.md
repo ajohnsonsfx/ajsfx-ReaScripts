@@ -245,8 +245,11 @@ Open **ajsfx VO Settings → Speech backend → Download backend & models**.
       and no partial file remains in `whisper-bin/` or `whisper-models/`.
 - [ ] Temporarily rename `curl` off PATH (or test on pre-1803 Windows) → a clear
       message, and the browser-download fallback still works.
-- [ ] Confirm the size check: interrupt a model download so a tiny partial file
-      is left, then re-run — the tool re-downloads rather than accepting it.
+- [ ] Confirm Cancel cleans up after itself: cancel mid-download and check
+      `whisper-bin/`/`whisper-models/` afterward — no partial file remains. Note:
+      `ModelIsInstalled` is existence-only, so a partial left by a hard
+      interruption (e.g. force-quitting REAPER, not the Cancel button) will read
+      as installed and must be deleted manually before re-downloading.
 
 ---
 

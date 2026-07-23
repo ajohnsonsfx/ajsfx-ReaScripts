@@ -1765,6 +1765,13 @@ test("ParseBackendFromLog reports CPU when no CUDA lines are present", function(
   assert(d.name == nil)
 end)
 
+test("ParseBackendFromLog reports CPU when CUDA is mentioned but no device is listed", function()
+  local log = "ggml_cuda_init: found 0 CUDA devices:\nwhisper_backend_init: using CPU backend"
+  local d = vo.ParseBackendFromLog(log)
+  assert(d.device == "CPU", d.device)
+  assert(d.name == nil)
+end)
+
 test("ParseBackendFromLog handles empty/nil input as CPU", function()
   assert(vo.ParseBackendFromLog("").device == "CPU")
   assert(vo.ParseBackendFromLog(nil).device == "CPU")

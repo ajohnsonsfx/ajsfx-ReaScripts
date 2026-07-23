@@ -1004,10 +1004,9 @@ end
 -- line. To be confirmed against real output on first run — see VO/SPEC.md §9.
 function vo.ParseBackendFromLog(text)
   text = text or ""
-  if text:find("CUDA") then
-    local name = text:match("Device%s+%d+:%s*([^,\r\n]+)")
-    if name then name = name:match("^%s*(.-)%s*$") end
-    return { device = "CUDA", name = name }
+  local name = text:match("Device%s+%d+:%s*([^,\r\n]+)")
+  if text:find("CUDA") and name then
+    return { device = "CUDA", name = name:match("^%s*(.-)%s*$") }
   end
   return { device = "CPU" }
 end
