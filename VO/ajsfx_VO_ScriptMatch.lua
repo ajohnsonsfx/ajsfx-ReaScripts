@@ -125,7 +125,6 @@ local state = {
   layout_dirty     = false,      -- mapping edited away from the named preset
   excluded         = {},         -- folded character key -> true when unchecked
   distinct         = nil,        -- vo.DistinctCharacters for the mapped speaker column
-  distinct_col     = nil,        -- header column distinct was built for (change detection)
   use_alts_track   = cfg.use_alts_track or false,
   suffix_alt_names = cfg.suffix_alt_names or false,
   primary_last     = true,
@@ -196,17 +195,16 @@ end
 local function RebuildDistinct()
   local spk = state.mapping.speaker
   if not spk then
-    state.distinct, state.distinct_col = nil, nil
+    state.distinct = nil
     return
   end
   local idx
   for i, h in ipairs(state.header or {}) do if h == spk then idx = i; break end end
   if not idx then
-    state.distinct, state.distinct_col = nil, nil
+    state.distinct = nil
     return
   end
-  state.distinct     = vo.DistinctCharacters(state.rows or {}, idx)
-  state.distinct_col = spk
+  state.distinct = vo.DistinctCharacters(state.rows or {}, idx)
 end
 
 -- Adopt a layout table (mapping + skip_values) against the current header: a
@@ -259,7 +257,7 @@ local function LoadCSV(path, restore)
   state.header       = nil
   state.rows         = nil
   state.header_error = ""
-  state.distinct, state.distinct_col = nil, nil
+  state.distinct     = nil
 
   if not path or path == "" then return end
 
@@ -366,6 +364,17 @@ local function RoleCombo(role, optional)
   end
 end
 
+-- Persist per-.rpp: CSV path, the inline layout, and the selected preset name
+-- (empty while the mapping is unsaved) — SPEC §5.3. Called both on Run and on
+-- dialog close so mapping a layout and closing without transcribing is not
+-- lost (§13.4).
+local function PersistProjectMemory()
+  r.SetProjExtState(0, PROJ_SECTION, "script_csv", state.csv_path)
+  r.SetProjExtState(0, PROJ_SECTION, "layout", vo.SerializeLayout(CurrentLayout()))
+  r.SetProjExtState(0, PROJ_SECTION, "layout_name",
+                    state.layout_dirty and "" or (state.layout_name or ""))
+end
+
 -- -----------------------------------------------------------------------
 -- The run itself
 -- -----------------------------------------------------------------------
@@ -448,12 +457,7 @@ local function Run()
     return
   end
 
-  -- Persist per-.rpp: CSV path, the inline layout, and the selected preset name
-  -- (empty while the mapping is unsaved) — SPEC §5.3.
-  r.SetProjExtState(0, PROJ_SECTION, "script_csv", state.csv_path)
-  r.SetProjExtState(0, PROJ_SECTION, "layout", vo.SerializeLayout(CurrentLayout()))
-  r.SetProjExtState(0, PROJ_SECTION, "layout_name",
-                    state.layout_dirty and "" or (state.layout_name or ""))
+  PersistProjectMemory()
 
   cfg.use_alts_track   = state.use_alts_track
   cfg.suffix_alt_names = state.suffix_alt_names
@@ -529,8 +533,7 @@ local function loop()
     -- Script CSV path. A change (typed or browsed) reloads the header + rows;
     -- the first successful load restores the layout by §5.3 precedence, later
     -- loads keep the current mapping against the new header.
-    local changed
-    changed, state.csv_path = im.InputText(ctx, "Script CSV", state.csv_path)
+    state.csv_path = select(2, im.InputText(ctx, "Script CSV", state.csv_path))
     im.SameLine(ctx)
     if im.Button(ctx, "Browse") then
       local ok, path = r.GetUserFileNameForRead(state.csv_path, "Select the session script", "csv")
@@ -686,7 +689,13 @@ local function loop()
     if state.running then return end -- hand off to the transcription window
   end
 
-  if open then r.defer(loop) end
+  if open then
+    r.defer(loop)
+  else
+    -- Dialog is closing. Persist whatever is currently mapped so a user who
+    -- edited the layout and closed without running doesn't lose it (§13.4).
+    PersistProjectMemory()
+  end
 end
 
 -- Load any remembered CSV once up front so the first frame shows its columns.

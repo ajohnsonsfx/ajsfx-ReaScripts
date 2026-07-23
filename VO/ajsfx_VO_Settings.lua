@@ -97,6 +97,10 @@ end
 
 local function Apply()
   cfg.substitutions = vo.ParseSubstitutionText(subs_text)
+  -- Skip tokens now live in the ScriptMatch layout (per-CSV, saved with the
+  -- preset); this global cfg.skip_values round-trip is retained only for
+  -- backward-compat with configs saved before that move — no UI edits it and
+  -- no behavior depends on it here.
   cfg.skip_values = {}
   for v in skip_text:gmatch("[^\n]+") do
     local trimmed = v:match("^%s*(.-)%s*$")

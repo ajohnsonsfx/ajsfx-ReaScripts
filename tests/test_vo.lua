@@ -1835,8 +1835,10 @@ test("AutoDetectMapping matches role aliases case-insensitively", function()
   assert(m.asset == "Filename", tostring(m.asset))
   assert(m.speaker == "Character", tostring(m.speaker))
   assert(m.type == "Category", tostring(m.type))
-  -- "VO Line" matches text alias "line"/"vo" only if exact-token; unmatched roles omitted
-  assert(m.text == nil or type(m.text) == "string")
+  -- `fold` does not tokenize on spaces, so "VO Line" folds to "vo line" and
+  -- matches no alias exactly; text is left unmapped. Documents this real
+  -- limitation rather than asserting a tautology.
+  assert(m.text == nil, "multi-word header should not auto-detect: " .. tostring(m.text))
 end)
 
 test("ValidateHeaderNames rejects tab/newline in a column name", function()
