@@ -1,7 +1,7 @@
 -- @description ajsfx Core Library
 -- @author ajsfx
--- @version 1.1
--- @changelog Add SaveMediaCounterConfig to complement LoadMediaCounterConfig
+-- @version 1.2
+-- @changelog Add item-edge query helpers (GetLastItemEnd, GetFirstItemStart) and GetSelectedTracksList
 -- @about Shared functions for ajsfx scripts
 
 local r = reaper
@@ -292,6 +292,60 @@ end
 function core.ItemIntersectsRange(item_pos, item_length, range_start, range_end)
   local item_end = item_pos + item_length
   return item_pos < range_end and item_end > range_start
+end
+
+--------------------------------
+-- Item Edge Queries
+--------------------------------
+
+-- Returns the maximum item end position (D_POSITION + D_LENGTH) across all
+-- items on the given tracks, or nil if no qualifying item exists.
+-- unmuted_only: when true, items with B_MUTE ~= 0 are skipped.
+function core.GetLastItemEnd(tracks, unmuted_only)
+  local last_end = nil
+  for _, track in ipairs(tracks) do
+    local item_count = r.CountTrackMediaItems(track)
+    for j = 0, item_count - 1 do
+      local item = r.GetTrackMediaItem(track, j)
+      if not unmuted_only or r.GetMediaItemInfo_Value(item, "B_MUTE") == 0 then
+        local item_end = r.GetMediaItemInfo_Value(item, "D_POSITION") + r.GetMediaItemInfo_Value(item, "D_LENGTH")
+        if not last_end or item_end > last_end then
+          last_end = item_end
+        end
+      end
+    end
+  end
+  return last_end
+end
+
+-- Returns the minimum item start position (D_POSITION) across all items on
+-- the given tracks, or nil if no qualifying item exists.
+-- unmuted_only: when true, items with B_MUTE ~= 0 are skipped.
+function core.GetFirstItemStart(tracks, unmuted_only)
+  local first_start = nil
+  for _, track in ipairs(tracks) do
+    local item_count = r.CountTrackMediaItems(track)
+    for j = 0, item_count - 1 do
+      local item = r.GetTrackMediaItem(track, j)
+      if not unmuted_only or r.GetMediaItemInfo_Value(item, "B_MUTE") == 0 then
+        local item_start = r.GetMediaItemInfo_Value(item, "D_POSITION")
+        if not first_start or item_start < first_start then
+          first_start = item_start
+        end
+      end
+    end
+  end
+  return first_start
+end
+
+-- Returns a list (possibly empty) of currently selected tracks.
+function core.GetSelectedTracksList()
+  local tracks = {}
+  local count = r.CountSelectedTracks(0)
+  for i = 0, count - 1 do
+    tracks[#tracks + 1] = r.GetSelectedTrack(0, i)
+  end
+  return tracks
 end
 
 --------------------------------
