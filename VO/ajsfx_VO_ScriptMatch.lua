@@ -444,17 +444,6 @@ local function RefreshPreview()
   })
 end
 
--- ReaImGui attaches objects to the context and rejects creating one per frame
--- ("excessive creation of short-lived resources"), so the clipper is made once
--- and reused. ValidatePtr catches the context being recreated in loop().
-local clipper
-local function Clipper()
-  if not (clipper and im.ValidatePtr(clipper, 'ImGui_ListClipper*')) then
-    clipper = im.CreateListClipper(ctx)
-  end
-  return clipper
-end
-
 -- The table is the interface: columns are mapped in its header, and the body is
 -- the list of lines that will actually run. Rows excluded by a skip token, the
 -- character filter, or an empty required cell are hidden, not dimmed (R4).
@@ -499,20 +488,17 @@ local function DrawTableBody()
 
   local lines = state.preview
   if lines and #lines > 0 then
-    local cl = Clipper()
-    im.ListClipper_Begin(cl, #lines)
-    while im.ListClipper_Step(cl) do
-      local first, last = im.ListClipper_GetDisplayRange(cl)
-      for n = first, last - 1 do
-        local line = lines[n + 1]
-        if line then
-          im.TableNextRow(ctx)
-          for i, c in ipairs(COLUMNS) do
-            im.TableSetColumnIndex(ctx, i - 1)
-            if c.kind == "mapped" then
-              im.Text(ctx, line[c.key] or "")
-            end
-          end
+    -- Every row is emitted; ImGui's own table clipping keeps off-screen rows
+    -- from reaching the draw list. ListClipper would cut the per-row Lua calls
+    -- too, but ReaImGui treats it as a short-lived resource and rejects it here
+    -- ("excessive creation of short-lived resources"), so this is the cost of
+    -- staying inside the binding's rules.
+    for _, line in ipairs(lines) do
+      im.TableNextRow(ctx)
+      for i, c in ipairs(COLUMNS) do
+        im.TableSetColumnIndex(ctx, i - 1)
+        if c.kind == "mapped" then
+          im.Text(ctx, line[c.key] or "")
         end
       end
     end
