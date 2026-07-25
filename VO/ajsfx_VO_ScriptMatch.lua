@@ -854,10 +854,13 @@ local function loop()
 
     if state.header and state.header_error == "" then
       im.Spacing(ctx)
-      -- Reserve room for the count line and the run button row below it; the
-      -- table takes whatever height is left.
+      -- Reserve room for the count line and the status/error lines below it;
+      -- the table takes whatever height is left. GetContentRegionAvail returns
+      -- width first, so the height must be taken from the SECOND return value —
+      -- using the first ties the table's height to the window's width.
       local reserve = im.GetFrameHeightWithSpacing(ctx) * 3
-      DrawTable(math.max(120, im.GetContentRegionAvail(ctx) - reserve))
+      local _, avail_h = im.GetContentRegionAvail(ctx)
+      DrawTable(math.max(120, avail_h - reserve))
 
       im.TextDisabled(ctx, string.format("%d of %d rows will run.",
         state.preview and #state.preview or 0, state.rows and #state.rows or 0))
