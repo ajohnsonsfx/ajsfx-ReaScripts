@@ -1,7 +1,7 @@
 -- @description ajsfx VO ScriptMatch
 -- @author ajsfx
 -- @version 0.8
--- @changelog Transcribe and cut are now two buttons in the top right: Transcribe reads the audio and builds the plan without touching the project, and Cut applies it. Changing the CSV, mapping, filters or skip tokens discards a plan built before the change
+-- @changelog Transcribe and cut are now two buttons at the bottom right: Transcribe reads the audio and builds the plan without touching the project, and Cut applies it. Once a plan exists the button becomes Re-transcribe and bypasses the transcript cache. Changing the CSV, mapping, filters or skip tokens discards a plan built before the change
 -- @about Cut a recorded VO session into one clip per script line and name each
 --        clip with its delivery asset name. Reads a CSV script, transcribes the
 --        selected items locally with whisper.cpp, matches spoken spans against
@@ -626,6 +626,12 @@ local function Run()
     end
   end
 
+  -- A plan already in hand means this is a deliberate second press, so bypass
+  -- the scratch-dir transcript cache and actually re-run whisper. The first
+  -- press reuses a cached transcript as before; the cache key already covers
+  -- backend settings, so only the audio itself can have changed underneath it.
+  cfg.force_retranscribe = (state.plan ~= nil)
+
   state.plan       = nil
   state.plan_lines = nil
   state.status     = ""
@@ -706,48 +712,7 @@ local function loop()
   local pressed_run, pressed_cut = false, false
 
   if visible then
-    -- Run gating. Computed before the controls it guards because the buttons
-    -- are drawn at the top; a mapping changed in the table below lands one
-    -- frame later, which ImGui redraws immediately anyway.
-    local run_error
-    if not state.header then
-      run_error = (state.header_error ~= "" and state.header_error) or "Load a script CSV."
-    elseif state.header_error ~= "" then
-      run_error = state.header_error
-    else
-      for _, role in ipairs({ "asset", "text" }) do
-        if not state.mapping[role] then
-          run_error = "Map the required column: " .. ROLE_LABEL[role]
-          break
-        end
-      end
-    end
-
     im.TextDisabled(ctx, string.format("%d item(s) selected, %d skipped.", #usable, #skipped))
-
-    -- Transcribe and Cut sit top-right, right-aligned as a pair. Transcribe
-    -- reads audio and builds a plan; nothing in the project changes until Cut.
-    RightAlign({ "Transcribe", "Cut and name" })
-
-    local dis_run = (run_error ~= nil)
-    if dis_run then im.BeginDisabled(ctx) end
-    pressed_run = im.Button(ctx, "Transcribe")
-    if dis_run then im.EndDisabled(ctx) end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, "Transcribe the selected items and build the cut plan.\n" ..
-                         "Nothing in the project changes.")
-    end
-
-    im.SameLine(ctx)
-    local dis_cut = (state.plan == nil)
-    if dis_cut then im.BeginDisabled(ctx) end
-    pressed_cut = im.Button(ctx, "Cut and name")
-    if dis_cut then im.EndDisabled(ctx) end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, dis_cut and "Transcribe first — there is no plan to apply."
-                                 or  "Split and name the clips from the transcribed plan.")
-    end
-
     im.Spacing(ctx)
 
     -- Script CSV path. A change (typed or browsed) reloads the header + rows;
@@ -852,33 +817,77 @@ local function loop()
     -- body is exactly the set of lines that will run.
     if state.preview_dirty then RefreshPreview() end
 
+    -- Run gating. Both required roles must be mapped and the CSV must parse.
+    local run_error
+    if not state.header then
+      run_error = (state.header_error ~= "" and state.header_error) or "Load a script CSV."
+    elseif state.header_error ~= "" then
+      run_error = state.header_error
+    else
+      for _, role in ipairs({ "asset", "text" }) do
+        if not state.mapping[role] then
+          run_error = "Map the required column: " .. ROLE_LABEL[role]
+          break
+        end
+      end
+    end
+
     if state.header and state.header_error == "" then
       im.Spacing(ctx)
-      -- Reserve room for the count line and the status/error lines below it;
-      -- the table takes whatever height is left. GetContentRegionAvail returns
-      -- width first, so the height must be taken from the SECOND return value —
-      -- using the first ties the table's height to the window's width.
-      local reserve = im.GetFrameHeightWithSpacing(ctx) * 3
+      -- Reserve room for the count line, the button row and whichever status
+      -- lines are showing; the table takes whatever height is left. The reserve
+      -- is counted rather than fixed so a long error message can't push the
+      -- buttons off the bottom of the window — the reason they were moved up
+      -- in the first place.
+      local rows = 2 -- count line + button row
+      if state.status ~= "" then rows = rows + 1 end
+      if run_error            then rows = rows + 1 end
+      if state.message ~= ""  then rows = rows + 1 end
+
+      -- GetContentRegionAvail returns width first, so the height must come from
+      -- the SECOND return value; the first ties table height to window width.
       local _, avail_h = im.GetContentRegionAvail(ctx)
-      DrawTable(math.max(120, avail_h - reserve))
+      DrawTable(math.max(120, avail_h - im.GetFrameHeightWithSpacing(ctx) * rows))
 
       im.TextDisabled(ctx, string.format("%d of %d rows will run.",
         state.preview and #state.preview or 0, state.rows and #state.rows or 0))
     end
 
     if state.status ~= "" then
-      im.Spacing(ctx)
       im.TextColored(ctx, 0x66BB66FF, state.status)
     end
 
     if run_error then
-      im.Spacing(ctx)
       im.TextColored(ctx, 0xDDAA33FF, run_error)
     end
 
     if state.message ~= "" then
-      im.Spacing(ctx)
       im.TextColored(ctx, 0xDD6666FF, state.message)
+    end
+
+    -- Transcribe and Cut, bottom-right. Transcribe reads the audio and builds
+    -- the plan; nothing in the project changes until Cut.
+    local relabel = state.plan and "Re-transcribe" or "Transcribe"
+    RightAlign({ relabel, "Cut and name" })
+
+    local dis_run = (run_error ~= nil)
+    if dis_run then im.BeginDisabled(ctx) end
+    pressed_run = im.Button(ctx, relabel)
+    if dis_run then im.EndDisabled(ctx) end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, state.plan
+        and "Discard the current plan and transcribe the audio again from scratch."
+        or  "Transcribe the selected items and build the cut plan.\nNothing in the project changes.")
+    end
+
+    im.SameLine(ctx)
+    local dis_cut = (state.plan == nil)
+    if dis_cut then im.BeginDisabled(ctx) end
+    pressed_cut = im.Button(ctx, "Cut and name")
+    if dis_cut then im.EndDisabled(ctx) end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, dis_cut and "Transcribe first — there is no plan to apply."
+                                 or  "Split and name the clips from the transcribed plan.")
     end
   end
 
