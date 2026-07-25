@@ -124,7 +124,7 @@ local state = {
   skip_text        = "",         -- skip tokens, one per line (part of the layout)
   layout_name      = "",         -- selected preset name ("" = unsaved/inline)
   layout_dirty     = false,      -- mapping edited away from the named preset
-  excluded         = {},         -- folded character key -> true when unchecked
+  character        = nil,        -- folded character key to keep, nil = all (R3)
   distinct         = nil,        -- vo.DistinctCharacters for the mapped speaker column
   use_alts_track   = cfg.use_alts_track or false,
   suffix_alt_names = cfg.suffix_alt_names or false,
@@ -188,22 +188,38 @@ local function HeaderMatch(colname)
   return nil
 end
 
--- (Re)build the character multi-select from the mapped speaker column. Existing
--- exclusions are keyed by folded character key, so they survive a rebuild; new
--- characters default to included. Cleared when no character column is mapped.
+-- (Re)build the character list from the mapped speaker column. A selection that
+-- still exists in the new column survives; one that does not resets to "all".
 local function RebuildDistinct()
   local spk = state.mapping.speaker
-  if not spk then
-    state.distinct = nil
-    return
-  end
   local idx
-  for i, h in ipairs(state.header or {}) do if h == spk then idx = i; break end end
+  if spk then
+    for i, h in ipairs(state.header or {}) do if h == spk then idx = i; break end end
+  end
   if not idx then
-    state.distinct = nil
+    state.distinct  = nil
+    state.character = nil
     return
   end
   state.distinct = vo.DistinctCharacters(state.rows or {}, idx)
+  if state.character then
+    local still_there = false
+    for _, d in ipairs(state.distinct) do
+      if d.key == state.character then still_there = true; break end
+    end
+    if not still_there then state.character = nil end
+  end
+end
+
+-- The character filter as BuildScriptLines arguments. Canonicalization applies
+-- whenever a character column carries values; the include-set is nil (inert ->
+-- keep every row, blank-character rows included) until a character is chosen,
+-- at which point it is a set of exactly one (R3).
+local function CharacterFilter()
+  if not (state.distinct and #state.distinct > 0) then return nil, nil end
+  local canon = vo.CanonicalizeMap(state.distinct)
+  if not state.character then return nil, canon end
+  return { [state.character] = true }, canon
 end
 
 -- Adopt a layout table (mapping + skip_values) against the current header: a
@@ -423,29 +439,7 @@ local function Run()
   local cols, err = vo.MapColumns(state.header, state.mapping)
   if not cols then state.message = err; return end
 
-  -- Character filter -> folded include-set + canonicalizer. Canonicalization
-  -- applies whenever a character column carries values. The include-set itself
-  -- stays nil (inert -> keep every row, including blank-character ones) unless
-  -- the user has actually excluded at least one character; only then does it
-  -- become the include-set of checked characters, which also makes a
-  -- blank-character row (speaker_key == nil) fail the include-set test in
-  -- BuildScriptLines and get dropped, as intended once filtering is active.
-  local speakers, canon
-  if state.distinct and #state.distinct > 0 then
-    canon = vo.CanonicalizeMap(state.distinct)
-    local any_excluded = false
-    for _, d in ipairs(state.distinct) do
-      if state.excluded[d.key] then any_excluded = true; break end
-    end
-    if any_excluded then
-      speakers = {}
-      local any_included = false
-      for _, d in ipairs(state.distinct) do
-        if not state.excluded[d.key] then speakers[d.key] = true; any_included = true end
-      end
-      if not any_included then state.message = "No characters selected."; return end
-    end
-  end
+  local speakers, canon = CharacterFilter()
 
   local lines = vo.BuildScriptLines(state.rows, cols, {
     skip_values  = ParseSkipLines(state.skip_text),
@@ -611,19 +605,6 @@ local function loop()
       skchanged, state.skip_text = im.InputTextMultiline(ctx, "##skip", state.skip_text, 380, 54)
       if skchanged then MarkDirty() end
 
-      -- Character filter -------------------------------------------------
-      if state.distinct and #state.distinct > 0 then
-        im.Spacing(ctx)
-        im.SeparatorText(ctx, "Character filter")
-        im.TextDisabled(ctx, "Unchecked characters are excluded from this run.")
-        for _, d in ipairs(state.distinct) do
-          local included = not state.excluded[d.key]
-          local cbch, val = im.Checkbox(ctx, d.display .. "##char_" .. d.key, included)
-          if cbch then
-            state.excluded[d.key] = (not val) or nil
-          end
-        end
-      end
     elseif state.header_error ~= "" then
       im.Spacing(ctx)
       im.TextColored(ctx, 0xDD6666FF, state.header_error)
