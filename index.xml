@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ajsfx-ReaScripts" commit="3821159ba78105d6bf31e0bfd9caaebab8c3a7e0">
+<index version="1" name="ajsfx-ReaScripts" commit="ff97c92d3d534435898109c2b8d601bf05b97692">
   <category name="Items">
     <reapack name="ajsfx_GentleNormalizer.lua" type="script" desc="Gentle Normalizer">
       <metadata>
@@ -351,7 +351,7 @@
 {\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
 \widowctrl\hyphauto
 
-{\pard \ql \f0 \sa180 \li0 \fi0 Cut a recorded VO session into one clip per script line and name each clip with its delivery asset name. Reads a CSV script, transcribes the selected items locally with whisper.cpp, matches spoken spans against the script, and routes the results to Selects / Alts / Review tracks. Low-confidence and unmatched audio is flagged, never guessed. Configure the backend in "ajsfx VO Settings". See VO/SPEC.md.\par}
+{\pard \ql \f0 \sa180 \li0 \fi0 Cut a recorded VO session into one clip per script line and name each clip with its delivery asset name. Reads a CSV script, transcribes the selected items locally with whisper.cpp, matches spoken spans against the script, and routes the results to Selects / Alts / Review tracks. Low-confidence matches are flagged for review, never guessed. Unmatched audio is left untouched on the source track and flagged in the report. Configure the backend in "ajsfx VO Settings". See VO/SPEC.md.\par}
 }
 ]]></description>
       </metadata>
@@ -369,6 +369,27 @@ lib/ajsfx_vo.lua and only one may provide a given file.]]></changelog>
         <source main="main" file="ajsfx_VO_Settings.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/9dd74af0659dc7be6e6be191e692eb9ebe9fbd81/VO/ajsfx_VO_Settings.lua</source>
         <source file="lib/ajsfx_vo.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/9dd74af0659dc7be6e6be191e692eb9ebe9fbd81/VO/lib/ajsfx_vo.lua</source>
         <source file="lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/9dd74af0659dc7be6e6be191e692eb9ebe9fbd81/lib/ajsfx_core.lua</source>
+      </version>
+      <version name="0.3" author="ajsfx" time="2026-07-23T06:02:56Z">
+        <changelog><![CDATA[Add in-Settings download of a CUDA whisper-cli binary and models, with GPU device detection]]></changelog>
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/9e8ffe5dad604b21a7971f0264d70592fe72b688/VO/ajsfx_VO_ScriptMatch.lua</source>
+        <source main="main" file="ajsfx_VO_Settings.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/9e8ffe5dad604b21a7971f0264d70592fe72b688/VO/ajsfx_VO_Settings.lua</source>
+        <source file="lib/ajsfx_vo.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/9e8ffe5dad604b21a7971f0264d70592fe72b688/VO/lib/ajsfx_vo.lua</source>
+        <source file="lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/9e8ffe5dad604b21a7971f0264d70592fe72b688/lib/ajsfx_core.lua</source>
+      </version>
+      <version name="0.4" author="ajsfx" time="2026-07-23T21:14:06Z">
+        <changelog><![CDATA[Move CSV mapping/filtering into ScriptMatch: header-driven dropdowns, named layout presets, multi-select character filter, per-character track routing]]></changelog>
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/07f2f8803984a9f6be6bd16c921bb5d3c50e8878/VO/ajsfx_VO_ScriptMatch.lua</source>
+        <source main="main" file="ajsfx_VO_Settings.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/07f2f8803984a9f6be6bd16c921bb5d3c50e8878/VO/ajsfx_VO_Settings.lua</source>
+        <source file="lib/ajsfx_vo.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/07f2f8803984a9f6be6bd16c921bb5d3c50e8878/VO/lib/ajsfx_vo.lua</source>
+        <source file="lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/07f2f8803984a9f6be6bd16c921bb5d3c50e8878/lib/ajsfx_core.lua</source>
+      </version>
+      <version name="0.6" author="ajsfx" time="2026-07-25T17:49:42Z">
+        <changelog><![CDATA[Unmatched audio (slates, chatter, false starts) is now left untouched on the source track instead of being cut and moved to Review; it is still listed in the report]]></changelog>
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/d05ab4cfc4aaaa4c1523ea3ef0522d672131d0e9/VO/ajsfx_VO_ScriptMatch.lua</source>
+        <source main="main" file="ajsfx_VO_Settings.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/d05ab4cfc4aaaa4c1523ea3ef0522d672131d0e9/VO/ajsfx_VO_Settings.lua</source>
+        <source file="lib/ajsfx_vo.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/d05ab4cfc4aaaa4c1523ea3ef0522d672131d0e9/VO/lib/ajsfx_vo.lua</source>
+        <source file="lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/d05ab4cfc4aaaa4c1523ea3ef0522d672131d0e9/lib/ajsfx_core.lua</source>
       </version>
     </reapack>
   </category>
