@@ -77,8 +77,10 @@ Confirmed during design (2026-07-22), not assumed:
   rename in a future release would break the download; bumping the pin is a deliberate,
   testable change.
 - **Model lineup:** multilingual, DTW-verified only — `base`, `small`, `medium`, `large-v3`.
-- **Storage:** under REAPER's resource path — binaries in `whisper-bin/`, models in
-  `whisper-models/`. Stable, shared across projects, survives project changes.
+- **Storage:** under the plugin's own folder — `<Scripts>/<repo>/Resources/`, with
+  binaries in `whisper-bin/` and models in `whisper-models/`. The repo folder is
+  derived from the VO script's install path (never hardcoded), mirroring how PVX
+  locates its venv. Keeps downloads contained and uninstalling with the package.
 - **Exe resolution:** after extraction, **glob** the target dir for `whisper-cli.exe` rather
   than hard-coding a path inside the zip (the internal name/layout is confirmed on first run,
   not guessed — see §9).
@@ -101,8 +103,9 @@ thin **REAPER-coupled layer** (subprocess, extraction, ImGui). All new pure func
 | `vo.BINARY_CATALOG` | Ordered list of the two cublas builds: `key`, `release_tag`, `asset`, `url`, `expected_bytes`, `label`. |
 | `vo.ModelDownloadURL(name)` | → HuggingFace resolve URL (§2.5). |
 | `vo.BinaryDownloadURL(key)` | → GitHub release asset URL (§2.4). |
-| `vo.ResolveModelsDir()` | → `<resource>/whisper-models` (path only; creation is REAPER-side). |
-| `vo.ResolveBinDir()` | → `<resource>/whisper-bin`. |
+| `vo.PluginResourceRoot(script_dir)` | → `<Scripts>/<repo>/Resources` from the VO script dir (repo name not hardcoded). |
+| `vo.ResolveModelsDir(root)` | → `<root>/whisper-models` (path only; creation is REAPER-side). |
+| `vo.ResolveBinDir(root)` | → `<root>/whisper-bin`. |
 | `vo.ModelIsInstalled(dir, name)` | File exists and passes the size floor. |
 | `vo.VerifyDownloadSize(path, expected)` | True when actual ≥ ~95% of `expected` — catches truncated pulls and HTML error pages saved as `.bin`/`.zip`. |
 | `vo.LocateWhisperCliExe(entries)` | Given a flat list of extracted file paths, return the `whisper-cli.exe` path (case-insensitive), or nil. Pure over an injected listing so it is unit-testable. |

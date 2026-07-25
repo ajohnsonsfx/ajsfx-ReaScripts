@@ -120,14 +120,19 @@ beneath the source track:
 |---|---|---|
 | **Selects** | Matched takes (all of them, or just the primary — see toggles) | `Selects` |
 | **Alts** | Non-primary takes, when the Alts toggle is on | `Alts` |
-| **Review** | Low-confidence matches **and** unmatched audio (slates, chatter, false starts) | `Review` |
+| **Review** | Low-confidence matches | `Review` |
+
+**Unmatched audio is never pulled.** Slates, chatter and false starts match no script
+line, so they are left exactly as recorded on the source track — not split, not moved,
+not renamed. They are still listed in the report, which is where they get flagged.
 
 Splitting rather than copying is deliberate: with the pieces physically removed from the
-source track, it is immediately obvious what has been pulled and what has not. Every
-mutation lives in a single `core.Transaction`, so the whole run is one undo step.
+source track, it is immediately obvious what has been pulled and what has not — and what
+remains behind is precisely what the tool could not match. Every mutation lives in a
+single `core.Transaction`, so the whole run is one undo step.
 
-Clips are named by setting the take name (`P_NAME`). Non-speech silence between spans
-remains on the source track.
+Clips are named by setting the take name (`P_NAME`). Non-speech silence between spans,
+and unmatched audio, remain on the source track.
 
 Named **regions** over the Selects clips are available for Region Render Matrix
 delivery, but are **off by default** (Settings toggle).
@@ -151,7 +156,8 @@ numbering is chronological across all matches of a line; the primary carries the
 ### Naming of flagged clips
 
 - Low-confidence: `REVIEW_<AudioAsset>_s<score>` (e.g. `REVIEW_vo_npc_greet_01_s0.67`)
-- Unmatched: `UNMATCHED_<sanitized transcript snippet>` (e.g. `UNMATCHED_take_two`)
+- Unmatched: `UNMATCHED_<sanitized transcript snippet>` (e.g. `UNMATCHED_take_two`) —
+  a **report label only**, since unmatched audio is never cut and so has no take to name.
 
 Prefixes are configurable. All names pass through a filesystem-safe sanitizer.
 
@@ -309,7 +315,8 @@ therefore a *result* of matching rather than an input to it.
 
 7. **Gap sweep.** Any run of unconsumed words becomes an `unmatched` span — this is
    where slates, chatter, and false starts land, without needing to be modelled
-   explicitly.
+   explicitly. These spans are reported but never cut: they route to
+   `vo.DEST_IN_PLACE`, which `ApplyPlan` skips, leaving the audio on the source track.
 
 8. **Refine boundaries.** Start = first aligned word start − `pre_pad` (default 150 ms);
    end = last aligned word end + `post_pad` (default 250 ms). Clamped so neighbouring
@@ -375,7 +382,7 @@ single undo point and automatic error reporting via `core.Error`.
 | whisper exits non-zero | Show tail of log; abort before mutation |
 | Zero words transcribed | Abort with message |
 | CSV missing mapped columns | Message listing the headers actually found |
-| No span clears the review floor | Report still written; only the Review track is created |
+| No span clears the review floor | Everything is unmatched, so nothing is cut and no track is created; the report is still written |
 | User cancels transcription | Nothing committed |
 | Span crosses an item boundary | Clamped to the containing item; noted in the report |
 

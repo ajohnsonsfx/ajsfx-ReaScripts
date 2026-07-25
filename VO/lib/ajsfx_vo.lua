@@ -1,6 +1,7 @@
 -- @description ajsfx VO Shared Library
 -- @author ajsfx
--- @version 0.1
+-- @version 0.4
+-- @changelog Guard ApplyPlan against degenerate zero-length spans (a boundary split no-op was moving a whole item's tail, orphaning later spans); simplify CSV columns to Character/Filename/Line Text with Filename as the line identity
 -- @noindex
 -- @about Shared logic for ajsfx VO ScriptMatch.
 --        Split into a pure layer (parsing, normalization, matching, naming —
@@ -96,16 +97,114 @@ end
 
 -- Column mapping is fully configurable; nothing about the CSV shape is hardcoded
 -- beyond which of our fields are required to do the job at all.
-vo.REQUIRED_COLUMNS = { "line_id", "text", "asset" }
-vo.OPTIONAL_COLUMNS = { "speaker", "type" }
+-- The asset (Filename) doubles as the line's identity: repeated takes share it,
+-- so grouping and take-numbering key off it (see AssignNames). Text is the words
+-- to match. Character is optional — absent, everything routes to plain tracks.
+vo.REQUIRED_COLUMNS = { "asset", "text" }
+vo.OPTIONAL_COLUMNS = { "speaker" }
 
 vo.DEFAULT_COLUMN_MAPPING = {
-  line_id = "LineID",
-  text    = "Text",
-  asset   = "AudioAsset",
-  speaker = "Speaker",
-  type    = "Type",
+  text    = "Line Text",
+  asset   = "Filename",
+  speaker = "Character",
 }
+
+-- Distinct character values, de-duplicated by case-insensitive key (first-seen
+-- display wins), empties skipped. Order = first appearance.
+function vo.DistinctCharacters(rows, col_index)
+  local seen, out = {}, {}
+  for _, row in ipairs(rows or {}) do
+    local raw = trim(row[col_index] or "")
+    if raw ~= "" then
+      local key = fold(raw)
+      if not seen[key] then
+        seen[key] = true
+        out[#out + 1] = { key = key, display = raw }
+      end
+    end
+  end
+  return out
+end
+
+function vo.CanonicalizeMap(distinct)
+  local m = {}
+  for _, d in ipairs(distinct or {}) do m[d.key] = d.display end
+  return m
+end
+
+-- Per-role header aliases (folded). Role sets are disjoint so a header word
+-- can only claim one role.
+vo.ROLE_ALIASES = {
+  text    = { "text", "line text", "line_text", "linetext", "line", "dialogue", "vo" },
+  asset   = { "filename", "file name", "audioasset", "asset", "file", "wav", "output" },
+  speaker = { "character", "speaker", "char", "actor" },
+}
+
+-- Best-guess role -> header column name by folded alias match. Unmatched omitted.
+function vo.AutoDetectMapping(header)
+  local by_alias = {}
+  for _, h in ipairs(header or {}) do
+    local f = fold(h)
+    if by_alias[f] == nil then by_alias[f] = h end
+  end
+  local mapping = {}
+  for _, role in ipairs({ "asset", "text", "speaker" }) do
+    for _, alias in ipairs(vo.ROLE_ALIASES[role]) do
+      if by_alias[alias] then mapping[role] = by_alias[alias]; break end
+    end
+  end
+  return mapping
+end
+
+-- Header column names must not contain a tab or newline (the layout encoding is
+-- tab/line delimited). Returns ok, errmsg.
+function vo.ValidateHeaderNames(header)
+  for _, h in ipairs(header or {}) do
+    if tostring(h):find("[\t\n\r]") then
+      return false, "Column name contains a tab or newline, which is unsupported: " .. tostring(h)
+    end
+  end
+  return true
+end
+
+-- Preset name rules. The name becomes part of the ExtState key `preset:<name>`,
+-- and REAPER persists ExtState as key=value, so `=` is forbidden too.
+function vo.ValidatePresetName(name)
+  name = name or ""
+  if name == "" then return false, "Enter a preset name." end
+  if #name > 64 then return false, "Preset name is too long (max 64)." end
+  if name == "__names__" then return false, "That name is reserved." end
+  if name:find("[\t\n\r=]") then return false, "Preset name cannot contain tab, newline, or '='." end
+  return true
+end
+
+-- Tab-delimited, line-based. Header names are tab/newline-validated on load, so
+-- splitting each line on its FIRST tab is unambiguous.
+function vo.SerializeLayout(layout)
+  layout = layout or {}
+  local lines = {}
+  for _, role in ipairs({ "asset", "text", "speaker" }) do
+    local col = layout.mapping and layout.mapping[role]
+    if col and col ~= "" then lines[#lines + 1] = role .. "\t" .. col end
+  end
+  for _, tok in ipairs(layout.skip_values or {}) do
+    if tok ~= "" then lines[#lines + 1] = "skip\t" .. tok end
+  end
+  return table.concat(lines, "\n")
+end
+
+function vo.DeserializeLayout(text)
+  local layout = { mapping = {}, skip_values = {} }
+  for line in tostring(text or ""):gmatch("[^\n]+") do
+    local k, v = line:match("^([^\t]+)\t(.*)$")
+    if k == "skip" then
+      if v ~= "" then layout.skip_values[#layout.skip_values + 1] = v end
+    elseif k then
+      layout.mapping[k] = v
+    end
+  end
+  return layout
+end
 
 -- Resolve configured column names to 1-based indices in the header row.
 -- Matching is case-insensitive and tolerant of surrounding whitespace.
@@ -153,9 +252,9 @@ end
 vo.DEFAULT_SKIP_VALUES = { "TO RECORD" }
 
 -- Turn data rows (header already removed) into script line records.
--- filters: { skip_values = {...}, speaker = "NPC", type = "Barks" }
--- Speaker/Type filters are inert when the corresponding column is unmapped.
--- Returns: array of { line_id, text, asset, speaker, type, row }
+-- filters: { skip_values = {...}, speakers = { folded_key = true }, canonicalize }
+-- The character filter is inert when no character column is mapped.
+-- Returns: array of { text, asset, speaker, row }
 function vo.BuildScriptLines(rows, cols, filters)
   filters = filters or {}
 
@@ -164,29 +263,32 @@ function vo.BuildScriptLines(rows, cols, filters)
     skip[fold(v)] = true
   end
 
-  local want_speaker = filters.speaker and fold(filters.speaker) or nil
-  local want_type    = filters.type    and fold(filters.type)    or nil
-  if want_speaker == "" then want_speaker = nil end
-  if want_type    == "" then want_type    = nil end
+  local speakers  = filters.speakers                 -- folded-key set, or nil = all
+  local canon     = filters.canonicalize or {}
 
   local lines = {}
   for i, row in ipairs(rows or {}) do
     local text    = trim(row[cols.text])
     local asset   = trim(row[cols.asset])
-    local speaker = cols.speaker and trim(row[cols.speaker]) or nil
-    local ltype   = cols.type    and trim(row[cols.type])    or nil
+
+    local speaker_raw = cols.speaker and trim(row[cols.speaker]) or nil
+    local speaker_key = speaker_raw and fold(speaker_raw) or nil
+    local speaker     = speaker_raw and (canon[speaker_key] or speaker_raw) or nil
 
     local keep = text ~= "" and asset ~= "" and not skip[fold(asset)]
-    if keep and want_speaker and speaker then keep = fold(speaker) == want_speaker end
-    if keep and want_type    and ltype   then keep = fold(ltype)   == want_type    end
+    -- Character filter applies ONLY when a character column is mapped: with no
+    -- column the filter is inert (keep all — preserves the "filter inert without
+    -- the column" contract); with a column, a row whose character is empty or
+    -- not in the include-set is dropped.
+    if keep and speakers and cols.speaker then
+      keep = (speaker_key ~= nil) and speakers[speaker_key] == true
+    end
 
     if keep then
       lines[#lines + 1] = {
-        line_id = trim(row[cols.line_id]),
         text    = text,
         asset   = asset,
         speaker = speaker,
-        type    = ltype,
         row     = i,
       }
     end
@@ -393,6 +495,12 @@ vo.DEFAULTS = {
   max_name_length         = 96,
 }
 
+-- The destination of a span that is NOT pulled off the source track (SPEC.md
+-- §4). It deliberately has no entry in ApplyPlan's dest_names: ApplyPlan skips
+-- these spans outright, so the audio is never split, moved or renamed. It still
+-- appears in the report, which is where unmatched audio gets flagged now.
+vo.DEST_IN_PLACE = "source"
+
 -- Read a config value, falling back to the documented default.
 function vo.Opt(cfg, key)
   local v = cfg and cfg[key]
@@ -524,7 +632,7 @@ end
 -- Every occurrence of a line's anchor token proposes a window starting at
 -- `hit_position - token_offset_within_line`; windows of ±window_slack around the
 -- line length are scored and the best kept.
--- Returns: array of { i0, i1, start, stop, score, margin, line_idx, line_id, asset }
+-- Returns: array of { i0, i1, start, stop, score, margin, line_idx, asset, character }
 function vo.FindCandidates(word_tokens, lines, index, cfg)
   local slack  = vo.Opt(cfg, "window_slack")
   local floor_ = vo.Opt(cfg, "review_floor")
@@ -585,9 +693,9 @@ function vo.FindCandidates(word_tokens, lines, index, cfg)
               start    = word_tokens[i0].t0,
               stop     = word_tokens[i1].t1,
               score    = best_score,
-              line_idx = line_idx,
-              line_id  = lines[line_idx].line_id,
-              asset    = lines[line_idx].asset,
+              line_idx  = line_idx,
+              asset     = lines[line_idx].asset,
+              character = lines[line_idx].speaker,
             }
           end
         end
@@ -738,6 +846,15 @@ function vo.SanitizeName(s, max_len)
   return s
 end
 
+-- Track name for a character bucket: "<Character>_<Base>" when a character is
+-- present, else the base name. The character is sanitized like a clip name.
+function vo.CharacterTrackName(character, base)
+  if character and character ~= "" then
+    return vo.SanitizeName(character) .. "_" .. base
+  end
+  return base
+end
+
 --------------------------------
 -- Pure layer: boundaries
 --------------------------------
@@ -784,8 +901,9 @@ end
 -- Pure layer: routing and naming
 --------------------------------
 
--- Group repeated takes of a line, number them chronologically, then route and
--- name every span according to the three per-session toggles.
+-- Group repeated takes of a line (keyed by the Filename/asset, which is the
+-- line's identity), number them chronologically, then route and name every span
+-- according to the three per-session toggles.
 -- Only `match` spans are numbered: a review clip is not a delivered take, so
 -- counting it would leave gaps in the delivered take numbers.
 -- Mutates and returns `spans` (adds take_index, primary, dest, name).
@@ -800,19 +918,19 @@ function vo.AssignNames(spans, cfg)
 
   local groups, order = {}, {}
   for _, s in ipairs(spans) do
-    if s.kind == "match" and s.line_id then
-      local g = groups[s.line_id]
+    if s.kind == "match" and s.asset then
+      local g = groups[s.asset]
       if not g then
         g = {}
-        groups[s.line_id] = g
-        order[#order + 1] = s.line_id
+        groups[s.asset] = g
+        order[#order + 1] = s.asset
       end
       g[#g + 1] = s
     end
   end
 
-  for _, line_id in ipairs(order) do
-    local g = groups[line_id]
+  for _, asset in ipairs(order) do
+    local g = groups[asset]
     table.sort(g, function(a, b) return a.start < b.start end)
     for i, s in ipairs(g) do s.take_index = i end
     local primary = (primary_take == "first") and g[1] or g[#g]
@@ -834,7 +952,12 @@ function vo.AssignNames(spans, cfg)
         string.format("%s%s_s%.2f", review_prefix, s.asset or "", s.score or 0), max_len)
 
     else
-      s.dest = "review"
+      -- Unmatched audio (slates, chatter, false starts) is left exactly where it
+      -- was recorded. The name below is NOT applied to a take — nothing is cut —
+      -- it is the label for this span's row in the report, which is the only
+      -- place unmatched audio is flagged. Keep it: it is what makes the
+      -- unmatched_prefix / unmatched_snippet_words settings mean anything.
+      s.dest = vo.DEST_IN_PLACE
       local words = {}
       for w in tostring(s.transcript or ""):gmatch("%S+") do
         words[#words + 1] = w
@@ -859,6 +982,9 @@ end
 vo.DTW_PRESETS = {
   tiny = "tiny", base = "base", small = "small", medium = "medium",
   ["large-v1"] = "large.v1", ["large-v2"] = "large.v2", ["large-v3"] = "large.v3",
+  -- Verified against ggml-org/whisper.cpp v1.9.1 examples/cli/cli.cpp:
+  -- params.dtw == "large.v3.turbo" -> WHISPER_AHEADS_LARGE_V3_TURBO.
+  ["large-v3-turbo"] = "large.v3.turbo",
 }
 
 -- Map a ggml model path to its DTW preset, or nil when there isn't a known one.
@@ -902,6 +1028,124 @@ function vo.BuildWhisperArgv(cfg, audio, out_prefix)
   if preset then add("-dtw", preset) end
 
   return argv
+end
+
+--------------------------------
+-- Pure layer: backend acquisition catalogs
+--------------------------------
+
+-- Pinned whisper.cpp release. Binary URLs target this tag exactly; bumping it
+-- is a deliberate, tested change (a silent asset rename would break downloads).
+vo.WHISPER_RELEASE = "v1.9.1"
+
+-- Multilingual, DTW-verified models only. .en variants are excluded because
+-- their DTW presets are unverified (VO/SPEC.md §10) and this tool depends on
+-- sharp word boundaries. expected_bytes are approximate (well-known ggml sizes)
+-- and used only as a truncation floor; the binary sizes below are exact.
+vo.MODEL_CATALOG = {
+  { name = "base",     filename = "ggml-base.bin",     label = "base (multilingual, ~148 MB)",     expected_bytes = 147951465  },
+  { name = "small",    filename = "ggml-small.bin",    label = "small (multilingual, ~488 MB)",    expected_bytes = 487601967  },
+  { name = "medium",         filename = "ggml-medium.bin",         label = "medium (multilingual, ~1.5 GB)",           expected_bytes = 1533763059 },
+  { name = "large-v3-turbo", filename = "ggml-large-v3-turbo.bin", label = "large-v3-turbo (multilingual, ~1.6 GB)",   expected_bytes = 1624555275 },
+  { name = "large-v3",       filename = "ggml-large-v3.bin",       label = "large-v3 (multilingual, ~3.1 GB)",         expected_bytes = 3095033483 },
+}
+
+-- Prebuilt CUDA whisper-cli builds from the pinned release. Both bundle their
+-- CUDA runtime DLLs and depend only on a recent NVIDIA driver. Sizes verified
+-- via the GitHub API.
+vo.BINARY_CATALOG = {
+  { key = "cuda-12.4", asset = "whisper-cublas-12.4.0-bin-x64.zip", label = "CUDA 12.4 (recommended, ~678 MB)", expected_bytes = 677887125 },
+  { key = "cuda-11.8", asset = "whisper-cublas-11.8.0-bin-x64.zip", label = "CUDA 11.8 (older drivers, ~279 MB)", expected_bytes = 278557654 },
+}
+
+function vo.ModelDownloadURL(name)
+  return "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-" .. name .. ".bin"
+end
+
+function vo.BinaryDownloadURL(key)
+  for _, b in ipairs(vo.BINARY_CATALOG) do
+    if b.key == key then
+      return "https://github.com/ggml-org/whisper.cpp/releases/download/" ..
+             vo.WHISPER_RELEASE .. "/" .. b.asset
+    end
+  end
+  return nil
+end
+
+-- Human-readable byte size for the UI.
+function vo.FormatBytes(n)
+  if not n or n < 0 then return "?" end
+  local units = { "B", "KB", "MB", "GB", "TB" }
+  local i, v = 1, n
+  while v >= 1024 and i < #units do v = v / 1024; i = i + 1 end
+  if i == 1 then return string.format("%d %s", v, units[i]) end
+  return string.format("%.1f %s", v, units[i])
+end
+
+--------------------------------
+-- Pure layer: backend acquisition paths & checks
+--------------------------------
+
+-- Downloads live under the plugin's own folder, not loose in the resource
+-- root. Given the VO script directory (…/Scripts/<repo>/VO/), return
+-- …/Scripts/<repo>/Resources — deriving the repo folder from the install path
+-- so the name is never hardcoded (mirrors how PVX derives its venv dir).
+-- Pure over the passed directory for unit-testing; the caller supplies its own
+-- dir from debug.getinfo.
+function vo.PluginResourceRoot(script_dir)
+  local dir = (script_dir or ""):gsub("[/\\]+$", "")   -- strip trailing separators
+  dir = dir:gsub("[/\\][^/\\]+$", "")                  -- drop the VO segment -> repo root
+  return dir .. "/Resources"
+end
+
+-- Model/binary storage under the plugin resource root (from PluginResourceRoot).
+-- Pure over the injected base so it can be unit-tested.
+function vo.ResolveModelsDir(resource_root)
+  return (resource_root or "") .. "/whisper-models"
+end
+
+function vo.ResolveBinDir(resource_root)
+  return (resource_root or "") .. "/whisper-bin"
+end
+
+-- A download is valid when it reaches at least ~95% of the expected size. This
+-- catches truncated transfers and HTML error pages saved under the target name.
+-- With no/zero expected size, any non-empty file passes.
+function vo.VerifyDownloadSize(path, expected)
+  local actual = vo.FileSize(path)
+  if not actual then return false end
+  if not expected or expected <= 0 then return actual > 0 end
+  return actual >= math.floor(expected * 0.95)
+end
+
+-- True when the model file is present in dir. Existence only: download-time
+-- VerifyDownloadSize already guards integrity, and re-checking size here would
+-- force a multi-GB read every UI frame. Corruption is caught on next use.
+function vo.ModelIsInstalled(dir, name)
+  return vo.FileExists(dir .. "/ggml-" .. name .. ".bin")
+end
+
+-- Find whisper-cli.exe in a flat listing of extracted paths (case-insensitive).
+-- Pure over the listing so the caller supplies whatever directory walk it used.
+function vo.LocateWhisperCliExe(entries)
+  for _, p in ipairs(entries or {}) do
+    local base = p:match("[^/\\]+$") or p
+    if base:lower() == "whisper-cli.exe" then return p end
+  end
+  return nil
+end
+
+-- Read the active compute backend out of a captured whisper-cli log. whisper
+-- only initializes its device when a model loads, so this is fed the log of a
+-- real (tiny) run. Keys on "CUDA"; pulls the name from a "Device N: <name>"
+-- line. To be confirmed against real output on first run — see VO/SPEC.md §9.
+function vo.ParseBackendFromLog(text)
+  text = text or ""
+  local name = text:match("Device%s+%d+:%s*([^,\r\n]+)")
+  if text:find("CUDA") and name then
+    return { device = "CUDA", name = name:match("^%s*(.-)%s*$") }
+  end
+  return { device = "CPU" }
 end
 
 --------------------------------
@@ -963,29 +1207,30 @@ function vo.FormatCSVRow(fields)
 end
 
 vo.REPORT_HEADER = {
-  "start", "stop", "kind", "LineID", "AudioAsset", "score", "margin",
+  "start", "stop", "kind", "Filename", "character", "score", "margin",
   "take_index", "destination", "name", "transcript", "script_text", "clamped",
 }
 
 -- Build the run report: one row per span, then a trailing section listing
 -- script lines that received no match at all — the "did we actually record
--- everything?" check. A review-only line still counts as unrecorded.
+-- everything?" check. A review-only line still counts as unrecorded. Lines are
+-- keyed by their Filename (the line's identity).
 function vo.BuildReport(plan, lines)
-  local by_id = {}
-  for _, l in ipairs(lines or {}) do by_id[l.line_id] = l end
+  local by_asset = {}
+  for _, l in ipairs(lines or {}) do by_asset[l.asset] = l end
 
   local matched = {}
   local out = { vo.FormatCSVRow(vo.REPORT_HEADER) }
 
   for _, s in ipairs(plan or {}) do
-    if s.kind == "match" and s.line_id then matched[s.line_id] = true end
-    local line = s.line_id and by_id[s.line_id] or nil
+    if s.kind == "match" and s.asset then matched[s.asset] = true end
+    local line = s.asset and by_asset[s.asset] or nil
     out[#out + 1] = vo.FormatCSVRow({
       string.format("%.3f", s.start or 0),
       string.format("%.3f", s.stop or 0),
       s.kind or "",
-      s.line_id or "",
       s.asset or "",
+      s.character or "",
       s.score  and string.format("%.4f", s.score)  or "",
       s.margin and string.format("%.4f", s.margin) or "",
       s.take_index and tostring(s.take_index) or "",
@@ -999,10 +1244,10 @@ function vo.BuildReport(plan, lines)
 
   out[#out + 1] = ""
   out[#out + 1] = vo.FormatCSVRow({ "SCRIPT LINES WITH NO MATCH" })
-  out[#out + 1] = vo.FormatCSVRow({ "LineID", "AudioAsset", "Text" })
+  out[#out + 1] = vo.FormatCSVRow({ "Filename", "Character", "Text" })
   for _, l in ipairs(lines or {}) do
-    if not matched[l.line_id] then
-      out[#out + 1] = vo.FormatCSVRow({ l.line_id, l.asset, l.text })
+    if not matched[l.asset] then
+      out[#out + 1] = vo.FormatCSVRow({ l.asset, l.speaker or "", l.text })
     end
   end
 
@@ -1204,6 +1449,46 @@ function vo.SaveConfig(cfg)
   end
   table.sort(subs) -- deterministic serialization
   set("substitutions", table.concat(subs, "\n"))
+end
+
+--------------------------------
+-- Coupled layer: layout presets
+--------------------------------
+
+local LAYOUT_SECTION = "ajsfx_vo_layouts"
+
+-- Names of saved layout presets, in the order they were first saved.
+function vo.ListLayoutPresets()
+  local raw = r.GetExtState(LAYOUT_SECTION, "__names__")
+  local names = {}
+  for n in (raw or ""):gmatch("[^\n]+") do names[#names + 1] = n end
+  return names
+end
+
+-- Persist a layout under `name`. Refuses (and stores nothing) for an invalid
+-- name — see ValidatePresetName for the rules the ExtState key must satisfy.
+function vo.SaveLayoutPreset(name, layout)
+  local ok = vo.ValidatePresetName(name)
+  if not ok then return false end
+  r.SetExtState(LAYOUT_SECTION, "preset:" .. name, vo.SerializeLayout(layout), true)
+  local names, seen = vo.ListLayoutPresets(), false
+  for _, n in ipairs(names) do if n == name then seen = true break end end
+  if not seen then names[#names + 1] = name end
+  r.SetExtState(LAYOUT_SECTION, "__names__", table.concat(names, "\n"), true)
+  return true
+end
+
+-- Load a previously saved layout, or nil if `name` was never saved.
+function vo.LoadLayoutPreset(name)
+  if not r.HasExtState(LAYOUT_SECTION, "preset:" .. name) then return nil end
+  return vo.DeserializeLayout(r.GetExtState(LAYOUT_SECTION, "preset:" .. name))
+end
+
+function vo.DeleteLayoutPreset(name)
+  r.DeleteExtState(LAYOUT_SECTION, "preset:" .. name, true)
+  local kept = {}
+  for _, n in ipairs(vo.ListLayoutPresets()) do if n ~= name then kept[#kept + 1] = n end end
+  r.SetExtState(LAYOUT_SECTION, "__names__", table.concat(kept, "\n"), true)
 end
 
 --------------------------------
@@ -1469,6 +1754,212 @@ function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error
   r.defer(poll)
 end
 
+-- Download a URL to dest_path with a progress window and working Cancel.
+-- Detached curl via the same two-file launch as RunWhisperAsync; deliberately
+-- parallel to it rather than a shared refactor (VO/SPEC.md §11).
+-- curl -L follows the HF/GitHub redirects; --fail turns HTTP errors into a
+-- non-zero exit instead of saving an error page.
+-- UNVERIFIED outside REAPER — see VO/SPEC.md §9.
+function vo.RunDownloadAsync(cfg, url, dest_path, expected_bytes, on_done, on_cancel, on_error)
+  local scratch = vo.ResolveScratchDir(cfg)
+  vo.EnsureDir(scratch)
+  local timeout_s = 3600  -- generous fixed cap; large models/binaries take a while
+  local is_win    = vo.IsWindows()
+
+  local log_file  = scratch .. "/vo_download_log.txt"
+  local done_file = scratch .. "/vo_download_done.txt"
+  os.remove(done_file)
+
+  local argv = { "curl", "-L", "--fail", "-o", dest_path, url }
+  local quoted = {}
+  for _, a in ipairs(argv) do
+    quoted[#quoted + 1] = vo.QuoteArg(a, is_win and "Windows" or "Other")
+  end
+  local cmd_str = table.concat(quoted, " ")
+
+  local launched
+  if is_win then
+    local bat, vbs = scratch .. "/vo_dl.bat", scratch .. "/vo_dl.vbs"
+    local log_win, done_win = log_file:gsub("/", "\\"), done_file:gsub("/", "\\")
+    local fb = io.open(bat, "w")
+    if not fb then on_error("Cannot write launcher batch file: " .. bat) return end
+    fb:write("@echo off\r\n")
+    fb:write(cmd_str .. ' > "' .. log_win .. '" 2>&1\r\n')
+    fb:write('echo %ERRORLEVEL% > "' .. done_win .. '"\r\n')
+    fb:close()
+    local fv = io.open(vbs, "w")
+    if not fv then on_error("Cannot write VBScript launcher: " .. vbs) return end
+    fv:write('Set oShell = CreateObject("WScript.Shell")\r\n')
+    fv:write('oShell.Run "cmd /c " & Chr(34) & "' ..
+             bat:gsub("/", "\\"):gsub('"', '""') .. '" & Chr(34), 0, False\r\n')
+    fv:close()
+    launched = os.execute('wscript.exe //nologo //B "' .. vbs:gsub("/", "\\") .. '"')
+  else
+    launched = os.execute(string.format("(%s > %s 2>&1; echo $? > %s) &",
+      cmd_str, vo.QuoteArg(log_file, "Other"), vo.QuoteArg(done_file, "Other")))
+  end
+  if not launched then on_error("Failed to launch curl") return end
+
+  local function finished()
+    local f = io.open(done_file, "r")
+    if not f then return nil end
+    local code = tonumber(f:read("l")) or -1
+    f:close()
+    return code
+  end
+
+  local function read_log()
+    local lf = io.open(log_file, "r")
+    if not lf then return "" end
+    local t = lf:read("a") or ""
+    lf:close()
+    return #t > 600 and ("…" .. t:sub(-600)) or t
+  end
+
+  local function fail_partial(msg)
+    os.remove(dest_path)
+    local tail = read_log()
+    on_error(tail ~= "" and (msg .. "\n" .. tail) or msg)
+  end
+
+  local ok_im, im = pcall(function()
+    package.path = r.ImGui_GetBuiltinPath() .. '/?.lua;' .. package.path
+    return require('imgui')('0.9.3')
+  end)
+
+  local start_time = r.time_precise()
+
+  if not ok_im then
+    -- No ReaImGui: block without UI.
+    while true do
+      local code = finished()
+      if code then
+        if code == 0 and vo.VerifyDownloadSize(dest_path, expected_bytes) then on_done()
+        else fail_partial("Download failed or incomplete (curl exit " .. code .. ").") end
+        return
+      end
+      if r.time_precise() - start_time > timeout_s then fail_partial("Download timed out.") return end
+    end
+  end
+
+  local ctx       = im.CreateContext('VO Download')
+  local cancelled = false
+  local spinner   = { "|", "/", "-", "\\" }
+  local spin      = 0
+
+  local function kill()
+    if is_win then os.execute('taskkill /F /IM curl.exe > NUL 2>&1')
+    else os.execute("pkill -f curl 2>/dev/null") end
+    cancelled = true
+  end
+
+  local function poll()
+    if cancelled then return end
+    local elapsed = r.time_precise() - start_time
+    if elapsed > timeout_s then kill(); fail_partial("Download timed out.") return end
+
+    local code = finished()
+    if code then
+      if code == 0 and vo.VerifyDownloadSize(dest_path, expected_bytes) then on_done()
+      else fail_partial("Download failed or incomplete (curl exit " .. code .. ").") end
+      return
+    end
+
+    spin = (spin % #spinner) + 1
+    if not (ctx and im.ValidatePtr(ctx, 'ImGui_Context*')) then
+      ctx = im.CreateContext('VO Download')
+    end
+    im.SetNextWindowSize(ctx, 460, 160, im.Cond_FirstUseEver)
+    local visible, open = im.Begin(ctx, 'ajsfx VO — Downloading', true, im.WindowFlags_NoCollapse)
+    local pressed_cancel = false
+    if visible then
+      local got = vo.FileSize(dest_path)
+      im.Text(ctx, spinner[spin] .. "  Downloading…")
+      im.Spacing(ctx)
+      im.TextDisabled(ctx, string.format("%s of ~%s",
+        got and vo.FormatBytes(got) or "0 B", vo.FormatBytes(expected_bytes)))
+      im.Spacing(ctx)
+      im.TextDisabled(ctx, string.format("%.0fs elapsed (timeout %ds)", elapsed, timeout_s))
+      im.Spacing(ctx); im.Separator(ctx); im.Spacing(ctx)
+      pressed_cancel = im.Button(ctx, "Cancel")
+    end
+    im.End(ctx)  -- always End after Begin
+    if pressed_cancel or not open then kill(); os.remove(dest_path); on_cancel() return end
+    r.defer(poll)
+  end
+
+  r.defer(poll)
+end
+
+-- Extract a zip into dest_dir and return the list of extracted file paths.
+-- tar ships with Windows 10 >= 1803 and reads zip; PowerShell Expand-Archive is
+-- the fallback. UNVERIFIED outside REAPER — see VO/SPEC.md §9.
+function vo.ExtractZip(zip_path, dest_dir)
+  vo.EnsureDir(dest_dir)
+  local is_win = vo.IsWindows()
+  local q = function(s) return vo.QuoteArg(s, is_win and "Windows" or "Other") end
+
+  local ok = os.execute(string.format("tar -xf %s -C %s", q(zip_path), q(dest_dir)))
+  if not ok and is_win then
+    ok = os.execute(string.format(
+      'powershell -NoProfile -Command "Expand-Archive -Force -Path %s -DestinationPath %s"',
+      q(zip_path), q(dest_dir)))
+  end
+  if not ok then return false, "Could not extract " .. zip_path end
+
+  -- Walk dest_dir for a file listing.
+  local entries = {}
+  local lister = is_win
+    and ('dir /b /s ' .. ('"' .. dest_dir:gsub("/", "\\") .. '"'))
+    or  ('find ' .. q(dest_dir) .. ' -type f')
+  local p = io.popen(lister)
+  if p then
+    for line in p:lines() do
+      local trimmed = line:match("^%s*(.-)%s*$")
+      if trimmed ~= "" then entries[#entries + 1] = trimmed:gsub("\\", "/") end
+    end
+    p:close()
+  end
+  return true, entries
+end
+
+-- Run a tiny real transcription of a generated silent WAV to force whisper to
+-- initialize its device, then read the backend out of the log.
+-- UNVERIFIED outside REAPER — see VO/SPEC.md §9.
+function vo.ProbeBackendDevice(cfg, on_result)
+  local scratch = vo.ResolveScratchDir(cfg)
+  vo.EnsureDir(scratch)
+  local wav = scratch .. "/vo_probe.wav"
+  vo.WriteSilentWav(wav, 1.0)  -- 1s of silence; defined below
+
+  local argv = vo.BuildWhisperArgv(cfg, wav, scratch .. "/vo_probe")
+
+  -- Reuse the whisper runner so device init + log capture match a real run.
+  vo.RunWhisperAsync(cfg, argv, scratch,
+    function(_code, log) on_result(vo.ParseBackendFromLog(log or "")) end,
+    function() on_result({ device = "unknown" }) end,
+    function(_msg) on_result({ device = "unknown" }) end)
+end
+
+-- Minimal 16-bit mono 16kHz WAV of `seconds` of silence (whisper resamples
+-- internally, so 16kHz is fine). Pure file writer.
+function vo.WriteSilentWav(path, seconds)
+  local rate, bits, ch = 16000, 16, 1
+  local n = math.floor(rate * (seconds or 0.2))
+  local data_bytes = n * (bits // 8) * ch
+  local function u32(v) return string.char(v&255,(v>>8)&255,(v>>16)&255,(v>>24)&255) end
+  local function u16(v) return string.char(v&255,(v>>8)&255) end
+  local f = io.open(path, "wb")
+  if not f then return false end
+  f:write("RIFF"); f:write(u32(36 + data_bytes)); f:write("WAVE")
+  f:write("fmt "); f:write(u32(16)); f:write(u16(1)); f:write(u16(ch))
+  f:write(u32(rate)); f:write(u32(rate * ch * (bits//8)))
+  f:write(u16(ch * (bits//8))); f:write(u16(bits))
+  f:write("data"); f:write(u32(data_bytes)); f:write(string.rep("\0", data_bytes))
+  f:close()
+  return true
+end
+
 -- Transcribe a list of unique source files in sequence, reusing cached
 -- transcripts. Calls on_done(map) with path -> word array.
 -- UNVERIFIED outside REAPER — see SPEC.md §10.
@@ -1604,9 +2095,21 @@ local function ItemContaining(track, time)
   return nil
 end
 
--- Split the session and move each span to its destination track, named.
+-- A span shorter than this is not a cuttable clip. It matters beyond tidiness:
+-- ApplyPlan splits at span.start and again at span.stop, but REAPER's
+-- SplitMediaItem is a no-op when the split position lands on the item's own
+-- edge. A span with stop == start therefore leaves the second split undone, so
+-- `piece` is the WHOLE remainder of the item — and moving it sweeps every later
+-- span's audio onto one track, orphaning the rest of the session. Degenerate
+-- spans (a zero-duration recognizer word, or a span neighbour-clamped to nil
+-- width) are skipped and reported rather than allowed to corrupt the take.
+vo.MIN_SPLIT_LENGTH = 0.001  -- seconds
+
+-- Split the session and move each span to its destination track, named. Spans
+-- destined for vo.DEST_IN_PLACE (unmatched audio) are left untouched instead.
 -- Splitting rather than copying is deliberate (SPEC.md §4): with the pieces
--- physically removed it is obvious what has been pulled and what has not.
+-- physically removed it is obvious what has been pulled and what has not — and
+-- what stays behind on the source track is precisely what wasn't matched.
 -- Caller wraps this in core.Transaction so the whole run is one undo step.
 -- UNVERIFIED outside REAPER — see SPEC.md §10.
 -- Returns: applied count, array of failure strings.
@@ -1617,27 +2120,41 @@ function vo.ApplyPlan(plan, cfg, source_track)
     review  = cfg.track_review  or "Review",
   }
 
-  local tracks  = {}
+  local tracks  = {}     -- full track name -> MediaTrack
   local applied = 0
   local failures = {}
 
   for _, span in ipairs(plan) do
+    local length = (span.stop or 0) - (span.start or 0)
     local item = ItemContaining(source_track, span.start)
-    if not item then
+    if span.dest == vo.DEST_IN_PLACE then
+      -- Left exactly as recorded: not split, not moved, not renamed. Because the
+      -- splits below happen at span.start AND span.stop, skipping the span means
+      -- neither cut is made and the audio stays welded into the surrounding
+      -- source item. Not a failure, and not counted as applied. Checked first so
+      -- a degenerate unmatched span can't report a spurious "too short to cut".
+
+    elseif length < vo.MIN_SPLIT_LENGTH then
+      failures[#failures + 1] = string.format(
+        "%s: span too short to cut (%.3fs at %.3fs) — skipped",
+        span.name or "(unnamed)", length, span.start or 0)
+    elseif not item then
       failures[#failures + 1] =
         string.format("%s: no item at %.3fs", span.name or "(unnamed)", span.start)
     else
-      -- Split twice: the middle piece is the span.
+      -- Split twice: the middle piece is the span. Guarded above so span.stop is
+      -- strictly greater than span.start, keeping the second split real.
       local right = r.SplitMediaItem(item, span.start)
       local piece = right or item
       r.SplitMediaItem(piece, span.stop)
 
-      local dest_name = dest_names[span.dest] or dest_names.review
-      if not tracks[span.dest] then
-        tracks[span.dest] = vo.EnsureTrackBelow(source_track, dest_name)
+      local base      = dest_names[span.dest] or dest_names.review
+      local full_name = vo.CharacterTrackName(span.character, base)
+      if not tracks[full_name] then
+        tracks[full_name] = vo.EnsureTrackBelow(source_track, full_name)
       end
 
-      if r.MoveMediaItemToTrack(piece, tracks[span.dest]) then
+      if r.MoveMediaItemToTrack(piece, tracks[full_name]) then
         local take = r.GetActiveTake(piece)
         if take then
           r.GetSetMediaItemTakeInfo_String(take, "P_NAME", span.name, true)
@@ -1648,7 +2165,7 @@ function vo.ApplyPlan(plan, cfg, source_track)
         applied = applied + 1
       else
         failures[#failures + 1] =
-          string.format("%s: could not move to %s", span.name or "(unnamed)", dest_name)
+          string.format("%s: could not move to %s", span.name or "(unnamed)", full_name)
       end
     end
   end

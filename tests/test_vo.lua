@@ -92,34 +92,31 @@ end)
 print("\nMapColumns:")
 
 local MAPPING = {
-  line_id = "LineID",
   text    = "Text",
   asset   = "AudioAsset",
   speaker = "Speaker",
-  type    = "Type",
 }
 
 test("resolves configured names to 1-based indices", function()
   local cols = vo.MapColumns({ "LineID", "Speaker", "Text", "AudioAsset" }, MAPPING)
-  assert(cols.line_id == 1, "line_id: " .. tostring(cols.line_id))
   assert(cols.speaker == 2, "speaker: " .. tostring(cols.speaker))
   assert(cols.text == 3, "text: " .. tostring(cols.text))
   assert(cols.asset == 4, "asset: " .. tostring(cols.asset))
 end)
 
 test("header whitespace is ignored", function()
-  local cols = vo.MapColumns({ "  LineID  ", "Text", "AudioAsset" }, MAPPING)
-  assert(cols.line_id == 1 and cols.text == 2, "Whitespace not trimmed")
+  local cols = vo.MapColumns({ "  Text  ", "AudioAsset" }, MAPPING)
+  assert(cols.text == 1 and cols.asset == 2, "Whitespace not trimmed")
 end)
 
 test("header matching is case-insensitive", function()
   local cols = vo.MapColumns({ "lineid", "TEXT", "audioasset" }, MAPPING)
-  assert(cols.line_id == 1 and cols.text == 2 and cols.asset == 3, "Case not ignored")
+  assert(cols.text == 2 and cols.asset == 3, "Case not ignored")
 end)
 
 test("optional columns absent from header map to nil", function()
   local cols = vo.MapColumns({ "LineID", "Text", "AudioAsset" }, MAPPING)
-  assert(cols.speaker == nil and cols.type == nil, "Optional columns should be nil")
+  assert(cols.speaker == nil, "Optional speaker column should be nil")
 end)
 
 test("missing required column returns nil plus an error naming found headers", function()
@@ -134,7 +131,7 @@ end)
 --------------------------------
 print("\nBuildScriptLines:")
 
-local COLS = { line_id = 1, speaker = 2, type = 3, text = 4, asset = 5 }
+local COLS = { speaker = 2, text = 4, asset = 5 }
 
 local function rows()
   return {
@@ -149,7 +146,6 @@ end
 test("builds one record per usable row", function()
   local lines = vo.BuildScriptLines(rows(), COLS, {})
   assert(#lines == 3, "Expected 3 lines (TO RECORD and empty dropped), got " .. #lines)
-  assert(lines[1].line_id == "NPC_001", "line_id: " .. tostring(lines[1].line_id))
   assert(lines[1].asset == "vo_npc_greet_01", "asset: " .. tostring(lines[1].asset))
   assert(lines[1].text == "Hello there traveller", "text: " .. tostring(lines[1].text))
 end)
@@ -157,7 +153,7 @@ end)
 test("skip values drop rows by asset, case-insensitively", function()
   local lines = vo.BuildScriptLines(rows(), COLS, { skip_values = { "to record" } })
   for _, l in ipairs(lines) do
-    assert(l.line_id ~= "NPC_002", "TO RECORD row was not skipped")
+    assert(l.asset ~= "TO RECORD", "TO RECORD row was not skipped")
   end
 end)
 
@@ -168,24 +164,18 @@ test("rows with empty text or empty asset are dropped", function()
   end
 end)
 
-test("speaker filter keeps only that speaker", function()
-  local lines = vo.BuildScriptLines(rows(), COLS, { speaker = "NPC" })
+test("character include-set keeps only included characters", function()
+  local lines = vo.BuildScriptLines(rows(), COLS, { speakers = { npc = true } })
   assert(#lines == 2, "Expected 2 NPC lines, got " .. #lines)
   for _, l in ipairs(lines) do
     assert(l.speaker == "NPC", "Non-NPC line leaked: " .. tostring(l.speaker))
   end
 end)
 
-test("type filter keeps only that type", function()
-  local lines = vo.BuildScriptLines(rows(), COLS, { type = "Barks" })
-  assert(#lines == 1, "Expected 1 Barks line, got " .. #lines)
-  assert(lines[1].line_id == "NPC_003", "Wrong line: " .. tostring(lines[1].line_id))
-end)
-
-test("filters are case-insensitive and whitespace-tolerant", function()
-  local lines = vo.BuildScriptLines(rows(), COLS, { speaker = " player " })
+test("character include-set matches on folded key (case/space-insensitive)", function()
+  local lines = vo.BuildScriptLines(rows(), COLS, { speakers = { player = true } })
   assert(#lines == 1, "Expected 1 Player line, got " .. #lines)
-  assert(lines[1].line_id == "PLR_001", "Wrong line: " .. tostring(lines[1].line_id))
+  assert(lines[1].asset == "vo_plr_line_01", "Wrong line: " .. tostring(lines[1].asset))
 end)
 
 test("each line records its source row number for reporting", function()
@@ -195,8 +185,8 @@ test("each line records its source row number for reporting", function()
 end)
 
 test("missing optional speaker column leaves speaker nil and filter inert", function()
-  local cols = { line_id = 1, text = 4, asset = 5 }
-  local lines = vo.BuildScriptLines(rows(), cols, { speaker = "NPC" })
+  local cols = { text = 4, asset = 5 }
+  local lines = vo.BuildScriptLines(rows(), cols, { speakers = { npc = true } })
   assert(#lines == 3, "Speaker filter should be inert without the column, got " .. #lines)
   assert(lines[1].speaker == nil, "speaker should be nil")
 end)
@@ -431,10 +421,12 @@ end)
 --------------------------------
 print("\nBuildIndex:")
 
+-- Specs are { label, text, asset }; the label is only a human reading aid — the
+-- asset (Filename) is the line's identity everywhere downstream.
 local function script_lines(specs)
   local lines = {}
   for i, s in ipairs(specs) do
-    lines[i] = { line_id = s[1], text = s[2], asset = s[3], row = i }
+    lines[i] = { text = s[2], asset = s[3], row = i }
   end
   return lines
 end
@@ -535,9 +527,9 @@ test("finds lines recorded out of script order", function()
   local cands = vo.FindCandidates(toks, lines, idx, {})
   local seen = {}
   for _, c in ipairs(cands) do
-    if near(c.score, 1.0) then seen[c.line_id] = true end
+    if near(c.score, 1.0) then seen[c.asset] = true end
   end
-  assert(seen.L1 and seen.L2, "Both lines should be found regardless of order")
+  assert(seen.a and seen.b, "Both lines should be found regardless of order")
 end)
 
 test("a dropped word still scores above the accept threshold", function()
@@ -609,7 +601,7 @@ test("candidates carry the script line's identity and times", function()
   local idx   = vo.BuildIndex(lines, {})
   local toks  = vo.BuildWordTokens(whisper_words("open the north gate"), {})
   local c     = vo.FindCandidates(toks, lines, idx, {})[1]
-  assert(c.line_id == "L1" and c.asset == "vo_gate_north", "identity not carried")
+  assert(c.asset == "vo_gate_north", "identity (asset) not carried")
   assert(near(c.start, 0.0), "start: " .. tostring(c.start))
   assert(near(c.stop, 1.9), "stop: " .. tostring(c.stop))
 end)
@@ -621,7 +613,7 @@ print("\nSelectSpans:")
 
 local function cand(i0, i1, score, margin, id)
   return { i0 = i0, i1 = i1, score = score, margin = margin or 1.0,
-           line_id = id or ("L" .. i0), asset = "a" .. i0,
+           asset = id or ("a" .. i0),
            start = i0 * 1.0, stop = i1 * 1.0 }
 end
 
@@ -633,12 +625,12 @@ end)
 test("of two overlapping candidates the higher score wins", function()
   local spans = vo.SelectSpans({ cand(1, 4, 0.7, 1.0, "LOW"), cand(2, 5, 0.95, 1.0, "HIGH") }, {})
   assert(#spans == 1, "Expected 1 span, got " .. #spans)
-  assert(spans[1].line_id == "HIGH", "Wrong winner: " .. spans[1].line_id)
+  assert(spans[1].asset == "HIGH", "Wrong winner: " .. spans[1].asset)
 end)
 
 test("equal scores are tie-broken by the wider margin", function()
   local spans = vo.SelectSpans({ cand(1, 4, 0.9, 0.02, "THIN"), cand(2, 5, 0.9, 0.50, "WIDE") }, {})
-  assert(spans[1].line_id == "WIDE", "Wrong winner: " .. spans[1].line_id)
+  assert(spans[1].asset == "WIDE", "Wrong winner: " .. spans[1].asset)
 end)
 
 test("candidates below the review floor are discarded", function()
@@ -805,12 +797,13 @@ end)
 --------------------------------
 print("\nAssignNames:")
 
--- Two takes of L1 plus a single take of L2, already chronological.
+-- Two takes of vo_a plus a single take of vo_b, already chronological. Grouping
+-- keys off the asset (Filename), so the two vo_a spans are takes of one line.
 local function take_spans()
   return {
-    { kind = "match", line_id = "L1", asset = "vo_a", score = 0.95, start = 0, stop = 1 },
-    { kind = "match", line_id = "L2", asset = "vo_b", score = 0.93, start = 2, stop = 3 },
-    { kind = "match", line_id = "L1", asset = "vo_a", score = 0.97, start = 5, stop = 6 },
+    { kind = "match", asset = "vo_a", score = 0.95, start = 0, stop = 1 },
+    { kind = "match", asset = "vo_b", score = 0.93, start = 2, stop = 3 },
+    { kind = "match", asset = "vo_a", score = 0.97, start = 5, stop = 6 },
   }
 end
 
@@ -889,16 +882,18 @@ test("a single-take line never goes to alts even with the toggle on", function()
 end)
 
 test("low-confidence spans go to review named with their score", function()
-  local spans = { { kind = "review", line_id = "L1", asset = "vo_npc_greet_01", score = 0.67, start = 0, stop = 1 } }
+  local spans = { { kind = "review", asset = "vo_npc_greet_01", score = 0.67, start = 0, stop = 1 } }
   vo.AssignNames(spans, {})
   assert(spans[1].dest == "review", "dest: " .. spans[1].dest)
   assert(spans[1].name == "REVIEW_vo_npc_greet_01_s0.67", "name: " .. spans[1].name)
 end)
 
-test("unmatched spans go to review named from their transcript", function()
+test("unmatched spans stay in place, labelled from their transcript", function()
   local spans = { { kind = "unmatched", transcript = "take two", start = 0, stop = 1 } }
   vo.AssignNames(spans, {})
-  assert(spans[1].dest == "review", "dest: " .. spans[1].dest)
+  assert(spans[1].dest == vo.DEST_IN_PLACE, "dest: " .. spans[1].dest)
+  assert(spans[1].dest ~= "review", "unmatched must not route to the Review track")
+  -- The name is a report label, not a take name: nothing is cut for this span.
   assert(spans[1].name == "UNMATCHED_take_two", "name: " .. spans[1].name)
 end)
 
@@ -916,8 +911,8 @@ end)
 
 test("review and unmatched prefixes are configurable", function()
   local spans = {
-    { kind = "review",    line_id = "L1", asset = "vo_a", score = 0.6, start = 0, stop = 1 },
-    { kind = "unmatched", transcript = "hey",             start = 2, stop = 3 },
+    { kind = "review",    asset = "vo_a", score = 0.6, start = 0, stop = 1 },
+    { kind = "unmatched", transcript = "hey",  start = 2, stop = 3 },
   }
   vo.AssignNames(spans, { review_prefix = "CHK_", unmatched_prefix = "JUNK_" })
   assert(spans[1].name == "CHK_vo_a_s0.60", "name: " .. spans[1].name)
@@ -925,16 +920,16 @@ test("review and unmatched prefixes are configurable", function()
 end)
 
 test("names are passed through the sanitizer", function()
-  local spans = { { kind = "match", line_id = "L1", asset = "vo/a b", score = 0.9, start = 0, stop = 1 } }
+  local spans = { { kind = "match", asset = "vo/a b", score = 0.9, start = 0, stop = 1 } }
   vo.AssignNames(spans, {})
   assert(spans[1].name == "vo_a_b", "name: " .. spans[1].name)
 end)
 
 test("review spans do not consume take numbers from delivered takes", function()
   local spans = {
-    { kind = "review", line_id = "L1", asset = "vo_a", score = 0.60, start = 0, stop = 1 },
-    { kind = "match",  line_id = "L1", asset = "vo_a", score = 0.95, start = 2, stop = 3 },
-    { kind = "match",  line_id = "L1", asset = "vo_a", score = 0.97, start = 4, stop = 5 },
+    { kind = "review", asset = "vo_a", score = 0.60, start = 0, stop = 1 },
+    { kind = "match",  asset = "vo_a", score = 0.95, start = 2, stop = 3 },
+    { kind = "match",  asset = "vo_a", score = 0.97, start = 4, stop = 5 },
   }
   vo.AssignNames(spans, { suffix_alt_names = true, primary_take = "last" })
   assert(spans[2].take_index == 1, "first delivered take: " .. tostring(spans[2].take_index))
@@ -1073,7 +1068,7 @@ local function synthesize(lines, opts)
 
   for _, li in ipairs(order) do
     local line = lines[li]
-    local takes = (opts.repeats and opts.repeats[line.line_id]) or 1
+    local takes = (opts.repeats and opts.repeats[line.asset]) or 1
     for _ = 1, takes do
       if opts.slates then
         emit("take"); emit("two"); pause()
@@ -1084,7 +1079,7 @@ local function synthesize(lines, opts)
         elseif roll < drop + sub then emit("uhh")  -- word misheard
         else emit(w) end
       end
-      truth[#truth + 1] = line.line_id
+      truth[#truth + 1] = line.asset
       pause()
     end
   end
@@ -1129,11 +1124,11 @@ test("a clean read of every line matches every line", function()
 
   local got = {}
   for _, s in ipairs(plan) do
-    if s.kind == "match" then got[s.line_id] = s.asset end
+    if s.kind == "match" then got[s.asset] = s.asset end
   end
   for _, l in ipairs(lines) do
-    assert(got[l.line_id] == l.asset,
-      "Line " .. l.line_id .. " expected " .. l.asset .. ", got " .. tostring(got[l.line_id]))
+    assert(got[l.asset] == l.asset,
+      "Line " .. l.asset .. " expected " .. l.asset .. ", got " .. tostring(got[l.asset]))
   end
 end)
 
@@ -1163,13 +1158,13 @@ test("slates and chatter become unmatched spans without losing any line", functi
   assert(unmatched > 0, "Expected slates/chatter to surface as unmatched spans")
 end)
 
-test("unmatched spans are routed to review, never to selects", function()
+test("unmatched spans are left in place, never routed to a track", function()
   local lines = load_fixture()
   local words = synthesize(lines, { slates = true, chatter = true })
   local plan  = vo.BuildPlan(lines, words, {})
   for _, s in ipairs(plan) do
     if s.kind == "unmatched" then
-      assert(s.dest == "review", "unmatched routed to " .. tostring(s.dest))
+      assert(s.dest == vo.DEST_IN_PLACE, "unmatched routed to " .. tostring(s.dest))
     end
   end
 end)
@@ -1181,55 +1176,55 @@ test("a noisy transcript never silently loses a line", function()
 
   local found = {}
   for _, s in ipairs(plan) do
-    if s.kind == "match" or s.kind == "review" then found[s.line_id] = s.kind end
+    if s.kind == "match" or s.kind == "review" then found[s.asset] = s.kind end
   end
   for _, l in ipairs(lines) do
-    assert(found[l.line_id], "Lost line " .. l.line_id .. " to transcription noise")
+    assert(found[l.asset], "Lost line " .. l.asset .. " to transcription noise")
   end
 end)
 
 test("a line missing one word of five is still a confident match", function()
-  -- At this seed the recognizer drops the leading "Open" from NPC_002.
+  -- At this seed the recognizer drops the leading "Open" from vo_guard_gate_01.
   local lines = load_fixture()
   local words = synthesize(lines, { drop_rate = 0.10, sub_rate = 0.05, seed = 7 })
   local plan  = vo.BuildPlan(lines, words, {})
   for _, s in ipairs(plan) do
-    if s.line_id == "NPC_002" then
-      assert(s.kind == "match", "NPC_002 kind: " .. s.kind)
-      assert(s.name == "vo_guard_gate_01", "NPC_002 name: " .. s.name)
+    if s.asset == "vo_guard_gate_01" then
+      assert(s.kind == "match", "vo_guard_gate_01 kind: " .. s.kind)
+      assert(s.name == "vo_guard_gate_01", "vo_guard_gate_01 name: " .. s.name)
     end
   end
 end)
 
 test("a line missing a third of its words is flagged, not asserted", function()
-  -- PLR_001 loses 2 of its 6 words at this seed. A 0.67 score is a real match
-  -- but not a confident one; the tool must say so rather than stamp an asset
-  -- name on it. This is the guarantee the Review track exists to provide.
+  -- vo_hero_captain_01 loses 2 of its 6 words at this seed. A 0.67 score is a
+  -- real match but not a confident one; the tool must say so rather than stamp
+  -- an asset name on it. This is the guarantee the Review track exists to provide.
   local lines = load_fixture()
   local words = synthesize(lines, { drop_rate = 0.10, sub_rate = 0.05, seed = 7 })
   local plan  = vo.BuildPlan(lines, words, {})
   local seen = false
   for _, s in ipairs(plan) do
-    if s.line_id == "PLR_001" then
+    if s.asset == "vo_hero_captain_01" then
       seen = true
-      assert(s.kind == "review", "PLR_001 kind: " .. s.kind)
-      assert(s.dest == "review", "PLR_001 dest: " .. tostring(s.dest))
-      assert(s.name:find("^REVIEW_"), "PLR_001 name: " .. s.name)
+      assert(s.kind == "review", "vo_hero_captain_01 kind: " .. s.kind)
+      assert(s.dest == "review", "vo_hero_captain_01 dest: " .. tostring(s.dest))
+      assert(s.name:find("^REVIEW_"), "vo_hero_captain_01 name: " .. s.name)
     end
   end
-  assert(seen, "PLR_001 produced no span at all")
+  assert(seen, "vo_hero_captain_01 produced no span at all")
 end)
 
 test("a line recorded twice yields two numbered takes", function()
   local lines = load_fixture()
-  local words = synthesize(lines, { repeats = { NPC_001 = 2 } })
+  local words = synthesize(lines, { repeats = { vo_guard_halt_01 = 2 } })
   local plan  = vo.BuildPlan(lines, words, {})
 
   local takes = {}
   for _, s in ipairs(plan) do
-    if s.kind == "match" and s.line_id == "NPC_001" then takes[#takes + 1] = s end
+    if s.kind == "match" and s.asset == "vo_guard_halt_01" then takes[#takes + 1] = s end
   end
-  assert(#takes == 2, "Expected 2 takes of NPC_001, got " .. #takes)
+  assert(#takes == 2, "Expected 2 takes of vo_guard_halt_01, got " .. #takes)
   table.sort(takes, function(a, b) return a.start < b.start end)
   assert(takes[1].take_index == 1 and takes[2].take_index == 2, "take numbering wrong")
   assert(takes[2].primary == true, "last take should be primary by default")
@@ -1237,7 +1232,7 @@ end)
 
 test("plan spans are chronological and never overlap", function()
   local lines = load_fixture()
-  local words = synthesize(lines, { slates = true, repeats = { NPC_002 = 2 } })
+  local words = synthesize(lines, { slates = true, repeats = { vo_guard_gate_01 = 2 } })
   local plan  = vo.BuildPlan(lines, words, {})
 
   for i = 2, #plan do
@@ -1287,7 +1282,7 @@ test("report starts with a header row", function()
   local lines = load_fixture()
   local report = vo.BuildReport({}, lines)
   local first = report:match("^([^\n]*)")
-  assert(first:find("LineID"), "header: " .. first)
+  assert(first:find("Filename"), "header: " .. first)
   assert(first:find("score"), "header: " .. first)
 end)
 
@@ -1298,7 +1293,7 @@ test("report has one row per plan span", function()
   local rows  = vo.ParseCSV(vo.BuildReport(plan, lines))
   -- header + one row per span, then the no-match section
   assert(#rows > #plan, "Report is missing rows")
-  assert(rows[2][4] == plan[1].line_id, "First data row: " .. tostring(rows[2][4]))
+  assert(rows[2][4] == plan[1].asset, "First data row: " .. tostring(rows[2][4]))
 end)
 
 test("the report round-trips through our own CSV parser", function()
@@ -1313,7 +1308,7 @@ end)
 
 test("script text containing a comma is quoted in the report", function()
   local lines = load_fixture()
-  local plan  = { { kind = "match", line_id = "NPC_002", asset = "vo_guard_gate_01",
+  local plan  = { { kind = "match", asset = "vo_guard_gate_01",
                     score = 0.9, margin = 0.5, start = 0, stop = 1,
                     dest = "selects", name = "vo_guard_gate_01", transcript = "open the north gate quickly" } }
   local report = vo.BuildReport(plan, lines)
@@ -1323,24 +1318,24 @@ end)
 
 test("lines that received no match are listed in their own section", function()
   local lines = load_fixture()
-  local plan  = { { kind = "match", line_id = "NPC_001", asset = "vo_guard_halt_01",
+  local plan  = { { kind = "match", asset = "vo_guard_halt_01",
                     score = 0.95, margin = 0.5, start = 0, stop = 1,
                     dest = "selects", name = "vo_guard_halt_01" } }
   local report = vo.BuildReport(plan, lines)
 
   assert(report:find("SCRIPT LINES WITH NO MATCH", 1, true), "Missing no-match section")
   local tail = report:match("SCRIPT LINES WITH NO MATCH(.*)$")
-  assert(tail:find("PLR_001", 1, true), "Unmatched line PLR_001 not listed")
-  assert(not tail:find("NPC_001", 1, true), "Matched line NPC_001 should not be listed")
+  assert(tail:find("vo_hero_captain_01", 1, true), "Unmatched line vo_hero_captain_01 not listed")
+  assert(not tail:find("vo_guard_halt_01", 1, true), "Matched line vo_guard_halt_01 should not be listed")
 end)
 
 test("a review span does not count as a match for the no-match section", function()
   local lines = load_fixture()
-  local plan  = { { kind = "review", line_id = "NPC_001", asset = "vo_guard_halt_01",
+  local plan  = { { kind = "review", asset = "vo_guard_halt_01",
                     score = 0.60, margin = 0.5, start = 0, stop = 1,
                     dest = "review", name = "REVIEW_vo_guard_halt_01_s0.60" } }
   local tail = vo.BuildReport(plan, lines):match("SCRIPT LINES WITH NO MATCH(.*)$")
-  assert(tail:find("NPC_001", 1, true), "A review-only line still needs flagging as unmatched")
+  assert(tail:find("vo_guard_halt_01", 1, true), "A review-only line still needs flagging as unmatched")
 end)
 
 --------------------------------
@@ -1460,15 +1455,15 @@ end)
 test("the column mapping round-trips", function()
   mock.reset()
   local cfg = vo.LoadConfig()
-  assert(cfg.column_mapping.asset == "AudioAsset", "default asset column")
-  cfg.column_mapping.asset = "Filename"
+  assert(cfg.column_mapping.asset == "Filename", "default asset column")
+  cfg.column_mapping.asset = "AssetName"
   cfg.column_mapping.text  = "Dialogue"
   vo.SaveConfig(cfg)
 
   local back = vo.LoadConfig()
-  assert(back.column_mapping.asset == "Filename", back.column_mapping.asset)
+  assert(back.column_mapping.asset == "AssetName", back.column_mapping.asset)
   assert(back.column_mapping.text == "Dialogue", back.column_mapping.text)
-  assert(back.column_mapping.line_id == "LineID", "untouched column changed")
+  assert(back.column_mapping.speaker == "Character", "untouched column changed")
 end)
 
 test("skip values round-trip and default to TO RECORD", function()
@@ -1634,6 +1629,479 @@ end)
 
 test("an empty table formats to an empty string", function()
   assert(vo.FormatSubstitutionText({}) == "", "Expected empty string")
+end)
+
+--------------------------------
+-- Backend acquisition: catalogs & URLs
+--------------------------------
+print("Backend acquisition — catalogs & URLs:")
+
+test("model download URL uses the HuggingFace resolve path", function()
+  assert(vo.ModelDownloadURL("base") ==
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+    vo.ModelDownloadURL("base"))
+end)
+
+test("binary download URL is pinned to the release tag", function()
+  assert(vo.BinaryDownloadURL("cuda-12.4") ==
+    "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-cublas-12.4.0-bin-x64.zip",
+    tostring(vo.BinaryDownloadURL("cuda-12.4")))
+end)
+
+test("binary download URL is nil for an unknown key", function()
+  assert(vo.BinaryDownloadURL("nope") == nil)
+end)
+
+test("every offered model has a verified DTW preset", function()
+  assert(#vo.MODEL_CATALOG == 5, "expected 5 models, got " .. #vo.MODEL_CATALOG)
+  for _, m in ipairs(vo.MODEL_CATALOG) do
+    assert(vo.DTWPresetForModel(m.filename) ~= nil,
+      "no DTW preset for " .. m.filename)
+    assert(m.expected_bytes and m.expected_bytes > 0, "bad size for " .. m.name)
+  end
+end)
+
+test("large-v3-turbo is offered and maps to its verified DTW preset", function()
+  local found
+  for _, m in ipairs(vo.MODEL_CATALOG) do
+    if m.name == "large-v3-turbo" then found = m end
+  end
+  assert(found, "large-v3-turbo missing from MODEL_CATALOG")
+  assert(found.expected_bytes == 1624555275, "turbo size drift")
+  assert(vo.DTWPresetForModel("ggml-large-v3-turbo.bin") == "large.v3.turbo",
+    tostring(vo.DTWPresetForModel("ggml-large-v3-turbo.bin")))
+end)
+
+test("binary catalog carries the exact verified asset sizes", function()
+  local by_key = {}
+  for _, b in ipairs(vo.BINARY_CATALOG) do by_key[b.key] = b end
+  assert(by_key["cuda-12.4"].expected_bytes == 677887125, "12.4 size drift")
+  assert(by_key["cuda-11.8"].expected_bytes == 278557654, "11.8 size drift")
+end)
+
+test("FormatBytes scales into human units", function()
+  assert(vo.FormatBytes(512) == "512 B", vo.FormatBytes(512))
+  assert(vo.FormatBytes(1536) == "1.5 KB", vo.FormatBytes(1536))
+  assert(vo.FormatBytes(677887125) == "646.5 MB", vo.FormatBytes(677887125))
+end)
+
+--------------------------------
+-- Backend acquisition: paths, size checks, exe locator
+--------------------------------
+print("Backend acquisition — paths & filesystem helpers:")
+
+-- Write a file of exactly `bytes` length; returns its path.
+local function write_sized_file(bytes)
+  local path = os.tmpname()
+  local f = assert(io.open(path, "wb"))
+  if bytes > 0 then f:write(string.rep("x", bytes)) end
+  f:close()
+  return path
+end
+
+test("ResolveModelsDir/ResolveBinDir append under the resource root", function()
+  assert(vo.ResolveModelsDir("C:/RPR") == "C:/RPR/whisper-models", vo.ResolveModelsDir("C:/RPR"))
+  assert(vo.ResolveBinDir("C:/RPR")    == "C:/RPR/whisper-bin",    vo.ResolveBinDir("C:/RPR"))
+end)
+
+test("PluginResourceRoot drops the VO segment and points at <repo>/Resources", function()
+  assert(vo.PluginResourceRoot("C:/x/Scripts/ajsfx-ReaScripts/VO/") ==
+    "C:/x/Scripts/ajsfx-ReaScripts/Resources",
+    vo.PluginResourceRoot("C:/x/Scripts/ajsfx-ReaScripts/VO/"))
+  -- tolerates a missing trailing separator and backslashes
+  assert(vo.PluginResourceRoot("C:\\x\\ajsfx-ReaScripts\\VO") ==
+    "C:\\x\\ajsfx-ReaScripts/Resources",
+    vo.PluginResourceRoot("C:\\x\\ajsfx-ReaScripts\\VO"))
+end)
+
+test("VerifyDownloadSize passes at/above the 95% floor", function()
+  local p = write_sized_file(1000)
+  assert(vo.VerifyDownloadSize(p, 1000) == true, "exact size should pass")
+  assert(vo.VerifyDownloadSize(p, 1050) == true, "95% floor should pass")
+  os.remove(p)
+end)
+
+test("VerifyDownloadSize fails a truncated/error-page download", function()
+  local p = write_sized_file(10)          -- tiny HTML error page saved as .bin
+  assert(vo.VerifyDownloadSize(p, 1000) == false, "truncated should fail")
+  os.remove(p)
+end)
+
+test("VerifyDownloadSize fails when the file is missing", function()
+  assert(vo.VerifyDownloadSize("nope/does-not-exist.bin", 1000) == false)
+end)
+
+test("ModelIsInstalled reflects whether the model file is present", function()
+  local dir = os.tmpname() .. "_models"
+  os.execute((package.config:sub(1,1) == '\\'
+    and ('mkdir "' .. dir .. '" 2>NUL')
+    or  ('mkdir -p "' .. dir .. '" 2>/dev/null')))
+  assert(vo.ModelIsInstalled(dir, "base") == false, "absent model must read as not installed")
+  local f = assert(io.open(dir .. "/ggml-base.bin", "wb")); f:write("stub"); f:close()
+  assert(vo.ModelIsInstalled(dir, "base") == true, "present model must read as installed")
+  os.remove(dir .. "/ggml-base.bin")
+end)
+
+test("LocateWhisperCliExe finds the exe case-insensitively in a nested listing", function()
+  local entries = {
+    "C:/RPR/whisper-bin/README.txt",
+    "C:/RPR/whisper-bin/Release/Whisper-CLI.exe",
+    "C:/RPR/whisper-bin/Release/ggml.dll",
+  }
+  assert(vo.LocateWhisperCliExe(entries) == "C:/RPR/whisper-bin/Release/Whisper-CLI.exe",
+    tostring(vo.LocateWhisperCliExe(entries)))
+end)
+
+test("LocateWhisperCliExe returns nil when absent or empty", function()
+  assert(vo.LocateWhisperCliExe({ "a/b.dll" }) == nil)
+  assert(vo.LocateWhisperCliExe({}) == nil)
+end)
+
+--------------------------------
+-- Backend acquisition: device log parser
+--------------------------------
+print("\nBackend acquisition — device log parser:")
+
+test("ParseBackendFromLog reports CUDA and the device name", function()
+  local log = table.concat({
+    "whisper_init_from_file_with_params_no_state: loading model",
+    "ggml_cuda_init: found 1 CUDA devices:",
+    "  Device 0: NVIDIA GeForce RTX 4070, compute capability 8.9",
+    "whisper_backend_init_gpu: using CUDA0 backend",
+  }, "\n")
+  local d = vo.ParseBackendFromLog(log)
+  assert(d.device == "CUDA", d.device)
+  assert(d.name == "NVIDIA GeForce RTX 4070", tostring(d.name))
+end)
+
+test("ParseBackendFromLog reports CPU when no CUDA lines are present", function()
+  local log = "whisper_backend_init: using CPU backend\nsystem_info: n_threads = 8"
+  local d = vo.ParseBackendFromLog(log)
+  assert(d.device == "CPU", d.device)
+  assert(d.name == nil)
+end)
+
+test("ParseBackendFromLog reports CPU when CUDA is mentioned but no device is listed", function()
+  local log = "ggml_cuda_init: found 0 CUDA devices:\nwhisper_backend_init: using CPU backend"
+  local d = vo.ParseBackendFromLog(log)
+  assert(d.device == "CPU", d.device)
+  assert(d.name == nil)
+end)
+
+test("ParseBackendFromLog handles empty/nil input as CPU", function()
+  assert(vo.ParseBackendFromLog("").device == "CPU")
+  assert(vo.ParseBackendFromLog(nil).device == "CPU")
+end)
+
+--------------------------------
+-- Backend acquisition: silent WAV writer (pure)
+--------------------------------
+print("Backend acquisition — WriteSilentWav:")
+
+test("WriteSilentWav writes a valid 16k mono silent WAV of the right length", function()
+  local p = os.tmpname()
+  assert(vo.WriteSilentWav(p, 0.5) == true)
+  local f = assert(io.open(p, "rb")); local b = f:read("a"); f:close()
+  assert(b:sub(1, 4) == "RIFF", "missing RIFF")
+  assert(b:sub(9, 12) == "WAVE", "missing WAVE")
+  -- 16000 Hz * 0.5 s * 2 bytes/sample + 44-byte header
+  assert(#b == 44 + 16000, "unexpected size " .. #b)
+  os.remove(p)
+end)
+
+--------------------------------
+-- CSV layout — distinct/auto-detect/validators
+--------------------------------
+print("\nCSV layout — distinct/auto-detect/validators:")
+
+test("DistinctCharacters folds case/space, keeps first-seen display, drops empties", function()
+  local rows = { {"a","Guard"}, {"b","guard"}, {"c",""}, {"d","Guard "}, {"e","Hero"} }
+  local d = vo.DistinctCharacters(rows, 2)
+  assert(#d == 2, "#d="..#d)
+  assert(d[1].display == "Guard" and d[1].key == "guard", d[1].display.."/"..d[1].key)
+  assert(d[2].display == "Hero", d[2].display)
+  local canon = vo.CanonicalizeMap(d)
+  assert(canon["guard"] == "Guard" and canon["hero"] == "Hero")
+end)
+
+test("AutoDetectMapping matches role aliases case-insensitively", function()
+  local m = vo.AutoDetectMapping({ "VO Line", "Filename", "Character", "Category" })
+  assert(m.asset == "Filename", tostring(m.asset))
+  assert(m.speaker == "Character", tostring(m.speaker))
+  -- "VO Line" folds to "vo line", which matches no text alias exactly, so text
+  -- is left unmapped. Documents this real limitation rather than a tautology.
+  assert(m.text == nil, "an unrecognized header should not auto-detect: " .. tostring(m.text))
+end)
+
+test("AutoDetectMapping maps the canonical Character/Filename/Line Text headers", function()
+  local m = vo.AutoDetectMapping({ "Character", "Filename", "Line Text" })
+  assert(m.speaker == "Character", tostring(m.speaker))
+  assert(m.asset   == "Filename",  tostring(m.asset))
+  assert(m.text    == "Line Text", tostring(m.text))
+end)
+
+test("ValidateHeaderNames rejects tab/newline in a column name", function()
+  assert((vo.ValidateHeaderNames({ "A", "B" })) == true)
+  assert((vo.ValidateHeaderNames({ "A", "B\tC" })) == false)
+  assert((vo.ValidateHeaderNames({ "A", "B\nC" })) == false)
+end)
+
+test("ValidatePresetName enforces the naming rules", function()
+  assert((vo.ValidatePresetName("Ubisoft VO")) == true)
+  assert((vo.ValidatePresetName("")) == false)
+  assert((vo.ValidatePresetName("__names__")) == false)
+  assert((vo.ValidatePresetName("Boss=Final")) == false)
+  assert((vo.ValidatePresetName("a\tb")) == false)
+  assert((vo.ValidatePresetName(string.rep("x", 65))) == false)
+end)
+
+--------------------------------
+-- CSV layout — serialize/deserialize
+--------------------------------
+print("\nCSV layout — serialize:")
+
+test("SerializeLayout/DeserializeLayout round-trip incl. spaces and commas", function()
+  local layout = {
+    mapping = { text="VO, Text", asset="File Name", speaker="Character" },
+    skip_values = { "TO RECORD", "HOLD" },
+  }
+  local back = vo.DeserializeLayout(vo.SerializeLayout(layout))
+  assert(back.mapping.text == "VO, Text", back.mapping.text)
+  assert(back.mapping.asset == "File Name")
+  assert(back.mapping.speaker == "Character")
+  assert(#back.skip_values == 2 and back.skip_values[1] == "TO RECORD" and back.skip_values[2] == "HOLD")
+end)
+
+test("DeserializeLayout of empty/garbage yields an empty layout", function()
+  local l = vo.DeserializeLayout("")
+  assert(next(l.mapping) == nil and #l.skip_values == 0)
+end)
+
+--------------------------------
+-- CSV layout — track name, filter, threading
+--------------------------------
+print("\nCSV layout — track name, filter, threading:")
+
+test("CharacterTrackName prefixes with a sanitized character or falls back to base", function()
+  assert(vo.CharacterTrackName("Guard", "Selects") == "Guard_Selects")
+  assert(vo.CharacterTrackName("", "Review") == "Review")
+  assert(vo.CharacterTrackName(nil, "Alts") == "Alts")
+  assert(vo.CharacterTrackName("Guard/M", "Selects") == vo.SanitizeName("Guard/M") .. "_Selects")
+end)
+
+test("BuildScriptLines keeps only included characters and canonicalizes speaker", function()
+  local cols = { line_id=1, text=2, asset=3, speaker=4 }
+  local rows = {
+    { "L1","hi","a1","Guard" },
+    { "L2","yo","a2","guard" },   -- same character, different case
+    { "L3","hey","a3","Hero" },
+  }
+  local lines = vo.BuildScriptLines(rows, cols, {
+    speakers = { guard = true },              -- include only Guard
+    canonicalize = { guard = "Guard", hero = "Hero" },
+  })
+  assert(#lines == 2, "#lines="..#lines)
+  assert(lines[1].speaker == "Guard" and lines[2].speaker == "Guard", "canonicalized")
+end)
+
+test("BuildScriptLines nil speakers keeps all; empty keeps none", function()
+  local cols = { line_id=1, text=2, asset=3, speaker=4 }
+  local rows = { { "L1","hi","a1","Guard" }, { "L2","yo","a2","Hero" } }
+  assert(#vo.BuildScriptLines(rows, cols, { canonicalize={guard="Guard",hero="Hero"} }) == 2)
+  assert(#vo.BuildScriptLines(rows, cols, { speakers = {}, canonicalize={} }) == 0)
+end)
+
+test("a matched span carries the canonical character; unmatched carries nil", function()
+  local lines = {
+    { line_id="L1", text="open the gate", asset="g1", speaker="Guard" },
+  }
+  -- words that match the one line, plus a stray unmatched word (a slate)
+  local words = {
+    { t0=0.0, t1=0.4, text="open" }, { t0=0.4, t1=0.8, text="the" }, { t0=0.8, t1=1.2, text="gate" },
+    { t0=5.0, t1=5.4, text="slate" },
+  }
+  local plan = vo.BuildPlan(lines, words, { accept_threshold=0.5, review_floor=0.3, margin_threshold=0.0, anchor_count=1 })
+  local matched, unmatched
+  for _, s in ipairs(plan) do
+    if s.kind == "match" then matched = s elseif s.kind == "unmatched" then unmatched = s end
+  end
+  assert(matched and matched.character == "Guard", "matched character: " .. tostring(matched and matched.character))
+  assert(unmatched and unmatched.character == nil, "unmatched should have no character")
+end)
+
+--------------------------------
+-- CSV layout — layout preset storage (ExtState)
+--------------------------------
+print("\nCSV layout — layout presets (ExtState):")
+
+test("SaveLayoutPreset/ListLayoutPresets/LoadLayoutPreset/DeleteLayoutPreset round-trip", function()
+  mock.reset()
+  local layout = {
+    mapping = { text = "VO, Text", asset = "File Name", speaker = "Character" },
+    skip_values = { "TO RECORD", "HOLD" },
+  }
+  assert(vo.SaveLayoutPreset("Ubisoft VO", layout) == true, "SaveLayoutPreset should return true")
+
+  local names = vo.ListLayoutPresets()
+  local found = false
+  for _, n in ipairs(names) do if n == "Ubisoft VO" then found = true end end
+  assert(found, "Expected preset name in ListLayoutPresets")
+
+  local back = vo.LoadLayoutPreset("Ubisoft VO")
+  assert(back and back.mapping.asset == "File Name", "mapping did not round-trip")
+  assert(back.mapping.text == "VO, Text", "mapping with comma did not round-trip: " .. tostring(back.mapping.text))
+  assert(#back.skip_values == 2 and back.skip_values[2] == "HOLD", "skip_values did not round-trip")
+
+  assert(vo.LoadLayoutPreset("No Such Preset") == nil, "Expected nil for an unknown preset")
+
+  vo.DeleteLayoutPreset("Ubisoft VO")
+  for _, n in ipairs(vo.ListLayoutPresets()) do
+    assert(n ~= "Ubisoft VO", "Expected name gone from ListLayoutPresets after delete")
+  end
+  assert(vo.LoadLayoutPreset("Ubisoft VO") == nil, "Expected preset gone after delete")
+end)
+
+test("SaveLayoutPreset refuses an invalid name and stores nothing", function()
+  mock.reset()
+  local ok = vo.SaveLayoutPreset("bad=name", { mapping = {}, skip_values = {} })
+  assert(ok == false, "Expected false for an invalid preset name")
+  assert(#vo.ListLayoutPresets() == 0, "Expected no names stored for a refused save")
+  assert(vo.LoadLayoutPreset("bad=name") == nil, "Expected nothing stored under the bad name")
+end)
+
+--------------------------------
+-- ApplyPlan (coupled): a degenerate span must not corrupt the session
+--------------------------------
+print("\nApplyPlan:")
+
+test("a zero-length span is skipped and never sweeps the rest of the item", function()
+  mock.reset()
+
+  -- One source item [0,100] on a named "Raw" track.
+  local raw = { info = {}, name = "Raw", items = {} }
+  raw.items[1] = {
+    info  = { D_POSITION = 0, D_LENGTH = 100 },
+    take  = { info = {}, source = "mock_source" },
+    track = raw,
+  }
+  mock.tracks = { raw }
+
+  -- Chronological plan: a normal clip, a DEGENERATE zero-length span (start ==
+  -- stop, exactly what neighbour-clamping produced in the field), then another
+  -- normal clip after it.
+  local plan = {
+    { start = 10, stop = 20, dest = "selects", name = "A", kind = "match" },
+    { start = 50, stop = 50, dest = "selects", name = "Z", kind = "match" },
+    { start = 60, stop = 70, dest = "selects", name = "B", kind = "match" },
+  }
+  local cfg = { track_selects = "Selects", track_alts = "Alts", track_review = "Review" }
+
+  local applied, failures = vo.ApplyPlan(plan, cfg, raw)
+
+  local function track_by_name(nm)
+    for _, t in ipairs(mock.tracks) do if t.name == nm then return t end end
+  end
+  local selects = track_by_name("Selects")
+  assert(selects, "Selects track should have been created")
+
+  -- Both real spans are cut; the degenerate one is not.
+  assert(applied == 2, "Expected 2 clips applied, got " .. tostring(applied))
+
+  -- No clip on any created track may exceed the longest real span (10s). The
+  -- bug moved the whole 50..100 tail as a single 50s item.
+  for _, t in ipairs(mock.tracks) do
+    if t ~= raw then
+      for _, it in ipairs(t.items or {}) do
+        assert(it.info.D_LENGTH <= 10 + 1e-6, string.format(
+          "clip on %s is %.1fs long — the tail was swept", t.name, it.info.D_LENGTH))
+      end
+    end
+  end
+
+  -- The clip AFTER the degenerate span must exist: proof the tail survived so
+  -- later spans could still be cut.
+  local found_b = false
+  for _, it in ipairs(selects.items) do
+    if math.abs(it.info.D_POSITION - 60) < 1e-6 and math.abs(it.info.D_LENGTH - 10) < 1e-6 then
+      found_b = true
+    end
+  end
+  assert(found_b, "The clip after the zero-length span was never cut")
+
+  -- The source item's tail (up to 100) is still on Raw.
+  local raw_end = 0
+  for _, it in ipairs(raw.items) do
+    raw_end = math.max(raw_end, it.info.D_POSITION + it.info.D_LENGTH)
+  end
+  assert(math.abs(raw_end - 100) < 1e-6, "Raw tail was moved away; last end = " .. raw_end)
+
+  -- The degenerate span is reported, not silently dropped.
+  local reported = false
+  for _, f in ipairs(failures) do if f:find('"Z"') or f:find("Z:") then reported = true end end
+  assert(reported, "The skipped zero-length span should be reported")
+end)
+
+test("an unmatched span is neither split nor moved", function()
+  mock.reset()
+
+  -- One source item [0,100] on a named "Raw" track.
+  local raw = { info = {}, name = "Raw", items = {} }
+  raw.items[1] = {
+    info  = { D_POSITION = 0, D_LENGTH = 100 },
+    take  = { info = {}, source = "mock_source" },
+    track = raw,
+  }
+  mock.tracks = { raw }
+
+  -- A matched clip, then unmatched audio (a slate), then another matched clip.
+  local plan = {
+    { start = 10, stop = 20, dest = "selects",          name = "A", kind = "match" },
+    { start = 30, stop = 40, dest = vo.DEST_IN_PLACE,   name = "UNMATCHED_take_two",
+      kind = "unmatched" },
+    { start = 60, stop = 70, dest = "selects",          name = "B", kind = "match" },
+  }
+  local cfg = { track_selects = "Selects", track_alts = "Alts", track_review = "Review" }
+
+  local applied, failures = vo.ApplyPlan(plan, cfg, raw)
+
+  local function track_by_name(nm)
+    for _, t in ipairs(mock.tracks) do if t.name == nm then return t end end
+  end
+
+  -- Only the two matched spans are cut, and skipping the unmatched one is not
+  -- an error.
+  assert(applied == 2, "Expected 2 clips applied, got " .. tostring(applied))
+  assert(#failures == 0, "Unexpected failures: " .. table.concat(failures, "; "))
+
+  -- Nothing routed to Review, so that track is never created.
+  assert(not track_by_name("Review"), "A Review track was created for unmatched audio")
+
+  -- The heart of it: the source item was never split at 30 or 40, so the slate
+  -- is still welded into the surrounding item rather than standing alone.
+  for _, it in ipairs(raw.items) do
+    local p, e = it.info.D_POSITION, it.info.D_POSITION + it.info.D_LENGTH
+    for _, edge in ipairs({ 30, 40 }) do
+      assert(math.abs(p - edge) > 1e-6, "Raw was split at " .. edge .. " (item start)")
+      assert(math.abs(e - edge) > 1e-6, "Raw was split at " .. edge .. " (item end)")
+    end
+  end
+
+  -- And one single Raw item still spans the whole 30..40 range.
+  local covers = false
+  for _, it in ipairs(raw.items) do
+    local p, e = it.info.D_POSITION, it.info.D_POSITION + it.info.D_LENGTH
+    if p <= 30 + 1e-6 and e >= 40 - 1e-6 then covers = true end
+  end
+  assert(covers, "No single Raw item still covers the unmatched span 30..40")
+
+  -- The unmatched label never reached a take name anywhere in the project: it
+  -- is a report label only.
+  for _, t in ipairs(mock.tracks) do
+    for _, it in ipairs(t.items or {}) do
+      assert(not (it.take and it.take.name == "UNMATCHED_take_two"),
+             "The unmatched label was applied as a take name on " .. tostring(t.name))
+    end
+  end
 end)
 
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
