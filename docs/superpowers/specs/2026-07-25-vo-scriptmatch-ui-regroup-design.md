@@ -217,14 +217,27 @@ These are not in scope, but the design above is shaped so they are additive:
    unmatched status after a run.
 2. **Take column** — a computed column whose cell is clickable and moves the edit
    cursor to that line's primary take without changing play state.
-3. **REAPER-native look** — there is no scriptable native REAPER widget toolkit;
-   Project Bay's controls are C++ and not exposed. The realistic options are staying on
-   ReaImGui and styling it from `reaper.GetThemeColor` to harmonise with the user's
-   theme, or rewriting on a `gfx`-based toolkit such as rtk. This needs its own
-   investigation before any commitment; nothing in this design depends on the answer.
-
 Items 1 and 2 both require the dialog to stay open after the run rather than closing to
 a summary message box. That reshape of `Run` / `Finish` is deliberately deferred.
+
+## Decided: the toolkit stays ReaImGui
+
+There is no scriptable native REAPER widget toolkit — Project Bay's controls are C++
+and not exposed — so matching REAPER's look was never on the table. The choice was
+between ReaImGui and a `gfx`-based Lua toolkit (rtk, Lokasenna GUI v2).
+
+**ReaImGui, on usability and liveness grounds:**
+
+- The two primitives this design depends on, `TableSetupScrollFreeze` (two-row frozen
+  header) and `ListClipper` (draw only visible rows), have no equivalent in the
+  `gfx` toolkits, which redraw every widget in Lua each frame. A thousand-row table is
+  the difference between free and unusable.
+- ReaImGui tracks upstream Dear ImGui and is actively maintained; Lokasenna GUI v2 is
+  dormant. "Not dead" was an explicit requirement.
+
+Theme integration via `reaper.GetThemeColor` is explicitly **not** pursued. Function
+over appearance; the default ImGui style is acceptable. Revisit only if it becomes a
+usability problem rather than an aesthetic one.
 
 ## Testing
 
