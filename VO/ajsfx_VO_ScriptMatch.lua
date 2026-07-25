@@ -444,16 +444,25 @@ local function RefreshPreview()
   })
 end
 
+-- ReaImGui attaches objects to the context and rejects creating one per frame
+-- ("excessive creation of short-lived resources"), so the clipper is made once
+-- and reused. ValidatePtr catches the context being recreated in loop().
+local clipper
+local function Clipper()
+  if not (clipper and im.ValidatePtr(clipper, 'ImGui_ListClipper*')) then
+    clipper = im.CreateListClipper(ctx)
+  end
+  return clipper
+end
+
 -- The table is the interface: columns are mapped in its header, and the body is
 -- the list of lines that will actually run. Rows excluded by a skip token, the
 -- character filter, or an empty required cell are hidden, not dimmed (R4).
-local function DrawTable(height)
-  local flags = im.TableFlags_Borders | im.TableFlags_Resizable
-              | im.TableFlags_ScrollY | im.TableFlags_RowBg
-  if not im.BeginTable(ctx, "script_preview", #COLUMNS, flags, 0, height) then
-    return
-  end
-
+--
+-- The body is drawn inside pcall: an error raised between BeginTable and
+-- EndTable would otherwise escape with the table still open and leave ImGui's
+-- stack corrupted for every later frame ("Missing EndTable()").
+local function DrawTableBody()
   for _, c in ipairs(COLUMNS) do
     im.TableSetupColumn(ctx, c.label, im.TableColumnFlags_WidthFixed, c.init_width)
   end
@@ -490,17 +499,19 @@ local function DrawTable(height)
 
   local lines = state.preview
   if lines and #lines > 0 then
-    local clipper = im.CreateListClipper(ctx)
-    im.ListClipper_Begin(clipper, #lines)
-    while im.ListClipper_Step(clipper) do
-      local first, last = im.ListClipper_GetDisplayRange(clipper)
+    local cl = Clipper()
+    im.ListClipper_Begin(cl, #lines)
+    while im.ListClipper_Step(cl) do
+      local first, last = im.ListClipper_GetDisplayRange(cl)
       for n = first, last - 1 do
         local line = lines[n + 1]
-        im.TableNextRow(ctx)
-        for i, c in ipairs(COLUMNS) do
-          im.TableSetColumnIndex(ctx, i - 1)
-          if c.kind == "mapped" then
-            im.Text(ctx, line[c.key] or "")
+        if line then
+          im.TableNextRow(ctx)
+          for i, c in ipairs(COLUMNS) do
+            im.TableSetColumnIndex(ctx, i - 1)
+            if c.kind == "mapped" then
+              im.Text(ctx, line[c.key] or "")
+            end
           end
         end
       end
@@ -511,8 +522,17 @@ local function DrawTable(height)
     im.TextDisabled(ctx, lines and "No script lines survive the current filters."
                                or  "Choose the Filename and Line Text columns above.")
   end
+end
 
+local function DrawTable(height)
+  local flags = im.TableFlags_Borders | im.TableFlags_Resizable
+              | im.TableFlags_ScrollY | im.TableFlags_RowBg
+  if not im.BeginTable(ctx, "script_preview", #COLUMNS, flags, 0, height) then
+    return
+  end
+  local ok, err = pcall(DrawTableBody)
   im.EndTable(ctx)
+  if not ok then state.message = tostring(err) end
 end
 
 -- Persist per-.rpp: CSV path, the inline layout, and the selected preset name
