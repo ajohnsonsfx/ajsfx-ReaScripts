@@ -345,38 +345,65 @@ local function MarkDirty()
   state.layout_name  = ""
 end
 
--- One role dropdown. Options are the header columns; optional roles lead with
--- (none). Editing marks the layout unsaved and rebuilds the character list when
--- the speaker column moves. Combo items are the double-null-terminated form with
--- a 0-based index, so header lookups add 1 (and subtract the (none) offset).
-local function RoleCombo(role, optional)
-  local items, base = {}, 0
-  if optional then items[1], base = "(none)", 1 end
-  for _, h in ipairs(state.header) do items[#items + 1] = h end
+-- One column selector. The label lives inside the control as the preview text,
+-- so the table header does not need a separate label column. Options are the
+-- header columns; optional roles lead with (none). Editing marks the layout
+-- unsaved and rebuilds the character list when the speaker column moves.
+local function RoleCombo(role, optional, width)
+  local mapped  = state.mapping[role]
+  local preview = mapped or (optional and "(none)" or "Column…")
 
-  local cur = optional and 0 or -1
-  local mapped = state.mapping[role]
-  if mapped then
-    for i, h in ipairs(state.header) do
-      if h == mapped then cur = (i - 1) + base; break end
+  im.SetNextItemWidth(ctx, width or im.GetContentRegionAvail(ctx))
+  if im.BeginCombo(ctx, "##" .. role .. "_col", preview) then
+    if optional then
+      if im.Selectable(ctx, "(none)", mapped == nil) and mapped ~= nil then
+        state.mapping[role] = nil
+        MarkDirty()
+        state.preview_dirty = true
+        if role == "speaker" then RebuildDistinct() end
+      end
+    end
+    for _, h in ipairs(state.header or {}) do
+      if im.Selectable(ctx, h, h == mapped) and h ~= mapped then
+        state.mapping[role] = h
+        MarkDirty()
+        state.preview_dirty = true
+        if role == "speaker" then RebuildDistinct() end
+      end
+    end
+    im.EndCombo(ctx)
+  end
+end
+
+-- The "which character" selector, drawn beside the character column selector.
+-- Per-run only: it is not saved into a layout preset and does not mark dirty.
+local function CharacterCombo(width)
+  local has = state.distinct and #state.distinct > 0
+  local preview = "(all characters)"
+  if has and state.character then
+    for _, d in ipairs(state.distinct) do
+      if d.key == state.character then preview = d.display; break end
     end
   end
 
-  local label = ROLE_LABEL[role] .. (optional and "" or " *")
-  local cch, sel = im.Combo(ctx, label, cur, table.concat(items, "\0") .. "\0\0")
-  if cch and sel ~= cur then
-    local newcol
-    if optional and sel == 0 then
-      newcol = nil
-    else
-      newcol = state.header[sel - base + 1]
+  if not has then im.BeginDisabled(ctx) end
+  im.SetNextItemWidth(ctx, width or im.GetContentRegionAvail(ctx))
+  if im.BeginCombo(ctx, "##character", preview) then
+    if im.Selectable(ctx, "(all characters)", state.character == nil)
+       and state.character ~= nil then
+      state.character = nil
+      state.preview_dirty = true
     end
-    if state.mapping[role] ~= newcol then
-      state.mapping[role] = newcol
-      MarkDirty()
-      if role == "speaker" then RebuildDistinct() end
+    for _, d in ipairs(state.distinct or {}) do
+      if im.Selectable(ctx, d.display, d.key == state.character)
+         and d.key ~= state.character then
+        state.character = d.key
+        state.preview_dirty = true
+      end
     end
+    im.EndCombo(ctx)
   end
+  if not has then im.EndDisabled(ctx) end
 end
 
 -- Persist per-.rpp: CSV path, the inline layout, and the selected preset name
