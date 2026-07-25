@@ -5,6 +5,15 @@
 `line_id` requirement, adds character canonicalization, robust preset storage, overwrite
 confirmation, explicit removal of the old free-text filters, and the dialog lifecycle.
 
+> **Post-0.2 amendment (2026-07-23, after in-REAPER testing):** the mapping is simplified
+> to just three roles — **Character** (optional), **Filename** (required), **Line Text**
+> (required). The **LineID** and **Type** columns are removed: LineID was never used by the
+> matcher, and the **Filename** is now the line's identity (repeated takes group by it, and
+> `AssignNames`/`BuildReport` key off it). The Type column and its future timeline-grouping
+> TODO are dropped for now. Where sections below say `line_id` is required or `type` is
+> mapped, read this amendment instead. (A separate fix in the same change hardens
+> `ApplyPlan` against zero-length spans — see `vo.MIN_SPLIT_LENGTH`.)
+
 Move CSV handling out of global Settings and into the **ajsfx VO ScriptMatch** run
 dialog, where it belongs: a game project's CSV format is consistent across many REAPER
 sessions but differs between games. Replace hand-typed column names with **header-driven

@@ -1,7 +1,7 @@
 -- @description ajsfx VO Shared Library
 -- @author ajsfx
--- @version 0.3
--- @changelog CSV layout presets, character canonicalization/filter, per-character track routing
+-- @version 0.4
+-- @changelog Guard ApplyPlan against degenerate zero-length spans (a boundary split no-op was moving a whole item's tail, orphaning later spans); simplify CSV columns to Character/Filename/Line Text with Filename as the line identity
 -- @noindex
 -- @about Shared logic for ajsfx VO ScriptMatch.
 --        Split into a pure layer (parsing, normalization, matching, naming —
@@ -97,15 +97,16 @@ end
 
 -- Column mapping is fully configurable; nothing about the CSV shape is hardcoded
 -- beyond which of our fields are required to do the job at all.
-vo.REQUIRED_COLUMNS = { "line_id", "text", "asset" }
-vo.OPTIONAL_COLUMNS = { "speaker", "type" }
+-- The asset (Filename) doubles as the line's identity: repeated takes share it,
+-- so grouping and take-numbering key off it (see AssignNames). Text is the words
+-- to match. Character is optional — absent, everything routes to plain tracks.
+vo.REQUIRED_COLUMNS = { "asset", "text" }
+vo.OPTIONAL_COLUMNS = { "speaker" }
 
 vo.DEFAULT_COLUMN_MAPPING = {
-  line_id = "LineID",
-  text    = "Text",
-  asset   = "AudioAsset",
-  speaker = "Speaker",
-  type    = "Type",
+  text    = "Line Text",
+  asset   = "Filename",
+  speaker = "Character",
 }
 
 -- Distinct character values, de-duplicated by case-insensitive key (first-seen
@@ -134,11 +135,9 @@ end
 -- Per-role header aliases (folded). Role sets are disjoint so a header word
 -- can only claim one role.
 vo.ROLE_ALIASES = {
-  line_id = { "lineid", "line_id", "id", "cue" },
-  text    = { "text", "line", "dialogue", "vo" },
-  asset   = { "audioasset", "filename", "asset", "file", "wav", "output" },
-  speaker = { "speaker", "character", "char", "actor" },
-  type    = { "type", "category", "kind" },
+  text    = { "text", "line text", "line_text", "linetext", "line", "dialogue", "vo" },
+  asset   = { "filename", "file name", "audioasset", "asset", "file", "wav", "output" },
+  speaker = { "character", "speaker", "char", "actor" },
 }
 
 -- Best-guess role -> header column name by folded alias match. Unmatched omitted.
@@ -149,7 +148,7 @@ function vo.AutoDetectMapping(header)
     if by_alias[f] == nil then by_alias[f] = h end
   end
   local mapping = {}
-  for _, role in ipairs({ "line_id", "text", "asset", "speaker", "type" }) do
+  for _, role in ipairs({ "asset", "text", "speaker" }) do
     for _, alias in ipairs(vo.ROLE_ALIASES[role]) do
       if by_alias[alias] then mapping[role] = by_alias[alias]; break end
     end
@@ -184,7 +183,7 @@ end
 function vo.SerializeLayout(layout)
   layout = layout or {}
   local lines = {}
-  for _, role in ipairs({ "line_id", "text", "asset", "speaker", "type" }) do
+  for _, role in ipairs({ "asset", "text", "speaker" }) do
     local col = layout.mapping and layout.mapping[role]
     if col and col ~= "" then lines[#lines + 1] = role .. "\t" .. col end
   end
@@ -253,9 +252,9 @@ end
 vo.DEFAULT_SKIP_VALUES = { "TO RECORD" }
 
 -- Turn data rows (header already removed) into script line records.
--- filters: { skip_values = {...}, speaker = "NPC", type = "Barks" }
--- Speaker/Type filters are inert when the corresponding column is unmapped.
--- Returns: array of { line_id, text, asset, speaker, type, row }
+-- filters: { skip_values = {...}, speakers = { folded_key = true }, canonicalize }
+-- The character filter is inert when no character column is mapped.
+-- Returns: array of { text, asset, speaker, row }
 function vo.BuildScriptLines(rows, cols, filters)
   filters = filters or {}
 
@@ -266,14 +265,11 @@ function vo.BuildScriptLines(rows, cols, filters)
 
   local speakers  = filters.speakers                 -- folded-key set, or nil = all
   local canon     = filters.canonicalize or {}
-  local want_type = filters.type and fold(filters.type) or nil
-  if want_type == "" then want_type = nil end
 
   local lines = {}
   for i, row in ipairs(rows or {}) do
     local text    = trim(row[cols.text])
     local asset   = trim(row[cols.asset])
-    local ltype   = cols.type and trim(row[cols.type]) or nil
 
     local speaker_raw = cols.speaker and trim(row[cols.speaker]) or nil
     local speaker_key = speaker_raw and fold(speaker_raw) or nil
@@ -287,15 +283,12 @@ function vo.BuildScriptLines(rows, cols, filters)
     if keep and speakers and cols.speaker then
       keep = (speaker_key ~= nil) and speakers[speaker_key] == true
     end
-    if keep and want_type and ltype then keep = fold(ltype) == want_type end
 
     if keep then
       lines[#lines + 1] = {
-        line_id = trim(row[cols.line_id]),
         text    = text,
         asset   = asset,
         speaker = speaker,
-        type    = ltype,
         row     = i,
       }
     end
@@ -502,6 +495,12 @@ vo.DEFAULTS = {
   max_name_length         = 96,
 }
 
+-- The destination of a span that is NOT pulled off the source track (SPEC.md
+-- §4). It deliberately has no entry in ApplyPlan's dest_names: ApplyPlan skips
+-- these spans outright, so the audio is never split, moved or renamed. It still
+-- appears in the report, which is where unmatched audio gets flagged now.
+vo.DEST_IN_PLACE = "source"
+
 -- Read a config value, falling back to the documented default.
 function vo.Opt(cfg, key)
   local v = cfg and cfg[key]
@@ -633,7 +632,7 @@ end
 -- Every occurrence of a line's anchor token proposes a window starting at
 -- `hit_position - token_offset_within_line`; windows of ±window_slack around the
 -- line length are scored and the best kept.
--- Returns: array of { i0, i1, start, stop, score, margin, line_idx, line_id, asset }
+-- Returns: array of { i0, i1, start, stop, score, margin, line_idx, asset, character }
 function vo.FindCandidates(word_tokens, lines, index, cfg)
   local slack  = vo.Opt(cfg, "window_slack")
   local floor_ = vo.Opt(cfg, "review_floor")
@@ -695,7 +694,6 @@ function vo.FindCandidates(word_tokens, lines, index, cfg)
               stop     = word_tokens[i1].t1,
               score    = best_score,
               line_idx  = line_idx,
-              line_id   = lines[line_idx].line_id,
               asset     = lines[line_idx].asset,
               character = lines[line_idx].speaker,
             }
@@ -903,8 +901,9 @@ end
 -- Pure layer: routing and naming
 --------------------------------
 
--- Group repeated takes of a line, number them chronologically, then route and
--- name every span according to the three per-session toggles.
+-- Group repeated takes of a line (keyed by the Filename/asset, which is the
+-- line's identity), number them chronologically, then route and name every span
+-- according to the three per-session toggles.
 -- Only `match` spans are numbered: a review clip is not a delivered take, so
 -- counting it would leave gaps in the delivered take numbers.
 -- Mutates and returns `spans` (adds take_index, primary, dest, name).
@@ -919,19 +918,19 @@ function vo.AssignNames(spans, cfg)
 
   local groups, order = {}, {}
   for _, s in ipairs(spans) do
-    if s.kind == "match" and s.line_id then
-      local g = groups[s.line_id]
+    if s.kind == "match" and s.asset then
+      local g = groups[s.asset]
       if not g then
         g = {}
-        groups[s.line_id] = g
-        order[#order + 1] = s.line_id
+        groups[s.asset] = g
+        order[#order + 1] = s.asset
       end
       g[#g + 1] = s
     end
   end
 
-  for _, line_id in ipairs(order) do
-    local g = groups[line_id]
+  for _, asset in ipairs(order) do
+    local g = groups[asset]
     table.sort(g, function(a, b) return a.start < b.start end)
     for i, s in ipairs(g) do s.take_index = i end
     local primary = (primary_take == "first") and g[1] or g[#g]
@@ -953,7 +952,12 @@ function vo.AssignNames(spans, cfg)
         string.format("%s%s_s%.2f", review_prefix, s.asset or "", s.score or 0), max_len)
 
     else
-      s.dest = "review"
+      -- Unmatched audio (slates, chatter, false starts) is left exactly where it
+      -- was recorded. The name below is NOT applied to a take — nothing is cut —
+      -- it is the label for this span's row in the report, which is the only
+      -- place unmatched audio is flagged. Keep it: it is what makes the
+      -- unmatched_prefix / unmatched_snippet_words settings mean anything.
+      s.dest = vo.DEST_IN_PLACE
       local words = {}
       for w in tostring(s.transcript or ""):gmatch("%S+") do
         words[#words + 1] = w
@@ -1203,29 +1207,30 @@ function vo.FormatCSVRow(fields)
 end
 
 vo.REPORT_HEADER = {
-  "start", "stop", "kind", "LineID", "AudioAsset", "score", "margin",
+  "start", "stop", "kind", "Filename", "character", "score", "margin",
   "take_index", "destination", "name", "transcript", "script_text", "clamped",
 }
 
 -- Build the run report: one row per span, then a trailing section listing
 -- script lines that received no match at all — the "did we actually record
--- everything?" check. A review-only line still counts as unrecorded.
+-- everything?" check. A review-only line still counts as unrecorded. Lines are
+-- keyed by their Filename (the line's identity).
 function vo.BuildReport(plan, lines)
-  local by_id = {}
-  for _, l in ipairs(lines or {}) do by_id[l.line_id] = l end
+  local by_asset = {}
+  for _, l in ipairs(lines or {}) do by_asset[l.asset] = l end
 
   local matched = {}
   local out = { vo.FormatCSVRow(vo.REPORT_HEADER) }
 
   for _, s in ipairs(plan or {}) do
-    if s.kind == "match" and s.line_id then matched[s.line_id] = true end
-    local line = s.line_id and by_id[s.line_id] or nil
+    if s.kind == "match" and s.asset then matched[s.asset] = true end
+    local line = s.asset and by_asset[s.asset] or nil
     out[#out + 1] = vo.FormatCSVRow({
       string.format("%.3f", s.start or 0),
       string.format("%.3f", s.stop or 0),
       s.kind or "",
-      s.line_id or "",
       s.asset or "",
+      s.character or "",
       s.score  and string.format("%.4f", s.score)  or "",
       s.margin and string.format("%.4f", s.margin) or "",
       s.take_index and tostring(s.take_index) or "",
@@ -1239,10 +1244,10 @@ function vo.BuildReport(plan, lines)
 
   out[#out + 1] = ""
   out[#out + 1] = vo.FormatCSVRow({ "SCRIPT LINES WITH NO MATCH" })
-  out[#out + 1] = vo.FormatCSVRow({ "LineID", "AudioAsset", "Text" })
+  out[#out + 1] = vo.FormatCSVRow({ "Filename", "Character", "Text" })
   for _, l in ipairs(lines or {}) do
-    if not matched[l.line_id] then
-      out[#out + 1] = vo.FormatCSVRow({ l.line_id, l.asset, l.text })
+    if not matched[l.asset] then
+      out[#out + 1] = vo.FormatCSVRow({ l.asset, l.speaker or "", l.text })
     end
   end
 
@@ -2090,9 +2095,21 @@ local function ItemContaining(track, time)
   return nil
 end
 
--- Split the session and move each span to its destination track, named.
+-- A span shorter than this is not a cuttable clip. It matters beyond tidiness:
+-- ApplyPlan splits at span.start and again at span.stop, but REAPER's
+-- SplitMediaItem is a no-op when the split position lands on the item's own
+-- edge. A span with stop == start therefore leaves the second split undone, so
+-- `piece` is the WHOLE remainder of the item — and moving it sweeps every later
+-- span's audio onto one track, orphaning the rest of the session. Degenerate
+-- spans (a zero-duration recognizer word, or a span neighbour-clamped to nil
+-- width) are skipped and reported rather than allowed to corrupt the take.
+vo.MIN_SPLIT_LENGTH = 0.001  -- seconds
+
+-- Split the session and move each span to its destination track, named. Spans
+-- destined for vo.DEST_IN_PLACE (unmatched audio) are left untouched instead.
 -- Splitting rather than copying is deliberate (SPEC.md §4): with the pieces
--- physically removed it is obvious what has been pulled and what has not.
+-- physically removed it is obvious what has been pulled and what has not — and
+-- what stays behind on the source track is precisely what wasn't matched.
 -- Caller wraps this in core.Transaction so the whole run is one undo step.
 -- UNVERIFIED outside REAPER — see SPEC.md §10.
 -- Returns: applied count, array of failure strings.
@@ -2108,12 +2125,25 @@ function vo.ApplyPlan(plan, cfg, source_track)
   local failures = {}
 
   for _, span in ipairs(plan) do
+    local length = (span.stop or 0) - (span.start or 0)
     local item = ItemContaining(source_track, span.start)
-    if not item then
+    if span.dest == vo.DEST_IN_PLACE then
+      -- Left exactly as recorded: not split, not moved, not renamed. Because the
+      -- splits below happen at span.start AND span.stop, skipping the span means
+      -- neither cut is made and the audio stays welded into the surrounding
+      -- source item. Not a failure, and not counted as applied. Checked first so
+      -- a degenerate unmatched span can't report a spurious "too short to cut".
+
+    elseif length < vo.MIN_SPLIT_LENGTH then
+      failures[#failures + 1] = string.format(
+        "%s: span too short to cut (%.3fs at %.3fs) — skipped",
+        span.name or "(unnamed)", length, span.start or 0)
+    elseif not item then
       failures[#failures + 1] =
         string.format("%s: no item at %.3fs", span.name or "(unnamed)", span.start)
     else
-      -- Split twice: the middle piece is the span.
+      -- Split twice: the middle piece is the span. Guarded above so span.stop is
+      -- strictly greater than span.start, keeping the second split real.
       local right = r.SplitMediaItem(item, span.start)
       local piece = right or item
       r.SplitMediaItem(piece, span.stop)

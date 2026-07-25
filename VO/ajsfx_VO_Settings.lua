@@ -1,7 +1,7 @@
 -- @description ajsfx VO Settings
 -- @author ajsfx
--- @version 0.3
--- @changelog Move CSV column mapping/skip out to ScriptMatch; keep substitutions
+-- @version 0.4
+-- @changelog Note that the unmatched prefix now labels report rows only, since unmatched audio stays on the source track
 -- @noindex
 -- @about Settings panel for ajsfx VO ScriptMatch. Configure the speech backend,
 --        matching thresholds, destination tracks, and the substitution table.
@@ -348,6 +348,9 @@ local function DrawOutput()
   im.Spacing(ctx)
   changed, cfg.review_prefix    = im.InputText(ctx, "Review prefix",    cfg.review_prefix)
   changed, cfg.unmatched_prefix = im.InputText(ctx, "Unmatched prefix", cfg.unmatched_prefix)
+  im.TextDisabled(ctx, "Unmatched audio is left untouched on the source track, so the\n" ..
+                       "unmatched prefix labels its rows in the report rather than\n" ..
+                       "naming a clip.")
   im.Spacing(ctx)
   changed, cfg.create_regions = im.Checkbox(ctx, "Create regions over Selects clips", cfg.create_regions)
   im.TextDisabled(ctx, "For Region Render Matrix delivery. Off by default.")

@@ -1,12 +1,13 @@
 -- @description ajsfx VO ScriptMatch
 -- @author ajsfx
--- @version 0.4
--- @changelog Move CSV mapping/filtering into ScriptMatch: header-driven dropdowns, named layout presets, multi-select character filter, per-character track routing
+-- @version 0.6
+-- @changelog Unmatched audio (slates, chatter, false starts) is now left untouched on the source track instead of being cut and moved to Review; it is still listed in the report
 -- @about Cut a recorded VO session into one clip per script line and name each
 --        clip with its delivery asset name. Reads a CSV script, transcribes the
 --        selected items locally with whisper.cpp, matches spoken spans against
 --        the script, and routes the results to Selects / Alts / Review tracks.
---        Low-confidence and unmatched audio is flagged, never guessed.
+--        Low-confidence matches are flagged for review, never guessed. Unmatched
+--        audio is left untouched on the source track and flagged in the report.
 --        Configure the backend in "ajsfx VO Settings". See VO/SPEC.md.
 -- @provides
 --   [main] .
@@ -156,14 +157,12 @@ end
 -- Layout / CSV dialog helpers
 -- -----------------------------------------------------------------------
 
-local ALL_ROLES = { "line_id", "text", "asset", "speaker", "type" }
+local ALL_ROLES = { "asset", "text", "speaker" }
 
 local ROLE_LABEL = {
-  line_id = "LineID",
-  text    = "Text",
-  asset   = "Filename/AudioAsset",
+  asset   = "Filename",
+  text    = "Line Text",
   speaker = "Character",
-  type    = "Type",
 }
 
 -- Skip-tokens box -> trimmed, non-empty token list (mirrors Settings' Apply()).
@@ -394,8 +393,9 @@ local function Finish(plan, lines)
   local counts  = { match = 0, review = 0, unmatched = 0 }
   for _, span in ipairs(plan) do counts[span.kind] = (counts[span.kind] or 0) + 1 end
 
-  summary[#summary + 1] = string.format("%d matched, %d for review, %d unmatched.",
-                                        counts.match, counts.review, counts.unmatched)
+  summary[#summary + 1] = string.format(
+    "%d matched, %d for review, %d unmatched (left untouched on the source track).",
+    counts.match, counts.review, counts.unmatched)
   summary[#summary + 1] = string.format("%d clips cut and named.", applied)
   if #skipped > 0 then
     summary[#summary + 1] = "\nItems skipped:\n" .. table.concat(skipped, "\n")
@@ -600,11 +600,9 @@ local function loop()
       if dis_del then im.EndDisabled(ctx) end
 
       im.Spacing(ctx)
-      RoleCombo("line_id", false)
-      RoleCombo("text",    false)
-      RoleCombo("asset",   false)
-      RoleCombo("speaker", true)
-      RoleCombo("type",    true)
+      RoleCombo("speaker", true)   -- Character (optional)
+      RoleCombo("asset",   false)  -- Filename (required, and the line's identity)
+      RoleCombo("text",    false)  -- Line Text (required)
 
       im.Spacing(ctx)
       im.TextDisabled(ctx, "Skip tokens — one per line. A row whose Filename cell\n" ..
@@ -654,7 +652,7 @@ local function loop()
     elseif state.header_error ~= "" then
       run_error = state.header_error
     else
-      for _, role in ipairs({ "line_id", "text", "asset" }) do
+      for _, role in ipairs({ "asset", "text" }) do
         if not state.mapping[role] then
           run_error = "Map the required column: " .. ROLE_LABEL[role]
           break

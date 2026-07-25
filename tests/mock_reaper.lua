@@ -32,7 +32,13 @@ function mock.reset()
             return nil
         end,
         GetMediaTrackInfo_Value = function(track, key)
-            if not track or not track.info then return 0 end
+            if not track then return 0 end
+            -- IP_TRACKNUMBER is the track's 1-based position in the project.
+            if key == "IP_TRACKNUMBER" then
+                for i, t in ipairs(mock.tracks) do if t == track then return i end end
+                return 0
+            end
+            if not track.info then return 0 end
             return track.info[key] or 0
         end,
         SetMediaTrackInfo_Value = function(track, key, val)
@@ -42,6 +48,11 @@ function mock.reset()
             end
         end,
         GetSetMediaTrackInfo_String = function(track, key, val, set)
+            -- Track name get/set, used by EnsureTrackBelow.
+            if track and key == "P_NAME" then
+                if set then track.name = val; return true end
+                return true, track.name or ""
+            end
             if track and track.razor then
                 return true, track.razor
             end
@@ -103,6 +114,59 @@ function mock.reset()
                 return source.norm_gain
             end
             return 1.0 -- unity gain by default
+        end,
+
+        -- Item take name (used by ApplyPlan to name cut clips)
+        GetSetMediaItemTakeInfo_String = function(take, key, val, set)
+            if take then
+                if set then take.name = val; return true end
+                return true, take.name or ""
+            end
+            return false, ""
+        end,
+        GetMediaItem_Track = function(item) return item and item.track or nil end,
+
+        -- Split/move, modelled on REAPER's real behaviour so ApplyPlan can be
+        -- unit-tested. SplitMediaItem returns NULL when the position is on or
+        -- outside the item's bounds (the boundary no-op that a zero-length span
+        -- exploited to move a whole item instead of a slice).
+        SplitMediaItem = function(item, pos)
+            if not item or not item.info then return nil end
+            local p   = item.info.D_POSITION or 0
+            local len = item.info.D_LENGTH or 0
+            local e   = p + len
+            local eps = 1e-9
+            if pos <= p + eps or pos >= e - eps then return nil end
+            item.info.D_LENGTH = pos - p
+            local right = {
+                info  = { D_POSITION = pos, D_LENGTH = e - pos },
+                take  = { info = {}, source = (item.take and item.take.source) or "mock_source" },
+                track = item.track,
+            }
+            local list = item.track and item.track.items
+            if list then
+                for i, it in ipairs(list) do
+                    if it == item then table.insert(list, i + 1, right); break end
+                end
+            end
+            return right
+        end,
+        MoveMediaItemToTrack = function(item, track)
+            if not item or not track then return false end
+            local from = item.track and item.track.items
+            if from then
+                for i, it in ipairs(from) do
+                    if it == item then table.remove(from, i); break end
+                end
+            end
+            if not track.items then track.items = {} end
+            track.items[#track.items + 1] = item
+            item.track = track
+            return true
+        end,
+        InsertTrackAtIndex = function(idx, wantDefaults)
+            -- idx is 0-based; a new empty track lands at that project position.
+            table.insert(mock.tracks, idx + 1, { info = {}, items = {}, name = "" })
         end,
 
         -- Undo / UI
