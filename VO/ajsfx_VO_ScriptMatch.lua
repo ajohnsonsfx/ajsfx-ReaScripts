@@ -1,7 +1,7 @@
 -- @description ajsfx VO ScriptMatch
 -- @author ajsfx
--- @version 0.6
--- @changelog Unmatched audio (slates, chatter, false starts) is now left untouched on the source track instead of being cut and moved to Review; it is still listed in the report
+-- @version 0.7
+-- @changelog Run dialog rebuilt around a live preview table: columns are mapped in the table header, the body shows exactly the lines that will run, and layout and session options collapse out of the way; character filtering is now single-select
 -- @about Cut a recorded VO session into one clip per script line and name each
 --        clip with its delivery asset name. Reads a CSV script, transcribes the
 --        selected items locally with whisper.cpp, matches spoken spans against
@@ -126,6 +126,8 @@ local state = {
   layout_dirty     = false,      -- mapping edited away from the named preset
   character        = nil,        -- folded character key to keep, nil = all (R3)
   distinct         = nil,        -- vo.DistinctCharacters for the mapped speaker column
+  preview          = nil,        -- cached BuildScriptLines result (R4)
+  preview_dirty    = true,       -- recompute the preview on the next frame
   use_alts_track   = cfg.use_alts_track or false,
   suffix_alt_names = cfg.suffix_alt_names or false,
   primary_last     = true,
@@ -163,6 +165,20 @@ local ROLE_LABEL = {
   asset   = "Filename",
   text    = "Line Text",
   speaker = "Character",
+}
+
+-- The preview table is driven by this ordered list, not hardcoded columns.
+-- kind = "mapped" -> a column selector in the header, body values from the CSV.
+-- kind = "computed" is reserved for future columns whose header is a static
+-- label and whose body comes from a render function (Result, Take). Nothing in
+-- the drawing code may assume every column is mapped.
+local COLUMNS = {
+  { key = "speaker", label = "Character", kind = "mapped", role = "speaker",
+    optional = true, filter = "character", init_width = 200 },
+  { key = "asset",   label = "Filename",  kind = "mapped", role = "asset",
+    required = true, init_width = 180 },
+  { key = "text",    label = "Line Text", kind = "mapped", role = "text",
+    required = true, init_width = 280 },
 }
 
 -- Skip-tokens box -> trimmed, non-empty token list (mirrors Settings' Apply()).
@@ -302,7 +318,8 @@ local function LoadCSV(path, restore)
 
   if restore then RestoreLayoutFromMemory() else ReintersectMapping() end
   RebuildDistinct()
-  state.restored = true
+  state.restored      = true
+  state.preview_dirty = true
 end
 
 -- The current dialog mapping + skip tokens as a layout table for save/persist.
@@ -337,6 +354,7 @@ local function LoadPresetByName(name)
   ApplyLayoutTable(layout)
   state.layout_name, state.layout_dirty = name, false
   RebuildDistinct()
+  state.preview_dirty = true
 end
 
 -- Any mapping/skip edit deviates from the named preset -> mark unsaved.
@@ -404,6 +422,97 @@ local function CharacterCombo(width)
     im.EndCombo(ctx)
   end
   if not has then im.EndDisabled(ctx) end
+end
+
+-- Recompute the will-run set. This is the same call Run() makes with the same
+-- arguments, so the table cannot drift from actual run behaviour (R4). Leaves
+-- state.preview nil (not an empty list) when the mapping is incomplete, which
+-- the table distinguishes from "mapped but nothing survives".
+local function RefreshPreview()
+  state.preview_dirty = false
+  state.preview = nil
+  if not state.header or state.header_error ~= "" or not state.rows then return end
+
+  local cols = vo.MapColumns(state.header, state.mapping)
+  if not cols then return end
+
+  local speakers, canon = CharacterFilter()
+  state.preview = vo.BuildScriptLines(state.rows, cols, {
+    skip_values  = ParseSkipLines(state.skip_text),
+    speakers     = speakers,
+    canonicalize = canon,
+  })
+end
+
+-- The table is the interface: columns are mapped in its header, and the body is
+-- the list of lines that will actually run. Rows excluded by a skip token, the
+-- character filter, or an empty required cell are hidden, not dimmed (R4).
+local function DrawTable(height)
+  local flags = im.TableFlags_Borders | im.TableFlags_Resizable
+              | im.TableFlags_ScrollY | im.TableFlags_RowBg
+  if not im.BeginTable(ctx, "script_preview", #COLUMNS, flags, 0, height) then
+    return
+  end
+
+  for _, c in ipairs(COLUMNS) do
+    im.TableSetupColumn(ctx, c.label, im.TableColumnFlags_WidthFixed, c.init_width)
+  end
+  im.TableSetupScrollFreeze(ctx, 0, 2)
+
+  -- Header row 1: static labels. A required column that is unmapped shows its
+  -- label in the warning colour, so what blocks the run is visible in place.
+  im.TableNextRow(ctx, im.TableRowFlags_Headers)
+  for i, c in ipairs(COLUMNS) do
+    im.TableSetColumnIndex(ctx, i - 1)
+    if c.required and not state.mapping[c.role] then
+      im.TextColored(ctx, 0xDDAA33FF, c.label)
+    else
+      im.Text(ctx, c.label)
+    end
+  end
+
+  -- Header row 2: the selectors. The Character cell holds two combos side by
+  -- side so its header is no taller than the others.
+  im.TableNextRow(ctx)
+  for i, c in ipairs(COLUMNS) do
+    im.TableSetColumnIndex(ctx, i - 1)
+    if c.kind == "mapped" then
+      if c.filter == "character" then
+        local half = math.max(60, (im.GetContentRegionAvail(ctx) - 8) / 2)
+        RoleCombo(c.role, c.optional, half)
+        im.SameLine(ctx)
+        CharacterCombo(half)
+      else
+        RoleCombo(c.role, c.optional)
+      end
+    end
+  end
+
+  local lines = state.preview
+  if lines and #lines > 0 then
+    local clipper = im.CreateListClipper(ctx)
+    im.ListClipper_Begin(clipper, #lines)
+    while im.ListClipper_Step(clipper) do
+      local first, last = im.ListClipper_GetDisplayRange(clipper)
+      for n = first, last - 1 do
+        local line = lines[n + 1]
+        im.TableNextRow(ctx)
+        for i, c in ipairs(COLUMNS) do
+          im.TableSetColumnIndex(ctx, i - 1)
+          if c.kind == "mapped" then
+            im.Text(ctx, line[c.key] or "")
+          end
+        end
+      end
+    end
+  else
+    im.TableNextRow(ctx)
+    im.TableSetColumnIndex(ctx, 0)
+    im.TextDisabled(ctx, lines and "No script lines survive the current filters."
+                               or  "Choose the Filename and Line Text columns above.")
+  end
+
+  im.EndTable(ctx)
 end
 
 -- Persist per-.rpp: CSV path, the inline layout, and the selected preset name
@@ -542,7 +651,7 @@ local function loop()
     ctx = im.CreateContext('VO ScriptMatch')
   end
 
-  im.SetNextWindowSize(ctx, 520, 560, im.Cond_FirstUseEver)
+  im.SetNextWindowSize(ctx, 760, 720, im.Cond_FirstUseEver)
   local visible, open = im.Begin(ctx, 'ajsfx VO ScriptMatch', true)
 
   local pressed_run = false
@@ -565,72 +674,71 @@ local function loop()
     end
 
     if state.header then
-      -- Layout -----------------------------------------------------------
+      -- Layout & presets ---------------------------------------------------
       im.Spacing(ctx)
-      im.SeparatorText(ctx, "Layout")
-
-      local preset_names = vo.ListLayoutPresets()
-      local preset_items = { "(unsaved)" }
-      for _, n in ipairs(preset_names) do preset_items[#preset_items + 1] = n end
-      local preset_cur = 0
-      if state.layout_name ~= "" and not state.layout_dirty then
-        for i, n in ipairs(preset_names) do
-          if n == state.layout_name then preset_cur = i; break end
+      if im.CollapsingHeader(ctx, "Layout & presets") then
+        local preset_names = vo.ListLayoutPresets()
+        local preset_items = { "(unsaved)" }
+        for _, n in ipairs(preset_names) do preset_items[#preset_items + 1] = n end
+        local preset_cur = 0
+        if state.layout_name ~= "" and not state.layout_dirty then
+          for i, n in ipairs(preset_names) do
+            if n == state.layout_name then preset_cur = i; break end
+          end
         end
-      end
-      local pchanged, psel = im.Combo(ctx, "Preset", preset_cur,
-        table.concat(preset_items, "\0") .. "\0\0")
-      if pchanged and psel ~= preset_cur then
-        if psel == 0 then
-          state.layout_name, state.layout_dirty = "", true
-        else
-          LoadPresetByName(preset_names[psel])
+        local pchanged, psel = im.Combo(ctx, "Preset", preset_cur,
+          table.concat(preset_items, "\0") .. "\0\0")
+        if pchanged and psel ~= preset_cur then
+          if psel == 0 then
+            state.layout_name, state.layout_dirty = "", true
+          else
+            LoadPresetByName(preset_names[psel])
+          end
         end
-      end
 
-      if im.Button(ctx, "Save") then
-        if state.layout_name ~= "" then
-          DoSave(state.layout_name)
-        else
-          local ok, name = r.GetUserInputs("Save layout preset", 1,
-            "Preset name:,extrawidth=180", "")
+        if im.Button(ctx, "Save") then
+          if state.layout_name ~= "" then
+            DoSave(state.layout_name)
+          else
+            local ok, name = r.GetUserInputs("Save layout preset", 1,
+              "Preset name:,extrawidth=180", "")
+            if ok then DoSave(name) end
+          end
+        end
+        im.SameLine(ctx)
+        if im.Button(ctx, "Save As...") then
+          local ok, name = r.GetUserInputs("Save layout preset as", 1,
+            "Preset name:,extrawidth=180", state.layout_name)
           if ok then DoSave(name) end
         end
-      end
-      im.SameLine(ctx)
-      if im.Button(ctx, "Save As...") then
-        local ok, name = r.GetUserInputs("Save layout preset as", 1,
-          "Preset name:,extrawidth=180", state.layout_name)
-        if ok then DoSave(name) end
-      end
-      im.SameLine(ctx)
-      -- Capture the disabled state BEFORE the button: Delete clears layout_name
-      -- in this same frame, so gating EndDisabled on a re-read would unbalance
-      -- the ImGui stack (see Settings dis_bin/dis_model/dis_check).
-      local dis_del = (state.layout_name == "")
-      if dis_del then im.BeginDisabled(ctx) end
-      if im.Button(ctx, "Delete") then
-        local nm = state.layout_name
-        if nm ~= "" and r.MB("Delete layout preset \"" .. nm .. "\"?",
-                             "Delete layout preset", 4) == 6 then
-          vo.DeleteLayoutPreset(nm)
-          state.layout_name, state.layout_dirty = "", true
-          state.message = "Deleted layout preset \"" .. nm .. "\"."
+        im.SameLine(ctx)
+        -- Capture the disabled state BEFORE the button: Delete clears layout_name
+        -- in this same frame, so gating EndDisabled on a re-read would unbalance
+        -- the ImGui stack (see Settings dis_bin/dis_model/dis_check).
+        local dis_del = (state.layout_name == "")
+        if dis_del then im.BeginDisabled(ctx) end
+        if im.Button(ctx, "Delete") then
+          local nm = state.layout_name
+          if nm ~= "" and r.MB("Delete layout preset \"" .. nm .. "\"?",
+                               "Delete layout preset", 4) == 6 then
+            vo.DeleteLayoutPreset(nm)
+            state.layout_name, state.layout_dirty = "", true
+            state.message = "Deleted layout preset \"" .. nm .. "\"."
+          end
         end
-      end
-      if dis_del then im.EndDisabled(ctx) end
+        if dis_del then im.EndDisabled(ctx) end
 
-      im.Spacing(ctx)
-      RoleCombo("speaker", true)   -- Character (optional)
-      RoleCombo("asset",   false)  -- Filename (required, and the line's identity)
-      RoleCombo("text",    false)  -- Line Text (required)
-
-      im.Spacing(ctx)
-      im.TextDisabled(ctx, "Skip tokens — one per line. A row whose Filename cell\n" ..
-                           "matches is not yet recorded and is excluded.")
-      local skchanged
-      skchanged, state.skip_text = im.InputTextMultiline(ctx, "##skip", state.skip_text, 380, 54)
-      if skchanged then MarkDirty() end
+        -- Skip tokens live with the presets because they are saved into one.
+        im.Spacing(ctx)
+        im.TextDisabled(ctx, "Skip tokens — one per line. A row whose Filename cell\n" ..
+                             "matches is not yet recorded and is excluded.")
+        local skchanged
+        skchanged, state.skip_text = im.InputTextMultiline(ctx, "##skip", state.skip_text, 380, 54)
+        if skchanged then
+          MarkDirty()
+          state.preview_dirty = true
+        end
+      end -- CollapsingHeader "Layout & presets"
 
     elseif state.header_error ~= "" then
       im.Spacing(ctx)
@@ -640,14 +748,30 @@ local function loop()
       im.TextDisabled(ctx, "Choose a script CSV to map its columns.")
     end
 
-    -- This session --------------------------------------------------------
+    -- Session options -----------------------------------------------------
     im.Spacing(ctx)
-    im.SeparatorText(ctx, "This session")
-    local sch
-    sch, state.use_alts_track   = im.Checkbox(ctx, "Send non-primary takes to the Alts track", state.use_alts_track)
-    sch, state.suffix_alt_names = im.Checkbox(ctx, "Suffix non-primary takes (_tk01, _tk02…)", state.suffix_alt_names)
-    sch, state.primary_last     = im.Checkbox(ctx, "The last take of a line is the primary", state.primary_last)
-    im.TextDisabled(ctx, "Uncheck the last box if the first read is usually the keeper.")
+    if im.CollapsingHeader(ctx, "Session options") then
+      local sch
+      sch, state.suffix_alt_names = im.Checkbox(ctx, "Suffix non-primary takes (_tk01, _tk02…)", state.suffix_alt_names)
+      sch, state.use_alts_track   = im.Checkbox(ctx, "Send non-primary takes to the Alts track", state.use_alts_track)
+      sch, state.primary_last     = im.Checkbox(ctx, "The last take of a line is the primary", state.primary_last)
+      im.TextDisabled(ctx, "Uncheck the last box if the first read is usually the keeper.")
+    end
+
+    -- The table is the interface (R4). Columns are mapped in its header and the
+    -- body is exactly the set of lines that will run.
+    if state.preview_dirty then RefreshPreview() end
+
+    if state.header and state.header_error == "" then
+      im.Spacing(ctx)
+      -- Reserve room for the count line and the run button row below it; the
+      -- table takes whatever height is left.
+      local reserve = im.GetFrameHeightWithSpacing(ctx) * 3
+      DrawTable(math.max(120, im.GetContentRegionAvail(ctx) - reserve))
+
+      im.TextDisabled(ctx, string.format("%d of %d rows will run.",
+        state.preview and #state.preview or 0, state.rows and #state.rows or 0))
+    end
 
     im.Spacing(ctx)
     im.Separator(ctx)
