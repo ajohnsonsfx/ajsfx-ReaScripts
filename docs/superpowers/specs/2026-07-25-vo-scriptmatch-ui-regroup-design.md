@@ -14,9 +14,9 @@ and character filter is never shown at all.
 
 ## Goal
 
-Make the script table the interface. Columns are mapped *in the table header*, the
-table body shows the real CSV content, and rows excluded by the filters are visibly
-excluded rather than silently absent. Everything else collapses out of the way.
+Make the script table the interface. Columns are mapped *in the table header*, and the
+table body is the list of lines that will actually run — the real CSV content, with the
+filters already applied. Everything else collapses out of the way.
 
 ## Layout
 
@@ -30,16 +30,14 @@ Script CSV  [_______________________________________] [Browse]
 ┌ Character ─────────────────┬ Filename ────────┬ Line Text ──────────────┐
 │ [Column ▾] [Character ▾]   │ [Column ▾]       │ [Column ▾]              │
 ├────────────────────────────┼──────────────────┼─────────────────────────┤
-│ NARRATOR                   │ vo_nar_open_01   │ The station had been…   │
 │ RIVA                       │ vo_riva_intro_01 │ We should not have c…   │
 │ RIVA                       │ vo_riva_intro_02 │ Quiet. Something is …   │
-│ GUARD          (dimmed)    │ vo_guard_hail_01 │ Halt. Identify yours…   │
-│ RIVA           (dimmed)    │ TBR              │ Not recorded yet.       │
+│ RIVA                       │ vo_riva_deck_01  │ Seal it. Nobody goes…   │
 │ …                                                                       │
 └─────────────────────────────────────────────────────────────────────────┘
                                        (table fills remaining window height)
 
-128 of 214 lines will run.
+128 of 214 rows will run.
 [Transcribe and cut]   Nothing changes until transcription finishes.
 ```
 
@@ -124,32 +122,35 @@ mark the layout dirty.
 
 ### R4 — Table body
 
-The body shows **every data row** in the CSV, in CSV order, for whichever columns are
-mapped. A column with no mapped CSV column renders empty cells. Cell text is clipped,
-not wrapped, so a long line of dialogue cannot change row height.
+The body shows **only the rows that will be processed**. Excluded rows are hidden, not
+dimmed. Cell text is clipped, not wrapped, so a long line of dialogue cannot change row
+height.
 
-**Excluded rows are shown, dimmed.** A row that will not be processed is drawn in the
-disabled text colour rather than omitted, so the effect of every filter is visible.
-
-The will-run set is derived from the same call `Run()` makes:
+The rows are the return value of the same call `Run()` makes:
 
 ```lua
 local lines = vo.BuildScriptLines(state.rows, cols, { skip_values = …, speakers = …, canonicalize = … })
-local will_run = {}
-for _, ln in ipairs(lines) do will_run[ln.row] = true end
 ```
 
-`BuildScriptLines` already returns the source row index as `row` on every line it
-keeps, so this needs no reimplementation of the filter rules and cannot drift from
-them. A row is dimmed exactly when `will_run[i]` is falsy — whether it was dropped for
-a skip token, the character filter, or an empty required cell.
+which returns `{ text, asset, speaker, row }` per surviving line — exactly the three
+column values the table needs. The preview is not a reimplementation of the filter
+rules and cannot drift from them. Character names shown are the canonicalized forms,
+matching the output.
 
-Body values come from `state.rows` directly, so the table populates as soon as *any*
-column is mapped and gives immediate feedback while mapping. This is why the body is
-not `BuildScriptLines`'s output: that would leave the table empty until both required
-columns are chosen, which is the moment feedback matters most.
+Rows therefore disappear from the table when excluded by a skip token, by the character
+filter, or by an empty Filename or Line Text cell.
 
-Below the table: `N of M lines will run.` — `N` = `#lines`, `M` = `#state.rows`.
+**The header and selector rows are always drawn**, including when the body is empty —
+they are the controls the user needs in order to fill the body. Empty-body states show
+a dimmed message in place of rows:
+
+| State | Message |
+|---|---|
+| A required column is unmapped | `Choose the Filename and Line Text columns above.` |
+| All mapped, nothing survives | `No script lines survive the current filters.` |
+
+Below the table: `N of M rows will run.` — `N` = `#lines`, `M` = `#state.rows`. This is
+the only signal that rows were excluded, since they are no longer visible.
 
 **Sizing.** The table fills the remaining window height (`im.GetContentRegionAvail`
 minus the reserved height of the count line and the run button row below it).
@@ -209,6 +210,17 @@ No change to:
    three table columns and the Character column's two combos. Still user-resizable, and
    `Cond_FirstUseEver` means a remembered size wins.
 
+4. **The table is empty until both required columns are mapped.** `BuildScriptLines`
+   drops rows with an empty Filename or Line Text, so it returns nothing until both are
+   chosen. Accepted deliberately: the selectors and the CSV-derived dropdown contents
+   are the feedback during mapping, and the run is blocked in that state anyway. The
+   empty body carries an instructive message rather than nothing (R4).
+
+5. **Excluded rows are invisible.** Hiding rather than dimming means a skip token that
+   matches more than intended removes rows silently. The `N of M rows will run.` count
+   is the only indication. Accepted: an accurate list of what will run is the more
+   useful default, and the count makes an over-broad filter noticeable.
+
 ## Future work
 
 These are not in scope, but the design above is shaped so they are additive:
@@ -247,12 +259,14 @@ to pass unchanged — this change touches no library function.
 No new unit tests are warranted: the will-run set is `BuildScriptLines`'s output, which
 is already covered in `tests/test_vo.lua`. Verification is manual, in REAPER:
 
-1. Load a CSV with no layout remembered; confirm the table populates and required
-   column headers are warning-coloured until mapped.
-2. Map one column at a time; confirm the body fills in column by column.
-3. Pick a character; confirm every other character's rows dim and the count drops.
-4. Set it back to `(all characters)`; confirm all rows undim.
-5. Type a skip token matching a real Filename cell; confirm those rows dim.
+1. Load a CSV with no layout remembered; confirm the header and selector rows draw, the
+   body shows `Choose the Filename and Line Text columns above.`, and required column
+   headers are warning-coloured until mapped.
+2. Map Filename and Line Text; confirm the body populates on the second selection.
+3. Pick a character; confirm every other character's rows disappear and the count drops.
+4. Set it back to `(all characters)`; confirm all rows return.
+5. Type a skip token matching a real Filename cell; confirm those rows disappear and the
+   count drops by the right amount.
 6. Change the Character column to a different CSV column; confirm the character
    selector repopulates and the selection resets when the old value is absent.
 7. Unmap Line Text; confirm Run is blocked with its existing message.
