@@ -1,7 +1,7 @@
 -- @description ajsfx VO ScriptMatch
 -- @author ajsfx
--- @version 0.7
--- @changelog Run dialog rebuilt around a live preview table: columns are mapped in the table header, the body shows exactly the lines that will run, and layout and session options collapse out of the way; character filtering is now single-select
+-- @version 0.8
+-- @changelog Transcribe and cut are now two buttons in the top right: Transcribe reads the audio and builds the plan without touching the project, and Cut applies it. Changing the CSV, mapping, filters or skip tokens discards a plan built before the change
 -- @about Cut a recorded VO session into one clip per script line and name each
 --        clip with its delivery asset name. Reads a CSV script, transcribes the
 --        selected items locally with whisper.cpp, matches spoken spans against
@@ -128,6 +128,9 @@ local state = {
   distinct         = nil,        -- vo.DistinctCharacters for the mapped speaker column
   preview          = nil,        -- cached BuildScriptLines result (R4)
   preview_dirty    = true,       -- recompute the preview on the next frame
+  plan             = nil,        -- transcribed plan awaiting Cut, nil = none
+  plan_lines       = nil,        -- the script lines that plan was built from
+  status           = "",         -- neutral progress note, distinct from message
   use_alts_track   = cfg.use_alts_track or false,
   suffix_alt_names = cfg.suffix_alt_names or false,
   primary_last     = true,
@@ -431,6 +434,11 @@ end
 local function RefreshPreview()
   state.preview_dirty = false
   state.preview = nil
+  -- Anything that changes the will-run set invalidates a plan built from the
+  -- old one, so a stale Cut can never be applied.
+  state.plan       = nil
+  state.plan_lines = nil
+  state.status     = ""
   if not state.header or state.header_error ~= "" or not state.rows then return end
 
   local cols = vo.MapColumns(state.header, state.mapping)
@@ -536,8 +544,20 @@ end
 -- The run itself
 -- -----------------------------------------------------------------------
 
+-- Session options feed both BuildPlan and ApplyPlan, so they are pushed into
+-- cfg at each step rather than once: a checkbox toggled between Transcribe and
+-- Cut still takes effect on the cut.
+local function ApplyCfg()
+  cfg.use_alts_track   = state.use_alts_track
+  cfg.suffix_alt_names = state.suffix_alt_names
+  cfg.primary_take     = state.primary_last and "last" or "first"
+end
+
+-- The cut half: everything that touches the project. Takes the plan built by
+-- the transcribe half, which has been sitting in state until now.
 local function Finish(plan, lines)
   local applied, failures = 0, {}
+  ApplyCfg()
 
   core.Transaction("VO ScriptMatch", function()
     applied, failures = vo.ApplyPlan(plan, cfg, usable[1].track)
@@ -595,9 +615,7 @@ local function Run()
 
   PersistProjectMemory()
 
-  cfg.use_alts_track   = state.use_alts_track
-  cfg.suffix_alt_names = state.suffix_alt_names
-  cfg.primary_take     = state.primary_last and "last" or "first"
+  ApplyCfg()
 
   -- One transcription per unique source file, however many items use it.
   local seen, sources = {}, {}
@@ -608,7 +626,10 @@ local function Run()
     end
   end
 
-  state.running = true
+  state.plan       = nil
+  state.plan_lines = nil
+  state.status     = ""
+  state.running    = true
 
   vo.TranscribeSources(cfg, sources,
     function(transcripts)
@@ -632,8 +653,15 @@ local function Run()
       local plan = vo.BuildPlan(lines, words, cfg)
       ClampSpansToItems(plan, usable)
 
-      state.running = false
-      Finish(plan, lines)
+      state.running    = false
+      state.plan       = plan
+      state.plan_lines = lines
+
+      local counts = { match = 0, review = 0, unmatched = 0 }
+      for _, span in ipairs(plan) do counts[span.kind] = (counts[span.kind] or 0) + 1 end
+      state.status = string.format(
+        "Transcribed: %d matched, %d for review, %d unmatched. Press Cut to apply.",
+        counts.match, counts.review, counts.unmatched)
     end,
     function()
       state.running = false
@@ -650,6 +678,21 @@ end
 -- Run dialog
 -- -----------------------------------------------------------------------
 
+-- Put the cursor on the current line such that buttons with these labels end
+-- flush with the right edge. ImGui has no right-align, so the width is measured
+-- from the labels and the frame/spacing style values.
+local function RightAlign(labels)
+  local padx    = im.GetStyleVar(ctx, im.StyleVar_FramePadding)
+  local spacing = im.GetStyleVar(ctx, im.StyleVar_ItemSpacing)
+  local total   = 0
+  for i, label in ipairs(labels) do
+    total = total + im.CalcTextSize(ctx, label) + padx * 2
+    if i > 1 then total = total + spacing end
+  end
+  im.SameLine(ctx)
+  im.SetCursorPosX(ctx, im.GetCursorPosX(ctx) + im.GetContentRegionAvail(ctx) - total)
+end
+
 local function loop()
   if state.running then return end -- the transcription window has the floor
 
@@ -660,10 +703,51 @@ local function loop()
   im.SetNextWindowSize(ctx, 760, 720, im.Cond_FirstUseEver)
   local visible, open = im.Begin(ctx, 'ajsfx VO ScriptMatch', true)
 
-  local pressed_run = false
+  local pressed_run, pressed_cut = false, false
 
   if visible then
+    -- Run gating. Computed before the controls it guards because the buttons
+    -- are drawn at the top; a mapping changed in the table below lands one
+    -- frame later, which ImGui redraws immediately anyway.
+    local run_error
+    if not state.header then
+      run_error = (state.header_error ~= "" and state.header_error) or "Load a script CSV."
+    elseif state.header_error ~= "" then
+      run_error = state.header_error
+    else
+      for _, role in ipairs({ "asset", "text" }) do
+        if not state.mapping[role] then
+          run_error = "Map the required column: " .. ROLE_LABEL[role]
+          break
+        end
+      end
+    end
+
     im.TextDisabled(ctx, string.format("%d item(s) selected, %d skipped.", #usable, #skipped))
+
+    -- Transcribe and Cut sit top-right, right-aligned as a pair. Transcribe
+    -- reads audio and builds a plan; nothing in the project changes until Cut.
+    RightAlign({ "Transcribe", "Cut and name" })
+
+    local dis_run = (run_error ~= nil)
+    if dis_run then im.BeginDisabled(ctx) end
+    pressed_run = im.Button(ctx, "Transcribe")
+    if dis_run then im.EndDisabled(ctx) end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Transcribe the selected items and build the cut plan.\n" ..
+                         "Nothing in the project changes.")
+    end
+
+    im.SameLine(ctx)
+    local dis_cut = (state.plan == nil)
+    if dis_cut then im.BeginDisabled(ctx) end
+    pressed_cut = im.Button(ctx, "Cut and name")
+    if dis_cut then im.EndDisabled(ctx) end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, dis_cut and "Transcribe first — there is no plan to apply."
+                                 or  "Split and name the clips from the transcribed plan.")
+    end
+
     im.Spacing(ctx)
 
     -- Script CSV path. A change (typed or browsed) reloads the header + rows;
@@ -779,31 +863,10 @@ local function loop()
         state.preview and #state.preview or 0, state.rows and #state.rows or 0))
     end
 
-    im.Spacing(ctx)
-    im.Separator(ctx)
-    im.Spacing(ctx)
-
-    -- Run is blocked until the CSV is valid and every required role is mapped.
-    local run_error
-    if not state.header then
-      run_error = (state.header_error ~= "" and state.header_error) or "Load a script CSV."
-    elseif state.header_error ~= "" then
-      run_error = state.header_error
-    else
-      for _, role in ipairs({ "asset", "text" }) do
-        if not state.mapping[role] then
-          run_error = "Map the required column: " .. ROLE_LABEL[role]
-          break
-        end
-      end
+    if state.status ~= "" then
+      im.Spacing(ctx)
+      im.TextColored(ctx, 0x66BB66FF, state.status)
     end
-
-    local dis_run = (run_error ~= nil)
-    if dis_run then im.BeginDisabled(ctx) end
-    pressed_run = im.Button(ctx, "Transcribe and cut")
-    if dis_run then im.EndDisabled(ctx) end
-    im.SameLine(ctx)
-    im.TextDisabled(ctx, "Nothing changes until transcription finishes.")
 
     if run_error then
       im.Spacing(ctx)
@@ -819,10 +882,17 @@ local function loop()
   -- Always End after Begin; skipping it corrupts ImGui's push/pop stack.
   im.End(ctx)
 
+  -- Both actions run after End: Finish opens a modal, and Run may hand the
+  -- frame to the transcription window.
   if pressed_run then
     state.message = ""
     Run()
     if state.running then return end -- hand off to the transcription window
+  elseif pressed_cut and state.plan then
+    state.message = ""
+    Finish(state.plan, state.plan_lines)
+    state.plan, state.plan_lines = nil, nil
+    state.status = "Cut applied."
   end
 
   if open then
