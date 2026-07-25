@@ -1,215 +1,249 @@
-# VO ScriptMatch — CSV config UI regroup
+# VO ScriptMatch — spreadsheet-first run dialog
 
 **Date:** 2026-07-25
-**Scope:** `VO/ajsfx_VO_ScriptMatch.lua` run dialog only. Presentation change.
+**Scope:** `VO/ajsfx_VO_ScriptMatch.lua` run dialog. Presentation plus one behavioural
+simplification (single-character filter).
 
 ## Problem
 
-The run dialog stacks all three column dropdowns together under **Layout**, then puts
-the character filter in a separate section far below, and the "suffix non-primary
-takes" option in a third section (**This session**) with unrelated routing options.
-
-A setting is therefore separated from the column it acts on. The user has to look in
-three places to understand one decision, and there is no way to confirm a column
-selection is correct — or see what the filters actually excluded — without opening
-the CSV in another application.
+The run dialog is a stack of form controls. Column mapping, the character filter and
+the filename options each live in a different section, so a setting is separated from
+the column it acts on. Nothing shows what the CSV actually contains, so a wrong column
+choice is invisible until after a transcription run, and the effect of the skip tokens
+and character filter is never shown at all.
 
 ## Goal
 
-1. Group each column dropdown with the settings that act on it.
-2. Show a live preview table of the rows that will actually be processed.
+Make the script table the interface. Columns are mapped *in the table header*, the
+table body shows the real CSV content, and rows excluded by the filters are visibly
+excluded rather than silently absent. Everything else collapses out of the way.
 
 ## Layout
 
 ```
 [N item(s) selected, M skipped]
-Script CSV  [_______________________] [Browse]
+Script CSV  [_______________________________________] [Browse]
 
-── Layout ────────────────────────────────────────────────
-Preset [(unsaved) ▾]   [Save] [Save As...] [Delete]
+▸ Layout & presets
+▸ Session options
 
-── Character ─────────────────────────────────────────────
-[Character Column:  Character            ▾]
-      ┌──────────────────────────────────┐
-      │ ☑ NARRATOR                       │
-      │ ☑ RIVA                           │
-      │ ☐ GUARD                          │
-      └──────────────────────────────────┘
-      Unchecked characters are excluded from this run.
+┌ Character ─────────────────┬ Filename ────────┬ Line Text ──────────────┐
+│ [Column ▾] [Character ▾]   │ [Column ▾]       │ [Column ▾]              │
+├────────────────────────────┼──────────────────┼─────────────────────────┤
+│ NARRATOR                   │ vo_nar_open_01   │ The station had been…   │
+│ RIVA                       │ vo_riva_intro_01 │ We should not have c…   │
+│ RIVA                       │ vo_riva_intro_02 │ Quiet. Something is …   │
+│ GUARD          (dimmed)    │ vo_guard_hail_01 │ Halt. Identify yours…   │
+│ RIVA           (dimmed)    │ TBR              │ Not recorded yet.       │
+│ …                                                                       │
+└─────────────────────────────────────────────────────────────────────────┘
+                                       (table fills remaining window height)
 
-── Filename ──────────────────────────────────────────────
-[Filename Column:  Asset               ▾]
-☐ Suffix non-primary takes (_tk01, _tk02…)
-Skip tokens — one per line. A row whose Filename cell matches
-is not yet recorded and is excluded.
-[________________________]
-
-── Line Text ─────────────────────────────────────────────
-[Line Text Column:  Line                ▾]
-
-── This session ──────────────────────────────────────────
-☐ Send non-primary takes to the Alts track
-☑ The last take of a line is the primary
-Uncheck the last box if the first read is usually the keeper.
-
-── Preview — 128 lines ───────────────────────────────────
-┌ Character ─┬ Filename ──────────┬ Line Text ───────────┐
-│ NARRATOR   │ vo_nar_open_01     │ The station had bee… │
-│ RIVA       │ vo_riva_intro_01   │ We should not have … │
-│ RIVA       │ vo_riva_intro_02   │ Quiet. Something is… │
-│ …                                                      │
-└────────────┴────────────────────┴──────────────────────┘
-                            (fills remaining window height)
-
-──────────────────────────────────────────────────────────
+128 of 214 lines will run.
 [Transcribe and cut]   Nothing changes until transcription finishes.
+```
+
+Expanded, the two collapsing headers contain:
+
+```
+▾ Layout & presets
+  Preset [(unsaved) ▾]   [Save] [Save As...] [Delete]
+  Skip tokens — one per line. A row whose Filename cell matches is not
+  yet recorded and is excluded.
+  [_________________________________]
+
+▾ Session options
+  ☐ Suffix non-primary takes (_tk01, _tk02…)
+  ☐ Send non-primary takes to the Alts track
+  ☑ The last take of a line is the primary
+  Uncheck the last box if the first read is usually the keeper.
 ```
 
 ## Requirements
 
-### R1 — Labels inside the dropdowns
+### R1 — Column descriptor model
 
-Each role dropdown displays its label inside the closed control:
-`Character Column:  <selected column>`, where the selected column is the header name
-or `(none)`. This frees the horizontal space an external ImGui label consumes.
+The table is driven by an ordered descriptor list, not hardcoded columns:
 
-`RoleCombo` is rewritten from `im.Combo` to `im.BeginCombo` /
-`im.Selectable` / `im.EndCombo`, since `im.Combo` derives its closed-state text from
-the selected item and cannot show a composed preview string. The ImGui label becomes
-`##<role>_col` (hidden). Each combo is set to full available width via
-`im.SetNextItemWidth`.
+```lua
+local COLUMNS = {
+  { key = "speaker", label = "Character",
+    kind = "mapped", role = "speaker", optional = true, filter = "character" },
+  { key = "asset",   label = "Filename",
+    kind = "mapped", role = "asset",   required = true },
+  { key = "text",    label = "Line Text",
+    kind = "mapped", role = "text",    required = true },
+}
+```
 
-Required roles (Filename, Line Text) keep a `*` marker in the preview string:
-`Filename Column *:  Asset`. Selection semantics, the `(none)` entry for the optional
-Character role, `MarkDirty` on change, and `RebuildDistinct` when the speaker column
-moves are all unchanged.
+`kind = "mapped"` columns render a column-selector combo in the selector row and take
+their body values from the CSV. The model reserves `kind = "computed"` for columns
+whose header is a static label and whose body is produced by a render function — the
+extension point for the future Result and Take columns (see Future work). Nothing in
+the drawing code may assume all columns are mapped.
 
-### R2 — Section grouping
+### R2 — Table header
 
-Sections in order: **Layout**, **Character**, **Filename**, **Line Text**,
-**This session**, **Preview**.
+Two frozen rows (`im.TableSetupScrollFreeze(ctx, 0, 2)`):
+
+**Row 1 — static labels.** `Character`, `Filename`, `Line Text`, from
+`descriptor.label`. Required columns whose role is unmapped show the label in the
+warning colour, so what is blocking the run is visible in the header itself.
+
+**Row 2 — selectors.** Each mapped column gets a combo listing the CSV header names,
+sized to the table column via `im.SetNextItemWidth`. The Character column's cell holds
+**two combos side by side** on the same line: the column selector, then the character
+selector (R3). No extra row, no taller header.
+
+Combo labels are hidden (`##<key>_col`). The optional Character column's selector leads
+with `(none)`. Changing a selector calls `MarkDirty` and, for the speaker role,
+`RebuildDistinct`, exactly as today.
+
+Table flags: `Borders | Resizable | ScrollY | RowBg`. The Character column is given a
+wider initial width to fit its two combos.
+
+### R3 — Single-character filter
+
+Multi-character selection is removed. Recording sessions put one character per media
+file; a session with two characters is handled by running the script twice.
+
+- `state.excluded` (a set of folded keys) is replaced by `state.character` — a single
+  folded key, or `nil` for "(all)".
+- The character selector combo lists `(all characters)` followed by the display names
+  from `state.distinct`. It is disabled when no character column is mapped.
+- `RebuildDistinct` keeps `state.character` if that character still exists in the new
+  column, and resets it to `nil` if not.
+- In `Run()`, the include-set passed to `BuildScriptLines` is
+  `{ [state.character] = true }` when a character is selected, and `nil` otherwise —
+  a set of one. `vo.BuildScriptLines` is unchanged; so is the rule that the filter is
+  inert when no character column is mapped.
+- The "No characters selected." error path disappears — it is now unreachable.
+
+Character selection stays per-run: it is not saved into layout presets and does not
+mark the layout dirty.
+
+### R4 — Table body
+
+The body shows **every data row** in the CSV, in CSV order, for whichever columns are
+mapped. A column with no mapped CSV column renders empty cells. Cell text is clipped,
+not wrapped, so a long line of dialogue cannot change row height.
+
+**Excluded rows are shown, dimmed.** A row that will not be processed is drawn in the
+disabled text colour rather than omitted, so the effect of every filter is visible.
+
+The will-run set is derived from the same call `Run()` makes:
+
+```lua
+local lines = vo.BuildScriptLines(state.rows, cols, { skip_values = …, speakers = …, canonicalize = … })
+local will_run = {}
+for _, ln in ipairs(lines) do will_run[ln.row] = true end
+```
+
+`BuildScriptLines` already returns the source row index as `row` on every line it
+keeps, so this needs no reimplementation of the filter rules and cannot drift from
+them. A row is dimmed exactly when `will_run[i]` is falsy — whether it was dropped for
+a skip token, the character filter, or an empty required cell.
+
+Body values come from `state.rows` directly, so the table populates as soon as *any*
+column is mapped and gives immediate feedback while mapping. This is why the body is
+not `BuildScriptLines`'s output: that would leave the table empty until both required
+columns are chosen, which is the moment feedback matters most.
+
+Below the table: `N of M lines will run.` — `N` = `#lines`, `M` = `#state.rows`.
+
+**Sizing.** The table fills the remaining window height (`im.GetContentRegionAvail`
+minus the reserved height of the count line and the run button row below it).
+
+**Performance.** `BuildScriptLines` is not called per frame. It is recomputed only when
+an input changes — CSV load, mapping change, skip-text edit, character selection —
+each of which sets `state.preview_dirty`. Row drawing uses `im.CreateListClipper` so
+only visible rows issue draw calls.
+
+### R5 — Collapsed sections
+
+Two `im.CollapsingHeader` sections above the table, both closed by default:
 
 | Section | Contents |
 |---|---|
-| Layout | Preset combo; Save / Save As… / Delete |
-| Character | Character Column combo; bordered scrolling checkbox list (indented beneath the combo); dimmed hint "Unchecked characters are excluded from this run." |
-| Filename | Filename Column combo; `Suffix non-primary takes (_tk01, _tk02…)` checkbox; skip-tokens hint and multiline input |
-| Line Text | Line Text Column combo |
-| This session | `Send non-primary takes to the Alts track`; `The last take of a line is the primary`; existing hint line |
-| Preview | The preview table (R3) |
+| Layout & presets | Preset combo; Save / Save As… / Delete; skip-tokens hint and multiline input |
+| Session options | `Suffix non-primary takes`; `Send non-primary takes to the Alts track`; `The last take of a line is the primary`; existing hint line |
 
-Relocations from today:
+Skip tokens sit with the presets because they are saved *into* a layout preset; the
+Session options are per-run `cfg` values. Both headers stay visible (not hidden) so a
+non-default setting is one click from view.
 
-- **Character filter** moves out of its own `Character filter` section into the
-  Character section; that separator is removed.
-- **Suffix non-primary takes** moves out of `This session` into Filename. It is a
-  filename option.
-- **Skip tokens** move out of the Layout block into Filename. They match against the
-  Filename cell.
+The `Layout`, `Character filter` and `This session` `SeparatorText` sections are
+removed.
 
-The character checkbox list keeps its existing widget and `state.excluded` keying; it
-gains a bordered child window with a fixed height (~4 rows) so a large cast scrolls
-instead of pushing the rest of the dialog down.
+### R6 — Run gating
 
-### R3 — Preview table
-
-A three-column table — **Character**, **Filename**, **Line Text** — showing the rows
-that will actually be processed.
-
-**Source of truth.** The rows are the return value of `vo.BuildScriptLines(state.rows,
-cols, {skip_values = ParseSkipLines(state.skip_text), speakers = …, canonicalize = …})`
-— the same call, with the same arguments, that `Run()` makes. The preview is not a
-reimplementation of the filters; it cannot drift from what the run does. Character
-names shown are therefore the canonicalized forms, matching the output.
-
-Consequences that follow from using that function, and are intended:
-
-- Rows whose Filename cell matches a skip token do not appear.
-- Rows whose character is unchecked do not appear (only once at least one character
-  has been unchecked — the filter is inert until then, per existing behaviour).
-- Rows with an empty Filename or empty Line Text do not appear.
-
-**Header.** The section separator reads `Preview — N lines`, N being the row count.
-When N is 0 the table is replaced by dimmed `No script lines survive the current
-filters.` — the same condition that blocks the run with that message.
-
-**Character column.** Rendered empty when no character column is mapped. The column
-is always present so the table shape does not shift.
-
-**Sizing.** The table fills the remaining window height: height is
-`im.GetContentRegionAvail` minus the reserved height of the separator, run button row
-and message lines below it. It scrolls vertically (`TableFlags_ScrollY`) with a frozen
-header row, and has borders and resizable columns
-(`TableFlags_Borders | TableFlags_Resizable`). Cell text is clipped, not wrapped, so a
-long line of dialogue cannot alter row height.
-
-**Performance.** `BuildScriptLines` is not called per frame. The result is cached and
-recomputed only when an input changes: CSV load, mapping change, skip-text edit, or a
-character checkbox toggle. Each of those sets `state.preview_dirty = true`; the draw
-code recomputes when dirty and clears the flag. Row drawing uses
-`im.CreateListClipper` so only visible rows issue draw calls, keeping a
-multi-thousand-row CSV responsive.
-
-### R4 — Run button placement
+Unchanged in substance: the run is blocked until the CSV is valid and both required
+roles are mapped, with today's messages. Presentation changes only — the required
+column's header label also turns warning-coloured while unmapped.
 
 The `Transcribe and cut` button, its hint, the run-blocked message and
-`state.message` move **below** the preview table, remaining the last elements in the
-window.
+`state.message` sit below the table, remaining the last elements in the window.
 
-### R5 — Behaviour preserved
+### R7 — Behaviour preserved
 
-No change to any of:
+No change to:
 
-- `state.mapping`, `state.excluded`, `state.distinct`, `state.skip_text` semantics
+- `state.mapping` and `state.skip_text` semantics
 - layout preset save/load/delete, `MarkDirty` on mapping or skip edits
 - `PersistProjectMemory` and SPEC §5.3 restore precedence
-- the run-blocked validation, its messages, and `cfg` assignment on Run
-- `RebuildDistinct` firing when the speaker column moves
-- no library function in `VO/lib/ajsfx_vo.lua` is modified
-
-Toggling a character checkbox still does not mark the layout dirty (character
-exclusions are per-run, not part of a preset) — it only invalidates the preview.
+- `cfg` assignment on Run; matching, transcription and routing behaviour
+- any function in `VO/lib/ajsfx_vo.lua`
 
 ## Accepted consequences
 
-1. **Preview needs both required columns.** `BuildScriptLines` drops rows with an
-   empty Filename or Line Text, so before both required columns are mapped it returns
-   nothing. In that state the preview shows dimmed
-   `Map the Filename and Line Text columns to see a preview.` rather than an empty
-   table. Accepted: the run is blocked in the same state.
+1. **Multi-character runs are no longer possible in one pass.** Deliberate, per R3.
+   A mixed-character session requires two runs. `vo.BuildScriptLines` still accepts an
+   arbitrary include-set, so restoring multi-select later is a UI change only.
 
-2. **Suffix checkbox hidden without a CSV.** The Filename section only renders when
-   `state.header` is set, so `Suffix non-primary takes` disappears when no CSV is
-   loaded, where today it is always visible. Accepted: the run is blocked and the
-   setting has nothing to act on.
+2. **Session options are one click away rather than always visible.** Both headers are
+   collapsed by default. Their settings persist in `cfg` as they do today, so a
+   forgotten checkbox stays in effect unseen. Mitigated by keeping the headers
+   themselves always visible.
 
-3. **Taller default window.** Default size grows from 520×560 to roughly 620×760 to
-   give the preview usable room on first open. The window remains user-resizable and
-   `Cond_FirstUseEver` still means a remembered size wins.
+3. **Wider default window.** Default size grows from 520×560 to roughly 760×720 to fit
+   three table columns and the Character column's two combos. Still user-resizable, and
+   `Cond_FirstUseEver` means a remembered size wins.
+
+## Future work
+
+These are not in scope, but the design above is shaped so they are additive:
+
+1. **Result column** — a `kind = "computed"` column showing per-line match / review /
+   unmatched status after a run.
+2. **Take column** — a computed column whose cell is clickable and moves the edit
+   cursor to that line's primary take without changing play state.
+3. **REAPER-native look** — there is no scriptable native REAPER widget toolkit;
+   Project Bay's controls are C++ and not exposed. The realistic options are staying on
+   ReaImGui and styling it from `reaper.GetThemeColor` to harmonise with the user's
+   theme, or rewriting on a `gfx`-based toolkit such as rtk. This needs its own
+   investigation before any commitment; nothing in this design depends on the answer.
+
+Items 1 and 2 both require the dialog to stay open after the run rather than closing to
+a summary message box. That reshape of `Run` / `Finish` is deliberately deferred.
 
 ## Testing
 
-Existing tests in `tests/` cover `vo.lua` logic, not dialog drawing, and must
-continue to pass unchanged — this change touches no library function.
+Existing tests in `tests/` cover `vo.lua` logic, not dialog drawing, and must continue
+to pass unchanged — this change touches no library function.
 
-No new unit tests are warranted: the preview's correctness is `BuildScriptLines`'s
-correctness, which is already covered in `tests/test_vo.lua`. Verification is manual,
-in REAPER:
+No new unit tests are warranted: the will-run set is `BuildScriptLines`'s output, which
+is already covered in `tests/test_vo.lua`. Verification is manual, in REAPER:
 
-1. Load a CSV; confirm section order, labels inside the combos, and a populated preview.
-2. Uncheck a character; confirm its rows leave the preview and the count updates.
-3. Re-check every character; confirm all rows return (filter inert).
-4. Type a skip token matching a real Filename cell; confirm those rows leave.
-5. Change the Filename column to a wrong one; confirm the preview visibly changes.
-6. Unmap Line Text; confirm the "map the required columns" preview message and that
-   Run is blocked with its existing message.
-7. Load a 1000+ row CSV; confirm the dialog stays responsive while scrolling.
-8. Save a preset, close and reopen the dialog; confirm mapping, skip tokens and
-   preset name restore, and the preview repopulates.
-9. Resize the window taller; confirm the table grows and the run button stays visible.
-
-## Out of scope
-
-- `ajsfx_VO_Settings.lua` — its CSV panel is untouched.
-- Any change to matching, transcription, or routing behaviour.
-- Editing CSV values from the preview table; sorting the preview.
+1. Load a CSV with no layout remembered; confirm the table populates and required
+   column headers are warning-coloured until mapped.
+2. Map one column at a time; confirm the body fills in column by column.
+3. Pick a character; confirm every other character's rows dim and the count drops.
+4. Set it back to `(all characters)`; confirm all rows undim.
+5. Type a skip token matching a real Filename cell; confirm those rows dim.
+6. Change the Character column to a different CSV column; confirm the character
+   selector repopulates and the selection resets when the old value is absent.
+7. Unmap Line Text; confirm Run is blocked with its existing message.
+8. Load a 1000+ row CSV; confirm scrolling stays responsive.
+9. Save a preset, close and reopen; confirm mapping, skip tokens and preset name
+   restore and the table repopulates.
+10. Resize the window taller; confirm the table grows and the run button stays visible.
