@@ -758,6 +758,24 @@ local function MarkDirty()
   state.layout_dirty = true
 end
 
+-- Push/pop bookkeeping for the two ImGui stacks the table body opens that
+-- EndTable does NOT unwind. DrawTableBody runs inside a pcall precisely because
+-- an error between BeginTable and EndTable corrupts ImGui's state for every
+-- later frame -- but an error raised inside a BeginCombo body, or between the
+-- BeginDisabled/EndDisabled pair around one of these combos, leaves the popup
+-- or disabled stack pushed just as permanently. ReaImGui exposes no depth
+-- query, so the depth is counted here and unwound by DrawTable on failure.
+local table_disabled_depth, table_combo_depth = 0, 0
+
+-- Script-side controls are dead while a transcription is in flight. The
+-- callbacks captured the line list at the press; letting the user retarget the
+-- character filter mid-run left the table showing 40 NARRATOR rows next to a
+-- plan built over all 300 lines, with Cut enabled and about to split and name
+-- every character's lines. See the run-lock note at the CSV field in loop().
+local function RunLocked()
+  return state.running == true
+end
+
 -- One column selector. The label lives inside the control as the preview text,
 -- so the table header does not need a separate label column. Options are the
 -- header columns; optional roles lead with (none). Editing marks the layout
@@ -766,8 +784,15 @@ local function RoleCombo(role, optional, width)
   local mapped  = state.mapping[role]
   local preview = mapped or (optional and "(none)" or "Column…")
 
+  -- Captured once so the Begin/End pair cannot straddle a change of state.
+  local locked = RunLocked()
+  if locked then
+    im.BeginDisabled(ctx)
+    table_disabled_depth = table_disabled_depth + 1
+  end
   im.SetNextItemWidth(ctx, width or im.GetContentRegionAvail(ctx))
   if im.BeginCombo(ctx, "##" .. role .. "_col", preview) then
+    table_combo_depth = table_combo_depth + 1
     if optional then
       if im.Selectable(ctx, "(none)", mapped == nil) and mapped ~= nil then
         state.mapping[role] = nil
@@ -784,7 +809,12 @@ local function RoleCombo(role, optional, width)
         if role == "speaker" then RebuildDistinct() end
       end
     end
+    table_combo_depth = table_combo_depth - 1
     im.EndCombo(ctx)
+  end
+  if locked then
+    table_disabled_depth = table_disabled_depth - 1
+    im.EndDisabled(ctx)
   end
 end
 
@@ -799,9 +829,17 @@ local function CharacterCombo(width)
     end
   end
 
-  if not has then im.BeginDisabled(ctx) end
+  -- Disabled with no character column, and equally while a transcription is in
+  -- flight: this combo is the single easiest way to make the table disagree
+  -- with the plan the callback is about to hand Cut.
+  local dis = (not has) or RunLocked()
+  if dis then
+    im.BeginDisabled(ctx)
+    table_disabled_depth = table_disabled_depth + 1
+  end
   im.SetNextItemWidth(ctx, width or im.GetContentRegionAvail(ctx))
   if im.BeginCombo(ctx, "##character", preview) then
+    table_combo_depth = table_combo_depth + 1
     if im.Selectable(ctx, "(all characters)", state.character == nil)
        and state.character ~= nil then
       state.character = nil
@@ -814,9 +852,13 @@ local function CharacterCombo(width)
         state.preview_dirty = true
       end
     end
+    table_combo_depth = table_combo_depth - 1
     im.EndCombo(ctx)
   end
-  if not has then im.EndDisabled(ctx) end
+  if dis then
+    table_disabled_depth = table_disabled_depth - 1
+    im.EndDisabled(ctx)
+  end
 end
 
 -- Reset the whole group of fields that describe a plan/report, in one place,
@@ -969,8 +1011,22 @@ local function DrawTable(height)
     return
   end
   local ok, err = pcall(DrawTableBody)
+  if not ok then
+    -- EndTable does not unwind the popup or disabled stacks, and the pcall
+    -- exists for exactly this class of escape. Unwound INNERMOST FIRST and
+    -- before EndTable: the combos push their popup inside the disabled scope,
+    -- and the whole lot is inside the table.
+    while table_combo_depth > 0 do
+      table_combo_depth = table_combo_depth - 1
+      im.EndCombo(ctx)
+    end
+    while table_disabled_depth > 0 do
+      table_disabled_depth = table_disabled_depth - 1
+      im.EndDisabled(ctx)
+    end
+  end
   im.EndTable(ctx)
-  if not ok then state.message = tostring(err) end
+  if not ok then state.message, state.message_kind = tostring(err), "error" end
 end
 
 -- Persist per-.rpp: CSV path, the inline layout, and the selected preset name
@@ -1354,19 +1410,43 @@ local function loop()
     -- Script CSV path. A change (typed or browsed) reloads the header + rows;
     -- the first successful load restores the layout by §5.3 precedence, later
     -- loads keep the current mapping against the new header.
+    --
+    -- RUN LOCK. Every script-side control below is disabled while a
+    -- transcription is in flight. The selection scan was already skipped while
+    -- running, but the CSV path, the column mapping, the character filter and
+    -- the skip tokens were not -- and Run's callback builds its plan from the
+    -- line list captured at the press. Retarget the character filter during a
+    -- 12-minute run and the table honestly reported "40 of 300 rows will run"
+    -- while Cut, still enabled, would split and name all 300. Locking the
+    -- script side for the length of a run costs the user nothing they can act
+    -- on (a mid-run edit could only ever produce a plan/table disagreement),
+    -- and it is the only option that leaves NO invalid state to explain: the
+    -- alternative -- keep editing, then invalidate the plan on a mismatch --
+    -- silently throws away minutes of whisper output and cannot be undone by
+    -- putting the filter back, because the plan is already gone.
+    -- Captured once per frame so every Begin/End pair below is balanced even in
+    -- the (currently impossible) event of the flag changing mid-frame.
+    local locked = RunLocked()
+    if locked then im.BeginDisabled(ctx) end
+
     state.csv_path = select(2, im.InputText(ctx, "Script CSV", state.csv_path))
     im.SameLine(ctx)
     if im.Button(ctx, "Browse") then
       local ok, path = r.GetUserFileNameForRead(state.csv_path, "Select the session script", "csv")
       if ok then state.csv_path = path end
     end
-    if state.csv_path ~= state.loaded_path then
+    if not locked and state.csv_path ~= state.loaded_path then
       LoadCSV(state.csv_path, not state.restored)
     end
+    if locked then im.EndDisabled(ctx) end
 
     if state.header then
       -- Layout & presets ---------------------------------------------------
       im.Spacing(ctx)
+      -- Second half of the run lock (kept a separate Begin/End pair so it does
+      -- not straddle the if/elseif branches below, which must stay readable in
+      -- full colour: a header error is not something to grey out).
+      if locked then im.BeginDisabled(ctx) end
       if im.CollapsingHeader(ctx, "Layout & presets") then
         -- The droplist only *selects*; nothing is loaded until Load is pressed.
         -- Selecting is therefore free of consequences, and Save has a target to
@@ -1459,6 +1539,7 @@ local function loop()
           state.preview_dirty = true
         end
       end -- CollapsingHeader "Layout & presets"
+      if locked then im.EndDisabled(ctx) end
 
     elseif state.header_error ~= "" then
       im.Spacing(ctx)
@@ -1480,7 +1561,13 @@ local function loop()
 
     -- The table is the interface (R4). Columns are mapped in its header and the
     -- body is exactly the set of lines that will run.
-    if state.preview_dirty then RefreshPreview() end
+    -- Never mid-run, for the same reason the selection scan is skipped there:
+    -- RefreshPreview rebuilds the very line list the in-flight callback is
+    -- building its plan against, and (with state.plan nil during a run) would
+    -- also re-enter LoadSidecars and rewrite the stale/mismatch/dropped fields
+    -- underneath it. The run lock above means nothing can dirty the preview
+    -- while running anyway; this is the belt to that pair of braces.
+    if state.preview_dirty and not state.running then RefreshPreview() end
 
     -- Script-usability gating: whatever makes the SCRIPT side impossible to
     -- run -- nothing selected, no CSV, a required column unmapped. Cutting is
@@ -1544,7 +1631,9 @@ local function loop()
       -- buttons off the bottom of the window — the reason they were moved up
       -- in the first place.
       local rows = 2 -- count line + button row
-      if state.running               then rows = rows + 1 end
+      -- Two lines while running: the "Transcribing…" note and the run-lock
+      -- explanation drawn directly under it.
+      if state.running               then rows = rows + 2 end
       if state.status ~= ""           then rows = rows + 1 end
       if #state.stale_sources > 0     then rows = rows + 1 end
       if state.script_mismatch ~= ""  then rows = rows + 1 end
@@ -1641,6 +1730,11 @@ local function loop()
     if state.running then
       im.TextColored(ctx, 0x66BB66FF,
         "Transcribing… this can take several minutes. REAPER stays usable.")
+      -- Says what the greyed-out script side means, so the lock is explained
+      -- rather than merely enforced. Its reserve row is the second one added
+      -- under `if state.running` below.
+      im.TextDisabled(ctx,
+        "The script, mapping and filters are locked until it finishes — the plan is being built from them.")
     end
 
     -- Transcribe and Cut, bottom-right. Transcribe reads the audio and builds
