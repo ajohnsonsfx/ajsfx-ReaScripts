@@ -807,12 +807,21 @@ local function RightAlign(labels)
 end
 
 local function loop()
-  if state.running then return end -- the transcription window has the floor
-
-  -- A changed source set invalidates any plan built from the old one.
-  if RefreshSelection() then
-    state.plan, state.plan_lines, state.line_status = nil, nil, nil
-    state.status, state.sidecar_warning = "", ""
+  -- Keep drawing while a transcription runs. vo.RunWhisperAsync polls the
+  -- whisper process headlessly and draws nothing of its own, so a dialog that
+  -- stops here leaves the user staring at an empty screen with no sign of
+  -- progress -- and because the defer chain ends with this function, stopping
+  -- also meant the window never came back.
+  --
+  -- The selection scan is the one thing skipped while running: the in-flight
+  -- callbacks captured `usable`, and rebuilding it underneath them would map
+  -- the transcribed words against a different set of items than they came from.
+  if not state.running then
+    -- A changed source set invalidates any plan built from the old one.
+    if RefreshSelection() then
+      state.plan, state.plan_lines, state.line_status = nil, nil, nil
+      state.status, state.sidecar_warning = "", ""
+    end
   end
 
   if not (ctx and im.ValidatePtr(ctx, 'ImGui_Context*')) then
@@ -982,9 +991,10 @@ local function loop()
       -- buttons off the bottom of the window — the reason they were moved up
       -- in the first place.
       local rows = 2 -- count line + button row
-      if state.status ~= "" then rows = rows + 1 end
-      if run_error            then rows = rows + 1 end
-      if state.message ~= ""  then rows = rows + 1 end
+      if state.running       then rows = rows + 1 end
+      if state.status ~= ""  then rows = rows + 1 end
+      if run_error           then rows = rows + 1 end
+      if state.message ~= "" then rows = rows + 1 end
 
       -- GetContentRegionAvail returns width first, so the height must come from
       -- the SECOND return value; the first ties table height to window width.
@@ -1007,23 +1017,33 @@ local function loop()
       im.TextColored(ctx, 0xDD6666FF, state.message)
     end
 
+    -- The only sign a transcription is under way: whisper is polled headlessly
+    -- and reports nothing itself, so without this the dialog looks idle.
+    if state.running then
+      im.TextColored(ctx, 0x66BB66FF,
+        "Transcribing… this can take several minutes. REAPER stays usable.")
+    end
+
     -- Transcribe and Cut, bottom-right. Transcribe reads the audio and builds
     -- the plan; nothing in the project changes until Cut.
     local relabel = state.plan and "Re-transcribe" or "Transcribe"
     RightAlign({ relabel, "Cut and name" })
 
-    local dis_run = (run_error ~= nil)
+    -- Both buttons are dead while a transcription is in flight: a second press
+    -- would start an overlapping run whose callbacks race the first one's.
+    local dis_run = (run_error ~= nil) or state.running
     if dis_run then im.BeginDisabled(ctx) end
     pressed_run = im.Button(ctx, relabel)
     if dis_run then im.EndDisabled(ctx) end
     if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, state.plan
+      im.SetTooltip(ctx, state.running and "A transcription is already running."
+        or state.plan
         and "Discard the current plan and transcribe the audio again from scratch."
         or  "Transcribe the selected items and build the cut plan.\nNothing in the project changes.")
     end
 
     im.SameLine(ctx)
-    local dis_cut = (state.plan == nil)
+    local dis_cut = (state.plan == nil) or state.running
     if dis_cut then im.BeginDisabled(ctx) end
     pressed_cut = im.Button(ctx, "Cut and name")
     if dis_cut then im.EndDisabled(ctx) end
@@ -1036,12 +1056,13 @@ local function loop()
   -- Always End after Begin; skipping it corrupts ImGui's push/pop stack.
   im.End(ctx)
 
-  -- Both actions run after End: Finish opens a modal, and Run may hand the
-  -- frame to the transcription window.
+  -- Both actions run after End, because Finish opens a modal. Run must NOT
+  -- return early here: the defer that keeps this dialog alive is at the bottom
+  -- of this function, so bailing out once state.running was set is what used to
+  -- close the window for the whole transcription and never reopen it.
   if pressed_run then
     state.message = ""
     Run()
-    if state.running then return end -- hand off to the transcription window
   elseif pressed_cut and state.plan then
     state.message = ""
     Finish(state.plan, state.plan_lines)
