@@ -1335,7 +1335,11 @@ local function loop()
         if no_sel then im.BeginDisabled(ctx) end
         if im.Button(ctx, "Load") then LoadPresetByName(state.layout_sel) end
         if no_sel then im.EndDisabled(ctx) end
-        if im.IsItemHovered(ctx) then
+        -- AllowWhenDisabled or the whole tooltip is dead code: ImGui stamps
+        -- ImGuiItemFlags_Disabled into LastItemData when the item is ADDED, and
+        -- EndDisabled does not clear it, so a plain IsItemHovered on a disabled
+        -- item is always false -- which is exactly the case the tooltip explains.
+        if im.IsItemHovered(ctx, im.HoveredFlags_AllowWhenDisabled) then
           im.SetTooltip(ctx, no_sel and "Choose a preset above first."
             or "Replace the current mapping and skip tokens with this preset.")
         end
@@ -1344,7 +1348,7 @@ local function loop()
         if no_sel then im.BeginDisabled(ctx) end
         if im.Button(ctx, "Save") then DoSave(state.layout_sel) end
         if no_sel then im.EndDisabled(ctx) end
-        if im.IsItemHovered(ctx) then
+        if im.IsItemHovered(ctx, im.HoveredFlags_AllowWhenDisabled) then
           im.SetTooltip(ctx, no_sel and "Choose a preset above, or use Save As…"
             or ("Overwrite \"" .. state.layout_sel .. "\" with the current layout."))
         end
@@ -1565,7 +1569,7 @@ local function loop()
     if dis_run then im.BeginDisabled(ctx) end
     pressed_run = im.Button(ctx, relabel)
     if dis_run then im.EndDisabled(ctx) end
-    if im.IsItemHovered(ctx) then
+    if im.IsItemHovered(ctx, im.HoveredFlags_AllowWhenDisabled) then
       -- A disabled button must say why it is disabled, the way Cut does below;
       -- run_error is the only thing that disables this one besides a run in
       -- flight, so it outranks any description of what a press would do.
@@ -1591,7 +1595,7 @@ local function loop()
     if dis_cut then im.BeginDisabled(ctx) end
     pressed_cut = im.Button(ctx, "Cut and name")
     if dis_cut then im.EndDisabled(ctx) end
-    if im.IsItemHovered(ctx) then
+    if im.IsItemHovered(ctx, im.HoveredFlags_AllowWhenDisabled) then
       im.SetTooltip(ctx,
         (state.plan == nil) and "Transcribe first — there is no plan to apply."
         or (#state.stale_sources > 0) and "The audio has changed since it was transcribed. Re-transcribe first."
