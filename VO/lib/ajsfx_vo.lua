@@ -2433,4 +2433,49 @@ function vo.ApplyPlan(plan, cfg, source_track)
   return applied, failures
 end
 
+-- Build the inline, non-modal summary shown after a Cut (Task 8: popups ask,
+-- never tell). Returns an array of {text, warn} lines rather than a single
+-- string: warn=true lines are the ones that need a warning colour, so the
+-- caller never has to re-inspect the counts to decide how to render them.
+--
+-- The counts (matched/review/unmatched, clips cut) always fit on two lines
+-- regardless of how many script lines were involved -- they are totals, not
+-- a per-line dump. Skipped items and apply-time failures are NOT bounded the
+-- same way (one entry per problem), but in practice both lists are capped by
+-- the size of the current selection, which the user chose -- unlike, say, an
+-- unbounded per-word transcript. They are still joined onto single lines
+-- rather than one line each, so a bad run cannot blow out the counted table
+-- height Task 6 relies on.
+function vo.FormatCutSummary(plan, applied, skipped, failures)
+  local counts = { match = 0, review = 0, unmatched = 0 }
+  for _, span in ipairs(plan or {}) do
+    counts[span.kind] = (counts[span.kind] or 0) + 1
+  end
+
+  local lines = {
+    { text = string.format(
+        "%d matched, %d for review, %d unmatched (left untouched on the source track).",
+        counts.match, counts.review, counts.unmatched),
+      warn = false },
+    { text = string.format("%d clip(s) cut and named.", applied),
+      warn = false },
+  }
+
+  if skipped and #skipped > 0 then
+    lines[#lines + 1] = {
+      text = string.format("%d item(s) skipped: %s", #skipped, table.concat(skipped, "; ")),
+      warn = true,
+    }
+  end
+
+  if failures and #failures > 0 then
+    lines[#lines + 1] = {
+      text = string.format("%d problem(s) while cutting: %s", #failures, table.concat(failures, "; ")),
+      warn = true,
+    }
+  end
+
+  return lines
+end
+
 return vo

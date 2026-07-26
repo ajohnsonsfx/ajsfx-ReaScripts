@@ -31,17 +31,20 @@ local PROJ_SECTION = "ajsfx_vo"
 
 local cfg = vo.LoadConfig()
 
-if r.CountSelectedMediaItems(0) == 0 then
-  r.MB("Select the recorded session item(s) on a track first.",
-       "ajsfx VO ScriptMatch", 0)
-  return
-end
-
+-- Neither "nothing selected" nor "backend not configured" aborts the launch
+-- any more (Task 8: popups ask, never tell — a report belongs in the dialog,
+-- not in a message box that steals focus before the dialog even exists). The
+-- dialog already follows the selection live and already gates Run on
+-- #usable == 0 with an inline "Select the recorded session item(s) on a
+-- track." message (see run_error in loop()), so an empty selection at launch
+-- needs no special case here: the dialog opens and shows that message itself.
+-- The backend check has nowhere inline to land until the dialog exists, so it
+-- is carried forward as backend_error and folded into the same run_error
+-- chain once loop() is reached.
+local backend_error = ""
 local ready, ready_msg = vo.IsBackendReady(cfg)
 if not ready then
-  r.MB(ready_msg .. "\n\nRun \"ajsfx VO Settings\" to configure the speech backend.",
-       "ajsfx VO ScriptMatch", 0)
-  return
+  backend_error = ready_msg .. "\nRun \"ajsfx VO Settings\" to configure the speech backend."
 end
 
 local success, im = pcall(function()
@@ -143,6 +146,8 @@ local state = {
   suffix_alt_names = cfg.suffix_alt_names or false,
   primary_last     = true,
   message          = "",
+  summary          = {},        -- inline Cut result lines from FormatCutSummary,
+                                 -- replacing the old end-of-cut message box
   running          = false,
   source_key       = nil,
   selection_key    = nil,
@@ -777,7 +782,8 @@ local function RefreshPreview()
   -- group goes with it -- every early-return below leaves that state until
   -- LoadSidecars (at the bottom) recomputes it against a real preview.
   ResetVerificationFields()
-  state.status = ""
+  state.status  = ""
+  state.summary = {}
   if not state.header or state.header_error ~= "" or not state.rows then return end
 
   local cols = vo.MapColumns(state.header, state.mapping)
@@ -921,22 +927,13 @@ local function Finish(plan, lines)
     state.sidecar_warning = ""
   end
 
-  local summary = {}
-  local counts  = { match = 0, review = 0, unmatched = 0 }
-  for _, span in ipairs(plan) do counts[span.kind] = (counts[span.kind] or 0) + 1 end
-
-  summary[#summary + 1] = string.format(
-    "%d matched, %d for review, %d unmatched (left untouched on the source track).",
-    counts.match, counts.review, counts.unmatched)
-  summary[#summary + 1] = string.format("%d clips cut and named.", applied)
-  if #skipped > 0 then
-    summary[#summary + 1] = "\nItems skipped:\n" .. table.concat(skipped, "\n")
-  end
-  if #failures > 0 then
-    summary[#summary + 1] = "\nProblems:\n" .. table.concat(failures, "\n")
-  end
-
-  r.MB(table.concat(summary, "\n"), "ajsfx VO ScriptMatch", 0)
+  -- Task 8: no more end-of-cut message box. The counts always fit on two
+  -- lines regardless of script size; skipped items and apply failures are
+  -- real problems (neither is written to the sidecar CSV, so this inline
+  -- line is the only record of WHY a span did not land), so they get a
+  -- warning-coloured line rather than silently vanishing with the popup that
+  -- used to carry them.
+  state.summary = vo.FormatCutSummary(plan, applied, skipped, failures)
 end
 
 local function Run()
@@ -1028,6 +1025,7 @@ local function Run()
   state.plan_lines  = nil
   state.line_status = nil
   state.status      = ""
+  state.summary     = {}
   state.running     = true
 
   vo.TranscribeSources(cfg, sources,
@@ -1044,9 +1042,8 @@ local function Run()
       if #words == 0 then
         state.running = false
         RestoreRetained()
-        r.MB("The transcription produced no words, so there is nothing to match.\n" ..
-             "Check that the selected items contain speech.",
-             "ajsfx VO ScriptMatch", 0)
+        state.message = "The transcription produced no words, so there is nothing to match. " ..
+                         "Check that the selected items contain speech."
         return
       end
 
@@ -1143,13 +1140,12 @@ local function Run()
     function()
       state.running = false
       RestoreRetained()
-      r.MB("Cancelled. Nothing in the project was changed.", "ajsfx VO ScriptMatch", 0)
+      state.status = "Cancelled. Nothing in the project was changed."
     end,
     function(message)
       state.running = false
       RestoreRetained()
-      r.MB(message .. "\n\nNothing in the project was changed.",
-           "ajsfx VO ScriptMatch", 0)
+      state.message = message .. " Nothing in the project was changed."
     end)
 end
 
@@ -1366,6 +1362,8 @@ local function loop()
       run_error = (state.header_error ~= "" and state.header_error) or "Load a script CSV."
     elseif state.header_error ~= "" then
       run_error = state.header_error
+    elseif backend_error ~= "" then
+      run_error = backend_error
     else
       for _, role in ipairs({ "asset", "text" }) do
         if not state.mapping[role] then
@@ -1392,6 +1390,7 @@ local function loop()
       if state.sidecar_warning ~= ""  then rows = rows + 1 end
       if run_error                    then rows = rows + 1 end
       if state.message ~= ""          then rows = rows + 1 end
+      rows = rows + #state.summary
 
       -- GetContentRegionAvail returns width first, so the height must come from
       -- the SECOND return value; the first ties table height to window width.
@@ -1433,6 +1432,18 @@ local function loop()
 
     if state.message ~= "" then
       im.TextColored(ctx, 0xDD6666FF, state.message)
+    end
+
+    -- The end-of-cut report, inline instead of the message box it replaced
+    -- (Task 8). Counts are neutral (disabled/grey); a skipped-items or
+    -- apply-failures line is a real problem the sidecar CSV never records,
+    -- so it gets the same warning colour as sidecar_warning/stale_sources above.
+    for _, line in ipairs(state.summary) do
+      if line.warn then
+        im.TextColored(ctx, 0xDDAA33FF, line.text)
+      else
+        im.TextDisabled(ctx, line.text)
+      end
     end
 
     -- The only sign a transcription is under way: whisper is polled headlessly
@@ -1496,10 +1507,11 @@ local function loop()
   -- Always End after Begin; skipping it corrupts ImGui's push/pop stack.
   im.End(ctx)
 
-  -- Both actions run after End, because Finish opens a modal. Run must NOT
-  -- return early here: the defer that keeps this dialog alive is at the bottom
-  -- of this function, so bailing out once state.running was set is what used to
-  -- close the window for the whole transcription and never reopen it.
+  -- Both actions run after End so ImGui's frame is fully closed either way
+  -- before Run or Finish touches state. Run must NOT return early here: the
+  -- defer that keeps this dialog alive is at the bottom of this function, so
+  -- bailing out once state.running was set is what used to close the window
+  -- for the whole transcription and never reopen it.
   if pressed_run then
     state.message = ""
     Run()

@@ -2601,5 +2601,49 @@ test("each source is returned once however many items reference it", function()
   assert(#need == 1, "Expected 1, got " .. #need)
 end)
 
+-- FormatCutSummary (Task 8: inline, non-modal Cut summary) ------------------
+
+test("counts and clips-cut always produce exactly two non-warning lines", function()
+  local plan = {
+    { kind = "match" }, { kind = "match" }, { kind = "review" }, { kind = "unmatched" },
+  }
+  local lines = vo.FormatCutSummary(plan, 3, {}, {})
+  assert(#lines == 2, "Expected 2 lines, got " .. #lines)
+  assert(lines[1].text == "2 matched, 1 for review, 1 unmatched (left untouched on the source track).",
+    "Got: " .. lines[1].text)
+  assert(lines[1].warn == false, "Counts line must not be a warning")
+  assert(lines[2].text == "3 clip(s) cut and named.", "Got: " .. lines[2].text)
+  assert(lines[2].warn == false, "Clips-cut line must not be a warning")
+end)
+
+test("an empty plan still reports zero counts, not nil", function()
+  local lines = vo.FormatCutSummary({}, 0, nil, nil)
+  assert(#lines == 2, "Expected 2 lines, got " .. #lines)
+  assert(lines[1].text == "0 matched, 0 for review, 0 unmatched (left untouched on the source track).",
+    "Got: " .. lines[1].text)
+end)
+
+test("skipped items add one warning line naming the count and reasons", function()
+  local lines = vo.FormatCutSummary({}, 0, { "item at 1.000s: no source" }, {})
+  assert(#lines == 3, "Expected 3 lines, got " .. #lines)
+  assert(lines[3].warn == true, "Skipped-items line must be a warning")
+  assert(lines[3].text == "1 item(s) skipped: item at 1.000s: no source", "Got: " .. lines[3].text)
+end)
+
+test("apply failures add one warning line naming the count and reasons", function()
+  local lines = vo.FormatCutSummary({}, 0, {}, { "L001: span too short to cut" })
+  assert(#lines == 3, "Expected 3 lines, got " .. #lines)
+  assert(lines[3].warn == true, "Failures line must be a warning")
+  assert(lines[3].text == "1 problem(s) while cutting: L001: span too short to cut", "Got: " .. lines[3].text)
+end)
+
+test("skipped and failures both present produce two warning lines, in order", function()
+  local lines = vo.FormatCutSummary({}, 0, { "skip A" }, { "fail B" })
+  assert(#lines == 4, "Expected 4 lines, got " .. #lines)
+  assert(lines[3].text:find("skipped", 1, true) ~= nil, "Skipped line should come first")
+  assert(lines[4].text:find("problem", 1, true) ~= nil, "Failures line should come second")
+  assert(lines[3].warn == true and lines[4].warn == true, "Both must be warnings")
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
