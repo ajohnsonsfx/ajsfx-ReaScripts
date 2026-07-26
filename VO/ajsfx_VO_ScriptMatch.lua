@@ -121,6 +121,10 @@ local state = {
   line_status      = nil,        -- asset -> STATUS key, from the current plan
   status           = "",         -- neutral progress note, distinct from message
   sidecar_warning  = "",         -- non-empty when a sidecar write failed (warning only)
+  stale_sources    = {},         -- base names whose audio changed since transcription
+  script_mismatch  = "",         -- sidecar's script CSV path when it differs
+  orphan_count     = 0,          -- spans naming a Filename absent from the script
+  dropped_count    = 0,          -- spans falling outside the current items
   use_alts_track   = cfg.use_alts_track or false,
   suffix_alt_names = cfg.suffix_alt_names or false,
   primary_last     = true,
@@ -230,6 +234,112 @@ local STATUS = {
   review    = { rank = 2, label = "review",   colour = 0xDDAA33FF },
   unmatched = { rank = 1, label = "no match", colour = 0x999999FF },
 }
+
+-- Fold a plan's spans to one status per script line. A line can produce several
+-- spans (one per take), so the best outcome wins. Also returns how many spans
+-- name a Filename that is not in the current script — an orphan, which the
+-- table cannot show because the table is driven by script lines.
+local function FoldStatuses(plan, lines)
+  local in_script = {}
+  for _, line in ipairs(lines or {}) do
+    if line.asset then in_script[line.asset] = true end
+  end
+
+  local by_asset, orphans = {}, 0
+  for _, span in ipairs(plan or {}) do
+    local s = STATUS[span.kind]
+    if span.asset and s then
+      if not in_script[span.asset] then
+        orphans = orphans + 1
+      else
+        local cur = STATUS[by_asset[span.asset]]
+        if not cur or s.rank > cur.rank then by_asset[span.asset] = span.kind end
+      end
+    end
+  end
+
+  -- A line the plan never mentions produced no audio at all.
+  for _, line in ipairs(lines or {}) do
+    if line.asset and not by_asset[line.asset] then by_asset[line.asset] = "unmatched" end
+  end
+
+  return by_asset, orphans
+end
+
+-- Load every sidecar for the currently selected sources into ONE plan. N files
+-- in, one plan out: the Status column folds several spans per line by rank, so
+-- a line matched in one recording and absent from another still reads matched.
+local function LoadSidecars()
+  local plan            = {}
+  local stale           = {}
+  local script_mismatch = ""
+  local dropped         = 0
+
+  -- Distinct sources, each with the items that currently reference it.
+  local by_source = {}
+  for _, item in ipairs(usable) do
+    if item.path then
+      by_source[item.path] = by_source[item.path] or {}
+      table.insert(by_source[item.path], item)
+    end
+  end
+
+  for source_path, its in pairs(by_source) do
+    local path = vo.SidecarPath(source_path)
+    if path and vo.FileExists(path) then
+      local parsed = vo.ParseSidecar(ReadFile(path))
+      if parsed then
+        -- The audio-changed check is file-level: if the recording differs, every
+        -- span's timing in this file is suspect at once, so Cut is blocked
+        -- rather than a per-line status being invented.
+        if parsed.source_bytes ~= (vo.FileSize(source_path) or 0) then
+          stale[#stale + 1] = source_path:match("([^/\\]+)$") or source_path
+        end
+        if parsed.script_csv ~= "" and state.csv_path ~= ""
+           and parsed.script_csv ~= state.csv_path then
+          script_mismatch = parsed.script_csv
+        end
+
+        for _, span in ipairs(parsed.spans) do
+          -- Place the span against whichever item currently plays that region.
+          -- An item trimmed since transcription leaves spans with no audio
+          -- behind them; those are dropped and counted, never clamped.
+          local placed = false
+          for _, item in ipairs(its) do
+            local src_end = (item.start_offs or 0) + (item.length or 0) * (item.playrate or 1.0)
+            local mid = (span.start + span.stop) / 2
+            if mid >= (item.start_offs or 0) and mid <= src_end then
+              local copy = {}
+              for k, v in pairs(span) do copy[k] = v end
+              copy.start = vo.SourceTimeToProject(span.start, item)
+              copy.stop  = vo.SourceTimeToProject(span.stop,  item)
+              plan[#plan + 1] = copy
+              placed = true
+              break
+            end
+          end
+          if not placed then dropped = dropped + 1 end
+        end
+      end
+    end
+  end
+
+  state.stale_sources   = stale
+  state.script_mismatch = script_mismatch
+  state.dropped_count   = dropped
+
+  if #plan == 0 then
+    state.plan, state.plan_lines, state.line_status = nil, nil, nil
+    state.orphan_count = 0
+    return
+  end
+
+  table.sort(plan, function(a, b) return (a.start or 0) < (b.start or 0) end)
+  state.plan       = plan
+  state.plan_lines = state.preview or {}
+  state.line_status, state.orphan_count = FoldStatuses(plan, state.plan_lines)
+  state.status = string.format("Loaded %d transcribed span(s) from disk.", #plan)
+end
 
 -- The preview table is driven by this ordered list, not hardcoded columns.
 -- kind = "mapped" -> a column selector in the header, body values from the CSV.
@@ -521,6 +631,11 @@ local function RefreshPreview()
     speakers     = speakers,
     canonicalize = canon,
   })
+
+  -- Loading a CSV (or changing its mapping) after the item was already
+  -- selected means the sidecar load above ran before state.preview existed;
+  -- pick up the statuses now that there is a line list to fold against.
+  if state.plan == nil then LoadSidecars() end
 end
 
 -- The table is the interface: columns are mapped in its header, and the body is
@@ -738,27 +853,18 @@ local function Run()
       local plan = vo.BuildPlan(lines, words, cfg)
       ClampSpansToItems(plan, usable)
 
-      state.running    = false
-      state.plan       = plan
-      state.plan_lines = lines
+      state.running       = false
+      state.plan          = plan
+      state.plan_lines    = lines
+      -- A fresh transcription re-derives everything the sidecar loader would
+      -- otherwise report stale; a plan just built from live audio is current.
+      state.stale_sources   = {}
+      state.script_mismatch = ""
+      state.dropped_count   = 0
 
       -- Fold the plan's spans down to one status per script line for the table.
       -- A line with several takes keeps the best outcome of any of them.
-      local by_asset = {}
-      for _, span in ipairs(plan) do
-        local s = STATUS[span.kind]
-        if span.asset and s then
-          local cur = STATUS[by_asset[span.asset]]
-          if not cur or s.rank > cur.rank then by_asset[span.asset] = span.kind end
-        end
-      end
-      -- A line the plan never mentions produced no audio at all.
-      for _, line in ipairs(lines) do
-        if line.asset and not by_asset[line.asset] then
-          by_asset[line.asset] = "unmatched"
-        end
-      end
-      state.line_status = by_asset
+      state.line_status, state.orphan_count = FoldStatuses(plan, lines)
 
       -- Persist beside each recording now, not at cut time: a session where
       -- the user transcribes, inspects and never cuts still leaves a result.
@@ -817,10 +923,14 @@ local function loop()
   -- callbacks captured `usable`, and rebuilding it underneath them would map
   -- the transcribed words against a different set of items than they came from.
   if not state.running then
-    -- A changed source set invalidates any plan built from the old one.
+    -- A changed source set invalidates any plan built from the old one; load
+    -- whatever sidecars exist for the new selection in its place.
     if RefreshSelection() then
       state.plan, state.plan_lines, state.line_status = nil, nil, nil
       state.status, state.sidecar_warning = "", ""
+      state.stale_sources, state.script_mismatch = {}, ""
+      state.orphan_count, state.dropped_count = 0, 0
+      LoadSidecars()
     end
   end
 
@@ -991,10 +1101,15 @@ local function loop()
       -- buttons off the bottom of the window — the reason they were moved up
       -- in the first place.
       local rows = 2 -- count line + button row
-      if state.running       then rows = rows + 1 end
-      if state.status ~= ""  then rows = rows + 1 end
-      if run_error           then rows = rows + 1 end
-      if state.message ~= "" then rows = rows + 1 end
+      if state.running               then rows = rows + 1 end
+      if state.status ~= ""           then rows = rows + 1 end
+      if #state.stale_sources > 0     then rows = rows + 1 end
+      if state.script_mismatch ~= ""  then rows = rows + 1 end
+      if state.orphan_count > 0       then rows = rows + 1 end
+      if state.dropped_count > 0      then rows = rows + 1 end
+      if state.sidecar_warning ~= ""  then rows = rows + 1 end
+      if run_error                    then rows = rows + 1 end
+      if state.message ~= ""          then rows = rows + 1 end
 
       -- GetContentRegionAvail returns width first, so the height must come from
       -- the SECOND return value; the first ties table height to window width.
@@ -1007,6 +1122,27 @@ local function loop()
 
     if state.status ~= "" then
       im.TextColored(ctx, 0x66BB66FF, state.status)
+    end
+
+    if #state.stale_sources > 0 then
+      im.TextColored(ctx, 0xDDAA33FF, string.format(
+        "%s has changed since it was transcribed — Re-transcribe to refresh.",
+        table.concat(state.stale_sources, ", ")))
+    end
+    if state.script_mismatch ~= "" then
+      im.TextColored(ctx, 0xDDAA33FF,
+        "Transcribed against a different script: " .. state.script_mismatch)
+    end
+    if state.orphan_count > 0 then
+      im.TextDisabled(ctx, string.format(
+        "%d transcribed line(s) are not in this script.", state.orphan_count))
+    end
+    if state.dropped_count > 0 then
+      im.TextDisabled(ctx, string.format(
+        "%d transcribed span(s) fall outside the selected items.", state.dropped_count))
+    end
+    if state.sidecar_warning ~= "" then
+      im.TextColored(ctx, 0xDDAA33FF, state.sidecar_warning)
     end
 
     if run_error then
@@ -1043,13 +1179,15 @@ local function loop()
     end
 
     im.SameLine(ctx)
-    local dis_cut = (state.plan == nil) or state.running
+    local dis_cut = (state.plan == nil) or state.running or (#state.stale_sources > 0)
     if dis_cut then im.BeginDisabled(ctx) end
     pressed_cut = im.Button(ctx, "Cut and name")
     if dis_cut then im.EndDisabled(ctx) end
     if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, dis_cut and "Transcribe first — there is no plan to apply."
-                                 or  "Split and name the clips from the transcribed plan.")
+      im.SetTooltip(ctx,
+        (#state.stale_sources > 0) and "The audio has changed since it was transcribed. Re-transcribe first."
+        or dis_cut and "Transcribe first — there is no plan to apply."
+        or "Split and name the clips from the transcribed plan.")
     end
   end
 
