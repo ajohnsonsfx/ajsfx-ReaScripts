@@ -117,6 +117,11 @@ local state = {
   preview          = nil,        -- cached BuildScriptLines result (R4)
   preview_dirty    = true,       -- recompute the preview on the next frame
   plan             = nil,        -- transcribed plan awaiting Cut, nil = none
+  plan_saved       = false,      -- true when state.plan is backed by sidecars on
+                                 -- disk (loaded from / successfully written to
+                                 -- disk); false when it is live from a
+                                 -- transcription that has not been durably
+                                 -- persisted yet
   plan_lines       = nil,        -- the script lines that plan was built from
   line_status      = nil,        -- asset -> STATUS key, from the current plan
   status           = "",         -- neutral progress note, distinct from message
@@ -356,11 +361,16 @@ local function LoadSidecars(update_status)
   if #plan == 0 then
     state.plan, state.plan_lines, state.line_status = nil, nil, nil
     state.orphan_count = 0
+    -- Nothing loaded from disk, so there is nothing disk-backed to claim.
+    state.plan_saved = false
     return
   end
 
   table.sort(plan, function(a, b) return (a.start or 0) < (b.start or 0) end)
   state.plan       = plan
+  -- Every span above came from a sidecar file, so this plan is, by
+  -- definition, backed by what's on disk right now.
+  state.plan_saved = true
   state.plan_lines = state.preview
   if state.plan_lines then
     state.line_status, state.orphan_count = FoldStatuses(plan, state.plan_lines)
@@ -651,9 +661,20 @@ end
 -- no longer exists. Before this helper, dropped_count, script_mismatch and
 -- stale_sources survived RefreshPreview's early returns while plan/plan_lines/
 -- orphan_count did not -- see finding 4.
-local function ResetVerificationFields()
-  state.plan            = nil
-  state.plan_lines      = nil
+--
+-- A live, unsaved plan (state.plan_saved == false) is real work -- minutes of
+-- whisper transcription that exists nowhere on disk if the sidecar write
+-- failed -- and must survive a script-side reset by default. Only a
+-- disk-backed plan (or no plan at all) is safe to drop unconditionally; a
+-- caller that must invalidate a live plan too -- the source set changed
+-- (Run/Cut consumed it, or the plan was just applied) -- passes
+-- force_drop_plan = true. See finding: RefreshPreview / :692.
+local function ResetVerificationFields(force_drop_plan)
+  if force_drop_plan or state.plan_saved then
+    state.plan       = nil
+    state.plan_saved = false
+    state.plan_lines = nil
+  end
   state.line_status      = nil
   state.orphan_count     = 0
   state.dropped_count    = 0
@@ -686,10 +707,20 @@ local function RefreshPreview()
     canonicalize = canon,
   })
 
-  -- Loading a CSV (or changing its mapping) after the item was already
-  -- selected means the sidecar load above ran before state.preview existed;
-  -- pick up the statuses now that there is a line list to fold against.
-  if state.plan == nil then LoadSidecars() end
+  if state.plan then
+    -- A live plan survived ResetVerificationFields above (it is not yet
+    -- disk-backed). Its spans are not script-derived and stay untouched, but
+    -- line_status/orphan_count ARE computed against the script, so a mapping
+    -- or filter change must refold them against the new line list rather than
+    -- leaving them nil'd or describing the old one.
+    state.plan_lines = state.preview
+    state.line_status, state.orphan_count = FoldStatuses(state.plan, state.preview)
+  else
+    -- Loading a CSV (or changing its mapping) after the item was already
+    -- selected means the sidecar load above ran before state.preview existed;
+    -- pick up the statuses now that there is a line list to fold against.
+    LoadSidecars()
+  end
 end
 
 -- The table is the interface: columns are mapped in its header, and the body is
@@ -880,6 +911,7 @@ local function Run()
   cfg.force_retranscribe = (state.plan ~= nil)
 
   state.plan        = nil
+  state.plan_saved  = false
   state.plan_lines  = nil
   state.line_status = nil
   state.status      = ""
@@ -929,6 +961,10 @@ local function Run()
           "Could not write %d sidecar file(s): %s",
           #sc_failures, sc_failures[1].path)
       end
+      -- Disk-backed only if every source was actually written; a partial
+      -- write leaves this plan live-and-unsaved, same as a total failure --
+      -- it must not be silently dropped by a later reselect (see loop()).
+      state.plan_saved = (#sc_failures == 0)
 
       local counts = { match = 0, review = 0, unmatched = 0 }
       for _, span in ipairs(plan) do counts[span.kind] = (counts[span.kind] or 0) + 1 end
@@ -977,27 +1013,28 @@ local function loop()
   -- callbacks captured `usable`, and rebuilding it underneath them would map
   -- the transcribed words against a different set of items than they came from.
   if not state.running then
-    -- Any selection change reloads sidecars for whatever is now usable --
-    -- BUT NEVER while a live, unsaved plan sits in state.plan. That plan only
-    -- exists between a successful Transcribe and the user's next Cut or
-    -- Re-transcribe; it is real work (minutes of whisper transcription) that
-    -- exists nowhere on disk yet if the sidecar write failed. A disk load
-    -- finding nothing there would otherwise nil it out from a stray reselect
-    -- or even a shift-click adding a second item on the same source -- see
-    -- finding 2. So loading is skipped outright whenever a plan is live;
-    -- Re-transcribe and Cut are the only two actions allowed to replace it.
+    -- The reload rule keys off WHERE the current plan came from
+    -- (state.plan_saved), not just whether one exists -- a single boolean
+    -- can't distinguish "disk-backed, describes the current selection" from
+    -- "live from whisper, not yet written anywhere" (see the finding at the
+    -- top of this file's history for why `not state.plan` alone broke this).
     --
-    -- When there is no live plan, LoadSidecars fully overwrites state.plan
-    -- and everything derived from it (plan_lines, line_status, orphan/dropped
-    -- counts, stale/mismatch lists), whether it finds spans or not, so a
-    -- same-source reselect naturally ends up with the freshly-loaded plan
-    -- surviving without any extra clearing here. status and sidecar_warning
-    -- describe the previous SOURCE set's transcription/write, so they are
-    -- reset only when the source set itself changed; LoadSidecars is told the
-    -- same thing (via src_changed) so a same-source reselect does not stomp a
-    -- lingering "Cut applied." with "Loaded N transcribed span(s) from disk."
+    -- * The source set genuinely changed (src_changed): ALWAYS reload. A plan
+    --   cannot describe a source set it wasn't built from -- keeping it, even
+    --   a live/unsaved one, would let Cut apply RIVA's spans to OTHER's items.
+    --   The unsaved-plan-lost case is not silent: sidecar_warning already
+    --   surfaced the write failure when it happened.
+    -- * Same sources, different items (sel_changed and not src_changed):
+    --   reload ONLY IF state.plan_saved. A disk-backed plan must reload so a
+    --   newly selected item picks up spans that were previously out of range
+    --   (a shift-click adding a second item on the same source). A live,
+    --   unsaved plan is real work -- minutes of whisper transcription that
+    --   exists nowhere on disk if the write failed -- and must not be nil'd
+    --   out by a load that finds nothing there.
+    -- * Neither changed: no load, no I/O.
     local sel_changed, src_changed = RefreshSelection()
-    if sel_changed and not state.plan then
+    local should_reload = src_changed or (sel_changed and state.plan_saved)
+    if should_reload then
       if src_changed then
         state.status, state.sidecar_warning = "", ""
       end
@@ -1278,10 +1315,11 @@ local function loop()
     -- Clear every verification field the plan being applied described, not
     -- just the plan itself -- otherwise "N transcribed span(s) fall outside
     -- the selected items" keeps rendering under "Cut applied." until the next
-    -- selection change happens to recompute them.
-    state.plan, state.plan_lines, state.line_status = nil, nil, nil
-    state.orphan_count, state.dropped_count = 0, 0
-    state.script_mismatch = ""
+    -- selection change happens to recompute them. Routed through the same
+    -- helper RefreshPreview uses so the two callers can't drift; force the
+    -- plan itself to clear regardless of provenance, since Cut just applied
+    -- it whether or not it was disk-backed.
+    ResetVerificationFields(true)
     state.status = "Cut applied."
   end
 
