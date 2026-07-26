@@ -112,7 +112,7 @@ Select the recorded item. Run **ajsfx VO ScriptMatch**.
 - [ ] The slate and the chatter are on **Review**, not Selects.
 - [ ] Nothing is named for NPC_004.
 - [ ] Non-speech silence remains on the original track.
-- [ ] A `*_vo_report.csv` sits next to the project.
+- [ ] A `*_vo_report.csv` sits next to the recorded audio source file.
 
 ### Check the report
 
@@ -399,6 +399,27 @@ This is the item verified as part of Task 6's review fix — confirm it directly
   REAPER's `GetUserInputs` (it treats commas as its own field separator). Use a preset
   name without commas; `ValidatePresetName` does not special-case this because the
   dialog itself never delivers the comma to Lua.
+
+---
+
+## Per-source sidecar
+
+1. Open the script with nothing selected. No message box appears; the dialog shows
+   `Select the recorded session item(s) on a track.` and Transcribe is disabled.
+2. Select an item. The table becomes active without reopening the script.
+3. Transcribe. `<audio>_vo_report.csv` appears beside the audio file, and the Status
+   column populates.
+4. Close and reopen with the same item selected. Statuses return with no whisper run.
+5. Select a different recording that has its own sidecar. The table switches to it.
+6. Select both recordings at once. Both sidecars load and the statuses union.
+7. Drag the item along the timeline, then reopen. Spans still align with the audio.
+8. Re-record over the .wav so its size changes. An amber line names the file and
+   Cut is disabled; Re-transcribe clears it.
+9. Load a different script CSV. The mismatch line appears and Cut stays enabled.
+10. Press Re-transcribe. Whisper actually re-runs and the sidecar is rewritten.
+11. Cut. The summary appears inline; no message box takes focus.
+12. Make the audio directory read-only and transcribe. An inline warning names the
+    path and the session remains usable.
 
 ---
 

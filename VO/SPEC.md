@@ -196,7 +196,7 @@ CSV script ──> script lines (filtered) ────────────�
                                                                        │
                                                     ┌──────────────────┴───────────┐
                                                     v                              v
-                                          ApplyPlan() [REAPER]              report CSV
+                                          ApplyPlan() [REAPER]              sidecar CSV (per source)
                                      split → move → rename → regions
 ```
 
@@ -246,7 +246,8 @@ and no audio. This mirrors how `pvx/lib/ajsfx_pvx.lua` separates its pure helper
 | `vo.SanitizeName(s, max_len)` | Filesystem-safe names |
 | `vo.BuildPlan(lines, words, cfg)` | Composes all of the above |
 | `vo.EscapeCSVField(s)` / `vo.FormatCSVRow(fields)` | RFC4180 output escaping |
-| `vo.BuildReport(plan, lines)` | Report CSV string |
+| `vo.SerializeSidecar(spans, lines, meta)` | Sidecar CSV string (source-time spans) |
+| `vo.ParseSidecar(text)` | Parsed sidecar table, or nil plus a reason |
 | `vo.DTWPresetForModel(path)` | Model filename → `-dtw` preset, or nil |
 | `vo.BuildWhisperArgv(cfg, audio, out_prefix)` | Backend command line |
 
@@ -376,23 +377,27 @@ single undo point and automatic error reporting via `core.Error`.
 
 | Condition | Behaviour |
 |---|---|
-| No items selected | Message box; no mutation |
-| Backend not configured / binary or model missing | Message box pointing at Settings; no mutation |
+| No items selected | Inline message in the dialog ("Select the recorded session item(s) on a track."); Transcribe disabled, no mutation |
+| Backend not configured / binary or model missing | Inline dialog message pointing at Settings; no mutation |
 | Take is MIDI or empty, playrate ≠ 1.0, or reversed | Item skipped and listed in the report; run continues |
-| whisper exits non-zero | Show tail of log; abort before mutation |
-| Zero words transcribed | Abort with message |
-| CSV missing mapped columns | Message listing the headers actually found |
+| whisper exits non-zero | Tail of log shown inline; abort before mutation |
+| Zero words transcribed | Abort with an inline message |
+| CSV missing mapped columns | Inline message listing the headers actually found |
 | No span clears the review floor | Everything is unmatched, so nothing is cut and no track is created; the report is still written |
 | User cancels transcription | Nothing committed |
 | Span crosses an item boundary | Clamped to the containing item; noted in the report |
+| Sidecar audio-file size mismatch on load | Source flagged STALE inline; Cut disabled until re-transcribed |
+| Sidecar written against a different script CSV | Mismatch reported per-line inline |
 
 ### Report
 
-Always written, next to the project. One row per span — start, stop, kind, LineID,
-AudioAsset, score, margin, take_index, destination, transcript, script text — plus a
-trailing section listing script lines that received **no** match at all (the "did we
-actually record everything?" check). This report is also the designed input for the
-deferred LLM pass.
+One `<audio>_vo_report.csv` sidecar per media source file, written beside the audio
+itself rather than once per project. It is written when you transcribe (not only when
+you cut) and rewritten on cut. Span times are stored **source-relative**, so the
+sidecar stays valid if the item is later moved, trimmed, or copied on the timeline.
+The file is read back on open, so reopening the dialog on a recording that already has
+a sidecar restores its transcription result without re-running whisper. This report is
+also the designed input for the deferred LLM pass.
 
 ---
 
@@ -500,7 +505,7 @@ Stated plainly rather than assumed working:
    with progress and cancel, `ajsfx_VO_Settings.lua`.
 4. ~~**Apply layer + main action**~~ — *done.* `CollectSourceSpans`,
    `MapWordsToProject`, `EnsureTrackBelow`, `ApplyPlan`, and
-   `ajsfx_VO_ScriptMatch.lua` with the run dialog, per-project CSV memory, and report.
+   `ajsfx_VO_ScriptMatch.lua` with the run dialog, per-project CSV memory, and a per-source sidecar.
 5. ~~**Docs**~~ — *done.* README section, `VO/MANUAL_TEST.md`, sample dataset.
 
 **Remaining work is verification, not implementation:** everything in §10 needs a
