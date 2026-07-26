@@ -41,11 +41,27 @@ local cfg = vo.LoadConfig()
 -- The backend check has nowhere inline to land until the dialog exists, so it
 -- is carried forward as backend_error and folded into the same run_error
 -- chain once loop() is reached.
+-- IsBackendReady stats the whisper binary and model on disk, so it cannot be
+-- called every frame. It is re-evaluated on a throttle instead of once at
+-- launch: the dialog is now persistent, so a user who leaves it open, runs
+-- "ajsfx VO Settings" to configure the backend, and comes back would
+-- otherwise see Transcribe stay disabled forever with no hint a relaunch is
+-- needed (Task 8 fix 2). cfg is reloaded alongside it -- vo.LoadConfig only
+-- reads ExtState, which is in-memory and just as cheap as the throttle gate
+-- itself, so the settings change is picked up too, not just re-checked
+-- against the stale cfg captured at launch.
 local backend_error = ""
-local ready, ready_msg = vo.IsBackendReady(cfg)
-if not ready then
-  backend_error = ready_msg .. "\nRun \"ajsfx VO Settings\" to configure the speech backend."
+local backend_check_t = 0
+local BACKEND_CHECK_INTERVAL = 2.0 -- seconds; keeps the disk stat off the per-frame path
+local function RefreshBackendError()
+  local now = r.time_precise()
+  if backend_check_t ~= 0 and (now - backend_check_t) < BACKEND_CHECK_INTERVAL then return end
+  backend_check_t = now
+  cfg = vo.LoadConfig()
+  local ready, ready_msg = vo.IsBackendReady(cfg)
+  backend_error = ready and "" or (ready_msg .. "\nRun \"ajsfx VO Settings\" to configure the speech backend.")
 end
+RefreshBackendError()
 
 local success, im = pcall(function()
   package.path = r.ImGui_GetBuiltinPath() .. '/?.lua;' .. package.path
@@ -128,6 +144,10 @@ local state = {
   plan_lines       = nil,        -- the script lines that plan was built from
   line_status      = nil,        -- asset -> STATUS key, from the current plan
   status           = "",         -- neutral progress note, distinct from message
+  status_kind      = "ok",       -- "ok" (green, something worked) or "warn"
+                                 -- (amber, a non-fatal problem/notice such as a
+                                 -- user-initiated cancellation) -- colours the
+                                 -- text drawn for state.status
   sidecar_warning  = "",         -- non-empty when a sidecar write failed (warning only)
   stale_sources    = {},         -- FULL PATHS whose audio changed since transcription
                                  -- (paths, not base names: two selected sources
@@ -452,7 +472,7 @@ local function LoadSidecars(update_status)
     state.line_status, state.orphan_count = nil, 0
   end
   if update_status then
-    state.status = string.format("Loaded %d transcribed span(s) from disk.", #plan)
+    state.status, state.status_kind = string.format("Loaded %d transcribed span(s) from disk.", #plan), "ok"
   end
 end
 
@@ -782,7 +802,7 @@ local function RefreshPreview()
   -- group goes with it -- every early-return below leaves that state until
   -- LoadSidecars (at the bottom) recomputes it against a real preview.
   ResetVerificationFields()
-  state.status  = ""
+  state.status, state.status_kind = "", "ok"
   state.summary = {}
   if not state.header or state.header_error ~= "" or not state.rows then return end
 
@@ -1025,6 +1045,7 @@ local function Run()
   state.plan_lines  = nil
   state.line_status = nil
   state.status      = ""
+  state.status_kind = "ok"
   state.summary     = {}
   state.running     = true
 
@@ -1133,14 +1154,20 @@ local function Run()
 
       local counts = { match = 0, review = 0, unmatched = 0 }
       for _, span in ipairs(plan) do counts[span.kind] = (counts[span.kind] or 0) + 1 end
-      state.status = string.format(
+      state.status, state.status_kind = string.format(
         "Transcribed: %d matched, %d for review, %d unmatched. Press Cut to apply.",
-        counts.match, counts.review, counts.unmatched)
+        counts.match, counts.review, counts.unmatched), "ok"
     end,
     function()
+      -- Async callback (fires off the whisper poll, not inside an ImGui
+      -- frame): may only SET state, never call im.*. A cancellation did not
+      -- succeed, so it must not render in the same green as a real result --
+      -- route it through status_kind = "warn" (the file's amber-for-non-fatal
+      -- convention) rather than the default green (Task 8 fix 4). Wording is
+      -- unchanged; only the colour channel differs.
       state.running = false
       RestoreRetained()
-      state.status = "Cancelled. Nothing in the project was changed."
+      state.status, state.status_kind = "Cancelled. Nothing in the project was changed.", "warn"
     end,
     function(message)
       state.running = false
@@ -1169,6 +1196,11 @@ local function RightAlign(labels)
 end
 
 local function loop()
+  -- Gated to at most once every BACKEND_CHECK_INTERVAL seconds internally, so
+  -- this call is cheap on every other frame -- see the comment above its
+  -- definition for why it can't simply run per frame.
+  RefreshBackendError()
+
   -- Keep drawing while a transcription runs. vo.RunWhisperAsync polls the
   -- whisper process headlessly and draws nothing of its own, so a dialog that
   -- stops here leaves the user staring at an empty screen with no sign of
@@ -1206,7 +1238,7 @@ local function loop()
       or (sel_changed and (state.plan == nil or state.plan_saved))
     if should_reload then
       if src_changed then
-        state.status, state.sidecar_warning = "", ""
+        state.status, state.status_kind, state.sidecar_warning = "", "ok", ""
       end
       LoadSidecars(src_changed)
     end
@@ -1352,25 +1384,40 @@ local function loop()
     -- body is exactly the set of lines that will run.
     if state.preview_dirty then RefreshPreview() end
 
-    -- Run gating. Both required roles must be mapped and the CSV must parse.
-    local run_error
+    -- Script-usability gating: whatever makes the SCRIPT side impossible to
+    -- run -- nothing selected, no CSV, a required column unmapped. Cutting is
+    -- pure REAPER item manipulation and needs no speech backend, so this is
+    -- the chain Cut gates on (Task 8 fix 3): a plan loaded from sidecars must
+    -- stay applicable even if the whisper binary has since moved.
+    local script_error
     if #usable == 0 then
-      run_error = (#skipped > 0)
+      script_error = (#skipped > 0)
         and ("None of the selected items can be transcribed:\n" .. table.concat(skipped, "\n"))
         or  "Select the recorded session item(s) on a track."
     elseif not state.header then
-      run_error = (state.header_error ~= "" and state.header_error) or "Load a script CSV."
+      script_error = (state.header_error ~= "" and state.header_error) or "Load a script CSV."
     elseif state.header_error ~= "" then
-      run_error = state.header_error
-    elseif backend_error ~= "" then
-      run_error = backend_error
+      script_error = state.header_error
     else
       for _, role in ipairs({ "asset", "text" }) do
         if not state.mapping[role] then
-          run_error = "Map the required column: " .. ROLE_LABEL[role]
+          script_error = "Map the required column: " .. ROLE_LABEL[role]
           break
         end
       end
+    end
+
+    -- Run (Transcribe) gating additionally requires a configured backend.
+    -- backend_error is checked immediately after #usable == 0 -- a missing
+    -- backend is a hard blocker that should surface before the user chases
+    -- down CSV/mapping issues only to hit VO Settings last (Task 8 fix 1).
+    local run_error
+    if #usable == 0 then
+      run_error = script_error
+    elseif backend_error ~= "" then
+      run_error = backend_error
+    else
+      run_error = script_error
     end
 
     if state.header and state.header_error == "" then
@@ -1402,7 +1449,7 @@ local function loop()
     end
 
     if state.status ~= "" then
-      im.TextColored(ctx, 0x66BB66FF, state.status)
+      im.TextColored(ctx, state.status_kind == "warn" and 0xDDAA33FF or 0x66BB66FF, state.status)
     end
 
     if #state.stale_sources > 0 then
@@ -1482,15 +1529,17 @@ local function loop()
     end
 
     im.SameLine(ctx)
-    -- run_error also gates Cut. When the script side is unusable -- a required
-    -- column unmapped, the CSV unloaded, nothing selected -- RefreshPreview
-    -- returns early and leaves a surviving live plan paired with a STALE
-    -- plan_lines and no line_status, so the table honestly reads "0 of N rows
-    -- will run" while Cut would silently apply the OLD line list. The plan is
-    -- still valuable, so it is kept rather than discarded; it just cannot be
-    -- applied until the script is mapped again. The tooltip says which.
+    -- script_error also gates Cut -- but NOT backend_error: cutting touches no
+    -- backend, only the sidecar-derived plan and the project's items. When the
+    -- script side is unusable -- a required column unmapped, the CSV unloaded,
+    -- nothing selected -- RefreshPreview returns early and leaves a surviving
+    -- live plan paired with a STALE plan_lines and no line_status, so the
+    -- table honestly reads "0 of N rows will run" while Cut would silently
+    -- apply the OLD line list. The plan is still valuable, so it is kept
+    -- rather than discarded; it just cannot be applied until the script is
+    -- mapped again. The tooltip says which.
     local dis_cut = (state.plan == nil) or state.running
-      or (#state.stale_sources > 0) or (run_error ~= nil)
+      or (#state.stale_sources > 0) or (script_error ~= nil)
     if dis_cut then im.BeginDisabled(ctx) end
     pressed_cut = im.Button(ctx, "Cut and name")
     if dis_cut then im.EndDisabled(ctx) end
@@ -1499,7 +1548,7 @@ local function loop()
         (state.plan == nil) and "Transcribe first — there is no plan to apply."
         or (#state.stale_sources > 0) and "The audio has changed since it was transcribed. Re-transcribe first."
         or state.running and "A transcription is already running."
-        or run_error and ("The plan is kept, but it cannot be applied until the script is usable again:\n" .. run_error)
+        or script_error and ("The plan is kept, but it cannot be applied until the script is usable again:\n" .. script_error)
         or "Split and name the clips from the transcribed plan.")
     end
   end
@@ -1526,7 +1575,7 @@ local function loop()
     -- plan itself to clear regardless of provenance, since Cut just applied
     -- it whether or not it was disk-backed.
     ResetVerificationFields(true)
-    state.status = "Cut applied."
+    state.status, state.status_kind = "Cut applied.", "ok"
   end
 
   if open then
