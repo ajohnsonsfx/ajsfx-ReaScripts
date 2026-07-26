@@ -277,7 +277,13 @@ end
 -- Load every sidecar for the currently selected sources into ONE plan. N files
 -- in, one plan out: the Status column folds several spans per line by rank, so
 -- a line matched in one recording and absent from another still reads matched.
-local function LoadSidecars()
+--
+-- update_status (default true) controls whether a successful load overwrites
+-- state.status. A same-source reselect passes false so a lingering message
+-- describing the current source set (e.g. "Cut applied.") survives finding
+-- exactly the sidecars it already knew about -- see the call site in loop().
+local function LoadSidecars(update_status)
+  if update_status == nil then update_status = true end
   local plan       = {}
   local stale      = {}
   local mismatches = {}
@@ -355,9 +361,22 @@ local function LoadSidecars()
 
   table.sort(plan, function(a, b) return (a.start or 0) < (b.start or 0) end)
   state.plan       = plan
-  state.plan_lines = state.preview or {}
-  state.line_status, state.orphan_count = FoldStatuses(plan, state.plan_lines)
-  state.status = string.format("Loaded %d transcribed span(s) from disk.", #plan)
+  state.plan_lines = state.preview
+  if state.plan_lines then
+    state.line_status, state.orphan_count = FoldStatuses(plan, state.plan_lines)
+  else
+    -- No usable script to fold against yet -- no CSV loaded, or a required
+    -- column unmapped, so RefreshPreview left state.preview nil. An orphan
+    -- count is meaningless without a script to be orphaned FROM: every span
+    -- just found on disk must not be miscounted as one just because the
+    -- preview hasn't been (re)computed. This is the actual site finding 1
+    -- was about -- state.plan_lines is produced HERE, so the guard belongs
+    -- here, not at whichever caller happens to run after us.
+    state.line_status, state.orphan_count = nil, 0
+  end
+  if update_status then
+    state.status = string.format("Loaded %d transcribed span(s) from disk.", #plan)
+  end
 end
 
 -- The preview table is driven by this ordered list, not hardcoded columns.
@@ -626,6 +645,22 @@ local function CharacterCombo(width)
   if not has then im.EndDisabled(ctx) end
 end
 
+-- Reset the whole group of fields that describe a plan/report, in one place,
+-- so a caller invalidating one of them (because the will-run set changed, or
+-- the script became unusable) can't leave the others describing a plan that
+-- no longer exists. Before this helper, dropped_count, script_mismatch and
+-- stale_sources survived RefreshPreview's early returns while plan/plan_lines/
+-- orphan_count did not -- see finding 4.
+local function ResetVerificationFields()
+  state.plan            = nil
+  state.plan_lines      = nil
+  state.line_status      = nil
+  state.orphan_count     = 0
+  state.dropped_count    = 0
+  state.stale_sources    = {}
+  state.script_mismatch  = ""
+end
+
 -- Recompute the will-run set. This is the same call Run() makes with the same
 -- arguments, so the table cannot drift from actual run behaviour (R4). Leaves
 -- state.preview nil (not an empty list) when the mapping is incomplete, which
@@ -634,17 +669,11 @@ local function RefreshPreview()
   state.preview_dirty = false
   state.preview = nil
   -- Anything that changes the will-run set invalidates a plan built from the
-  -- old one, so a stale Cut can never be applied. orphan_count is paired with
-  -- line_status (both come from FoldStatuses against the current plan_lines),
-  -- so it is cleared here too -- an orphan count is meaningless without a
-  -- script to be orphaned FROM, and every early-return below leaves exactly
-  -- that state until LoadSidecars (at the bottom) recomputes it against a
-  -- real preview.
-  state.plan         = nil
-  state.plan_lines   = nil
-  state.line_status  = nil
-  state.orphan_count = 0
-  state.status       = ""
+  -- old one, so a stale Cut can never be applied. The whole verification-field
+  -- group goes with it -- every early-return below leaves that state until
+  -- LoadSidecars (at the bottom) recomputes it against a real preview.
+  ResetVerificationFields()
+  state.status = ""
   if not state.header or state.header_error ~= "" or not state.rows then return end
 
   local cols = vo.MapColumns(state.header, state.mapping)
@@ -949,21 +978,30 @@ local function loop()
   -- the transcribed words against a different set of items than they came from.
   if not state.running then
     -- Any selection change reloads sidecars for whatever is now usable --
-    -- LoadSidecars always fully overwrites state.plan and everything derived
-    -- from it (plan_lines, line_status, orphan/dropped counts, stale/mismatch
-    -- lists), whether it finds spans or not, so a same-source reselect
-    -- naturally ends up with the freshly-loaded plan surviving without any
-    -- extra clearing here. Only status and sidecar_warning are left untouched
-    -- by an empty LoadSidecars pass, and those describe the previous SOURCE
-    -- set's transcription/write, so they are reset only when the source set
-    -- itself changed -- a same-source reselect must not stomp a lingering
-    -- "Cut applied." message that still describes the current source.
+    -- BUT NEVER while a live, unsaved plan sits in state.plan. That plan only
+    -- exists between a successful Transcribe and the user's next Cut or
+    -- Re-transcribe; it is real work (minutes of whisper transcription) that
+    -- exists nowhere on disk yet if the sidecar write failed. A disk load
+    -- finding nothing there would otherwise nil it out from a stray reselect
+    -- or even a shift-click adding a second item on the same source -- see
+    -- finding 2. So loading is skipped outright whenever a plan is live;
+    -- Re-transcribe and Cut are the only two actions allowed to replace it.
+    --
+    -- When there is no live plan, LoadSidecars fully overwrites state.plan
+    -- and everything derived from it (plan_lines, line_status, orphan/dropped
+    -- counts, stale/mismatch lists), whether it finds spans or not, so a
+    -- same-source reselect naturally ends up with the freshly-loaded plan
+    -- surviving without any extra clearing here. status and sidecar_warning
+    -- describe the previous SOURCE set's transcription/write, so they are
+    -- reset only when the source set itself changed; LoadSidecars is told the
+    -- same thing (via src_changed) so a same-source reselect does not stomp a
+    -- lingering "Cut applied." with "Loaded N transcribed span(s) from disk."
     local sel_changed, src_changed = RefreshSelection()
-    if sel_changed then
+    if sel_changed and not state.plan then
       if src_changed then
         state.status, state.sidecar_warning = "", ""
       end
-      LoadSidecars()
+      LoadSidecars(src_changed)
     end
   end
 
