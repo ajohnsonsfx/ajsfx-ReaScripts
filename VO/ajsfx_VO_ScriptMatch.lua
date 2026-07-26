@@ -53,11 +53,24 @@ local cfg = vo.LoadConfig()
 local backend_error = ""
 local backend_check_t = 0
 local BACKEND_CHECK_INTERVAL = 2.0 -- seconds; keeps the disk stat off the per-frame path
+-- Fields IsBackendReady actually reads. Only these are refreshed from disk on
+-- the throttle; every other field on `cfg` (including the dialog-owned
+-- use_alts_track / suffix_alt_names / primary_take, which vo.LoadConfig does
+-- not even emit) is left alone. A round 1 version of this rebound `cfg`
+-- wholesale to a fresh vo.LoadConfig() table, which is fine while idle but a
+-- data-corruption bug the instant it fires DURING a transcription: Run() is
+-- minutes long, this throttle keeps firing throughout it, and a rebind
+-- silently reverts the dialog's toggles to vo.DEFAULTS for whatever the
+-- callback reads afterward. Copying only the backend keys IN PLACE fixes the
+-- whole class rather than just this one reachable instance.
+local BACKEND_CFG_KEYS = { "whisper_bin", "whisper_model", "whisper_threads",
+                            "whisper_language", "scratch_dir", "timeout_s" }
 local function RefreshBackendError()
   local now = r.time_precise()
   if backend_check_t ~= 0 and (now - backend_check_t) < BACKEND_CHECK_INTERVAL then return end
   backend_check_t = now
-  cfg = vo.LoadConfig()
+  local fresh = vo.LoadConfig()
+  for _, key in ipairs(BACKEND_CFG_KEYS) do cfg[key] = fresh[key] end
   local ready, ready_msg = vo.IsBackendReady(cfg)
   backend_error = ready and "" or (ready_msg .. "\nRun \"ajsfx VO Settings\" to configure the speech backend.")
 end
@@ -1049,7 +1062,13 @@ local function Run()
   state.summary     = {}
   state.running     = true
 
-  vo.TranscribeSources(cfg, sources,
+  -- Captured explicitly rather than left to close over the `cfg` upvalue:
+  -- the callbacks below fire minutes later, asynchronously, and must use the
+  -- config this run actually started with, not whatever `cfg` happens to
+  -- hold by then. (RefreshBackendError no longer rebinds `cfg` at all -- see
+  -- above -- but the callback should not depend on that fact to be correct.)
+  local run_cfg = cfg
+  vo.TranscribeSources(run_cfg, sources,
     function(transcripts)
       -- Everything below is still read-only until core.Transaction runs.
       local words = {}
@@ -1068,7 +1087,7 @@ local function Run()
         return
       end
 
-      local plan = vo.BuildPlan(lines, words, cfg)
+      local plan = vo.BuildPlan(lines, words, run_cfg)
       ClampSpansToItems(plan, usable)
 
       -- The plan is the UNION of what was just transcribed and what the skipped
@@ -1091,7 +1110,7 @@ local function Run()
       -- Deliberately AFTER ClampSpansToItems above: this only writes naming
       -- fields, never start/stop, so the retained spans may stay aliased
       -- (rather than deep-copied) exactly as before.
-      vo.AssignNames(plan, cfg)
+      vo.AssignNames(plan, run_cfg)
 
       state.running       = false
       state.plan          = plan
@@ -1435,8 +1454,14 @@ local function loop()
       if state.orphan_count > 0       then rows = rows + 1 end
       if state.dropped_count > 0      then rows = rows + 1 end
       if state.sidecar_warning ~= ""  then rows = rows + 1 end
-      if run_error                    then rows = rows + 1 end
-      if state.message ~= ""          then rows = rows + 1 end
+      -- run_error and state.message are not always one line: backend_error
+      -- appends a "Run ajsfx VO Settings" line (three when ready_msg is
+      -- itself the two-line "whisper-cli not found at:\n<path>" form) and
+      -- script_error's skipped-list branch is one line PER skipped item.
+      -- Counting embedded newlines keeps the reserve exact instead of
+      -- under-sizing it and pushing the button row toward/off the bottom.
+      rows = rows + vo.CountLines(run_error)
+      rows = rows + vo.CountLines(state.message)
       rows = rows + #state.summary
 
       -- GetContentRegionAvail returns width first, so the height must come from

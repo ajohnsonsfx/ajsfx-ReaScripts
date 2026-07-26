@@ -2645,5 +2645,28 @@ test("skipped and failures both present produce two warning lines, in order", fu
   assert(lines[3].warn == true and lines[4].warn == true, "Both must be warnings")
 end)
 
+--------------------------------
+-- CountLines
+--------------------------------
+print("CountLines:")
+
+test("no newline counts as one line", function()
+  assert(vo.CountLines("single line") == 1, "Expected 1")
+end)
+
+test("empty string counts as zero lines", function()
+  assert(vo.CountLines("") == 0, "Expected 0")
+  assert(vo.CountLines(nil) == 0, "Expected 0 for nil")
+end)
+
+test("trailing newline still counts once past it", function()
+  assert(vo.CountLines("line one\n") == 2, "Expected 2")
+end)
+
+test("multiple embedded newlines count every line", function()
+  assert(vo.CountLines("whisper-cli not found at:\n/some/path") == 2, "Expected 2")
+  assert(vo.CountLines("a\nb\nc") == 3, "Expected 3")
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

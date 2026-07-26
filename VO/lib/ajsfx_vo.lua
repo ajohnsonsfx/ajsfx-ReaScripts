@@ -24,6 +24,17 @@ local function fold(s)
   return trim(s):lower()
 end
 
+-- How many display rows a message will occupy: 1 plus one for every embedded
+-- newline. Used to size UI reserves for messages whose line count varies
+-- (a path-bearing error, a concatenated skip list) rather than assuming every
+-- status message is exactly one line.
+function vo.CountLines(s)
+  if s == nil or s == "" then return 0 end
+  local n = 1
+  for _ in tostring(s):gmatch("\n") do n = n + 1 end
+  return n
+end
+
 --------------------------------
 -- Pure layer: CSV parsing
 --------------------------------
