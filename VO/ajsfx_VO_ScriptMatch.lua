@@ -1059,7 +1059,26 @@ local function Run()
   -- Nothing needs transcribing, so this press is a deliberate re-run: bypass
   -- both the sidecar and the scratch-dir transcript cache. The cache key already
   -- covers backend settings, so only the audio itself can have changed under it.
-  cfg.force_retranscribe = (#needing == 0)
+  --
+  -- The computed value may only ever force the flag ON. force_retranscribe is a
+  -- PERSISTED USER PREFERENCE ("Always re-transcribe (ignore cache)" in ajsfx VO
+  -- Settings, vo.CONFIG_SCHEMA, consumed in vo.TranscribeSources); the old
+  -- unconditional assignment turned it OFF whenever anything needed
+  -- transcribing, so a user who re-recorded over RIVA.wav and ticked the box got
+  -- the scratch-dir transcript of the OLD audio reused and a plan built from a
+  -- recording that no longer exists. The user's preference wins; the "everything
+  -- is already done, so this press means re-run" inference only adds to it.
+  --
+  -- Read fresh rather than from `cfg`: this is a Settings-owned field, and the
+  -- Settings dialog can be opened and changed while this one stays open.
+  -- vo.LoadConfig only reads ExtState (in-memory), so it is cheap here on the
+  -- press path. It is deliberately NOT added to BACKEND_CFG_KEYS: that list is
+  -- "fields IsBackendReady reads", refreshed on a 2-second throttle that keeps
+  -- firing DURING a run -- and Run writes cfg.force_retranscribe in place, so
+  -- the throttle would race that write for no benefit. Reading it at the one
+  -- point it is used gets the current value with no such interaction.
+  local user_force = vo.LoadConfig().force_retranscribe == true
+  cfg.force_retranscribe = user_force or (#needing == 0)
 
   state.plan        = nil
   state.plan_saved  = false
