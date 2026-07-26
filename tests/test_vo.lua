@@ -2396,5 +2396,102 @@ test("items with no path are skipped", function()
   assert(next(by_source) == nil, "A pathless item should produce no groups")
 end)
 
+--------------------------------
+-- SpansBySourcePath
+--------------------------------
+print("\nSpansBySourcePath:")
+
+test("spans are grouped by source and left in project time", function()
+  local plan = {
+    { start = 1,  stop = 2,  kind = "match", asset = "a" },
+    { start = 21, stop = 22, kind = "match", asset = "b" },
+  }
+  local by_path = vo.SpansBySourcePath(plan, two_source_items())
+  assert(#by_path["A.wav"] == 1, "A.wav: " .. #(by_path["A.wav"] or {}))
+  assert(near(by_path["B.wav"][1].start, 21.0),
+    "B.wav span must stay in project time, got " .. by_path["B.wav"][1].start)
+end)
+
+test("a source with no spans has no entry", function()
+  local plan = { { start = 1, stop = 2, kind = "match", asset = "a" } }
+  local by_path = vo.SpansBySourcePath(plan, two_source_items())
+  assert(by_path["B.wav"] == nil, "B.wav should have no entry")
+end)
+
+--------------------------------
+-- SourcesNeedingTranscription
+--------------------------------
+print("\nSourcesNeedingTranscription:")
+
+test("only the source without a result is returned", function()
+  -- A has a sidecar span, B has none: paying whisper time for B alone is the
+  -- whole point, and the old global 'any plan at all' test skipped B too.
+  local plan = { { start = 1, stop = 2, kind = "match", asset = "a" } }
+  local need = vo.SourcesNeedingTranscription(plan, {}, two_source_items())
+  assert(#need == 1, "Expected 1, got " .. #need)
+  assert(need[1] == "B.wav", "Expected B.wav, got " .. tostring(need[1]))
+end)
+
+test("a stale source is returned even though it has spans", function()
+  local plan = {
+    { start = 1,  stop = 2,  kind = "match", asset = "a" },
+    { start = 21, stop = 22, kind = "match", asset = "b" },
+  }
+  local need = vo.SourcesNeedingTranscription(plan, { "A.wav" }, two_source_items())
+  assert(#need == 1, "Expected 1, got " .. #need)
+  assert(need[1] == "A.wav", "Expected A.wav, got " .. tostring(need[1]))
+end)
+
+test("a source whose sidecar yielded zero spans is returned", function()
+  local need = vo.SourcesNeedingTranscription({}, {}, two_source_items())
+  assert(#need == 2, "Expected both sources, got " .. #need)
+end)
+
+test("all sources fresh returns nothing", function()
+  local plan = {
+    { start = 1,  stop = 2,  kind = "match", asset = "a" },
+    { start = 21, stop = 22, kind = "match", asset = "b" },
+  }
+  local need = vo.SourcesNeedingTranscription(plan, {}, two_source_items())
+  assert(#need == 0, "Expected none, got " .. #need)
+end)
+
+test("four fresh sidecars do not vouch for a fifth source", function()
+  local items, plan = {}, {}
+  for i = 1, 4 do
+    items[i] = { path = "S" .. i .. ".wav", pos = (i - 1) * 10, length = 10,
+                 start_offs = 0, playrate = 1.0 }
+    plan[i]  = { start = (i - 1) * 10 + 1, stop = (i - 1) * 10 + 2,
+                 kind = "match", asset = "a" .. i }
+  end
+  items[5] = { path = "S5.wav", pos = 40, length = 10, start_offs = 0, playrate = 1.0 }
+  local need = vo.SourcesNeedingTranscription(plan, {}, items)
+  assert(#need == 1, "Expected only S5.wav, got " .. #need)
+  assert(need[1] == "S5.wav", "Expected S5.wav, got " .. tostring(need[1]))
+end)
+
+test("staleness is keyed by full path, not basename", function()
+  local items = {
+    { path = "/one/VO_take.wav", pos = 0,  length = 10, start_offs = 0, playrate = 1.0 },
+    { path = "/two/VO_take.wav", pos = 20, length = 10, start_offs = 0, playrate = 1.0 },
+  }
+  local plan = {
+    { start = 1,  stop = 2,  kind = "match", asset = "a" },
+    { start = 21, stop = 22, kind = "match", asset = "b" },
+  }
+  local need = vo.SourcesNeedingTranscription(plan, { "/one/VO_take.wav" }, items)
+  assert(#need == 1, "A same-named source in another folder must not be dragged in: " .. #need)
+  assert(need[1] == "/one/VO_take.wav", "Got " .. tostring(need[1]))
+end)
+
+test("each source is returned once however many items reference it", function()
+  local items = {
+    { path = "A.wav", pos = 0,  length = 10, start_offs = 0,  playrate = 1.0 },
+    { path = "A.wav", pos = 20, length = 10, start_offs = 30, playrate = 1.0 },
+  }
+  local need = vo.SourcesNeedingTranscription(nil, nil, items)
+  assert(#need == 1, "Expected 1, got " .. #need)
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

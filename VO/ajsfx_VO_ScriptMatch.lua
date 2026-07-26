@@ -126,7 +126,11 @@ local state = {
   line_status      = nil,        -- asset -> STATUS key, from the current plan
   status           = "",         -- neutral progress note, distinct from message
   sidecar_warning  = "",         -- non-empty when a sidecar write failed (warning only)
-  stale_sources    = {},         -- base names whose audio changed since transcription
+  stale_sources    = {},         -- FULL PATHS whose audio changed since transcription
+                                 -- (paths, not base names: two selected sources
+                                 -- can share a filename in different folders,
+                                 -- and one must never mark the other stale --
+                                 -- basenames are derived only for display)
   script_mismatch  = "",         -- sidecar's script CSV path when it differs
   orphan_count     = 0,          -- spans naming a Filename absent from the script
   dropped_count    = 0,          -- spans falling outside the current items
@@ -331,7 +335,7 @@ local function LoadSidecars(update_status)
         -- span's timing in this file is suspect at once, so Cut is blocked
         -- rather than a per-line status being invented.
         if parsed.source_bytes ~= (vo.FileSize(source_path) or 0) then
-          stale[#stale + 1] = source_path:match("([^/\\]+)$") or source_path
+          stale[#stale + 1] = source_path
         end
         if parsed.script_csv ~= "" and state.csv_path ~= ""
            and parsed.script_csv ~= state.csv_path then
@@ -400,28 +404,23 @@ local function LoadSidecars(update_status)
   end
 end
 
--- A source counts as already transcribed only if its sidecar loaded cleanly AND
--- the audio still matches. A stale sidecar must NOT count: its timings are why
--- Cut is disabled, so skipping it would strand the user with no way forward.
+-- Which selected sources still need transcribing. The decision itself lives in
+-- the lib as a pure function of (plan, stale, items) so it can be unit-tested;
+-- this is only the binding of the dialog's module locals to it. Purely
+-- in-memory, so it stays safe to call from the per-frame loop.
 local function SourcesNeedingTranscription()
-  local stale = {}
-  for _, name in ipairs(state.stale_sources or {}) do stale[name] = true end
+  return vo.SourcesNeedingTranscription(state.plan, state.stale_sources, usable)
+end
 
-  local have = {}
-  for _, span in ipairs(state.plan or {}) do
-    if span.asset then have[span.asset] = true end
+-- Base names of the stale sources, for messages. state.stale_sources holds full
+-- paths so the skip decision cannot confuse two same-named recordings; only the
+-- text the user reads is shortened.
+local function StaleSourceNames()
+  local names = {}
+  for _, path in ipairs(state.stale_sources or {}) do
+    names[#names + 1] = path:match("([^/\\]+)$") or path
   end
-  local has_plan = next(have) ~= nil
-
-  local need, seen = {}, {}
-  for _, item in ipairs(usable) do
-    local base = item.path and (item.path:match("([^/\\]+)$") or item.path)
-    if item.path and not seen[item.path] then
-      seen[item.path] = true
-      if not has_plan or stale[base] then need[#need + 1] = item.path end
-    end
-  end
-  return need
+  return names
 end
 
 -- The preview table is driven by this ordered list, not hardcoded columns.
@@ -938,11 +937,45 @@ local function Run()
   for _, path in ipairs(needing) do wanted[path] = true end
 
   local seen, sources = {}, {}
+  local transcribed = {}
   for _, item in ipairs(usable) do
     if item.path and not seen[item.path] and (#needing == 0 or wanted[item.path]) then
       seen[item.path] = true
+      transcribed[item.path] = true
       sources[#sources + 1] = { path = item.path, size = vo.FileSize(item.path) or 0 }
     end
+  end
+
+  -- What the sources we are NOT re-transcribing already contribute, captured
+  -- before the plan is cleared below. Without this a partial run would REPLACE
+  -- the plan with only the freshly transcribed source and silently drop the
+  -- rest: their lines would lose their status and Cut would apply nothing for
+  -- them. These spans stay in PROJECT time (SpansBySourcePath does not convert)
+  -- so they can be concatenated with a fresh BuildPlan result, which is also in
+  -- project time -- its words came through MapWordsToProject.
+  local retained, retained_saved = {}, (state.plan_saved == true)
+  do
+    local by_path = vo.SpansBySourcePath(state.plan, usable)
+    for path, spans in pairs(by_path) do
+      if not transcribed[path] then
+        for _, span in ipairs(spans) do retained[#retained + 1] = span end
+      end
+    end
+  end
+
+  -- Every exit that ends without a new plan -- cancelled, errored, no words --
+  -- puts the retained spans back rather than leaving the user at an empty plan
+  -- for sources this run never intended to touch. state.stale_sources is not
+  -- restored because nothing cleared it: no skipped source was re-transcribed.
+  local function RestoreRetained()
+    if #retained == 0 then return end
+    local kept = {}
+    for i, span in ipairs(retained) do kept[i] = span end
+    table.sort(kept, function(a, b) return (a.start or 0) < (b.start or 0) end)
+    state.plan       = kept
+    state.plan_lines = lines
+    state.plan_saved = retained_saved
+    state.line_status, state.orphan_count = FoldStatuses(kept, lines)
   end
 
   -- Nothing needs transcribing, so this press is a deliberate re-run: bypass
@@ -970,6 +1003,7 @@ local function Run()
 
       if #words == 0 then
         state.running = false
+        RestoreRetained()
         r.MB("The transcription produced no words, so there is nothing to match.\n" ..
              "Check that the selected items contain speech.",
              "ajsfx VO ScriptMatch", 0)
@@ -979,12 +1013,26 @@ local function Run()
       local plan = vo.BuildPlan(lines, words, cfg)
       ClampSpansToItems(plan, usable)
 
+      -- The plan is the UNION of what was just transcribed and what the skipped
+      -- sources already had. Both sides are in project time, so they append
+      -- directly; the sort keeps the whole plan ordered the way LoadSidecars
+      -- and ApplyPlan expect.
+      for _, span in ipairs(retained) do plan[#plan + 1] = span end
+      table.sort(plan, function(a, b) return (a.start or 0) < (b.start or 0) end)
+
       state.running       = false
       state.plan          = plan
       state.plan_lines    = lines
-      -- A fresh transcription re-derives everything the sidecar loader would
-      -- otherwise report stale; a plan just built from live audio is current.
-      state.stale_sources   = {}
+      -- A fresh transcription re-derives everything the sidecar loader reported
+      -- stale -- but only for the sources actually re-run. A stale source that
+      -- this partial run skipped is still stale, and must keep blocking Cut:
+      -- clearing the list wholesale would re-enable Cut over unchanged-in-name,
+      -- changed-in-fact audio.
+      local kept_stale = {}
+      for _, path in ipairs(state.stale_sources or {}) do
+        if not transcribed[path] then kept_stale[#kept_stale + 1] = path end
+      end
+      state.stale_sources   = kept_stale
       state.script_mismatch = ""
       state.dropped_count   = 0
 
@@ -1004,6 +1052,9 @@ local function Run()
       -- Disk-backed only if every source was actually written; a partial
       -- write leaves this plan live-and-unsaved, same as a total failure --
       -- it must not be silently dropped by a later reselect (see loop()).
+      -- WriteSidecars was handed the MERGED plan, so the retained sources were
+      -- re-persisted too: a clean write means the whole plan is on disk, and a
+      -- failed one means it is not, retained half included.
       state.plan_saved = (#sc_failures == 0)
 
       local counts = { match = 0, review = 0, unmatched = 0 }
@@ -1014,10 +1065,12 @@ local function Run()
     end,
     function()
       state.running = false
+      RestoreRetained()
       r.MB("Cancelled. Nothing in the project was changed.", "ajsfx VO ScriptMatch", 0)
     end,
     function(message)
       state.running = false
+      RestoreRetained()
       r.MB(message .. "\n\nNothing in the project was changed.",
            "ajsfx VO ScriptMatch", 0)
     end)
@@ -1279,7 +1332,7 @@ local function loop()
     if #state.stale_sources > 0 then
       im.TextColored(ctx, 0xDDAA33FF, string.format(
         "%s has changed since it was transcribed — Re-transcribe to refresh.",
-        table.concat(state.stale_sources, ", ")))
+        table.concat(StaleSourceNames(), ", ")))
     end
     if state.script_mismatch ~= "" then
       im.TextColored(ctx, 0xDDAA33FF,
@@ -1315,7 +1368,12 @@ local function loop()
     -- Transcribe and Cut, bottom-right. Transcribe reads the audio and builds
     -- the plan; nothing in the project changes until Cut.
     local needing = SourcesNeedingTranscription()
-    local relabel = (#needing == 0) and "Re-transcribe" or "Transcribe"
+    -- "Nothing left to do" is only a claim worth making about a non-empty
+    -- selection: with no usable items #needing is trivially 0, and labelling
+    -- that "Re-transcribe" told the user every selected recording was already
+    -- transcribed when none were even selected.
+    local all_done = (#needing == 0) and (#usable > 0)
+    local relabel  = all_done and "Re-transcribe" or "Transcribe"
     RightAlign({ relabel, "Cut and name" })
 
     -- Both buttons are dead while a transcription is in flight: a second press
@@ -1325,8 +1383,12 @@ local function loop()
     pressed_run = im.Button(ctx, relabel)
     if dis_run then im.EndDisabled(ctx) end
     if im.IsItemHovered(ctx) then
+      -- A disabled button must say why it is disabled, the way Cut does below;
+      -- run_error is the only thing that disables this one besides a run in
+      -- flight, so it outranks any description of what a press would do.
       im.SetTooltip(ctx, state.running and "A transcription is already running."
-        or (#needing == 0)
+        or run_error and ("This cannot run yet:\n" .. run_error)
+        or all_done
         and "Every selected recording is already transcribed.\nThis discards those results and runs again from scratch."
         or  string.format("Transcribe %d recording(s).\nNothing in the project changes.", #needing))
     end

@@ -1407,6 +1407,61 @@ function vo.PartitionPlanBySource(plan, items)
   return by_source
 end
 
+-- Group a plan's spans by the source file whose item plays them, WITHOUT
+-- converting the times: spans come back exactly as they went in. This is the
+-- project-time sibling of PartitionPlanBySource (which converts to source time
+-- for writing sidecars) and exists for callers that must keep a SUBSET of a
+-- live plan -- a partial re-transcription retaining the sources it skipped --
+-- where converting would corrupt the very times it is trying to preserve.
+function vo.SpansBySourcePath(plan, items)
+  local by_source = {}
+  for _, span in ipairs(plan or {}) do
+    local midpoint = ((span.raw_start or span.start or 0)
+                    + (span.raw_stop  or span.stop  or 0)) / 2
+    for _, item in ipairs(items or {}) do
+      if item.path and midpoint >= item.pos and midpoint <= item.pos + (item.length or 0) then
+        by_source[item.path] = by_source[item.path] or {}
+        table.insert(by_source[item.path], span)
+        break
+      end
+    end
+  end
+  return by_source
+end
+
+-- Which of the selected sources still need transcribing. The question is asked
+-- PER SOURCE FILE, never globally: a source is skipped only when it has a
+-- usable result OF ITS OWN. Deciding from "does the plan contain anything at
+-- all" would let four good sidecars vouch for a fifth source that has none.
+--
+-- A source needs transcription when:
+--   * nothing in the plan belongs to it (no sidecar, or one that parsed to zero
+--     usable spans), or
+--   * it is listed stale -- its audio changed, so its timings are why Cut is
+--     blocked; skipping it would leave the user no way to refresh it.
+--
+-- Pure: three plain tables in, an array of source paths out. `stale` is keyed
+-- by FULL PATH, not basename, so two selected recordings that share a filename
+-- in different folders cannot stand in for each other.
+function vo.SourcesNeedingTranscription(plan, stale, items)
+  local is_stale = {}
+  for _, path in ipairs(stale or {}) do is_stale[path] = true end
+
+  local have = vo.SpansBySourcePath(plan, items)
+
+  local need, seen = {}, {}
+  for _, item in ipairs(items or {}) do
+    if item.path and not seen[item.path] then
+      seen[item.path] = true
+      local spans = have[item.path]
+      if is_stale[item.path] or not spans or #spans == 0 then
+        need[#need + 1] = item.path
+      end
+    end
+  end
+  return need
+end
+
 --------------------------------
 -- Pure layer: shell quoting
 --------------------------------
