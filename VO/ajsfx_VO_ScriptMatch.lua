@@ -1,7 +1,7 @@
 -- @description ajsfx VO ScriptMatch
 -- @author ajsfx
 -- @version 0.8
--- @changelog Transcribe and cut are now two buttons at the bottom right: Transcribe reads the audio and builds the plan without touching the project, and Cut applies it. Once a plan exists the button becomes Re-transcribe and bypasses the transcript cache. The preview table gains a Status column showing matched / review / no match per line once a transcription has run. Changing the CSV, mapping, filters or skip tokens discards a plan built before the change
+-- @changelog Transcribe and cut are now two buttons at the bottom right: Transcribe reads the audio and builds the plan without touching the project, and Cut applies it. Once a plan exists the button becomes Re-transcribe and bypasses the transcript cache. The preview table gains a Status column showing matched / review / no match per line once a transcription has run. Changing the CSV, mapping, filters or skip tokens discards a plan built before the change. Layout presets no longer load the moment you pick one from the droplist: choosing a preset only selects it, Load applies it, and Save writes the current layout back over the selected preset after a confirmation. Editing a mapping keeps the preset name so it can be updated without retyping it
 -- @about Cut a recorded VO session into one clip per script line and name each
 --        clip with its delivery asset name. Reads a CSV script, transcribes the
 --        selected items locally with whisper.cpp, matches spoken spans against
@@ -122,8 +122,10 @@ local state = {
   header_error     = "",         -- unreadable / no data / bad header -> run disabled
   mapping          = {},         -- role -> header column name
   skip_text        = "",         -- skip tokens, one per line (part of the layout)
-  layout_name      = "",         -- selected preset name ("" = unsaved/inline)
+  layout_name      = "",         -- preset the current layout came from ("" = inline)
   layout_dirty     = false,      -- mapping edited away from the named preset
+  layout_sel       = "",         -- name highlighted in the preset droplist, not
+                                 -- necessarily loaded: Load/Save/Delete act on it
   character        = nil,        -- folded character key to keep, nil = all (R3)
   distinct         = nil,        -- vo.DistinctCharacters for the mapped speaker column
   preview          = nil,        -- cached BuildScriptLines result (R4)
@@ -292,6 +294,7 @@ local function RestoreLayoutFromMemory()
   ApplyLayoutTable(layout)
   state.layout_name  = name
   state.layout_dirty = false
+  state.layout_sel   = name
 end
 
 -- Read, parse and header-validate a CSV path into dialog state. `restore` true
@@ -349,12 +352,16 @@ local function DoSave(name)
   if not ok then state.message = reason; return end
   local exists = false
   for _, n in ipairs(vo.ListLayoutPresets()) do if n == name then exists = true; break end end
-  if exists and r.MB("A layout preset named \"" .. name .. "\" already exists.\n" ..
-                     "Overwrite it?", "Overwrite layout preset", 4) ~= 6 then
+  if exists and r.MB("Overwrite the layout preset \"" .. name .. "\" with the\n" ..
+                     "current column mapping and skip tokens?",
+                     "Overwrite layout preset", 4) ~= 6 then
     return
   end
   if vo.SaveLayoutPreset(name, CurrentLayout()) then
     state.layout_name, state.layout_dirty = name, false
+    -- Saving also makes this the droplist selection, so a second Save updates
+    -- the same preset rather than falling back to a name prompt.
+    state.layout_sel = name
     state.message = "Saved layout preset \"" .. name .. "\"."
   else
     state.message = "Could not save the layout preset."
@@ -367,14 +374,17 @@ local function LoadPresetByName(name)
   if not layout then state.message = "Preset not found: " .. name; return end
   ApplyLayoutTable(layout)
   state.layout_name, state.layout_dirty = name, false
+  state.layout_sel = name
   RebuildDistinct()
   state.preview_dirty = true
 end
 
--- Any mapping/skip edit deviates from the named preset -> mark unsaved.
+-- Any mapping/skip edit deviates from the named preset -> mark unsaved. The
+-- name is deliberately kept: it is what Save writes back to, which is the whole
+-- point of editing a preset. PersistProjectMemory already refuses to persist a
+-- dirty layout_name, so §5.3 restore precedence is unaffected.
 local function MarkDirty()
   state.layout_dirty = true
-  state.layout_name  = ""
 end
 
 -- One column selector. The label lives inside the control as the preview text,
@@ -768,56 +778,81 @@ local function loop()
       -- Layout & presets ---------------------------------------------------
       im.Spacing(ctx)
       if im.CollapsingHeader(ctx, "Layout & presets") then
+        -- The droplist only *selects*; nothing is loaded until Load is pressed.
+        -- Selecting is therefore free of consequences, and Save has a target to
+        -- write back to without the user retyping the name.
         local preset_names = vo.ListLayoutPresets()
-        local preset_items = { "(unsaved)" }
+        local preset_items = { "(none)" }
         for _, n in ipairs(preset_names) do preset_items[#preset_items + 1] = n end
+        -- The selection is tracked by NAME, not index: Save As inserts into the
+        -- sorted list and would silently shift a stored index onto a neighbour.
         local preset_cur = 0
-        if state.layout_name ~= "" and not state.layout_dirty then
-          for i, n in ipairs(preset_names) do
-            if n == state.layout_name then preset_cur = i; break end
-          end
+        for i, n in ipairs(preset_names) do
+          if n == state.layout_sel then preset_cur = i; break end
         end
         local pchanged, psel = im.Combo(ctx, "Preset", preset_cur,
           table.concat(preset_items, "\0") .. "\0\0")
-        if pchanged and psel ~= preset_cur then
-          if psel == 0 then
-            state.layout_name, state.layout_dirty = "", true
-          else
-            LoadPresetByName(preset_names[psel])
-          end
+        if pchanged then
+          state.layout_sel = (psel > 0) and preset_names[psel] or ""
         end
 
-        if im.Button(ctx, "Save") then
-          if state.layout_name ~= "" then
-            DoSave(state.layout_name)
-          else
-            local ok, name = r.GetUserInputs("Save layout preset", 1,
-              "Preset name:,extrawidth=180", "")
-            if ok then DoSave(name) end
-          end
+        -- Capture every disabled flag BEFORE its button: these buttons mutate
+        -- layout_sel in the same frame, so gating EndDisabled on a re-read would
+        -- unbalance the ImGui stack (see Settings dis_bin/dis_model/dis_check).
+        local no_sel = (state.layout_sel == "")
+
+        if no_sel then im.BeginDisabled(ctx) end
+        if im.Button(ctx, "Load") then LoadPresetByName(state.layout_sel) end
+        if no_sel then im.EndDisabled(ctx) end
+        if im.IsItemHovered(ctx) then
+          im.SetTooltip(ctx, no_sel and "Choose a preset above first."
+            or "Replace the current mapping and skip tokens with this preset.")
         end
+
+        im.SameLine(ctx)
+        if no_sel then im.BeginDisabled(ctx) end
+        if im.Button(ctx, "Save") then DoSave(state.layout_sel) end
+        if no_sel then im.EndDisabled(ctx) end
+        if im.IsItemHovered(ctx) then
+          im.SetTooltip(ctx, no_sel and "Choose a preset above, or use Save As…"
+            or ("Overwrite \"" .. state.layout_sel .. "\" with the current layout."))
+        end
+
         im.SameLine(ctx)
         if im.Button(ctx, "Save As...") then
           local ok, name = r.GetUserInputs("Save layout preset as", 1,
-            "Preset name:,extrawidth=180", state.layout_name)
+            "Preset name:,extrawidth=180", state.layout_sel)
           if ok then DoSave(name) end
         end
+
         im.SameLine(ctx)
-        -- Capture the disabled state BEFORE the button: Delete clears layout_name
-        -- in this same frame, so gating EndDisabled on a re-read would unbalance
-        -- the ImGui stack (see Settings dis_bin/dis_model/dis_check).
-        local dis_del = (state.layout_name == "")
-        if dis_del then im.BeginDisabled(ctx) end
+        if no_sel then im.BeginDisabled(ctx) end
         if im.Button(ctx, "Delete") then
-          local nm = state.layout_name
+          local nm = state.layout_sel
           if nm ~= "" and r.MB("Delete layout preset \"" .. nm .. "\"?",
                                "Delete layout preset", 4) == 6 then
             vo.DeleteLayoutPreset(nm)
-            state.layout_name, state.layout_dirty = "", true
+            state.layout_sel = ""
+            -- The mapping in the dialog stays as it is; it just no longer has a
+            -- preset behind it, so it persists inline instead.
+            if state.layout_name == nm then
+              state.layout_name, state.layout_dirty = "", true
+            end
             state.message = "Deleted layout preset \"" .. nm .. "\"."
           end
         end
-        if dis_del then im.EndDisabled(ctx) end
+        if no_sel then im.EndDisabled(ctx) end
+
+        -- What the current mapping actually is, which the droplist no longer
+        -- says now that selecting and loading are separate.
+        if state.layout_name == "" then
+          im.TextDisabled(ctx, "Current layout: not saved to a preset.")
+        elseif state.layout_dirty then
+          im.TextColored(ctx, 0xDDAA33FF,
+            "Current layout: " .. state.layout_name .. " (edited, not saved).")
+        else
+          im.TextDisabled(ctx, "Current layout: " .. state.layout_name .. ".")
+        end
 
         -- Skip tokens live with the presets because they are saved into one.
         im.Spacing(ctx)
