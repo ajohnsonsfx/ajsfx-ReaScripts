@@ -1520,11 +1520,18 @@ end
 -- spans onto track 1's items (simultaneous boom + lav takes). The dialog gates
 -- Cut on this being 1; transcription across several tracks stays fine.
 function vo.DistinctTrackCount(items)
+  -- Keyed by tostring, not by the value itself: a MediaTrack* comes back from
+  -- the API as userdata, and identity as a TABLE KEY depends on REAPER handing
+  -- back the same object rather than a fresh wrapper around the same pointer.
+  -- tostring gives "(MediaTrack*)0x…", which is the pointer either way.
   local seen, n = {}, 0
   for _, item in ipairs(items or {}) do
-    if item.track ~= nil and not seen[item.track] then
-      seen[item.track] = true
-      n = n + 1
+    if item.track ~= nil then
+      local key = tostring(item.track)
+      if not seen[key] then
+        seen[key] = true
+        n = n + 1
+      end
     end
   end
   return n
