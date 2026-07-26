@@ -400,6 +400,30 @@ local function LoadSidecars(update_status)
   end
 end
 
+-- A source counts as already transcribed only if its sidecar loaded cleanly AND
+-- the audio still matches. A stale sidecar must NOT count: its timings are why
+-- Cut is disabled, so skipping it would strand the user with no way forward.
+local function SourcesNeedingTranscription()
+  local stale = {}
+  for _, name in ipairs(state.stale_sources or {}) do stale[name] = true end
+
+  local have = {}
+  for _, span in ipairs(state.plan or {}) do
+    if span.asset then have[span.asset] = true end
+  end
+  local has_plan = next(have) ~= nil
+
+  local need, seen = {}, {}
+  for _, item in ipairs(usable) do
+    local base = item.path and (item.path:match("([^/\\]+)$") or item.path)
+    if item.path and not seen[item.path] then
+      seen[item.path] = true
+      if not has_plan or stale[base] then need[#need + 1] = item.path end
+    end
+  end
+  return need
+end
+
 -- The preview table is driven by this ordered list, not hardcoded columns.
 -- kind = "mapped" -> a column selector in the header, body values from the CSV.
 -- kind = "computed" -> a static header label and a body from render(line); the
@@ -906,20 +930,25 @@ local function Run()
 
   ApplyCfg()
 
-  -- One transcription per unique source file, however many items use it.
+  -- One transcription per unique source file, however many items use it, and
+  -- only those that need it: a source whose sidecar loaded cleanly and still
+  -- matches its audio is skipped.
+  local needing = SourcesNeedingTranscription()
+  local wanted  = {}
+  for _, path in ipairs(needing) do wanted[path] = true end
+
   local seen, sources = {}, {}
   for _, item in ipairs(usable) do
-    if not seen[item.path] then
+    if item.path and not seen[item.path] and (#needing == 0 or wanted[item.path]) then
       seen[item.path] = true
       sources[#sources + 1] = { path = item.path, size = vo.FileSize(item.path) or 0 }
     end
   end
 
-  -- A plan already in hand means this is a deliberate second press, so bypass
-  -- the scratch-dir transcript cache and actually re-run whisper. The first
-  -- press reuses a cached transcript as before; the cache key already covers
-  -- backend settings, so only the audio itself can have changed underneath it.
-  cfg.force_retranscribe = (state.plan ~= nil)
+  -- Nothing needs transcribing, so this press is a deliberate re-run: bypass
+  -- both the sidecar and the scratch-dir transcript cache. The cache key already
+  -- covers backend settings, so only the audio itself can have changed under it.
+  cfg.force_retranscribe = (#needing == 0)
 
   state.plan        = nil
   state.plan_saved  = false
@@ -1285,7 +1314,8 @@ local function loop()
 
     -- Transcribe and Cut, bottom-right. Transcribe reads the audio and builds
     -- the plan; nothing in the project changes until Cut.
-    local relabel = state.plan and "Re-transcribe" or "Transcribe"
+    local needing = SourcesNeedingTranscription()
+    local relabel = (#needing == 0) and "Re-transcribe" or "Transcribe"
     RightAlign({ relabel, "Cut and name" })
 
     -- Both buttons are dead while a transcription is in flight: a second press
@@ -1296,9 +1326,9 @@ local function loop()
     if dis_run then im.EndDisabled(ctx) end
     if im.IsItemHovered(ctx) then
       im.SetTooltip(ctx, state.running and "A transcription is already running."
-        or state.plan
-        and "Discard the current plan and transcribe the audio again from scratch."
-        or  "Transcribe the selected items and build the cut plan.\nNothing in the project changes.")
+        or (#needing == 0)
+        and "Every selected recording is already transcribed.\nThis discards those results and runs again from scratch."
+        or  string.format("Transcribe %d recording(s).\nNothing in the project changes.", #needing))
     end
 
     im.SameLine(ctx)
