@@ -188,10 +188,18 @@ local function SelectionKey()
   return table.concat(parts, "\31")
 end
 
--- Returns true when the set of selected source files changed this frame.
+-- Returns two values: (selection_changed, source_changed). selection_changed
+-- is true whenever the set of SELECTED ITEMS changed this frame (a shift-click
+-- swapping one item on a source for another counts, even if no source file
+-- was added or dropped). source_changed is true only when the underlying set
+-- of SOURCE FILES also changed. The two are deliberately not the same thing:
+-- a same-source reselect (e.g. picking a different span on the same take)
+-- must still reload sidecars for the newly usable items -- that is what
+-- "load sidecars on selection change" means -- but it must not blow away a
+-- plan the user just transcribed the way an actual source-set change should.
 local function RefreshSelection()
   local sel_key = SelectionKey()
-  if sel_key == state.selection_key then return false end
+  if sel_key == state.selection_key then return false, false end
   state.selection_key = sel_key
 
   -- The selection itself changed (a cheap fact); only now is it worth paying
@@ -209,9 +217,9 @@ local function RefreshSelection()
     end
   end
 
-  if key == state.source_key then return false end
+  local source_changed = key ~= state.source_key
   state.source_key = key
-  return true
+  return true, source_changed
 end
 
 -- -----------------------------------------------------------------------
@@ -270,10 +278,10 @@ end
 -- in, one plan out: the Status column folds several spans per line by rank, so
 -- a line matched in one recording and absent from another still reads matched.
 local function LoadSidecars()
-  local plan            = {}
-  local stale           = {}
-  local script_mismatch = ""
-  local dropped         = 0
+  local plan       = {}
+  local stale      = {}
+  local mismatches = {}
+  local dropped    = 0
 
   -- Distinct sources, each with the items that currently reference it.
   local by_source = {}
@@ -284,7 +292,15 @@ local function LoadSidecars()
     end
   end
 
-  for source_path, its in pairs(by_source) do
+  -- Sorted so a source-file name is deterministic across runs on identical
+  -- input; pairs() order is not, and it must not decide which mismatching
+  -- sidecar gets named when several selected sources disagree with the CSV.
+  local source_paths = {}
+  for source_path in pairs(by_source) do source_paths[#source_paths + 1] = source_path end
+  table.sort(source_paths)
+
+  for _, source_path in ipairs(source_paths) do
+    local its  = by_source[source_path]
     local path = vo.SidecarPath(source_path)
     if path and vo.FileExists(path) then
       local parsed = vo.ParseSidecar(ReadFile(path))
@@ -297,7 +313,7 @@ local function LoadSidecars()
         end
         if parsed.script_csv ~= "" and state.csv_path ~= ""
            and parsed.script_csv ~= state.csv_path then
-          script_mismatch = parsed.script_csv
+          mismatches[#mismatches + 1] = { source_path, parsed.script_csv }
         end
 
         for _, span in ipairs(parsed.spans) do
@@ -324,8 +340,11 @@ local function LoadSidecars()
     end
   end
 
+  -- Deterministic even with several mismatching sources: source_paths above is
+  -- sorted, so the first entry appended to mismatches is always the same one
+  -- for identical input, never whichever pairs() happened to visit last.
   state.stale_sources   = stale
-  state.script_mismatch = script_mismatch
+  state.script_mismatch = mismatches[1] and mismatches[1][2] or ""
   state.dropped_count   = dropped
 
   if #plan == 0 then
@@ -615,11 +634,17 @@ local function RefreshPreview()
   state.preview_dirty = false
   state.preview = nil
   -- Anything that changes the will-run set invalidates a plan built from the
-  -- old one, so a stale Cut can never be applied.
-  state.plan        = nil
-  state.plan_lines  = nil
-  state.line_status = nil
-  state.status      = ""
+  -- old one, so a stale Cut can never be applied. orphan_count is paired with
+  -- line_status (both come from FoldStatuses against the current plan_lines),
+  -- so it is cleared here too -- an orphan count is meaningless without a
+  -- script to be orphaned FROM, and every early-return below leaves exactly
+  -- that state until LoadSidecars (at the bottom) recomputes it against a
+  -- real preview.
+  state.plan         = nil
+  state.plan_lines   = nil
+  state.line_status  = nil
+  state.orphan_count = 0
+  state.status       = ""
   if not state.header or state.header_error ~= "" or not state.rows then return end
 
   local cols = vo.MapColumns(state.header, state.mapping)
@@ -923,13 +948,21 @@ local function loop()
   -- callbacks captured `usable`, and rebuilding it underneath them would map
   -- the transcribed words against a different set of items than they came from.
   if not state.running then
-    -- A changed source set invalidates any plan built from the old one; load
-    -- whatever sidecars exist for the new selection in its place.
-    if RefreshSelection() then
-      state.plan, state.plan_lines, state.line_status = nil, nil, nil
-      state.status, state.sidecar_warning = "", ""
-      state.stale_sources, state.script_mismatch = {}, ""
-      state.orphan_count, state.dropped_count = 0, 0
+    -- Any selection change reloads sidecars for whatever is now usable --
+    -- LoadSidecars always fully overwrites state.plan and everything derived
+    -- from it (plan_lines, line_status, orphan/dropped counts, stale/mismatch
+    -- lists), whether it finds spans or not, so a same-source reselect
+    -- naturally ends up with the freshly-loaded plan surviving without any
+    -- extra clearing here. Only status and sidecar_warning are left untouched
+    -- by an empty LoadSidecars pass, and those describe the previous SOURCE
+    -- set's transcription/write, so they are reset only when the source set
+    -- itself changed -- a same-source reselect must not stomp a lingering
+    -- "Cut applied." message that still describes the current source.
+    local sel_changed, src_changed = RefreshSelection()
+    if sel_changed then
+      if src_changed then
+        state.status, state.sidecar_warning = "", ""
+      end
       LoadSidecars()
     end
   end
@@ -1204,7 +1237,13 @@ local function loop()
   elseif pressed_cut and state.plan then
     state.message = ""
     Finish(state.plan, state.plan_lines)
-    state.plan, state.plan_lines = nil, nil
+    -- Clear every verification field the plan being applied described, not
+    -- just the plan itself -- otherwise "N transcribed span(s) fall outside
+    -- the selected items" keeps rendering under "Cut applied." until the next
+    -- selection change happens to recompute them.
+    state.plan, state.plan_lines, state.line_status = nil, nil, nil
+    state.orphan_count, state.dropped_count = 0, 0
+    state.script_mismatch = ""
     state.status = "Cut applied."
   end
 
