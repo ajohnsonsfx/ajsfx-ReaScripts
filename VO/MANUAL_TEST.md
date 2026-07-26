@@ -439,6 +439,72 @@ This is the item verified as part of Task 6's review fix — confirm it directly
 
 ---
 
+## VO Overview
+
+Needs a project with **two** recordings that already have sidecars (finish the
+section above first), a script CSV covering both, and at least one script line
+that was never recorded.
+
+### Reading the session
+
+1. Open **ajsfx VO Overview**. One table lists both recordings' spans plus every
+   script line, regardless of what is selected in the arrange view.
+2. A line the script has but neither recording matched shows **Missing**.
+3. Audio that matched no script line shows **Orphan**, listed after everything else.
+4. The summary line counts *lines*, not takes: five takes of one line still reads
+   as one line delivered.
+5. Set the status filter to **Missing**. Only missing lines remain; the summary
+   does not change.
+6. Type part of a line's text into the search box. Rows filter as you type.
+
+### Navigating
+
+7. Click a row from the first recording. The edit cursor moves to it and the item
+   is selected. Click one from the second recording — same, on the other item.
+8. Click a Missing row. Nothing moves, the row is dimmed, and hovering explains why.
+9. A line with several takes shows sibling rows numbered `1/3`, `2/3`, `3/3`, with
+   the last carrying the Sel radio. Click Sel on take 1 — it moves, and take 3
+   clears.
+
+### Marking work
+
+10. Tick **OK** on a few rows. Select a row and press `Space` — it toggles.
+    Click into Notes, type a space — the row does *not* toggle.
+11. Type a note containing a comma and a quote. Close the window, reopen it: the
+    note is intact.
+12. Open `<project>_vo_tracker.csv` in Excel. It is legible, and holds only the
+    rows you actually marked.
+
+### Renaming
+
+13. Edit a Filename cell and press Enter. The take name changes in the arrange
+    view and an amber `*` appears on the row.
+14. `Ctrl+Z` once. The take name reverts — one edit is one undo step.
+15. Type a name of only illegal characters (`///`). An inline error appears and
+    nothing is renamed.
+
+### The acceptance test
+
+16. **Re-transcribe one of the two recordings in ScriptMatch.** Return to
+    Overview and press **Refresh**. Every verified mark, note and rename on that
+    recording is still there, and the other recording is untouched.
+17. **Cut** in ScriptMatch, then Refresh Overview. Row → item navigation still
+    lands correctly on the now-split items.
+18. Move the project and its audio to another folder, reopen, Refresh. The marks
+    are still found by basename.
+
+### Degrading safely
+
+19. Corrupt the tracker (delete its first line) and reopen. The window opens, an
+    inline error names the file, and **nothing is saved** until it is fixed —
+    confirm the file on disk is not overwritten.
+20. Corrupt one sidecar. The window opens, names that file inline, and the other
+    recording's rows still load.
+21. Open Overview in an unsaved project. It warns that marks cannot be saved and
+    otherwise works.
+
+---
+
 ## Recording results
 
 Note anything that differs from the expectations above directly in

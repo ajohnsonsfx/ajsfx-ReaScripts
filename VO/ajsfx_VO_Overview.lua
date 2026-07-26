@@ -1,0 +1,805 @@
+-- @noindex
+-- Provided by the ajsfx VO ScriptMatch package; see that script's @provides.
+--
+-- ajsfx VO Overview — a project-wide picture of the dialogue in a session.
+--
+-- Every line the script says should exist, every span the sidecars say does
+-- exist, in one table across every recording in the project. This script does
+-- not transcribe, cut, or pull selects: it reads what ScriptMatch wrote and
+-- adds the one thing nothing else records, which is what the USER decided.
+-- See VO/SPEC-overview.md.
+
+local r = reaper
+
+local script_path = debug.getinfo(1, "S").source:match("@?(.*[\\/])")
+if not script_path then script_path = "" end
+package.path = script_path .. "?.lua;" .. script_path .. "../?.lua;" .. package.path
+local core = require("lib.ajsfx_core")
+local vo   = require("lib.ajsfx_vo")
+
+local success, im = pcall(function()
+  package.path = r.ImGui_GetBuiltinPath() .. '/?.lua;' .. package.path
+  return require('imgui')('0.9.3')
+end)
+if not success then
+  r.MB("This script requires the 'imgui' library.\n\n" ..
+       "Install ReaImGui: ReaScript binding for Dear ImGui via ReaPack.",
+       "Library not found", 0)
+  return
+end
+
+-- Shared with ScriptMatch on purpose: the script CSV and its column layout are
+-- properties of the PROJECT, not of whichever dialog is open. Map the columns
+-- once in ScriptMatch and this window already knows them.
+local PROJ_SECTION = "ajsfx_vo"
+
+-- Sidecars are read off disk, so the rebuild cannot sit on the per-frame path.
+-- A project-state probe decides WHETHER to rebuild; this decides how often that
+-- question may lead to actual file I/O.
+local RELOAD_THROTTLE = 1.5   -- seconds
+local FLUSH_THROTTLE  = 2.0   -- seconds between tracker writes while typing
+
+local STATUS_STYLE = {
+  recorded = { label = "Recorded", colour = 0x66BB66FF },
+  review   = { label = "Review",   colour = 0xDDAA33FF },
+  missing  = { label = "Missing",  colour = 0xDD6666FF },
+  orphan   = { label = "Orphan",   colour = 0x9999AAFF },
+}
+
+local COLUMNS = {
+  { key = "verify",     label = "OK",         width =  28 },
+  { key = "status",     label = "Status",     width =  74 },
+  { key = "primary",    label = "Sel",        width =  32 },
+  { key = "character",  label = "Character",  width =  90 },
+  { key = "asset",      label = "Filename",   width = 190 },
+  { key = "take",       label = "Take",       width =  44 },
+  { key = "line_text",  label = "Line text",  width = 240 },
+  { key = "transcript", label = "Transcript", width = 240 },
+  { key = "source",     label = "Source",     width = 120 },
+  { key = "time",       label = "Time",       width =  76 },
+  { key = "notes",      label = "Notes",      width = 200 },
+}
+
+local SORTS = {
+  { key = "script",    label = "Script order" },
+  { key = "status",    label = "Status" },
+  { key = "filename",  label = "Filename" },
+  { key = "character", label = "Character" },
+  { key = "timeline",  label = "Timeline position" },
+}
+
+local STATUS_FILTERS = {
+  { key = "all",       label = "All" },
+  { key = "missing",   label = "Missing" },
+  { key = "review",    label = "Needs review" },
+  { key = "orphan",    label = "Orphans" },
+  { key = "unverified",label = "Not yet verified" },
+  { key = "verified",  label = "Verified" },
+  { key = "flagged",   label = "Flagged" },
+}
+
+local state = {
+  csv_path      = "",
+  header        = nil,
+  rows          = nil,        -- raw script CSV rows
+  mapping       = {},
+  skip_values   = nil,
+  header_error  = "",
+
+  items         = {},         -- vo.CollectProjectSpans()
+  sidecars      = {},         -- { { path=, spans= }, ... }
+  sidecar_errors = {},
+
+  tracker       = {},         -- vo.ParseTracker entries, the in-memory truth
+  tracker_path  = nil,
+  tracker_error = "",
+  dirty         = false,
+  last_flush    = 0,
+
+  overview      = {},         -- vo.BuildOverview result
+  visible       = {},         -- after filters
+  summary       = {},
+
+  probe         = nil,
+  last_reload   = 0,
+  selected_key  = nil,
+
+  sort          = "script",
+  status_filter = "all",
+  character     = nil,
+  search        = "",
+
+  message       = "",
+  message_kind  = "ok",
+}
+
+-- -----------------------------------------------------------------------
+-- Disk
+-- -----------------------------------------------------------------------
+
+local function ReadFile(path)
+  local f = io.open(path, "rb")
+  if not f then return nil end
+  local text = f:read("*a")
+  f:close()
+  return text
+end
+
+local function WriteFile(path, text)
+  local f = io.open(path, "wb")
+  if not f then return false end
+  f:write(text)
+  f:close()
+  return true
+end
+
+local function ProjectPath()
+  local _, path = r.EnumProjects(-1, "")
+  return path or ""
+end
+
+-- -----------------------------------------------------------------------
+-- The script side
+-- -----------------------------------------------------------------------
+
+local function LoadCSV(path)
+  state.header, state.rows, state.header_error = nil, nil, ""
+  if not path or path == "" then return end
+
+  local text = ReadFile(path)
+  if not text then
+    state.header_error = "Cannot read the script CSV:\n" .. path
+    return
+  end
+
+  local rows = vo.ParseCSV(text)
+  if #rows < 1 then
+    state.header_error = "The script CSV is empty."
+    return
+  end
+
+  local header = table.remove(rows, 1)
+  local ok, err = vo.ValidateHeaderNames(header)
+  if not ok then
+    state.header_error = err
+    return
+  end
+
+  state.header, state.rows = header, rows
+  if #rows == 0 then state.header_error = "The script CSV has no data rows." end
+end
+
+-- The mapping ScriptMatch persisted for this project, falling back to whatever
+-- the header itself suggests. A project whose columns were never mapped still
+-- opens with something sensible rather than an empty table.
+local function RestoreLayout()
+  local _, serialized = r.GetProjExtState(0, PROJ_SECTION, "layout")
+  local layout = (serialized ~= "") and vo.DeserializeLayout(serialized) or nil
+
+  if layout and layout.mapping and next(layout.mapping) then
+    state.mapping = layout.mapping
+  elseif state.header then
+    state.mapping = vo.AutoDetectMapping(state.header)
+  else
+    state.mapping = {}
+  end
+  state.skip_values = layout and layout.skip_values or nil
+end
+
+-- The script lines this project expects, after skip tokens and the character
+-- filter. Returns an empty list (never nil) so callers need no special case.
+local function ScriptLines()
+  if not state.header or not state.rows or state.header_error ~= "" then return {} end
+  local cols = vo.MapColumns(state.header, state.mapping)
+  if not cols then return {} end
+  return vo.BuildScriptLines(state.rows, cols, { skip_values = state.skip_values })
+end
+
+-- -----------------------------------------------------------------------
+-- The audio side
+-- -----------------------------------------------------------------------
+
+local function LoadSidecars()
+  state.items = vo.CollectProjectSpans()
+  state.sidecars, state.sidecar_errors = {}, {}
+
+  for _, path in ipairs(vo.ProjectSourcePaths(state.items)) do
+    local sc_path = vo.SidecarPath(path)
+    local text = sc_path and ReadFile(sc_path) or nil
+    if text then
+      local parsed, reason = vo.ParseSidecar(text)
+      if parsed then
+        state.sidecars[#state.sidecars + 1] = { path = path, spans = parsed.spans }
+      else
+        -- Named, not swallowed: a sidecar that stopped loading is exactly the
+        -- kind of silent gap this window exists to make visible.
+        state.sidecar_errors[#state.sidecar_errors + 1] =
+          vo.Basename(sc_path) .. ": " .. tostring(reason)
+      end
+    end
+  end
+end
+
+local function LoadTracker()
+  state.tracker, state.tracker_error = {}, ""
+  local proj = ProjectPath()
+  state.tracker_path = (proj ~= "") and vo.TrackerPath(proj) or nil
+  if not state.tracker_path then return end
+
+  local text = ReadFile(state.tracker_path)
+  if not text then return end          -- no tracker yet is the normal first run
+
+  local entries, reason = vo.ParseTracker(text)
+  if entries then
+    state.tracker = entries
+  else
+    -- The file is NOT overwritten on a parse failure: writing would destroy
+    -- whatever the user still has in there. Saving stays off until they fix or
+    -- remove it, and the window says so.
+    state.tracker_error = "Cannot read " .. vo.Basename(state.tracker_path)
+                       .. ": " .. tostring(reason)
+  end
+end
+
+local function FlushTracker(force)
+  if not state.dirty or state.tracker_error ~= "" or not state.tracker_path then return end
+  if not force and (r.time_precise() - state.last_flush) < FLUSH_THROTTLE then return end
+
+  if WriteFile(state.tracker_path, vo.SerializeTracker(state.tracker)) then
+    state.dirty, state.last_flush = false, r.time_precise()
+  else
+    state.message, state.message_kind =
+      "Cannot write " .. tostring(state.tracker_path), "error"
+  end
+end
+
+-- -----------------------------------------------------------------------
+-- Assembly
+-- -----------------------------------------------------------------------
+
+local function Rebuild()
+  state.overview = vo.BuildOverview({
+    lines    = ScriptLines(),
+    sidecars = state.sidecars,
+    tracker  = state.tracker,
+    cfg      = vo.LoadConfig(),
+  })
+  state.summary = vo.SummarizeOverview(state.overview)
+
+  -- Resolve each row to a live item once per rebuild rather than per frame:
+  -- this walks every project item per row and is far too expensive to redo at
+  -- frame rate on a long session.
+  for _, row in ipairs(state.overview) do
+    if row.source_path and row.source_start then
+      local item, proj_time = vo.ResolveSourceTime(row.source_path, row.source_start, state.items)
+      row.item, row.proj_time = item, proj_time
+    end
+  end
+end
+
+local function Reload()
+  LoadSidecars()
+  Rebuild()
+  state.last_reload = r.time_precise()
+end
+
+-- Cheap enough to run every frame. The state-change counter moves on any edit
+-- (an item split, moved, renamed, deleted), which is precisely when a row's
+-- resolved item and the sidecar coverage can go stale.
+local function Probe()
+  return tostring(r.GetProjectStateChangeCount(0)) .. ":" .. tostring(r.CountMediaItems(0))
+end
+
+-- -----------------------------------------------------------------------
+-- User edits
+-- -----------------------------------------------------------------------
+
+-- The tracker entry backing a row, created on demand. Rows are rebuilt often,
+-- so edits are written to the tracker (which survives) rather than to the row.
+local function EntryFor(row)
+  for _, e in ipairs(state.tracker) do
+    if e.key == row.key and (e.source or "") == (row.source_path or "") then return e end
+  end
+  local e = {
+    key = row.key, source = row.source_path, source_start = row.source_start,
+    asset = row.asset, primary = false,
+  }
+  state.tracker[#state.tracker + 1] = e
+  return e
+end
+
+local function Mutate(row, fn)
+  fn(EntryFor(row))
+  state.dirty = true
+  Rebuild()
+end
+
+local function SetStatus(row, status)
+  Mutate(row, function(e) e.status = status end)
+end
+
+local function SetNotes(row, notes)
+  Mutate(row, function(e) e.notes = (notes ~= "") and notes or nil end)
+end
+
+-- Exactly one take of a line may be the select, so choosing one clears the rest
+-- of its group. Without this the tracker could hold two "yes" rows for one
+-- filename and BuildOverview would silently pick whichever came first.
+local function SetPrimary(row)
+  for _, other in ipairs(state.overview) do
+    if other.asset == row.asset and other.status ~= "orphan" and other.user_primary then
+      Mutate(other, function(e) e.primary = false end)
+    end
+  end
+  Mutate(row, function(e) e.primary = true end)
+end
+
+-- Renaming is the one edit that reaches into the project. It is recorded in the
+-- tracker AND applied to the take, so the delivery name survives even if the
+-- item is later deleted, and one edit is one undo step.
+local function Rename(row, name)
+  local clean = vo.SanitizeName(name)
+  if clean == "" then
+    state.message, state.message_kind =
+      "That name has no characters a filesystem will accept.", "error"
+    return
+  end
+
+  Mutate(row, function(e) e.name_override = clean end)
+
+  if not row.item then return end     -- tracked only; the audio is not loaded
+  core.Transaction("VO Overview: rename take", function()
+    local take = r.GetActiveTake(row.item)
+    if take then
+      r.GetSetMediaItemTakeInfo_String(take, "P_NAME", clean, true)
+    end
+  end)
+  state.message, state.message_kind = "Renamed to " .. clean .. ".", "ok"
+end
+
+local function GoTo(row)
+  state.selected_key = row.key
+  if not row.item or not row.proj_time then return end
+  r.Main_OnCommand(40289, 0)                       -- unselect all items
+  r.SetMediaItemSelected(row.item, true)
+  r.SetEditCurPos(row.proj_time, true, true)       -- move and seek playback
+  r.UpdateArrange()
+end
+
+-- -----------------------------------------------------------------------
+-- Filtering
+-- -----------------------------------------------------------------------
+
+local function Matches(row)
+  local f = state.status_filter
+  if f == "unverified" then
+    if row.user_status == "verified" or row.status == "orphan" then return false end
+  elseif f == "verified" or f == "flagged" then
+    if row.user_status ~= f then return false end
+  elseif f ~= "all" then
+    if row.status ~= f then return false end
+  end
+
+  if state.character and (row.character or "") ~= state.character then return false end
+
+  if state.search ~= "" then
+    local needle = state.search:lower()
+    local hay = ((row.asset or "") .. " " .. (row.line_text or "") .. " "
+              .. (row.transcript or "") .. " " .. (row.notes or "")):lower()
+    if not hay:find(needle, 1, true) then return false end
+  end
+  return true
+end
+
+local SORT_RANK = { missing = 1, review = 2, orphan = 3, recorded = 4 }
+
+local function ApplyFilters()
+  local out = {}
+  for i, row in ipairs(state.overview) do
+    if Matches(row) then
+      row.order = i     -- script order is the stable tiebreak for every sort
+      out[#out + 1] = row
+    end
+  end
+
+  local mode = state.sort
+  if mode ~= "script" then
+    table.sort(out, function(a, b)
+      local ka, kb
+      if mode == "status" then
+        ka, kb = SORT_RANK[a.status] or 9, SORT_RANK[b.status] or 9
+      elseif mode == "filename" then
+        ka, kb = (a.asset or ""):lower(), (b.asset or ""):lower()
+      elseif mode == "character" then
+        ka, kb = (a.character or ""):lower(), (b.character or ""):lower()
+      else -- timeline; rows with no audio sort last rather than at time zero
+        ka = a.proj_time or math.huge
+        kb = b.proj_time or math.huge
+      end
+      if ka ~= kb then return ka < kb end
+      return a.order < b.order
+    end)
+  end
+
+  state.visible = out
+end
+
+-- -----------------------------------------------------------------------
+-- Drawing
+-- -----------------------------------------------------------------------
+
+local ctx = im.CreateContext('VO Overview')
+
+local function FormatTime(t)
+  if not t then return "" end
+  local m = math.floor(t / 60)
+  return string.format("%d:%06.3f", m, t - m * 60)
+end
+
+local function Combo(label, width, options, current, on_pick)
+  im.SetNextItemWidth(ctx, width)
+  local shown = current
+  for _, o in ipairs(options) do
+    if o.key == current then shown = o.label; break end
+  end
+  if im.BeginCombo(ctx, label, shown) then
+    for _, o in ipairs(options) do
+      if im.Selectable(ctx, o.label, o.key == current) then on_pick(o.key) end
+    end
+    im.EndCombo(ctx)
+  end
+end
+
+local function DrawFilters()
+  Combo("##status", 130, STATUS_FILTERS, state.status_filter,
+        function(k) state.status_filter = k end)
+  im.SameLine(ctx)
+
+  -- Characters come from the rows, not the CSV: an orphan can carry a character
+  -- the current script filter excludes, and hiding it from the droplist would
+  -- make that row unreachable.
+  local seen, chars = {}, { { key = "__all__", label = "(all characters)" } }
+  for _, row in ipairs(state.overview) do
+    local c = row.character
+    if c and c ~= "" and not seen[c] then
+      seen[c] = true
+      chars[#chars + 1] = { key = c, label = c }
+    end
+  end
+  table.sort(chars, function(a, b)
+    if a.key == "__all__" then return true end
+    if b.key == "__all__" then return false end
+    return a.label < b.label
+  end)
+  Combo("##character", 140, chars, state.character or "__all__",
+        function(k) state.character = (k ~= "__all__") and k or nil end)
+  im.SameLine(ctx)
+
+  Combo("##sort", 150, SORTS, state.sort, function(k) state.sort = k end)
+  im.SameLine(ctx)
+
+  im.SetNextItemWidth(ctx, 200)
+  local changed, text = im.InputTextWithHint(ctx, "##search", "Search…", state.search)
+  if changed then state.search = text end
+
+  im.SameLine(ctx)
+  if im.Button(ctx, "Refresh") then Reload() end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Re-read every sidecar from disk.\n" ..
+                       "Do this after transcribing in ScriptMatch.")
+  end
+end
+
+local pending_action = nil   -- deferred so nothing mutates mid-table
+
+local function DrawTableBody()
+  for _, c in ipairs(COLUMNS) do
+    im.TableSetupColumn(ctx, c.label, im.TableColumnFlags_WidthFixed, c.width)
+  end
+  im.TableSetupScrollFreeze(ctx, 0, 1)
+  im.TableHeadersRow(ctx)
+
+  if #state.visible == 0 then
+    im.TableNextRow(ctx)
+    im.TableSetColumnIndex(ctx, 0)
+    im.TextDisabled(ctx, #state.overview == 0
+      and "Nothing to show yet. Load a script CSV, or transcribe a recording in ScriptMatch."
+      or  "No rows match the current filters.")
+    return
+  end
+
+  -- Every row is emitted; ImGui's own table clipping keeps off-screen rows out
+  -- of the draw list. ListClipper is deliberately NOT used: ReaImGui rejects it
+  -- here as excessive creation of short-lived resources, which is why
+  -- ScriptMatch dropped it from its preview table too.
+  for i, row in ipairs(state.visible) do
+    im.TableNextRow(ctx)
+    im.PushID(ctx, i)
+
+    -- Verified ------------------------------------------------------------
+    im.TableSetColumnIndex(ctx, 0)
+    local checked = row.user_status == "verified"
+    local hit, now = im.Checkbox(ctx, "##ok", checked)
+    if hit then pending_action = function() SetStatus(row, now and "verified" or nil) end end
+
+    -- Status --------------------------------------------------------------
+    im.TableSetColumnIndex(ctx, 1)
+    -- Drawn first in the row and spanning it, so a click anywhere that is not a
+    -- widget navigates. AllowOverlap lets the inputs drawn afterwards win.
+    local sel_flags = im.SelectableFlags_SpanAllColumns
+    if im.SelectableFlags_AllowOverlap then
+      sel_flags = sel_flags | im.SelectableFlags_AllowOverlap
+    end
+    local style = STATUS_STYLE[row.status]
+    if im.Selectable(ctx, "##row", state.selected_key == row.key, sel_flags) then
+      pending_action = function() GoTo(row) end
+    end
+    if im.IsItemHovered(ctx) and not row.item then
+      im.SetTooltip(ctx, row.status == "missing"
+        and "This line has no audio in the project yet."
+        or  "The audio for this row is not in this project.")
+    end
+    im.SameLine(ctx)
+    if row.user_status == "flagged" then
+      im.TextColored(ctx, 0xDD6666FF, "Flagged")
+    elseif style then
+      im.TextColored(ctx, style.colour, style.label)
+    end
+
+    -- Select --------------------------------------------------------------
+    im.TableSetColumnIndex(ctx, 2)
+    if row.status ~= "missing" and row.status ~= "orphan" and (row.take_count or 0) > 0 then
+      if im.RadioButton(ctx, "##sel", row.is_primary == true) then
+        pending_action = function() SetPrimary(row) end
+      end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, (row.take_count > 1)
+          and "Mark this take as the select."
+          or  "The only take of this line.")
+      end
+    end
+
+    im.TableSetColumnIndex(ctx, 3)
+    im.Text(ctx, row.character or "")
+
+    -- Filename ------------------------------------------------------------
+    im.TableSetColumnIndex(ctx, 4)
+    local shown = row.name_override or row.asset or ""
+    if row.status == "missing" then
+      -- Nothing to rename: there is no take. The script's filename is the fact.
+      im.TextDisabled(ctx, shown)
+    else
+      im.SetNextItemWidth(ctx, -1)
+      local fchanged, fname = im.InputText(ctx, "##fn", shown,
+                                           im.InputTextFlags_EnterReturnsTrue)
+      -- Committed on Enter or on losing focus after an edit, never per
+      -- keystroke: each commit is its own undo point in the project.
+      if fchanged or im.IsItemDeactivatedAfterEdit(ctx) then
+        if fname ~= shown then
+          local captured = fname
+          pending_action = function() Rename(row, captured) end
+        end
+      end
+      if row.name_override then
+        im.SameLine(ctx, 0, 2)
+        im.TextColored(ctx, 0xDDAA33FF, "*")
+        if im.IsItemHovered(ctx) then
+          im.SetTooltip(ctx, "Renamed from the script's " .. (row.asset or "") .. ".")
+        end
+      end
+    end
+
+    im.TableSetColumnIndex(ctx, 5)
+    if (row.take_count or 0) > 1 then
+      im.Text(ctx, string.format("%d/%d", row.take_index or 0, row.take_count))
+    elseif row.take_index then
+      im.TextDisabled(ctx, "1/1")
+    end
+
+    im.TableSetColumnIndex(ctx, 6)
+    im.Text(ctx, row.line_text or "")
+
+    im.TableSetColumnIndex(ctx, 7)
+    if row.score and row.status == "review" then
+      im.TextColored(ctx, 0xDDAA33FF, row.transcript or "")
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, string.format("Match confidence %.0f%%.", row.score * 100))
+      end
+    else
+      im.TextDisabled(ctx, row.transcript or "")
+    end
+
+    im.TableSetColumnIndex(ctx, 8)
+    im.TextDisabled(ctx, row.source_path and vo.Basename(row.source_path) or "")
+
+    im.TableSetColumnIndex(ctx, 9)
+    im.TextDisabled(ctx, FormatTime(row.proj_time))
+
+    -- Notes ---------------------------------------------------------------
+    im.TableSetColumnIndex(ctx, 10)
+    im.SetNextItemWidth(ctx, -1)
+    local nchanged, notes = im.InputText(ctx, "##notes", row.notes or "")
+    if nchanged then
+      local captured = notes
+      pending_action = function() SetNotes(row, captured) end
+    end
+
+    im.PopID(ctx)
+  end
+end
+
+local function DrawTable(height)
+  local flags = im.TableFlags_Borders | im.TableFlags_Resizable
+              | im.TableFlags_ScrollY | im.TableFlags_RowBg
+  if not im.BeginTable(ctx, "vo_overview", #COLUMNS, flags, 0, height) then
+    return
+  end
+  -- The body runs inside pcall for the same reason ScriptMatch's does: an error
+  -- escaping between BeginTable and EndTable leaves ImGui's stack corrupted for
+  -- every later frame. Nothing here pushes a combo or a disabled scope, so
+  -- EndTable alone is enough to unwind; PushID is balanced by ImGui itself when
+  -- the table ends.
+  local ok, err = pcall(DrawTableBody)
+  im.EndTable(ctx)
+  if not ok then state.message, state.message_kind = tostring(err), "error" end
+end
+
+local function DrawSummary()
+  local n = state.summary
+  im.Text(ctx, string.format("%d of %d lines recorded", n.delivered or 0, n.lines or 0))
+  im.SameLine(ctx)
+  im.TextDisabled(ctx, "·")
+  im.SameLine(ctx)
+  im.TextColored(ctx, 0x66BB66FF, string.format("%d verified", n.verified or 0))
+  if (n.review or 0) > 0 then
+    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
+    im.TextColored(ctx, 0xDDAA33FF, string.format("%d to review", n.review))
+  end
+  if (n.missing or 0) > 0 then
+    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
+    im.TextColored(ctx, 0xDD6666FF, string.format("%d missing", n.missing))
+  end
+  if (n.flagged or 0) > 0 then
+    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
+    im.TextColored(ctx, 0xDD6666FF, string.format("%d flagged", n.flagged))
+  end
+  if (n.orphan or 0) > 0 then
+    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
+    im.TextDisabled(ctx, string.format("%d orphan", n.orphan))
+  end
+end
+
+-- -----------------------------------------------------------------------
+-- Startup and loop
+-- -----------------------------------------------------------------------
+
+local _, remembered = r.GetProjExtState(0, PROJ_SECTION, "script_csv")
+state.csv_path = remembered or ""
+LoadCSV(state.csv_path)
+RestoreLayout()
+LoadTracker()
+Reload()
+state.probe = Probe()
+
+local function loop()
+  if not (ctx and im.ValidatePtr(ctx, 'ImGui_Context*')) then
+    ctx = im.CreateContext('VO Overview')
+  end
+
+  -- A project edit invalidates every row's resolved item, so rebuild -- but
+  -- throttle the disk read behind it, since a drag gesture moves the counter
+  -- every frame.
+  local probe = Probe()
+  if probe ~= state.probe then
+    state.probe = probe
+    if (r.time_precise() - state.last_reload) >= RELOAD_THROTTLE then Reload() end
+  end
+
+  FlushTracker(false)
+  ApplyFilters()
+
+  im.SetNextWindowSize(ctx, 1180, 720, im.Cond_FirstUseEver)
+  local visible, open = im.Begin(ctx, 'ajsfx VO Overview', true)
+
+  if visible then
+    pending_action = nil
+
+    -- Script CSV ----------------------------------------------------------
+    im.Text(ctx, "Script:")
+    im.SameLine(ctx)
+    if state.csv_path == "" then
+      im.TextDisabled(ctx, "none chosen")
+    else
+      im.TextDisabled(ctx, vo.Basename(state.csv_path))
+      if im.IsItemHovered(ctx) then im.SetTooltip(ctx, state.csv_path) end
+    end
+    im.SameLine(ctx)
+    if im.Button(ctx, "Choose…") then
+      local ok, path = r.GetUserFileNameForRead(state.csv_path, "Select the session script", "csv")
+      if ok then
+        state.csv_path = path
+        r.SetProjExtState(0, PROJ_SECTION, "script_csv", path)
+        LoadCSV(path)
+        RestoreLayout()
+        Rebuild()
+      end
+    end
+
+    if state.header_error ~= "" then
+      im.TextColored(ctx, 0xDD6666FF, state.header_error)
+    elseif state.header and not (state.mapping.asset and state.mapping.text) then
+      im.TextColored(ctx, 0xDDAA33FF,
+        "This script's Filename and Line Text columns are not mapped.\n" ..
+        "Map them once in ajsfx VO ScriptMatch — this window shares that setting.")
+    end
+
+    im.Separator(ctx)
+    DrawSummary()
+    im.Spacing(ctx)
+    DrawFilters()
+    im.Spacing(ctx)
+
+    -- Reserve room for whatever notices are showing; the table takes the rest.
+    local rows = 1                                     -- the count line below
+    if state.message ~= ""       then rows = rows + vo.CountLines(state.message, 4) end
+    if state.tracker_error ~= "" then rows = rows + vo.CountLines(state.tracker_error, 4) end
+    if not state.tracker_path    then rows = rows + 1 end
+    rows = rows + #state.sidecar_errors
+
+    -- GetContentRegionAvail returns width first, so height is the SECOND value.
+    local _, avail_h = im.GetContentRegionAvail(ctx)
+    DrawTable(math.max(120, avail_h - im.GetFrameHeightWithSpacing(ctx) * rows))
+
+    im.TextDisabled(ctx, string.format("%d of %d rows shown.",
+      #state.visible, #state.overview))
+
+    if not state.tracker_path then
+      im.TextColored(ctx, 0xDDAA33FF,
+        "Save the project to keep verified marks, notes and renames.")
+    end
+    if state.tracker_error ~= "" then
+      im.TextColored(ctx, 0xDD6666FF, state.tracker_error .. "\nNothing will be saved until this is fixed.")
+    end
+    for _, e in ipairs(state.sidecar_errors) do
+      im.TextColored(ctx, 0xDDAA33FF, e)
+    end
+    if state.message ~= "" then
+      im.TextColored(ctx, state.message_kind == "error" and 0xDD6666FF or 0x66BB66FF,
+                     state.message)
+    end
+
+    -- Space toggles the selected row, but only when no text field has focus --
+    -- otherwise typing a space in Notes would fire it.
+    if state.selected_key and not im.IsAnyItemActive(ctx)
+       and im.IsWindowFocused(ctx, im.FocusedFlags_RootAndChildWindows)
+       and im.IsKeyPressed(ctx, im.Key_Space) then
+      for _, row in ipairs(state.visible) do
+        if row.key == state.selected_key then
+          SetStatus(row, row.user_status == "verified" and nil or "verified")
+          break
+        end
+      end
+    end
+
+    im.End(ctx)
+
+    -- Run after End so ImGui's frame is closed before anything mutates state
+    -- or the project. One action per frame is enough: they are all user clicks.
+    if pending_action then
+      local action = pending_action
+      pending_action = nil
+      -- Cleared first so a stale success or error from the previous action is
+      -- never left sitting under the result of this one.
+      state.message, state.message_kind = "", "ok"
+      action()
+    end
+  end
+
+  if open then
+    r.defer(loop)
+  else
+    FlushTracker(true)
+  end
+end
+
+r.defer(loop)

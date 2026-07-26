@@ -1,7 +1,7 @@
 -- @description ajsfx VO ScriptMatch
 -- @author ajsfx
--- @version 0.8
--- @changelog Transcribe and cut are now two buttons at the bottom right: Transcribe reads the audio and builds the plan without touching the project, and Cut applies it. Once a plan exists the button becomes Re-transcribe and bypasses the transcript cache. The preview table gains a Status column showing matched / review / no match per line once a transcription has run. Changing the CSV, mapping, filters or skip tokens discards a plan built before the change. Layout presets no longer load the moment you pick one from the droplist: choosing a preset only selects it, Load applies it, and Save writes the current layout back over the selected preset after a confirmation. Editing a mapping keeps the preset name so it can be updated without retyping it. The run report is now written next to each recording as <audio>_vo_report.csv instead of once per project, and it is written when you transcribe rather than only when you cut. Reopening the dialog on a recording that already has one restores its result without re-transcribing. The dialog now follows the item selection while it is open, so it no longer refuses to start when nothing is selected. Status, results and errors are reported in the dialog instead of in message boxes that steal focus.
+-- @version 0.9
+-- @changelog Adds "ajsfx VO Overview", a new action giving a project-wide picture of the dialogue in a session: every line the script says should be there and every line that actually is, in one table across every recording in the project, whether or not it has been cut yet. Missing, recorded, needs-review and orphan audio are shown at a glance. Clicking a row moves the transport to it and selects the item. Filenames can be renamed inline, rows marked verified or flagged, notes kept per line, and the select chosen when a line has several takes. Those marks live in <project>_vo_tracker.csv beside the project and are never touched by transcription, so re-transcribing a recording does not cost a single checkmark. Overview shares the script CSV and column mapping with ScriptMatch, and does not transcribe or cut.
 -- @about Cut a recorded VO session into one clip per script line and name each
 --        clip with its delivery asset name. Reads a CSV script, transcribes the
 --        selected items locally with whisper.cpp, matches spoken spans against
@@ -12,6 +12,7 @@
 -- @provides
 --   [main] .
 --   [main] ajsfx_VO_Settings.lua
+--   [main] ajsfx_VO_Overview.lua
 --   lib/ajsfx_vo.lua
 --   ../lib/ajsfx_core.lua > lib/ajsfx_core.lua
 
