@@ -883,14 +883,40 @@ function vo.ApplyPadding(spans, cfg, bounds)
     end
   end
 
-  if bounds then
-    for _, s in ipairs(spans) do
-      if bounds.start and s.start < bounds.start then
-        s.start, s.clamped = bounds.start, true
-      end
-      if bounds.stop and s.stop > bounds.stop then
-        s.stop, s.clamped = bounds.stop, true
-      end
+  local function clamp_to_bounds(s)
+    if not bounds then return end
+    if bounds.start and s.start < bounds.start then
+      s.start, s.clamped = bounds.start, true
+    end
+    if bounds.stop and s.stop > bounds.stop then
+      s.stop, s.clamped = bounds.stop, true
+    end
+  end
+
+  for _, s in ipairs(spans) do clamp_to_bounds(s) end
+
+  -- Both clamps above move one boundary without consulting the other, so either
+  -- can push a boundary past its own opposite edge and invert the span. The
+  -- neighbour clamp does it whenever the plan's order is not chronological —
+  -- BuildPlan sorts by token index, and whisper timestamps are not guaranteed
+  -- monotonic (nor distinct: every token expanded from one word shares its
+  -- times), so `mid` can land beyond the later span's own end. The bounds clamp
+  -- does it for a span lying wholly outside the item.
+  --
+  -- An inverted span is not a cosmetic reporting problem: ApplyPlan splits at
+  -- start and again at stop, and with stop <= start the second split is a no-op,
+  -- which sweeps the whole remainder of the item onto one track (see
+  -- vo.MIN_SPLIT_LENGTH). Rather than lose the take, fall back to the span's own
+  -- recognized boundaries — unpadded, but real — and flag it so the report can
+  -- say why it was not padded like its neighbours. Only if the raw span is
+  -- itself degenerate, or lies outside the item, does it stay uncuttable, and
+  -- even then it is collapsed to zero width rather than left negative.
+  for _, s in ipairs(spans) do
+    if s.stop <= s.start then
+      s.start, s.stop = s.raw_start, s.raw_stop
+      s.degenerate = true
+      clamp_to_bounds(s)
+      if s.stop < s.start then s.stop = s.start end
     end
   end
 
@@ -1209,6 +1235,7 @@ end
 vo.REPORT_HEADER = {
   "start", "stop", "kind", "Filename", "character", "score", "margin",
   "take_index", "destination", "name", "transcript", "script_text", "clamped",
+  "degenerate",
 }
 
 -- Build the run report: one row per span, then a trailing section listing
@@ -1239,6 +1266,10 @@ function vo.BuildReport(plan, lines)
       s.transcript or "",
       line and line.text or "",
       s.clamped and "yes" or "",
+      -- Padding would have inverted this span, so it carries its raw recognized
+      -- boundaries instead. Worth surfacing: it is the one row whose times are
+      -- not the padded times, and the likely explanation for a skipped cut.
+      s.degenerate and "yes" or "",
     })
   end
 

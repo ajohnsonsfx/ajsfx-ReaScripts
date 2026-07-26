@@ -241,7 +241,7 @@ and no audio. This mirrors how `pvx/lib/ajsfx_pvx.lua` separates its pure helper
 | `vo.Classify(score, margin, cfg)` | `match` / `review` / reject |
 | `vo.SelectSpans(candidates, cfg)` | Non-overlapping selection |
 | `vo.FindGaps(words, spans)` | Unconsumed word runs → unmatched spans |
-| `vo.ApplyPadding(spans, cfg, bounds)` | Pre/post pad with neighbour and item-bound clamping |
+| `vo.ApplyPadding(spans, cfg, bounds)` | Pre/post pad with neighbour and item-bound clamping; a span the clamps would invert falls back to its raw times and is flagged `degenerate` |
 | `vo.AssignNames(spans, cfg)` | Duplicate grouping, take numbering, routing, naming |
 | `vo.SanitizeName(s, max_len)` | Filesystem-safe names |
 | `vo.BuildPlan(lines, words, cfg)` | Composes all of the above |

@@ -792,6 +792,60 @@ test("a span clamped at a bound is flagged for the report", function()
   assert(spans[1].clamped == true, "Expected clamped flag")
 end)
 
+-- A span must never come out of padding inverted (stop < start). ApplyPadding
+-- clamps each boundary independently, and the plan it is handed is ordered by
+-- token index, not by time — so a neighbour whose recognized times overlap or
+-- invert can push a boundary past its own opposite edge. A negative-length span
+-- is not merely an odd report line: ApplyPlan splits at start and again at stop,
+-- and an inverted span makes the second split meaningless.
+
+test("an inverted neighbour clamp falls back to the raw times", function()
+  -- The first span outlives the second, so the midpoint lands beyond the
+  -- second span's own end. Observed in a real run as a -0.180s span.
+  local spans = {
+    { start = 1911.0, stop = 1913.0 },
+    { start = 1911.1, stop = 1911.2 },
+  }
+  vo.ApplyPadding(spans, { pre_pad = 0.150, post_pad = 0.250 })
+  assert(near(spans[2].start, 1911.1), "start: " .. spans[2].start)
+  assert(near(spans[2].stop, 1911.2), "stop: " .. spans[2].stop)
+end)
+
+test("a span rescued from inversion is flagged for the report", function()
+  local spans = {
+    { start = 1911.0, stop = 1913.0 },
+    { start = 1911.1, stop = 1911.2 },
+  }
+  vo.ApplyPadding(spans, { pre_pad = 0.150, post_pad = 0.250 })
+  assert(spans[2].degenerate == true, "Expected degenerate flag")
+  assert(spans[1].degenerate == nil, "Healthy span wrongly flagged")
+end)
+
+test("a span wholly outside the item bounds is never negative", function()
+  local spans = { { start = 12.0, stop = 12.5 } }
+  vo.ApplyPadding(spans, { pre_pad = 0.150, post_pad = 0.250 }, { start = 0.0, stop = 10.0 })
+  assert(spans[1].stop >= spans[1].start,
+    "Inverted: " .. spans[1].start .. " -> " .. spans[1].stop)
+end)
+
+test("a zero-width recognizer span stays zero-width, never negative", function()
+  local spans = {
+    { start = 10.0, stop = 10.0 },
+    { start = 10.0, stop = 10.0 },
+  }
+  vo.ApplyPadding(spans, { pre_pad = 0.150, post_pad = 0.250 })
+  for i, s in ipairs(spans) do
+    assert(s.stop >= s.start, "Inverted span " .. i .. ": " .. s.start .. " -> " .. s.stop)
+  end
+end)
+
+test("ordinary padding is untouched by the inversion guard", function()
+  local spans = { { start = 5.0, stop = 6.0 } }
+  vo.ApplyPadding(spans, { pre_pad = 0.1, post_pad = 0.2 })
+  assert(near(spans[1].start, 4.9) and near(spans[1].stop, 6.2), "padding changed")
+  assert(spans[1].degenerate == nil, "Healthy span wrongly flagged")
+end)
+
 --------------------------------
 -- AssignNames
 --------------------------------
@@ -1284,6 +1338,19 @@ test("report starts with a header row", function()
   local first = report:match("^([^\n]*)")
   assert(first:find("Filename"), "header: " .. first)
   assert(first:find("score"), "header: " .. first)
+end)
+
+test("a span that fell back to its raw times is marked in the report", function()
+  local plan = {
+    { kind = "match", asset = "vo_a", start = 1.0, stop = 2.0, degenerate = true },
+    { kind = "match", asset = "vo_b", start = 3.0, stop = 4.0 },
+  }
+  local rows = vo.ParseCSV(vo.BuildReport(plan, {}))
+  local col
+  for i, name in ipairs(rows[1]) do if name == "degenerate" then col = i end end
+  assert(col, "No degenerate column in the report header")
+  assert(rows[2][col] == "yes", "Expected yes, got " .. tostring(rows[2][col]))
+  assert(rows[3][col] == "", "Healthy span marked: " .. tostring(rows[3][col]))
 end)
 
 test("report has one row per plan span", function()
