@@ -127,11 +127,14 @@ local state = {
   message          = "",
   running          = false,
   source_key       = nil,
+  selection_key    = nil,
 }
 
 -- The selection is read every frame, not frozen at launch: the dialog follows
--- whatever the user clicks. CollectSourceSpans is only re-run when the SET of
--- source files changes, so dragging an item costs nothing.
+-- whatever the user clicks. The expensive part -- CollectSourceSpans, which
+-- resolves each item's take and source file -- only runs when a cheap probe
+-- (item count + pointers) says the selection itself changed; dragging an item
+-- or picking a second item from an already-collected source costs nothing.
 local items, skipped, usable = {}, {}, {}
 
 -- Write one sidecar per source file the plan touches. Called after transcription
@@ -172,8 +175,23 @@ local function SourceKey(list)
   return table.concat(paths, "\31")
 end
 
+-- Cheap enough to run every frame: item pointers only, no take or source
+-- lookups. A count alone is not enough -- swapping one item for another
+-- leaves the count unchanged -- so the pointers themselves are the key.
+local function SelectionKey()
+  local n, parts = r.CountSelectedMediaItems(0), {}
+  for i = 0, n - 1 do parts[#parts + 1] = tostring(r.GetSelectedMediaItem(0, i)) end
+  return table.concat(parts, "\31")
+end
+
 -- Returns true when the set of selected source files changed this frame.
 local function RefreshSelection()
+  local sel_key = SelectionKey()
+  if sel_key == state.selection_key then return false end
+  state.selection_key = sel_key
+
+  -- The selection itself changed (a cheap fact); only now is it worth paying
+  -- for CollectSourceSpans to find out whether the source SET also changed.
   local fresh = vo.CollectSourceSpans()
   local key   = SourceKey(fresh)
 
