@@ -132,8 +132,13 @@ local state = {
                                  -- and one must never mark the other stale --
                                  -- basenames are derived only for display)
   script_mismatch  = "",         -- sidecar's script CSV path when it differs
+  mismatch_sources = {},         -- {source_path, csv_path} for every mismatching
+                                 -- sidecar, so a partial re-transcription can
+                                 -- clear only the entries it re-ran
   orphan_count     = 0,          -- spans naming a Filename absent from the script
   dropped_count    = 0,          -- spans falling outside the current items
+  dropped_by_source = {},        -- source path -> how many of dropped_count it
+                                 -- contributed, same partial-clear reason
   use_alts_track   = cfg.use_alts_track or false,
   suffix_alt_names = cfg.suffix_alt_names or false,
   primary_last     = true,
@@ -142,6 +147,18 @@ local state = {
   source_key       = nil,
   selection_key    = nil,
 }
+
+-- Session options feed BuildPlan, AssignNames and ApplyPlan, so they are pushed
+-- into cfg at each step rather than once: a checkbox toggled between Transcribe
+-- and Cut still takes effect on the cut.
+-- Defined up here, immediately after `state`, because LoadSidecars needs it too
+-- (it re-derives naming over the loaded union) and Lua resolves these flat
+-- locals by definition order.
+local function ApplyCfg()
+  cfg.use_alts_track   = state.use_alts_track
+  cfg.suffix_alt_names = state.suffix_alt_names
+  cfg.primary_take     = state.primary_last and "last" or "first"
+end
 
 -- The selection is read every frame, not frozen at launch: the dialog follows
 -- whatever the user clicks. The expensive part -- CollectSourceSpans, which
@@ -308,6 +325,12 @@ local function LoadSidecars(update_status)
   local stale      = {}
   local mismatches = {}
   local dropped    = 0
+  -- Per-source breakdowns, kept alongside the totals so a later PARTIAL
+  -- transcription can clear only the warnings belonging to the sources it
+  -- actually re-ran. The totals on their own cannot be narrowed, and clearing
+  -- them wholesale would hide a skipped source's mismatch/drop (see the merge
+  -- in Run's callback).
+  local dropped_by_source = {}
 
   -- Distinct sources, each with the items that currently reference it.
   local by_source = {}
@@ -360,7 +383,10 @@ local function LoadSidecars(update_status)
               break
             end
           end
-          if not placed then dropped = dropped + 1 end
+          if not placed then
+            dropped = dropped + 1
+            dropped_by_source[source_path] = (dropped_by_source[source_path] or 0) + 1
+          end
         end
       end
     end
@@ -369,9 +395,11 @@ local function LoadSidecars(update_status)
   -- Deterministic even with several mismatching sources: source_paths above is
   -- sorted, so the first entry appended to mismatches is always the same one
   -- for identical input, never whichever pairs() happened to visit last.
-  state.stale_sources   = stale
-  state.script_mismatch = mismatches[1] and mismatches[1][2] or ""
-  state.dropped_count   = dropped
+  state.stale_sources     = stale
+  state.mismatch_sources  = mismatches
+  state.dropped_by_source = dropped_by_source
+  state.script_mismatch   = mismatches[1] and mismatches[1][2] or ""
+  state.dropped_count     = dropped
 
   if #plan == 0 then
     state.plan, state.plan_lines, state.line_status = nil, nil, nil
@@ -382,6 +410,25 @@ local function LoadSidecars(update_status)
   end
 
   table.sort(plan, function(a, b) return (a.start or 0) < (b.start or 0) end)
+
+  -- Same collision as the transcribe/retain merge: each sidecar was written by a
+  -- run that had numbered its spans against that source ALONE, so two sources
+  -- both holding a read of L001 load as two take-1 primaries named "L001", and
+  -- Cut would put both on Selects under one name. Numbering only means anything
+  -- across the whole loaded set, so re-derive it here, once, over the union.
+  --
+  -- Re-named ALWAYS, not only when a duplicate asset is present. The take name
+  -- is a function of the three multi-take settings, and those live in the
+  -- session, not in the sidecar (SerializeSidecar records the resulting name but
+  -- not the settings that produced it). So the sidecar's recorded names are only
+  -- authoritative for the settings in force when it was written; the names that
+  -- matter are the ones Cut is about to apply, and Cut runs under `cfg` now.
+  -- Renaming only on collision would produce the worse outcome of a plan half
+  -- named under old settings and half under new. Re-deriving also restores
+  -- `primary`, which the sidecar format does not persist at all.
+  ApplyCfg()
+  vo.AssignNames(plan, cfg)
+
   state.plan       = plan
   -- Every span above came from a sidecar file, so this plan is, by
   -- definition, backed by what's on disk right now.
@@ -854,15 +901,6 @@ end
 -- The run itself
 -- -----------------------------------------------------------------------
 
--- Session options feed both BuildPlan and ApplyPlan, so they are pushed into
--- cfg at each step rather than once: a checkbox toggled between Transcribe and
--- Cut still takes effect on the cut.
-local function ApplyCfg()
-  cfg.use_alts_track   = state.use_alts_track
-  cfg.suffix_alt_names = state.suffix_alt_names
-  cfg.primary_take     = state.primary_last and "last" or "first"
-end
-
 -- The cut half: everything that touches the project. Takes the plan built by
 -- the transcribe half, which has been sitting in state until now.
 local function Finish(plan, lines)
@@ -1020,6 +1058,21 @@ local function Run()
       for _, span in ipairs(retained) do plan[#plan + 1] = span end
       table.sort(plan, function(a, b) return (a.start or 0) < (b.start or 0) end)
 
+      -- Naming has to be re-derived over the UNION, not just the new half.
+      -- BuildPlan numbered the freshly transcribed spans while they were the
+      -- only spans it could see, and the retained spans carry numbering from
+      -- whenever they were last named -- also in isolation. Two sources each
+      -- holding a read of L001 would therefore both arrive as take 1, both
+      -- primary, both named "L001", and Cut would drop two identically named
+      -- items on the Selects track with no _tk suffix and nothing routed to
+      -- Alts. AssignNames re-derives take_index/primary/dest/name from
+      -- kind/asset/start and is idempotent, so one pass over the whole plan
+      -- fixes the collision without disturbing anything already correct.
+      -- Deliberately AFTER ClampSpansToItems above: this only writes naming
+      -- fields, never start/stop, so the retained spans may stay aliased
+      -- (rather than deep-copied) exactly as before.
+      vo.AssignNames(plan, cfg)
+
       state.running       = false
       state.plan          = plan
       state.plan_lines    = lines
@@ -1033,8 +1086,30 @@ local function Run()
         if not transcribed[path] then kept_stale[#kept_stale + 1] = path end
       end
       state.stale_sources   = kept_stale
-      state.script_mismatch = ""
-      state.dropped_count   = 0
+
+      -- The same partial-run rule for the other two sidecar-derived warnings.
+      -- A skipped source whose sidecar was written against a DIFFERENT script
+      -- CSV is still transcribed against that other CSV, and a skipped source
+      -- whose spans fell outside its trimmed item still lost those spans;
+      -- blanking either one here would let the user press Cut with the warning
+      -- silently gone. Keep whatever belongs to a source this run did not
+      -- re-transcribe, and drop only what it did.
+      local kept_mismatch = {}
+      for _, m in ipairs(state.mismatch_sources or {}) do
+        if not transcribed[m[1]] then kept_mismatch[#kept_mismatch + 1] = m end
+      end
+      state.mismatch_sources = kept_mismatch
+      state.script_mismatch  = kept_mismatch[1] and kept_mismatch[1][2] or ""
+
+      local kept_dropped, kept_dropped_count = {}, 0
+      for path, n in pairs(state.dropped_by_source or {}) do
+        if not transcribed[path] then
+          kept_dropped[path] = n
+          kept_dropped_count = kept_dropped_count + n
+        end
+      end
+      state.dropped_by_source = kept_dropped
+      state.dropped_count     = kept_dropped_count
 
       -- Fold the plan's spans down to one status per script line for the table.
       -- A line with several takes keeps the best outcome of any of them.

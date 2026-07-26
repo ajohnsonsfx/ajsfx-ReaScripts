@@ -991,6 +991,91 @@ test("review spans do not consume take numbers from delivered takes", function()
   assert(spans[3].name == "vo_a", "primary: " .. spans[3].name)
 end)
 
+-- Two sources each holding a read of the same line. Each half was named on its
+-- own -- that is what BuildPlan does for a freshly transcribed source, and what
+-- each sidecar recorded -- so both halves claim take 1, primary, bare name.
+-- Concatenating them is exactly the merge in ajsfx_VO_ScriptMatch.lua, and if
+-- nothing re-names the union, Cut puts two items named "L001" on Selects.
+local function separately_named_halves(cfg)
+  local a = { { kind = "match", asset = "L001", score = 0.95, start = 0, stop = 1 } }
+  local b = { { kind = "match", asset = "L001", score = 0.96, start = 9, stop = 10 } }
+  vo.AssignNames(a, cfg)
+  vo.AssignNames(b, cfg)
+  local union = {}
+  for _, s in ipairs(a) do union[#union + 1] = s end
+  for _, s in ipairs(b) do union[#union + 1] = s end
+  return union
+end
+
+test("halves named in isolation both claim take 1 and primary (the collision)", function()
+  local u = separately_named_halves({ suffix_alt_names = true, primary_take = "last" })
+  assert(u[1].take_index == 1 and u[2].take_index == 1, "both should still be take 1")
+  assert(u[1].primary and u[2].primary, "both should still be primary")
+  assert(u[1].name == u[2].name, "both should still carry the same name")
+end)
+
+test("re-naming the union gives one primary and distinct take numbers", function()
+  local u = separately_named_halves({ suffix_alt_names = true, primary_take = "last" })
+  vo.AssignNames(u, { suffix_alt_names = true, primary_take = "last" })
+  assert(u[1].take_index == 1, "earlier take: " .. tostring(u[1].take_index))
+  assert(u[2].take_index == 2, "later take: " .. tostring(u[2].take_index))
+  local primaries = 0
+  for _, s in ipairs(u) do if s.primary then primaries = primaries + 1 end end
+  assert(primaries == 1, "exactly one primary, got " .. primaries)
+  assert(u[1].name ~= u[2].name, "names must differ: " .. u[1].name .. " / " .. u[2].name)
+  assert(u[1].name == "L001_tk01" and u[2].name == "L001", u[1].name .. " / " .. u[2].name)
+end)
+
+test("re-naming the union routes the non-primary to alts", function()
+  local u = separately_named_halves({ use_alts_track = true, primary_take = "last" })
+  vo.AssignNames(u, { use_alts_track = true, primary_take = "last" })
+  assert(u[1].dest == "alts", "earlier take dest: " .. tostring(u[1].dest))
+  assert(u[2].dest == "selects", "primary dest: " .. tostring(u[2].dest))
+end)
+
+test("AssignNames is idempotent over an already-named plan", function()
+  local cfg = { use_alts_track = true, suffix_alt_names = true, primary_take = "last" }
+  local once = take_spans()
+  vo.AssignNames(once, cfg)
+  local snapshot = {}
+  for i, s in ipairs(once) do
+    snapshot[i] = { s.take_index, s.primary, s.dest, s.name }
+  end
+  for _ = 1, 3 do vo.AssignNames(once, cfg) end
+  for i, s in ipairs(once) do
+    assert(s.take_index == snapshot[i][1], "take_index drifted at " .. i)
+    assert(s.primary    == snapshot[i][2], "primary drifted at " .. i)
+    assert(s.dest       == snapshot[i][3], "dest drifted at " .. i)
+    assert(s.name       == snapshot[i][4], "name drifted at " .. i)
+  end
+end)
+
+test("re-running over the union is itself idempotent", function()
+  local cfg = { suffix_alt_names = true, primary_take = "last" }
+  local u = separately_named_halves(cfg)
+  vo.AssignNames(u, cfg)
+  local n1, n2, t1, t2 = u[1].name, u[2].name, u[1].take_index, u[2].take_index
+  vo.AssignNames(u, cfg)
+  assert(u[1].name == n1 and u[2].name == n2, "names drifted on the second pass")
+  assert(u[1].take_index == t1 and u[2].take_index == t2, "take numbers drifted")
+end)
+
+test("take numbering is stable when two takes share a start time", function()
+  -- table.sort is not stable, so equal keys must be broken deterministically or
+  -- a re-run can swap the take numbers of two coincident spans.
+  local cfg = { suffix_alt_names = true, primary_take = "last" }
+  local spans = {
+    { kind = "match", asset = "L001", start = 4, stop = 5, transcript = "b" },
+    { kind = "match", asset = "L001", start = 4, stop = 5, transcript = "a" },
+  }
+  vo.AssignNames(spans, cfg)
+  local first = spans[1].take_index
+  for _ = 1, 5 do
+    vo.AssignNames(spans, cfg)
+    assert(spans[1].take_index == first, "take number swapped between runs")
+  end
+end)
+
 --------------------------------
 -- BuildWhisperArgv
 --------------------------------

@@ -933,6 +933,19 @@ end
 -- Only `match` spans are numbered: a review clip is not a delivered take, so
 -- counting it would leave gaps in the delivered take numbers.
 -- Mutates and returns `spans` (adds take_index, primary, dest, name).
+--
+-- IDEMPOTENT, and relied upon as such: take_index, primary, dest and name are
+-- every one of them re-derived from kind/asset/start/score/transcript plus cfg,
+-- and unconditionally overwritten -- nothing here reads a previously assigned
+-- value. That is what lets the two callers that assemble a plan out of
+-- separately-named halves (the transcribe/retain merge and the multi-sidecar
+-- load, both in ajsfx_VO_ScriptMatch.lua) simply re-run it over the union: two
+-- spans of the same line arriving from two different sources are only seen as
+-- takes of one line if something numbers them TOGETHER, and the halves were each
+-- numbered when they were the only spans for that asset.
+-- The per-group sort is a total order (start, then stop, then transcript) so
+-- that re-running cannot permute equal-keyed spans and hand them different take
+-- numbers than the previous pass did; table.sort is not stable.
 function vo.AssignNames(spans, cfg)
   local use_alts         = vo.Opt(cfg, "use_alts_track")
   local suffix           = vo.Opt(cfg, "suffix_alt_names")
@@ -957,7 +970,11 @@ function vo.AssignNames(spans, cfg)
 
   for _, asset in ipairs(order) do
     local g = groups[asset]
-    table.sort(g, function(a, b) return a.start < b.start end)
+    table.sort(g, function(a, b)
+      if a.start ~= b.start then return a.start < b.start end
+      if (a.stop or 0) ~= (b.stop or 0) then return (a.stop or 0) < (b.stop or 0) end
+      return tostring(a.transcript or "") < tostring(b.transcript or "")
+    end)
     for i, s in ipairs(g) do s.take_index = i end
     local primary = (primary_take == "first") and g[1] or g[#g]
     for _, s in ipairs(g) do s.primary = (s == primary) end
