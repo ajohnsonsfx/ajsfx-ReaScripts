@@ -1169,11 +1169,39 @@ local function Run()
   -- puts the retained spans back rather than leaving the user at an empty plan
   -- for sources this run never intended to touch. state.stale_sources is not
   -- restored because nothing cleared it: no skipped source was re-transcribed.
+  -- Forward-declared so RestoreRetained below can close over it: the snapshot
+  -- itself is still taken further down, AFTER ApplyCfg and after
+  -- force_retranscribe is written, which is the ordering a previous fix
+  -- established and this must not disturb. Only the DECLARATION moved up.
+  local run_cfg
+
   local function RestoreRetained()
-    if #retained == 0 then return end
+    if #retained == 0 then
+      -- Nothing to put back, so state.plan stays nil (it was cleared below) --
+      -- and every field describing a plan must go with it, or a fully
+      -- cancelled run leaves "N transcribed span(s) fall outside the selected
+      -- items" and "Transcribed against a different script: ..." on screen
+      -- describing a plan that no longer exists. state.stale_sources is
+      -- deliberately NOT cleared: nothing was re-transcribed, so every source
+      -- listed stale is still stale and must keep blocking Cut.
+      state.dropped_count, state.dropped_by_source = 0, {}
+      state.script_mismatch, state.mismatch_sources = "", {}
+      state.orphan_count = 0
+      return
+    end
     local kept = {}
     for i, span in ipairs(retained) do kept[i] = span end
     table.sort(kept, function(a, b) return (a.start or 0) < (b.start or 0) end)
+    -- Re-derive naming over the SHRUNKEN plan. The retained spans were numbered
+    -- alongside spans that are no longer here, so without this a lone surviving
+    -- read of L001 keeps take_index 2 / primary = false / dest "alts" / name
+    -- "L001_tk02" -- a plan that would route the only take of a line to Alts.
+    -- AssignNames is idempotent and writes only naming fields, never
+    -- start/stop, so the spans may stay aliased with `retained` as before.
+    -- (Reachable-to-Cut only via paths that also leave a stale source, which
+    -- disables Cut -- an accident, not a guard, hence the explicit re-run.)
+    ApplyCfg()
+    vo.AssignNames(kept, run_cfg or cfg)
     state.plan       = kept
     state.plan_lines = lines
     state.plan_saved = retained_saved
@@ -1226,7 +1254,7 @@ local function Run()
   -- between sources. Taken here -- after ApplyCfg() pushed the dialog-owned
   -- toggles onto cfg and after force_retranscribe was set above -- so both
   -- are present in the snapshot.
-  local run_cfg = vo.ShallowCopy(cfg)
+  run_cfg = vo.ShallowCopy(cfg)
   vo.TranscribeSources(run_cfg, sources,
     function(transcripts)
       -- Everything below is still read-only until core.Transaction runs.
@@ -1334,9 +1362,15 @@ local function Run()
 
       local counts = { match = 0, review = 0, unmatched = 0 }
       for _, span in ipairs(plan) do counts[span.kind] = (counts[span.kind] or 0) + 1 end
+      -- The kind comes from the RESULT, not from "the run completed". A run
+      -- that matched nothing -- "Transcribed: 0 matched, 0 for review, 47
+      -- unmatched." -- is not a success and must not render in success green;
+      -- amber is this file's colour for a non-fatal problem, which is exactly
+      -- what a transcription that matched no script line is.
       state.status, state.status_kind = string.format(
         "Transcribed: %d matched, %d for review, %d unmatched. Press Cut to apply.",
-        counts.match, counts.review, counts.unmatched), "ok"
+        counts.match, counts.review, counts.unmatched),
+        (counts.match > 0 or counts.review > 0) and "ok" or "warn"
     end,
     function()
       -- Async callback (fires off the whisper poll, not inside an ImGui
