@@ -1,7 +1,7 @@
 -- @description ajsfx VO ScriptMatch
 -- @author ajsfx
 -- @version 0.8
--- @changelog Transcribe and cut are now two buttons at the bottom right: Transcribe reads the audio and builds the plan without touching the project, and Cut applies it. Once a plan exists the button becomes Re-transcribe and bypasses the transcript cache. Changing the CSV, mapping, filters or skip tokens discards a plan built before the change
+-- @changelog Transcribe and cut are now two buttons at the bottom right: Transcribe reads the audio and builds the plan without touching the project, and Cut applies it. Once a plan exists the button becomes Re-transcribe and bypasses the transcript cache. The preview table gains a Status column showing matched / review / no match per line once a transcription has run. Changing the CSV, mapping, filters or skip tokens discards a plan built before the change
 -- @about Cut a recorded VO session into one clip per script line and name each
 --        clip with its delivery asset name. Reads a CSV script, transcribes the
 --        selected items locally with whisper.cpp, matches spoken spans against
@@ -130,6 +130,7 @@ local state = {
   preview_dirty    = true,       -- recompute the preview on the next frame
   plan             = nil,        -- transcribed plan awaiting Cut, nil = none
   plan_lines       = nil,        -- the script lines that plan was built from
+  line_status      = nil,        -- asset -> STATUS key, from the current plan
   status           = "",         -- neutral progress note, distinct from message
   use_alts_track   = cfg.use_alts_track or false,
   suffix_alt_names = cfg.suffix_alt_names or false,
@@ -170,11 +171,20 @@ local ROLE_LABEL = {
   speaker = "Character",
 }
 
+-- What a line's spans in the plan add up to. A line can produce several spans
+-- (one per take), so the best outcome wins: any confident match makes the line
+-- matched, otherwise a partial or low-confidence span makes it review.
+local STATUS = {
+  match     = { rank = 3, label = "matched",  colour = 0x66BB66FF },
+  review    = { rank = 2, label = "review",   colour = 0xDDAA33FF },
+  unmatched = { rank = 1, label = "no match", colour = 0x999999FF },
+}
+
 -- The preview table is driven by this ordered list, not hardcoded columns.
 -- kind = "mapped" -> a column selector in the header, body values from the CSV.
--- kind = "computed" is reserved for future columns whose header is a static
--- label and whose body comes from a render function (Result, Take). Nothing in
--- the drawing code may assume every column is mapped.
+-- kind = "computed" -> a static header label and a body from render(line); the
+-- cell is blank until something fills state.line_status. Nothing in the drawing
+-- code may assume every column is mapped.
 local COLUMNS = {
   { key = "speaker", label = "Character", kind = "mapped", role = "speaker",
     optional = true, filter = "character", init_width = 200 },
@@ -182,6 +192,7 @@ local COLUMNS = {
     required = true, init_width = 180 },
   { key = "text",    label = "Line Text", kind = "mapped", role = "text",
     required = true, init_width = 280 },
+  { key = "status",  label = "Status",    kind = "computed", init_width = 90 },
 }
 
 -- Skip-tokens box -> trimmed, non-empty token list (mirrors Settings' Apply()).
@@ -436,9 +447,10 @@ local function RefreshPreview()
   state.preview = nil
   -- Anything that changes the will-run set invalidates a plan built from the
   -- old one, so a stale Cut can never be applied.
-  state.plan       = nil
-  state.plan_lines = nil
-  state.status     = ""
+  state.plan        = nil
+  state.plan_lines  = nil
+  state.line_status = nil
+  state.status      = ""
   if not state.header or state.header_error ~= "" or not state.rows then return end
 
   local cols = vo.MapColumns(state.header, state.mapping)
@@ -507,6 +519,11 @@ local function DrawTableBody()
         im.TableSetColumnIndex(ctx, i - 1)
         if c.kind == "mapped" then
           im.Text(ctx, line[c.key] or "")
+        elseif c.key == "status" then
+          -- Blank until a plan exists: no transcription has been run, so there
+          -- is nothing to report rather than a status of "not matched".
+          local s = STATUS[state.line_status and state.line_status[line.asset]]
+          if s then im.TextColored(ctx, s.colour, s.label) end
         end
       end
     end
@@ -632,10 +649,11 @@ local function Run()
   -- backend settings, so only the audio itself can have changed underneath it.
   cfg.force_retranscribe = (state.plan ~= nil)
 
-  state.plan       = nil
-  state.plan_lines = nil
-  state.status     = ""
-  state.running    = true
+  state.plan        = nil
+  state.plan_lines  = nil
+  state.line_status = nil
+  state.status      = ""
+  state.running     = true
 
   vo.TranscribeSources(cfg, sources,
     function(transcripts)
@@ -662,6 +680,24 @@ local function Run()
       state.running    = false
       state.plan       = plan
       state.plan_lines = lines
+
+      -- Fold the plan's spans down to one status per script line for the table.
+      -- A line with several takes keeps the best outcome of any of them.
+      local by_asset = {}
+      for _, span in ipairs(plan) do
+        local s = STATUS[span.kind]
+        if span.asset and s then
+          local cur = STATUS[by_asset[span.asset]]
+          if not cur or s.rank > cur.rank then by_asset[span.asset] = span.kind end
+        end
+      end
+      -- A line the plan never mentions produced no audio at all.
+      for _, line in ipairs(lines) do
+        if line.asset and not by_asset[line.asset] then
+          by_asset[line.asset] = "unmatched"
+        end
+      end
+      state.line_status = by_asset
 
       local counts = { match = 0, review = 0, unmatched = 0 }
       for _, span in ipairs(plan) do counts[span.kind] = (counts[span.kind] or 0) + 1 end
