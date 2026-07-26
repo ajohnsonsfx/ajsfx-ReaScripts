@@ -1274,68 +1274,134 @@ test("audio with no script match produces only unmatched spans", function()
 end)
 
 --------------------------------
--- BuildReport
+-- Sidecar serialize / parse
 --------------------------------
-print("\nBuildReport:")
+print("\nSidecar serialize/parse:")
 
-test("report starts with a header row", function()
-  local lines = load_fixture()
-  local report = vo.BuildReport({}, lines)
-  local first = report:match("^([^\n]*)")
-  assert(first:find("Filename"), "header: " .. first)
-  assert(first:find("score"), "header: " .. first)
+local SIDECAR_META = {
+  source       = "RIVA_session.wav",
+  source_bytes = 412839104,
+  script_csv   = "D:/proj/script.csv",
+  mapping      = { asset = "Filename", text = "Line Text", speaker = "Character" },
+}
+
+local function sample_spans()
+  return {
+    { start = 12.48, stop = 15.22, kind = "match", asset = "vo_riva_intro_01",
+      character = "RIVA", score = 0.9821, margin = 0.441, take_index = 1,
+      dest = "Selects", name = "vo_riva_intro_01", transcript = "we should not have come" },
+    { start = 20.00, stop = 22.50, kind = "review", asset = "vo_riva_intro_02",
+      character = "RIVA", score = 0.6, margin = 0.05, take_index = 2,
+      dest = "Review", name = "vo_riva_intro_02_tk02", transcript = "quiet, something is wrong" },
+  }
+end
+
+test("the sidecar starts with the format marker and version", function()
+  local text = vo.SerializeSidecar({}, {}, SIDECAR_META)
+  local rows = vo.ParseCSV(text)
+  assert(rows[1][1] == vo.SIDECAR_MARKER, "Marker: " .. tostring(rows[1][1]))
+  assert(tonumber(rows[1][2]) == vo.SIDECAR_VERSION, "Version: " .. tostring(rows[1][2]))
 end)
 
-test("report has one row per plan span", function()
-  local lines = load_fixture()
-  local words = synthesize(lines)
-  local plan  = vo.BuildPlan(lines, words, {})
-  local rows  = vo.ParseCSV(vo.BuildReport(plan, lines))
-  -- header + one row per span, then the no-match section
-  assert(#rows > #plan, "Report is missing rows")
-  assert(rows[2][4] == plan[1].asset, "First data row: " .. tostring(rows[2][4]))
+test("the preamble carries source, size, script path and mapping", function()
+  local parsed = vo.ParseSidecar(vo.SerializeSidecar({}, {}, SIDECAR_META))
+  assert(parsed, "Parse returned nil")
+  assert(parsed.source == "RIVA_session.wav", "source: " .. tostring(parsed.source))
+  assert(parsed.source_bytes == 412839104, "bytes: " .. tostring(parsed.source_bytes))
+  assert(parsed.script_csv == "D:/proj/script.csv", "csv: " .. tostring(parsed.script_csv))
+  assert(parsed.mapping.asset == "Filename", "asset: " .. tostring(parsed.mapping.asset))
+  assert(parsed.mapping.speaker == "Character", "speaker: " .. tostring(parsed.mapping.speaker))
+  assert(parsed.mapping.text == "Line Text", "text: " .. tostring(parsed.mapping.text))
 end)
 
-test("the report round-trips through our own CSV parser", function()
-  local lines = load_fixture()
-  local words = synthesize(lines, { slates = true })
-  local plan  = vo.BuildPlan(lines, words, {})
-  local rows  = vo.ParseCSV(vo.BuildReport(plan, lines))
-  for _, row in ipairs(rows) do
-    assert(#row >= 1, "Report produced an unparseable row")
-  end
+test("every span field round-trips", function()
+  local parsed = vo.ParseSidecar(vo.SerializeSidecar(sample_spans(), {}, SIDECAR_META))
+  assert(#parsed.spans == 2, "Expected 2 spans, got " .. #parsed.spans)
+  local s = parsed.spans[1]
+  assert(near(s.start, 12.48), "start: " .. tostring(s.start))
+  assert(near(s.stop, 15.22), "stop: " .. tostring(s.stop))
+  assert(s.kind == "match", "kind: " .. tostring(s.kind))
+  assert(s.asset == "vo_riva_intro_01", "asset: " .. tostring(s.asset))
+  assert(s.character == "RIVA", "character: " .. tostring(s.character))
+  assert(near(s.score, 0.9821), "score: " .. tostring(s.score))
+  assert(near(s.margin, 0.441), "margin: " .. tostring(s.margin))
+  assert(s.take_index == 1, "take_index: " .. tostring(s.take_index))
+  assert(s.dest == "Selects", "dest: " .. tostring(s.dest))
+  assert(s.name == "vo_riva_intro_01", "name: " .. tostring(s.name))
+  assert(s.transcript == "we should not have come", "transcript: " .. tostring(s.transcript))
 end)
 
-test("script text containing a comma is quoted in the report", function()
-  local lines = load_fixture()
-  local plan  = { { kind = "match", asset = "vo_guard_gate_01",
-                    score = 0.9, margin = 0.5, start = 0, stop = 1,
-                    dest = "selects", name = "vo_guard_gate_01", transcript = "open the north gate quickly" } }
-  local report = vo.BuildReport(plan, lines)
-  assert(report:find('"Open the north gate, quickly."', 1, true),
-    "Script text with a comma was not quoted")
+test("fields containing commas, quotes and newlines survive the round-trip", function()
+  local spans = { { start = 0, stop = 1, kind = "match", asset = "a",
+                    transcript = 'he said "go, now"\nand left' } }
+  local parsed = vo.ParseSidecar(vo.SerializeSidecar(spans, {}, SIDECAR_META))
+  assert(parsed.spans[1].transcript == 'he said "go, now"\nand left',
+    "Got: " .. tostring(parsed.spans[1].transcript))
 end)
 
-test("lines that received no match are listed in their own section", function()
-  local lines = load_fixture()
-  local plan  = { { kind = "match", asset = "vo_guard_halt_01",
-                    score = 0.95, margin = 0.5, start = 0, stop = 1,
-                    dest = "selects", name = "vo_guard_halt_01" } }
-  local report = vo.BuildReport(plan, lines)
-
-  assert(report:find("SCRIPT LINES WITH NO MATCH", 1, true), "Missing no-match section")
-  local tail = report:match("SCRIPT LINES WITH NO MATCH(.*)$")
-  assert(tail:find("vo_hero_captain_01", 1, true), "Unmatched line vo_hero_captain_01 not listed")
-  assert(not tail:find("vo_guard_halt_01", 1, true), "Matched line vo_guard_halt_01 should not be listed")
+test("the trailing no-match section lists unmatched script lines", function()
+  local lines = {
+    { asset = "vo_riva_intro_01", speaker = "RIVA", text = "We should not have come." },
+    { asset = "vo_riva_deck_03",  speaker = "RIVA", text = "Seal it." },
+  }
+  local text = vo.SerializeSidecar(sample_spans(), lines, SIDECAR_META)
+  local tail = text:match("SCRIPT LINES WITH NO MATCH(.*)$")
+  assert(tail, "No trailing section")
+  assert(tail:find("vo_riva_deck_03", 1, true), "Unmatched line missing from tail")
+  assert(not tail:find("vo_riva_intro_01", 1, true), "Matched line should not be in tail")
 end)
 
-test("a review span does not count as a match for the no-match section", function()
-  local lines = load_fixture()
-  local plan  = { { kind = "review", asset = "vo_guard_halt_01",
-                    score = 0.60, margin = 0.5, start = 0, stop = 1,
-                    dest = "review", name = "REVIEW_vo_guard_halt_01_s0.60" } }
-  local tail = vo.BuildReport(plan, lines):match("SCRIPT LINES WITH NO MATCH(.*)$")
-  assert(tail:find("vo_guard_halt_01", 1, true), "A review-only line still needs flagging as unmatched")
+test("the trailing no-match section is ignored on load", function()
+  local lines = { { asset = "vo_riva_deck_03", speaker = "RIVA", text = "Seal it." } }
+  local parsed = vo.ParseSidecar(vo.SerializeSidecar(sample_spans(), lines, SIDECAR_META))
+  assert(#parsed.spans == 2, "Tail section leaked into spans: got " .. #parsed.spans)
+end)
+
+test("a review span still counts as unmatched in the tail", function()
+  local lines = { { asset = "vo_riva_intro_02", speaker = "RIVA", text = "Quiet." } }
+  local tail = vo.SerializeSidecar(sample_spans(), lines, SIDECAR_META)
+                 :match("SCRIPT LINES WITH NO MATCH(.*)$")
+  assert(tail:find("vo_riva_intro_02", 1, true), "Review-only line should be listed as unmatched")
+end)
+
+print("\nSidecar parse rejection:")
+
+test("empty text is rejected with a reason", function()
+  local parsed, reason = vo.ParseSidecar("")
+  assert(parsed == nil, "Empty text should not parse")
+  assert(type(reason) == "string" and reason ~= "", "Expected a reason string")
+end)
+
+test("nil text is rejected without erroring", function()
+  local parsed, reason = vo.ParseSidecar(nil)
+  assert(parsed == nil, "nil should not parse")
+  assert(type(reason) == "string", "Expected a reason string")
+end)
+
+test("a file that is not a sidecar is rejected", function()
+  local parsed, reason = vo.ParseSidecar("name,age\nalice,30\n")
+  assert(parsed == nil, "Arbitrary CSV should not parse as a sidecar")
+  assert(reason:find("ajsfx VO ScriptMatch", 1, true), "Reason should name the marker: " .. reason)
+end)
+
+test("an unrecognised version is rejected", function()
+  local text = vo.SerializeSidecar({}, {}, SIDECAR_META):gsub("^(.-),1\n", "%1,99\n", 1)
+  local parsed, reason = vo.ParseSidecar(text)
+  assert(parsed == nil, "Version 99 should not parse")
+  assert(reason:find("99", 1, true), "Reason should name the version: " .. reason)
+end)
+
+test("a sidecar with no span header row is rejected", function()
+  local text = vo.SIDECAR_MARKER .. ",1\nSource,RIVA.wav\n"
+  local parsed, reason = vo.ParseSidecar(text)
+  assert(parsed == nil, "Missing span header should not parse")
+  assert(type(reason) == "string" and reason ~= "", "Expected a reason string")
+end)
+
+test("a sidecar with a header but no span rows parses to zero spans", function()
+  local parsed = vo.ParseSidecar(vo.SerializeSidecar({}, {}, SIDECAR_META))
+  assert(parsed, "Should parse")
+  assert(#parsed.spans == 0, "Expected 0 spans, got " .. #parsed.spans)
 end)
 
 --------------------------------

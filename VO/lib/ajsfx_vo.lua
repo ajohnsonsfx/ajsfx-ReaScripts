@@ -1206,23 +1206,57 @@ function vo.FormatCSVRow(fields)
   return table.concat(out, ",")
 end
 
-vo.REPORT_HEADER = {
-  "start", "stop", "kind", "Filename", "character", "score", "margin",
-  "take_index", "destination", "name", "transcript", "script_text", "clamped",
+vo.SIDECAR_MARKER  = "ajsfx VO ScriptMatch"
+vo.SIDECAR_VERSION = 1
+
+vo.SIDECAR_HEADER = {
+  "Source start", "Source stop", "Kind", "Filename", "Character", "Score",
+  "Margin", "Take", "Dest", "Name", "Transcript", "Line text", "Clamped",
 }
 
--- Build the run report: one row per span, then a trailing section listing
--- script lines that received no match at all — the "did we actually record
--- everything?" check. A review-only line still counts as unrecorded. Lines are
--- keyed by their Filename (the line's identity).
-function vo.BuildReport(plan, lines)
+vo.SIDECAR_TAIL_MARKER = "SCRIPT LINES WITH NO MATCH"
+
+-- role=column pairs joined by ";". Kept human-legible because the sidecar is
+-- opened in spreadsheets; the role order matches vo.SerializeLayout.
+local function encode_mapping(mapping)
+  local out = {}
+  for _, role in ipairs({ "asset", "text", "speaker" }) do
+    local col = mapping and mapping[role]
+    if col and col ~= "" then out[#out + 1] = role .. "=" .. col end
+  end
+  return table.concat(out, ";")
+end
+
+local function decode_mapping(text)
+  local mapping = {}
+  for pair in tostring(text or ""):gmatch("[^;]+") do
+    local role, col = pair:match("^%s*([^=]+)=(.*)$")
+    if role then mapping[role:match("^%s*(.-)%s*$")] = col end
+  end
+  return mapping
+end
+
+-- Serialize a plan to its sidecar. `spans` must already be in SOURCE time (see
+-- vo.PartitionPlanBySource); this function does no conversion, so it cannot
+-- silently write project times. `lines` supplies script text for the readable
+-- columns and the trailing unmatched section, and may be empty.
+function vo.SerializeSidecar(spans, lines, meta)
+  meta = meta or {}
   local by_asset = {}
   for _, l in ipairs(lines or {}) do by_asset[l.asset] = l end
 
-  local matched = {}
-  local out = { vo.FormatCSVRow(vo.REPORT_HEADER) }
+  local out = {
+    vo.FormatCSVRow({ vo.SIDECAR_MARKER, tostring(vo.SIDECAR_VERSION) }),
+    vo.FormatCSVRow({ "Source",      meta.source or "" }),
+    vo.FormatCSVRow({ "Source bytes", tostring(meta.source_bytes or 0) }),
+    vo.FormatCSVRow({ "Script CSV",  meta.script_csv or "" }),
+    vo.FormatCSVRow({ "Mapping",     encode_mapping(meta.mapping) }),
+    "",
+    vo.FormatCSVRow(vo.SIDECAR_HEADER),
+  }
 
-  for _, s in ipairs(plan or {}) do
+  local matched = {}
+  for _, s in ipairs(spans or {}) do
     if s.kind == "match" and s.asset then matched[s.asset] = true end
     local line = s.asset and by_asset[s.asset] or nil
     out[#out + 1] = vo.FormatCSVRow({
@@ -1242,8 +1276,10 @@ function vo.BuildReport(plan, lines)
     })
   end
 
+  -- Readable only. ParseSidecar stops at this marker, so it can never become a
+  -- second source of truth that disagrees with the spans above it.
   out[#out + 1] = ""
-  out[#out + 1] = vo.FormatCSVRow({ "SCRIPT LINES WITH NO MATCH" })
+  out[#out + 1] = vo.FormatCSVRow({ vo.SIDECAR_TAIL_MARKER })
   out[#out + 1] = vo.FormatCSVRow({ "Filename", "Character", "Text" })
   for _, l in ipairs(lines or {}) do
     if not matched[l.asset] then
@@ -1252,6 +1288,68 @@ function vo.BuildReport(plan, lines)
   end
 
   return table.concat(out, "\n") .. "\n"
+end
+
+-- Returns the parsed sidecar, or nil plus a reason. A malformed file beside the
+-- audio must never stop the dialog opening, so nothing here raises.
+function vo.ParseSidecar(text)
+  if type(text) ~= "string" or text == "" then
+    return nil, "The sidecar file is empty."
+  end
+
+  local rows = vo.ParseCSV(text)
+  if not rows[1] or rows[1][1] ~= vo.SIDECAR_MARKER then
+    return nil, "Not an " .. vo.SIDECAR_MARKER .. " file."
+  end
+
+  local version = tonumber(rows[1][2] or "")
+  if version ~= vo.SIDECAR_VERSION then
+    return nil, "Unsupported sidecar version: " .. tostring(rows[1][2])
+  end
+
+  local parsed = { version = version, source = "", source_bytes = 0,
+                   script_csv = "", mapping = {}, spans = {} }
+
+  -- Walk the preamble until the span header row, then read spans until the
+  -- readable tail marker.
+  local i, header_at = 2, nil
+  while rows[i] do
+    local key = rows[i][1] or ""
+    if key == vo.SIDECAR_HEADER[1] then header_at = i; break end
+    if     key == "Source"       then parsed.source       = rows[i][2] or ""
+    elseif key == "Source bytes" then parsed.source_bytes = tonumber(rows[i][2] or "") or 0
+    elseif key == "Script CSV"   then parsed.script_csv   = rows[i][2] or ""
+    elseif key == "Mapping"      then parsed.mapping      = decode_mapping(rows[i][2])
+    end
+    i = i + 1
+  end
+
+  if not header_at then
+    return nil, "The sidecar has no span header row."
+  end
+
+  for j = header_at + 1, #rows do
+    local row = rows[j]
+    local first = row[1] or ""
+    if first == vo.SIDECAR_TAIL_MARKER then break end
+    if first ~= "" and tonumber(first) then
+      parsed.spans[#parsed.spans + 1] = {
+        start      = tonumber(row[1]) or 0,
+        stop       = tonumber(row[2]) or 0,
+        kind       = row[3] ~= "" and row[3] or nil,
+        asset      = row[4] ~= "" and row[4] or nil,
+        character  = row[5] ~= "" and row[5] or nil,
+        score      = tonumber(row[6] or ""),
+        margin     = tonumber(row[7] or ""),
+        take_index = tonumber(row[8] or ""),
+        dest       = row[9] ~= "" and row[9] or nil,
+        name       = row[10] ~= "" and row[10] or nil,
+        transcript = row[11] ~= "" and row[11] or nil,
+      }
+    end
+  end
+
+  return parsed
 end
 
 --------------------------------
