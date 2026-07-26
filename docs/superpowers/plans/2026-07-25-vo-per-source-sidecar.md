@@ -498,7 +498,7 @@ end
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run (Bash tool): `./run_tests.sh 2>&1 | tail -5`
-Expected: `=== Results: 251 passed, 0 failed ===` (243 from Task 1, minus 5 deleted `BuildReport` tests, plus 13 new).
+Expected: `=== Results: 250 passed, 0 failed ===` (243 from Task 1, minus the 6 deleted `BuildReport` tests, plus 13 new).
 
 If any test outside these sections fails, `vo.BuildReport` still has a caller. Only `VO/ajsfx_VO_ScriptMatch.lua:593` should reference it, and that is fixed in Task 4 — a *dialog* reference does not break the test suite, so a failure here means a real regression in the library.
 
@@ -638,7 +638,7 @@ end
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run (Bash tool): `./run_tests.sh 2>&1 | tail -5`
-Expected: `=== Results: 258 passed, 0 failed ===`.
+Expected: `=== Results: 257 passed, 0 failed ===`.
 
 - [ ] **Step 5: Commit**
 
@@ -746,7 +746,7 @@ grep -n "BuildReport\|ReportPath\|ProjectDir" VO/ajsfx_VO_ScriptMatch.lua VO/lib
 ```
 Expected: no matches.
 
-Run (Bash tool): `./run_tests.sh 2>&1 | tail -5` — expected `258 passed, 0 failed`.
+Run (Bash tool): `./run_tests.sh 2>&1 | tail -5` — expected `257 passed, 0 failed`.
 
 - [ ] **Step 6: Commit**
 
@@ -843,7 +843,7 @@ luac -p VO/ajsfx_VO_ScriptMatch.lua
 ```
 Expected: no output.
 
-Run (Bash tool): `./run_tests.sh 2>&1 | tail -5` — expected `258 passed, 0 failed` (unchanged; this task touches no library code).
+Run (Bash tool): `./run_tests.sh 2>&1 | tail -5` — expected `257 passed, 0 failed` (unchanged; this task touches no library code).
 
 - [ ] **Step 5: Commit**
 
@@ -1076,7 +1076,7 @@ and extend its tooltip:
 ```bash
 luac -p VO/ajsfx_VO_ScriptMatch.lua
 ```
-Expected: no output. Run (Bash tool): `./run_tests.sh 2>&1 | tail -5` — expected `258 passed, 0 failed`.
+Expected: no output. Run (Bash tool): `./run_tests.sh 2>&1 | tail -5` — expected `257 passed, 0 failed`.
 
 - [ ] **Step 6: Commit**
 
@@ -1178,7 +1178,7 @@ When `#needing == 0` the `wanted` filter is bypassed and every source is transcr
 ```bash
 luac -p VO/ajsfx_VO_ScriptMatch.lua
 ```
-Expected: no output. Run (Bash tool): `./run_tests.sh 2>&1 | tail -5` — expected `258 passed, 0 failed`.
+Expected: no output. Run (Bash tool): `./run_tests.sh 2>&1 | tail -5` — expected `257 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -1263,7 +1263,7 @@ Expected: exactly four matches — the missing-ReaImGui message near line 53, th
 ```bash
 luac -p VO/ajsfx_VO_ScriptMatch.lua
 ```
-Expected: no output. Run (Bash tool): `./run_tests.sh 2>&1 | tail -5` — expected `258 passed, 0 failed`.
+Expected: no output. Run (Bash tool): `./run_tests.sh 2>&1 | tail -5` — expected `257 passed, 0 failed`.
 
 - [ ] **Step 6: Commit**
 
