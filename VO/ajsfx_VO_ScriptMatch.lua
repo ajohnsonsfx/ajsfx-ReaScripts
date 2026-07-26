@@ -183,6 +183,9 @@ local state = {
   dropped_count    = 0,          -- spans falling outside the current items
   dropped_by_source = {},        -- source path -> how many of dropped_count it
                                  -- contributed, same partial-clear reason
+  preserved_count  = 0,          -- spans already on disk, outside the current
+                                 -- items' reach, that the last sidecar write
+                                 -- carried through instead of erasing
   use_alts_track   = cfg.use_alts_track or false,
   suffix_alt_names = cfg.suffix_alt_names or false,
   primary_last     = true,
@@ -218,14 +221,48 @@ local items, skipped, usable = {}, {}, {}
 -- ApplyPlan can clamp spans and the file should reflect what was applied.
 -- Returns how many were written, and a list of {path, reason} for those that
 -- were not: a read-only media folder is a warning, never a failed run.
+-- Also returns how many spans already on disk were PRESERVED across the write:
+-- a sidecar covers a whole recording, but the plan only ever covers the items
+-- currently SELECTED, and LoadSidecars drops (and counts) spans that fall
+-- outside them. Rewriting the file whole from that narrowed plan permanently
+-- erased those spans -- select one of three items cut from RIVA.wav, press Cut,
+-- and 40 of its 60 transcribed spans were gone from disk for good.
+--
+-- The merge is done in SOURCE time, on the far side of vo.PartitionPlanBySource
+-- (which is what converts) and on the same side as vo.ParseSidecar, so nothing
+-- is converted twice: PartitionPlanBySource turns the project-time plan into
+-- source-time spans, vo.SourceCoverageRanges describes the items' reach in that
+-- same source time, and vo.MergeSidecarSpans keeps exactly the disk spans that
+-- lie outside it. A source with no existing sidecar merges against an empty
+-- list and behaves exactly as before.
 local function WriteSidecars(plan, lines)
   local by_source = vo.PartitionPlanBySource(plan, usable)
-  local written, failures = 0, {}
+
+  -- The items backing each source, for the coverage ranges below.
+  local items_by_source = {}
+  for _, item in ipairs(usable) do
+    if item.path then
+      items_by_source[item.path] = items_by_source[item.path] or {}
+      table.insert(items_by_source[item.path], item)
+    end
+  end
+
+  local written, failures, preserved = 0, {}, 0
   for source_path, spans in pairs(by_source) do
     local path = vo.SidecarPath(source_path)
     if not path then
       failures[#failures + 1] = { path = source_path, reason = "no sidecar path" }
     else
+      local on_disk = {}
+      if vo.FileExists(path) then
+        local parsed = vo.ParseSidecar(ReadFile(path))
+        if parsed then on_disk = parsed.spans end
+      end
+      local kept
+      spans, kept = vo.MergeSidecarSpans(spans, on_disk,
+        vo.SourceCoverageRanges(items_by_source[source_path] or {}))
+      preserved = preserved + kept
+
       local text = vo.SerializeSidecar(spans, lines, {
         source       = source_path:match("([^/\\]+)$") or source_path,
         source_bytes = vo.FileSize(source_path) or 0,
@@ -239,7 +276,7 @@ local function WriteSidecars(plan, lines)
       end
     end
   end
-  return written, failures
+  return written, failures, preserved
 end
 
 -- A key over the SET of distinct source FILES behind a list of items -- which
@@ -805,6 +842,7 @@ local function ResetVerificationFields(force_drop_plan)
   state.line_status      = nil
   state.orphan_count     = 0
   state.dropped_count    = 0
+  state.preserved_count  = 0
   state.stale_sources    = {}
   state.script_mismatch  = ""
   state.mismatch_sources  = {}
@@ -960,7 +998,8 @@ local function Finish(plan, lines)
     applied, failures = vo.ApplyPlan(plan, cfg, usable[1].track)
   end)
 
-  local written, sc_failures = WriteSidecars(plan, lines)
+  local written, sc_failures, preserved = WriteSidecars(plan, lines)
+  state.preserved_count = preserved
   if #sc_failures > 0 then
     state.sidecar_warning = string.format(
       "Could not write %d sidecar file(s): %s", #sc_failures, sc_failures[1].path)
@@ -1191,7 +1230,8 @@ local function Run()
 
       -- Persist beside each recording now, not at cut time: a session where
       -- the user transcribes, inspects and never cuts still leaves a result.
-      local written, sc_failures = WriteSidecars(plan, lines)
+      local written, sc_failures, preserved = WriteSidecars(plan, lines)
+      state.preserved_count = preserved
       state.sidecar_warning = ""
       if #sc_failures > 0 then
         state.sidecar_warning = string.format(
@@ -1492,6 +1532,7 @@ local function loop()
       if state.script_mismatch ~= ""  then rows = rows + 1 end
       if state.orphan_count > 0       then rows = rows + 1 end
       if state.dropped_count > 0      then rows = rows + 1 end
+      if state.preserved_count > 0    then rows = rows + 1 end
       if state.sidecar_warning ~= ""  then rows = rows + 1 end
       -- run_error and state.message are not always one line: backend_error
       -- appends a "Run ajsfx VO Settings" line (three when ready_msg is
@@ -1538,7 +1579,13 @@ local function loop()
     end
     if state.dropped_count > 0 then
       im.TextDisabled(ctx, string.format(
-        "%d transcribed span(s) fall outside the selected items.", state.dropped_count))
+        "%d transcribed span(s) fall outside the selected items — they are left on disk, not erased.",
+        state.dropped_count))
+    end
+    if state.preserved_count > 0 then
+      im.TextDisabled(ctx, string.format(
+        "%d transcribed span(s) outside the current selection were kept in the sidecar file(s).",
+        state.preserved_count))
     end
     if state.sidecar_warning ~= "" then
       im.TextColored(ctx, 0xDDAA33FF, state.sidecar_warning)
@@ -1645,7 +1692,12 @@ local function loop()
     -- helper RefreshPreview uses so the two callers can't drift; force the
     -- plan itself to clear regardless of provenance, since Cut just applied
     -- it whether or not it was disk-backed.
+    -- ...except what the write that just happened reported. preserved_count
+    -- describes the sidecar files as they now stand on disk, not the plan that
+    -- was consumed, so it must survive the reset that clears the plan's fields.
+    local preserved = state.preserved_count
     ResetVerificationFields(true)
+    state.preserved_count = preserved
     state.status, state.status_kind = "Cut applied.", "ok"
   end
 
