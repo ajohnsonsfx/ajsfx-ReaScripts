@@ -761,6 +761,8 @@ local function ResetVerificationFields(force_drop_plan)
   state.dropped_count    = 0
   state.stale_sources    = {}
   state.script_mismatch  = ""
+  state.mismatch_sources  = {}
+  state.dropped_by_source = {}
 end
 
 -- Recompute the will-run set. This is the same call Run() makes with the same

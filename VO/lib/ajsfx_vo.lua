@@ -973,7 +973,9 @@ function vo.AssignNames(spans, cfg)
     table.sort(g, function(a, b)
       if a.start ~= b.start then return a.start < b.start end
       if (a.stop or 0) ~= (b.stop or 0) then return (a.stop or 0) < (b.stop or 0) end
-      return tostring(a.transcript or "") < tostring(b.transcript or "")
+      local at, bt = tostring(a.transcript or ""), tostring(b.transcript or "")
+      if at ~= bt then return at < bt end
+      return (a.score or 0) < (b.score or 0)
     end)
     for i, s in ipairs(g) do s.take_index = i end
     local primary = (primary_take == "first") and g[1] or g[#g]

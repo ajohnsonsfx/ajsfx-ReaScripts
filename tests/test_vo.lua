@@ -1060,19 +1060,42 @@ test("re-running over the union is itself idempotent", function()
   assert(u[1].take_index == t1 and u[2].take_index == t2, "take numbers drifted")
 end)
 
-test("take numbering is stable when two takes share a start time", function()
-  -- table.sort is not stable, so equal keys must be broken deterministically or
-  -- a re-run can swap the take numbers of two coincident spans.
+test("take numbering does not depend on input order when four takes tie on every other key", function()
+  -- table.sort is not stable, so spans tied on start/stop/transcript must be
+  -- broken by a further key (score) or their relative order -- and thus
+  -- take_index -- depends on whatever order they happened to arrive in
+  -- (e.g. CSV row order from a reload), rather than on the spans themselves.
+  -- With only two tied elements, Lua 5.4's table.sort preserves input order
+  -- regardless of tie-break logic, so this needs at least four spans tied on
+  -- every key but `score` before an order-dependent (pre-fix) comparator
+  -- actually produces a different permutation for a different input order.
   local cfg = { suffix_alt_names = true, primary_take = "last" }
-  local spans = {
-    { kind = "match", asset = "L001", start = 4, stop = 5, transcript = "b" },
-    { kind = "match", asset = "L001", start = 4, stop = 5, transcript = "a" },
-  }
-  vo.AssignNames(spans, cfg)
-  local first = spans[1].take_index
-  for _ = 1, 5 do
-    vo.AssignNames(spans, cfg)
-    assert(spans[1].take_index == first, "take number swapped between runs")
+
+  local function make(order)
+    local by_id = {
+      { kind = "match", asset = "L001", start = 4, stop = 5, transcript = "x", score = 0.4, id = 1 },
+      { kind = "match", asset = "L001", start = 4, stop = 5, transcript = "x", score = 0.3, id = 2 },
+      { kind = "match", asset = "L001", start = 4, stop = 5, transcript = "x", score = 0.2, id = 3 },
+      { kind = "match", asset = "L001", start = 4, stop = 5, transcript = "x", score = 0.1, id = 4 },
+    }
+    local spans = {}
+    for i, id in ipairs(order) do spans[i] = by_id[id] end
+    return spans
+  end
+
+  local forward = make({ 1, 2, 3, 4 })
+  local reverse = make({ 4, 3, 2, 1 })
+  vo.AssignNames(forward, cfg)
+  vo.AssignNames(reverse, cfg)
+
+  local by_id_forward, by_id_reverse = {}, {}
+  for _, s in ipairs(forward) do by_id_forward[s.id] = s.take_index end
+  for _, s in ipairs(reverse) do by_id_reverse[s.id] = s.take_index end
+
+  for id = 1, 4 do
+    assert(by_id_forward[id] == by_id_reverse[id],
+      "take_index for span id " .. id .. " depends on input order: "
+      .. tostring(by_id_forward[id]) .. " vs " .. tostring(by_id_reverse[id]))
   end
 end)
 
