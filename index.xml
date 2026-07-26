@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ajsfx-ReaScripts" commit="ff97c92d3d534435898109c2b8d601bf05b97692">
+<index version="1" name="ajsfx-ReaScripts" commit="6c833a555b189bb9f30cf5aeff6b33c3f8a1b20f">
   <category name="Items">
     <reapack name="ajsfx_GentleNormalizer.lua" type="script" desc="Gentle Normalizer">
       <metadata>
@@ -390,6 +390,20 @@ lib/ajsfx_vo.lua and only one may provide a given file.]]></changelog>
         <source main="main" file="ajsfx_VO_Settings.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/d05ab4cfc4aaaa4c1523ea3ef0522d672131d0e9/VO/ajsfx_VO_Settings.lua</source>
         <source file="lib/ajsfx_vo.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/d05ab4cfc4aaaa4c1523ea3ef0522d672131d0e9/VO/lib/ajsfx_vo.lua</source>
         <source file="lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/d05ab4cfc4aaaa4c1523ea3ef0522d672131d0e9/lib/ajsfx_core.lua</source>
+      </version>
+      <version name="0.7" author="ajsfx" time="2026-07-25T20:05:42Z">
+        <changelog><![CDATA[Run dialog rebuilt around a live preview table: columns are mapped in the table header, the body shows exactly the lines that will run, and layout and session options collapse out of the way; character filtering is now single-select]]></changelog>
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/fd939850579950587a25fce33cef64a5c2f822ed/VO/ajsfx_VO_ScriptMatch.lua</source>
+        <source main="main" file="ajsfx_VO_Settings.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/fd939850579950587a25fce33cef64a5c2f822ed/VO/ajsfx_VO_Settings.lua</source>
+        <source file="lib/ajsfx_vo.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/fd939850579950587a25fce33cef64a5c2f822ed/VO/lib/ajsfx_vo.lua</source>
+        <source file="lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/fd939850579950587a25fce33cef64a5c2f822ed/lib/ajsfx_core.lua</source>
+      </version>
+      <version name="0.8" author="ajsfx" time="2026-07-25T23:36:52Z">
+        <changelog><![CDATA[Transcribe and cut are now two buttons in the top right: Transcribe reads the audio and builds the plan without touching the project, and Cut applies it. Changing the CSV, mapping, filters or skip tokens discards a plan built before the change]]></changelog>
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/c4ccba06500ab85138a0405a38ce83de734cac29/VO/ajsfx_VO_ScriptMatch.lua</source>
+        <source main="main" file="ajsfx_VO_Settings.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/c4ccba06500ab85138a0405a38ce83de734cac29/VO/ajsfx_VO_Settings.lua</source>
+        <source file="lib/ajsfx_vo.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/c4ccba06500ab85138a0405a38ce83de734cac29/VO/lib/ajsfx_vo.lua</source>
+        <source file="lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/c4ccba06500ab85138a0405a38ce83de734cac29/lib/ajsfx_core.lua</source>
       </version>
     </reapack>
   </category>
