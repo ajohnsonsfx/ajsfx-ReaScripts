@@ -1505,6 +1505,24 @@ local function loop()
       end
     end
 
+    -- Cut-only gating: vo.ApplyPlan resolves EVERY span against one source
+    -- track (ItemContaining(source_track, span.start)) and the dialog can only
+    -- hand it usable[1].track, so a selection spanning two tracks is either
+    -- loudly wrong -- sequential takes on two tracks, where every span on the
+    -- second fails "no item at X" -- or silently destructive: with SIMULTANEOUS
+    -- recordings (boom + lav) the second track's spans resolve to the FIRST
+    -- track's items, splitting track 1 twice per line and naming its takes from
+    -- track 2's transcript while track 2 is never touched. Multi-track
+    -- TRANSCRIPTION stays allowed; only the cut is gated. Making ApplyPlan
+    -- multi-track is a design change beyond this branch.
+    local track_error
+    if vo.DistinctTrackCount(usable) > 1 then
+      track_error = "The selected items are on more than one track. "
+                 .. "Cut applies the whole plan to a single track, so it would "
+                 .. "split the wrong track's items.\nSelect the items on one "
+                 .. "track and cut them a track at a time."
+    end
+
     -- Run (Transcribe) gating additionally requires a configured backend.
     -- backend_error is checked immediately after #usable == 0 -- a missing
     -- backend is a hard blocker that should surface before the user chases
@@ -1548,6 +1566,7 @@ local function loop()
       -- text stays reachable without a popup -- only how much vertical space
       -- it is assumed to need gets bounded.
       rows = rows + vo.CountLines(run_error, MSG_ROW_RESERVE_CAP)
+      rows = rows + vo.CountLines(track_error, MSG_ROW_RESERVE_CAP)
       rows = rows + vo.CountLines(state.message, MSG_ROW_RESERVE_CAP)
       rows = rows + #state.summary
 
@@ -1593,6 +1612,12 @@ local function loop()
 
     if run_error then
       im.TextColored(ctx, 0xDDAA33FF, run_error)
+    end
+
+    -- Cut-only, so it is drawn separately from run_error rather than folded
+    -- into it: transcribing across several tracks is still perfectly fine.
+    if track_error then
+      im.TextColored(ctx, 0xDDAA33FF, track_error)
     end
 
     if state.message ~= "" then
@@ -1658,6 +1683,7 @@ local function loop()
     -- mapped again. The tooltip says which.
     local dis_cut = (state.plan == nil) or state.running
       or (#state.stale_sources > 0) or (script_error ~= nil)
+      or (track_error ~= nil)
     if dis_cut then im.BeginDisabled(ctx) end
     pressed_cut = im.Button(ctx, "Cut and name")
     if dis_cut then im.EndDisabled(ctx) end
@@ -1666,6 +1692,7 @@ local function loop()
         (state.plan == nil) and "Transcribe first — there is no plan to apply."
         or (#state.stale_sources > 0) and "The audio has changed since it was transcribed. Re-transcribe first."
         or state.running and "A transcription is already running."
+        or track_error
         or script_error and ("The plan is kept, but it cannot be applied until the script is usable again:\n" .. script_error)
         or "Split and name the clips from the transcribed plan.")
     end
