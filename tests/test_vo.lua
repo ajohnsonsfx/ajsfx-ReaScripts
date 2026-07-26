@@ -2715,5 +2715,128 @@ test("nested tables remain shared (shallow, not deep)", function()
   assert(out.column_mapping == src.column_mapping, "Expected nested table to be the same reference")
 end)
 
+--------------------------------
+print("\nSourceCoverageRanges:")
+
+test("one range per item, in source time", function()
+  local rs = vo.SourceCoverageRanges({ item_at(10, 4), item_at(30, 5, 20.0) })
+  assert(#rs == 2, "Expected 2 ranges, got " .. #rs)
+  assert(near(rs[1].from, 0) and near(rs[1].to, 4), "range 1: " .. rs[1].from .. ".." .. rs[1].to)
+  assert(near(rs[2].from, 20) and near(rs[2].to, 25), "range 2: " .. rs[2].from .. ".." .. rs[2].to)
+end)
+
+test("playrate stretches the source span the item covers", function()
+  local rs = vo.SourceCoverageRanges({ item_at(0, 4, 0, 2.0) })
+  assert(near(rs[1].to, 8.0), "4s at 2x plays 8s of source, got " .. rs[1].to)
+end)
+
+test("a zero playrate falls back to 1x rather than collapsing the range", function()
+  local rs = vo.SourceCoverageRanges({ item_at(0, 4, 0, 0) })
+  assert(near(rs[1].to, 4.0), "Expected 4.0, got " .. rs[1].to)
+end)
+
+test("no items yields no ranges", function()
+  assert(#vo.SourceCoverageRanges({}) == 0, "Expected no ranges")
+  assert(#vo.SourceCoverageRanges(nil) == 0, "Expected no ranges from nil")
+end)
+
+--------------------------------
+print("\nMergeSidecarSpans:")
+
+-- The regression this whole function exists for: RIVA.wav is cut into three
+-- timeline items and transcribed as one 60-span sidecar; the user then selects
+-- only the FIRST item and presses Cut. Before the merge, the rewrite kept only
+-- the 20 spans inside item 1 and the other 40 were erased from disk for good.
+test("spans outside every covered range survive the write", function()
+  local disk = {}
+  for i = 1, 6 do disk[i] = { start = i * 10, stop = i * 10 + 2, asset = "L00" .. i } end
+  local ranges = vo.SourceCoverageRanges({ item_at(0, 25) }) -- source 0..25s
+  local new    = { { start = 11, stop = 13, asset = "L001", kind = "match" } }
+  local merged, preserved = vo.MergeSidecarSpans(new, disk, ranges)
+  assert(preserved == 4, "Expected 4 out-of-range spans preserved, got " .. preserved)
+  assert(#merged == 5, "Expected 1 new + 4 preserved = 5, got " .. #merged)
+end)
+
+test("a disk span inside a covered range is superseded, not duplicated", function()
+  local disk   = { { start = 1.0, stop = 2.0, asset = "L001", kind = "review" } }
+  local ranges = vo.SourceCoverageRanges({ item_at(0, 10) })
+  local new    = { { start = 1.0, stop = 2.0, asset = "L001", kind = "match" } }
+  local merged, preserved = vo.MergeSidecarSpans(new, disk, ranges)
+  assert(preserved == 0, "A covered disk span must not be preserved, got " .. preserved)
+  assert(#merged == 1, "Expected exactly the new span, got " .. #merged)
+  assert(merged[1].kind == "match", "The new span must win, got " .. tostring(merged[1].kind))
+end)
+
+test("a re-transcription that finds fewer spans still shrinks the covered region", function()
+  local disk   = { { start = 1, stop = 2 }, { start = 3, stop = 4 }, { start = 5, stop = 6 } }
+  local ranges = vo.SourceCoverageRanges({ item_at(0, 10) })
+  local merged = vo.MergeSidecarSpans({ { start = 1, stop = 6 } }, disk, ranges)
+  assert(#merged == 1, "Expected the covered region to be replaced wholesale, got " .. #merged)
+end)
+
+test("the merged result is sorted by start", function()
+  local disk   = { { start = 90, stop = 91 }, { start = 50, stop = 51 } }
+  local ranges = vo.SourceCoverageRanges({ item_at(0, 10) })
+  local merged = vo.MergeSidecarSpans({ { start = 70, stop = 71 } }, disk, ranges)
+  assert(#merged == 3, "Expected 3, got " .. #merged)
+  assert(merged[1].start == 50 and merged[2].start == 70 and merged[3].start == 90,
+    "Out of order: " .. merged[1].start .. "," .. merged[2].start .. "," .. merged[3].start)
+end)
+
+test("membership is decided by midpoint, matching every other placement rule", function()
+  -- Starts inside the range, ends well outside: the midpoint is outside, so the
+  -- span belongs to a region this write could not see and must be kept.
+  local disk   = { { start = 9, stop = 21 } }
+  local ranges = vo.SourceCoverageRanges({ item_at(0, 10) })
+  local _, preserved = vo.MergeSidecarSpans({}, disk, ranges)
+  assert(preserved == 1, "Expected the span to be preserved, got " .. preserved)
+end)
+
+test("no ranges at all preserves every disk span", function()
+  local disk = { { start = 1, stop = 2 }, { start = 3, stop = 4 } }
+  local merged, preserved = vo.MergeSidecarSpans({}, disk, {})
+  assert(preserved == 2 and #merged == 2, "Expected both preserved, got " .. preserved)
+end)
+
+test("an empty disk side is a plain passthrough of the new spans", function()
+  local new = { { start = 1, stop = 2 } }
+  local merged, preserved = vo.MergeSidecarSpans(new, {}, vo.SourceCoverageRanges({ item_at(0, 10) }))
+  assert(preserved == 0 and #merged == 1, "Expected the new span alone")
+end)
+
+test("nil arguments are inert, never an error", function()
+  local merged, preserved = vo.MergeSidecarSpans(nil, nil, nil)
+  assert(#merged == 0 and preserved == 0, "Expected an empty merge")
+end)
+
+test("several items on one source cover several disjoint stretches", function()
+  -- Two items playing 0..5s and 40..45s of the same recording; a span at 20s
+  -- sits in the gap between them and must survive.
+  local ranges = vo.SourceCoverageRanges({ item_at(0, 5, 0), item_at(100, 5, 40) })
+  local disk   = { { start = 1, stop = 2 }, { start = 20, stop = 21 }, { start = 41, stop = 42 } }
+  local _, preserved = vo.MergeSidecarSpans({}, disk, ranges)
+  assert(preserved == 1, "Only the gap span may be preserved, got " .. preserved)
+end)
+
+--------------------------------
+print("\nDistinctTrackCount:")
+
+test("items on one track count as one", function()
+  local t = {}
+  assert(vo.DistinctTrackCount({ { track = t }, { track = t }, { track = t } }) == 1,
+    "Expected 1 distinct track")
+end)
+
+test("items on two tracks count as two", function()
+  assert(vo.DistinctTrackCount({ { track = {} }, { track = {} } }) == 2,
+    "Expected 2 distinct tracks")
+end)
+
+test("no items, or items with no track, count as zero", function()
+  assert(vo.DistinctTrackCount({}) == 0, "Expected 0")
+  assert(vo.DistinctTrackCount(nil) == 0, "Expected 0 from nil")
+  assert(vo.DistinctTrackCount({ { track = nil } }) == 0, "Expected 0 when no track is resolved")
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

@@ -1473,6 +1473,63 @@ function vo.SpansBySourcePath(plan, items)
   return by_source
 end
 
+-- Merge a freshly written span list with what is already on disk for the SAME
+-- source file. Both lists must be in SOURCE time (SerializeSidecar's base, i.e.
+-- the output of vo.PartitionPlanBySource on one side and vo.ParseSidecar on the
+-- other) -- this function converts nothing, so it can never double-convert.
+--
+-- Why it exists: a sidecar write rewrites a source's file WHOLE, but the plan
+-- being written only ever covers the items currently SELECTED. Narrow the
+-- selection to one of three items cut from the same recording and the other
+-- two items' spans were dropped at load; writing then erased them from disk
+-- permanently, losing transcription work the write simply could not see.
+--
+-- The rule is exactly that: a disk span is kept when its MIDPOINT falls inside
+-- none of `ranges` (the source-time stretches the current items play, from
+-- vo.SourceCoverageRanges). A disk span inside a covered range is superseded by
+-- whatever `new_spans` says about that region -- including its absence, so a
+-- re-transcription that legitimately produces fewer spans still shrinks the
+-- file. Midpoints, not endpoints, because that is how every other placement
+-- decision in this file is made (PartitionPlanBySource, SpansBySourcePath).
+--
+-- Returns: merged array sorted by start, plus how many disk spans were
+-- preserved (so the dialog can say so inline).
+function vo.MergeSidecarSpans(new_spans, disk_spans, ranges)
+  local merged, preserved = {}, 0
+  for _, s in ipairs(new_spans or {}) do merged[#merged + 1] = s end
+
+  for _, s in ipairs(disk_spans or {}) do
+    local mid = ((s.start or 0) + (s.stop or 0)) / 2
+    local covered = false
+    for _, range in ipairs(ranges or {}) do
+      if mid >= range.from and mid <= range.to then covered = true; break end
+    end
+    if not covered then
+      merged[#merged + 1] = s
+      preserved = preserved + 1
+    end
+  end
+
+  table.sort(merged, function(a, b) return (a.start or 0) < (b.start or 0) end)
+  return merged, preserved
+end
+
+-- How many distinct tracks a list of items sits on. vo.ApplyPlan resolves every
+-- span against ONE source track, so a cut over items spanning two tracks would
+-- either fail loudly (sequential takes) or -- worse -- silently resolve track 2's
+-- spans onto track 1's items (simultaneous boom + lav takes). The dialog gates
+-- Cut on this being 1; transcription across several tracks stays fine.
+function vo.DistinctTrackCount(items)
+  local seen, n = {}, 0
+  for _, item in ipairs(items or {}) do
+    if item.track ~= nil and not seen[item.track] then
+      seen[item.track] = true
+      n = n + 1
+    end
+  end
+  return n
+end
+
 -- Which of the selected sources still need transcribing. The question is asked
 -- PER SOURCE FILE, never globally: a source is skipped only when it has a
 -- usable result OF ITS OWN. Deciding from "does the plan contain anything at
@@ -1582,6 +1639,25 @@ end
 function vo.SourceTimeToProject(t, item)
   return ((item and item.pos) or 0)
        + (t - ((item and item.start_offs) or 0)) / safe_playrate(item)
+end
+
+-- The SOURCE-TIME stretch of a media source that a list of items actually
+-- plays: one range per item, in the same time base ParseSidecar/SerializeSidecar
+-- use. Mirrors the placement arithmetic in the dialog's LoadSidecars, so a span
+-- LoadSidecars could place is exactly a span that falls inside one of these
+-- ranges. All items passed in are expected to reference the same source file;
+-- the caller groups them.
+-- Defined HERE, below safe_playrate, and not beside vo.MergeSidecarSpans which
+-- it partners: safe_playrate is a plain file local, so a definition above it
+-- would resolve the name as a nil global and only fail inside REAPER.
+function vo.SourceCoverageRanges(items)
+  local out = {}
+  for _, item in ipairs(items or {}) do
+    local from = item.start_offs or 0
+    local to   = from + (item.length or 0) * safe_playrate(item)
+    out[#out + 1] = { from = from, to = to }
+  end
+  return out
 end
 
 --------------------------------
