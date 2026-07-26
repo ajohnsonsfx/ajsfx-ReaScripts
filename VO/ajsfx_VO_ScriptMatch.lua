@@ -304,6 +304,18 @@ local function SourceKey(list)
   return table.concat(paths, "\31")
 end
 
+-- The display form of a SourceKey: its base names, comma separated. Used to
+-- name what was lost when a source-set change discards an unsaved plan, so the
+-- notice says WHICH recording's transcription evaporated.
+local function SourceKeyNames(key)
+  local names = {}
+  for path in tostring(key or ""):gmatch("[^\31]+") do
+    names[#names + 1] = path:match("([^/\\]+)$") or path
+  end
+  if #names == 0 then return "the previous selection" end
+  return table.concat(names, ", ")
+end
+
 -- Cheap enough to run every frame: item pointers only, no take or source
 -- lookups. A count alone is not enough -- swapping one item for another
 -- leaves the count unchanged -- so the pointers themselves are the key.
@@ -1388,8 +1400,13 @@ local function loop()
     -- * The source set genuinely changed (src_changed): ALWAYS reload. A plan
     --   cannot describe a source set it wasn't built from -- keeping it, even
     --   a live/unsaved one, would let Cut apply RIVA's spans to OTHER's items.
-    --   The unsaved-plan-lost case is not silent: sidecar_warning already
-    --   surfaced the write failure when it happened.
+    --   The unsaved-plan-lost case must not be silent, and it is not the same
+    --   thing as the sidecar write having failed earlier: the branch below used
+    --   to CLEAR sidecar_warning two lines before LoadSidecars replaced the
+    --   plan, so on a read-only media folder the plan, the Status column and
+    --   the amber warning all vanished at once, with no record that twenty
+    --   minutes of whisper output had just evaporated. A discard notice naming
+    --   the source is raised here instead, on top of any surviving warning.
     -- * Same sources, different items (sel_changed and not src_changed):
     --   reload UNLESS doing so would destroy something. The only thing worth
     --   protecting is a LIVE UNSAVED plan (plan ~= nil and not plan_saved):
@@ -1401,12 +1418,39 @@ local function loop()
     --   adding a second item on the same source pick up spans that were
     --   previously out of range, now that src_changed no longer fires there.
     -- * Neither changed: no load, no I/O.
+    local prev_source_key = state.source_key
     local sel_changed, src_changed = RefreshSelection()
+
+    -- Both channels describe the selection that was current when they were
+    -- written. Leaving them up across a selection change re-attributed them:
+    -- cut RIVA.wav ("18 clip(s) cut and named."), click an OTHER.wav item, and
+    -- the dialog showed OTHER's "Loaded 24 transcribed span(s) from disk."
+    -- directly above RIVA's cut summary, which then read as OTHER's result.
+    -- state.status is already cleared on a source change below; these two were
+    -- cleared only by RefreshPreview, which a selection change never triggers.
+    if sel_changed then
+      state.summary = {}
+      state.message, state.message_kind = "", "error"
+    end
+
     local should_reload = src_changed
       or (sel_changed and (state.plan == nil or state.plan_saved))
     if should_reload then
       if src_changed then
-        state.status, state.status_kind, state.sidecar_warning = "", "ok", ""
+        state.status, state.status_kind = "", "ok"
+        if state.plan ~= nil and not state.plan_saved then
+          -- Live, never persisted, and about to be replaced by the incoming
+          -- source's sidecars. Say so, and keep whatever warning explained WHY
+          -- it was never persisted rather than clearing it in the one branch
+          -- that most needs it.
+          local note = string.format(
+            "Discarded an unsaved transcription for %s — it was never written to disk.",
+            SourceKeyNames(prev_source_key))
+          state.sidecar_warning = (state.sidecar_warning ~= "")
+            and (state.sidecar_warning .. "\n" .. note) or note
+        else
+          state.sidecar_warning = ""
+        end
       end
       LoadSidecars(src_changed)
     end
@@ -1658,7 +1702,9 @@ local function loop()
       if state.orphan_count > 0       then rows = rows + 1 end
       if state.dropped_count > 0      then rows = rows + 1 end
       if state.preserved_count > 0    then rows = rows + 1 end
-      if state.sidecar_warning ~= ""  then rows = rows + 1 end
+      -- Counted by line, not as one: a discarded-unsaved-plan notice can be
+      -- appended below an existing write failure, making this two lines.
+      rows = rows + vo.CountLines(state.sidecar_warning, MSG_ROW_RESERVE_CAP)
       -- run_error and state.message are not always one line: backend_error
       -- appends a "Run ajsfx VO Settings" line (three when ready_msg is
       -- itself the two-line "whisper-cli not found at:\n<path>" form) and
