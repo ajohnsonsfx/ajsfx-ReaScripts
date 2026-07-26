@@ -28,11 +28,25 @@ end
 -- newline. Used to size UI reserves for messages whose line count varies
 -- (a path-bearing error, a concatenated skip list) rather than assuming every
 -- status message is exactly one line.
-function vo.CountLines(s)
+-- `cap`, if given, clamps the returned count so one pathological message
+-- (e.g. a multi-hundred-line whisper log tail) cannot dominate a layout
+-- reserve computed by summing CountLines() across several messages.
+function vo.CountLines(s, cap)
   if s == nil or s == "" then return 0 end
   local n = 1
   for _ in tostring(s):gmatch("\n") do n = n + 1 end
+  if cap and n > cap then return cap end
   return n
+end
+
+-- Shallow copy: a new table with the same top-level key/value pairs. Nested
+-- tables (e.g. cfg.column_mapping) remain shared with the original -- callers
+-- that need to isolate a config snapshot from later top-level field writes
+-- (see run_cfg in ajsfx_VO_ScriptMatch.lua) only need the top level copied.
+function vo.ShallowCopy(t)
+  local out = {}
+  for k, v in pairs(t) do out[k] = v end
+  return out
 end
 
 --------------------------------

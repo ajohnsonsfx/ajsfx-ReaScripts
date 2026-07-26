@@ -2668,5 +2668,52 @@ test("multiple embedded newlines count every line", function()
   assert(vo.CountLines("a\nb\nc") == 3, "Expected 3")
 end)
 
+test("cap clamps a pathological line count", function()
+  local long = string.rep("x\n", 40) .. "x" -- 41 lines
+  assert(vo.CountLines(long) == 41, "Expected 41 uncapped")
+  assert(vo.CountLines(long, 8) == 8, "Expected clamp to 8")
+end)
+
+test("cap does not affect a count under the cap", function()
+  assert(vo.CountLines("a\nb\nc", 8) == 3, "Expected 3, cap should not raise or clip below its own value")
+end)
+
+test("cap is a no-op for empty/nil input", function()
+  assert(vo.CountLines("", 8) == 0, "Expected 0")
+  assert(vo.CountLines(nil, 8) == 0, "Expected 0")
+end)
+
+--------------------------------
+-- ShallowCopy
+--------------------------------
+print("ShallowCopy:")
+
+test("copies top-level keys into a new table", function()
+  local src = { a = 1, b = "two", c = true }
+  local out = vo.ShallowCopy(src)
+  assert(out.a == 1 and out.b == "two" and out.c == true, "Expected values to match")
+  assert(out ~= src, "Expected a distinct table, not the same reference")
+end)
+
+test("later writes to the source do not affect the copy", function()
+  local src = { whisper_model = "base.en" }
+  local out = vo.ShallowCopy(src)
+  src.whisper_model = "large-v3"
+  assert(out.whisper_model == "base.en", "Copy must not see later top-level writes to the source")
+end)
+
+test("writes to the copy do not affect the source", function()
+  local src = { force_retranscribe = false }
+  local out = vo.ShallowCopy(src)
+  out.force_retranscribe = true
+  assert(src.force_retranscribe == false, "Source must not see writes to the copy")
+end)
+
+test("nested tables remain shared (shallow, not deep)", function()
+  local src = { column_mapping = { asset = "Asset" } }
+  local out = vo.ShallowCopy(src)
+  assert(out.column_mapping == src.column_mapping, "Expected nested table to be the same reference")
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

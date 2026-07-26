@@ -25,6 +25,14 @@ local vo   = require("lib.ajsfx_vo")
 
 local PROJ_SECTION = "ajsfx_vo"
 
+-- Layout reserve cap for any single status message (Task 8 fix): a whisper-cli
+-- error can embed a 1500-char log tail with 30+ newlines; without a cap the
+-- reserve computed from CountLines() goes deeply negative and pins the table
+-- to its floor. 8 lines is enough to reserve space for the common short forms
+-- (missing-binary, one-path errors) without letting a pathological one crowd
+-- out the table.
+local MSG_ROW_RESERVE_CAP = 8
+
 -- -----------------------------------------------------------------------
 -- Preconditions — checked before anything is drawn or launched
 -- -----------------------------------------------------------------------
@@ -1067,7 +1075,15 @@ local function Run()
   -- config this run actually started with, not whatever `cfg` happens to
   -- hold by then. (RefreshBackendError no longer rebinds `cfg` at all -- see
   -- above -- but the callback should not depend on that fact to be correct.)
-  local run_cfg = cfg
+  -- This must be a real COPY, not an alias: vo.TranscribeSources re-reads cfg
+  -- per source inside its own step() loop (vo.CacheKey/vo.BuildWhisperArgv),
+  -- which for source 2+ runs long after Run() has returned. If run_cfg were
+  -- just `cfg`, the 2-second-throttled backend re-check could swap
+  -- whisper_model/scratch_dir/timeout_s out from under a multi-source run
+  -- between sources. Taken here -- after ApplyCfg() pushed the dialog-owned
+  -- toggles onto cfg and after force_retranscribe was set above -- so both
+  -- are present in the snapshot.
+  local run_cfg = vo.ShallowCopy(cfg)
   vo.TranscribeSources(run_cfg, sources,
     function(transcripts)
       -- Everything below is still read-only until core.Transaction runs.
@@ -1460,8 +1476,15 @@ local function loop()
       -- script_error's skipped-list branch is one line PER skipped item.
       -- Counting embedded newlines keeps the reserve exact instead of
       -- under-sizing it and pushing the button row toward/off the bottom.
-      rows = rows + vo.CountLines(run_error)
-      rows = rows + vo.CountLines(state.message)
+      -- Cap each message's contribution to the reserve: a whisper-cli error
+      -- can carry a 1500-character log tail with 30+ embedded newlines, which
+      -- would blow the reserve deeply negative and pin the table to its
+      -- 120px floor while still shoving the button row down regardless. The
+      -- message itself is NOT truncated -- the window scrolls, so the full
+      -- text stays reachable without a popup -- only how much vertical space
+      -- it is assumed to need gets bounded.
+      rows = rows + vo.CountLines(run_error, MSG_ROW_RESERVE_CAP)
+      rows = rows + vo.CountLines(state.message, MSG_ROW_RESERVE_CAP)
       rows = rows + #state.summary
 
       -- GetContentRegionAvail returns width first, so the height must come from
