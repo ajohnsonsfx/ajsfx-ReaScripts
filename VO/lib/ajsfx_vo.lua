@@ -1352,6 +1352,30 @@ function vo.ParseSidecar(text)
   return parsed
 end
 
+-- Split a project-time plan into one source-time span list per source file.
+-- The midpoint decides which item a span belongs to, matching how the dialog's
+-- ClampSpansToItems already assigns them, so the two cannot disagree.
+-- Spans matching no item (gaps between items) are omitted.
+function vo.PartitionPlanBySource(plan, items)
+  local by_source = {}
+  for _, span in ipairs(plan or {}) do
+    local midpoint = ((span.raw_start or span.start or 0)
+                    + (span.raw_stop  or span.stop  or 0)) / 2
+    for _, item in ipairs(items or {}) do
+      if item.path and midpoint >= item.pos and midpoint <= item.pos + (item.length or 0) then
+        local copy = {}
+        for k, v in pairs(span) do copy[k] = v end
+        copy.start = vo.ProjectTimeToSource(span.start or 0, item)
+        copy.stop  = vo.ProjectTimeToSource(span.stop  or 0, item)
+        by_source[item.path] = by_source[item.path] or {}
+        table.insert(by_source[item.path], copy)
+        break
+      end
+    end
+  end
+  return by_source
+end
+
 --------------------------------
 -- Pure layer: shell quoting
 --------------------------------

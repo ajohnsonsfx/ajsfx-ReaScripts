@@ -2244,5 +2244,79 @@ test("a playrate of zero or less is treated as 1.0", function()
     "Got: " .. vo.SourceTimeToProject(2.0, item_at(10, 4, 0, -1)))
 end)
 
+--------------------------------
+-- PartitionPlanBySource
+--------------------------------
+print("\nPartitionPlanBySource:")
+
+-- Two items on the timeline, drawn from two different source files.
+local function two_source_items()
+  return {
+    { path = "A.wav", pos = 0,  length = 10, start_offs = 0, playrate = 1.0 },
+    { path = "B.wav", pos = 20, length = 10, start_offs = 0, playrate = 1.0 },
+  }
+end
+
+test("spans are grouped by the source of the item containing them", function()
+  local plan = {
+    { start = 1, stop = 2,  kind = "match", asset = "a" },
+    { start = 21, stop = 22, kind = "match", asset = "b" },
+  }
+  local by_source = vo.PartitionPlanBySource(plan, two_source_items())
+  assert(#by_source["A.wav"] == 1, "A.wav: " .. #(by_source["A.wav"] or {}))
+  assert(#by_source["B.wav"] == 1, "B.wav: " .. #(by_source["B.wav"] or {}))
+  assert(by_source["A.wav"][1].asset == "a", "Wrong span in A.wav")
+  assert(by_source["B.wav"][1].asset == "b", "Wrong span in B.wav")
+end)
+
+test("partitioned spans are converted to source time", function()
+  local plan = { { start = 21, stop = 22, kind = "match", asset = "b" } }
+  local by_source = vo.PartitionPlanBySource(plan, two_source_items())
+  -- Item B sits at project 20s with no offset, so project 21s is source 1s.
+  assert(near(by_source["B.wav"][1].start, 1.0), "start: " .. by_source["B.wav"][1].start)
+  assert(near(by_source["B.wav"][1].stop, 2.0), "stop: " .. by_source["B.wav"][1].stop)
+end)
+
+test("the input plan is not mutated", function()
+  local plan = { { start = 21, stop = 22, kind = "match", asset = "b" } }
+  vo.PartitionPlanBySource(plan, two_source_items())
+  assert(near(plan[1].start, 21), "Input span was mutated: " .. plan[1].start)
+end)
+
+test("a span inside no item is omitted", function()
+  local plan = { { start = 15, stop = 16, kind = "match", asset = "gap" } }
+  local by_source = vo.PartitionPlanBySource(plan, two_source_items())
+  assert(by_source["A.wav"] == nil, "A.wav should have no entry")
+  assert(by_source["B.wav"] == nil, "B.wav should have no entry")
+end)
+
+test("two items sharing one source produce one group", function()
+  local items = {
+    { path = "A.wav", pos = 0,  length = 10, start_offs = 0,  playrate = 1.0 },
+    { path = "A.wav", pos = 20, length = 10, start_offs = 30, playrate = 1.0 },
+  }
+  local plan = {
+    { start = 1,  stop = 2,  kind = "match", asset = "a" },
+    { start = 21, stop = 22, kind = "match", asset = "b" },
+  }
+  local by_source = vo.PartitionPlanBySource(plan, items)
+  assert(#by_source["A.wav"] == 2, "Expected 2 spans in A.wav, got " .. #by_source["A.wav"])
+  -- The second item plays the source from 30s, so project 21s is source 31s.
+  assert(near(by_source["A.wav"][2].start, 31.0), "start: " .. by_source["A.wav"][2].start)
+end)
+
+test("assignment uses the span midpoint, matching ClampSpansToItems", function()
+  -- A span starting before item A but centred inside it belongs to A.
+  local plan = { { start = -1, stop = 3, kind = "match", asset = "a" } }
+  local by_source = vo.PartitionPlanBySource(plan, two_source_items())
+  assert(by_source["A.wav"] and #by_source["A.wav"] == 1, "Midpoint 1.0s should land in A.wav")
+end)
+
+test("items with no path are skipped", function()
+  local items = { { pos = 0, length = 10, start_offs = 0, playrate = 1.0 } }
+  local by_source = vo.PartitionPlanBySource({ { start = 1, stop = 2 } }, items)
+  assert(next(by_source) == nil, "A pathless item should produce no groups")
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
