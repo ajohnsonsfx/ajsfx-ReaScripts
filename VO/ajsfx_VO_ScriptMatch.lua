@@ -1462,9 +1462,14 @@ local function loop()
     -- directly above RIVA's cut summary, which then read as OTHER's result.
     -- state.status is already cleared on a source change below; these two were
     -- cleared only by RefreshPreview, which a selection change never triggers.
+    -- preserved_count belongs here for the same reason: it describes the
+    -- sidecar the last Cut wrote, and LoadSidecars does not reset it, so it
+    -- would otherwise survive onto a different recording and read as a claim
+    -- about a file that was never written.
     if sel_changed then
       state.summary = {}
       state.message, state.message_kind = "", "error"
+      state.preserved_count = 0
     end
 
     local should_reload = src_changed
