@@ -1301,6 +1301,38 @@ function vo.CacheKey(source_path, file_size, cfg)
 end
 
 --------------------------------
+-- Pure layer: sidecar paths and time base
+--------------------------------
+
+-- The sidecar for a media source lives beside it: RIVA.wav -> RIVA_vo_report.csv.
+-- Only the final extension is stripped, and the character class excludes path
+-- separators so a dot in a directory name cannot be mistaken for one.
+function vo.SidecarPath(source_path)
+  if not source_path or source_path == "" then return nil end
+  local base = tostring(source_path):gsub("%.[^%.\\/]*$", "")
+  return base .. "_vo_report.csv"
+end
+
+-- Exact inverses of the arithmetic in vo.MapWordsToProject. A sidecar lives next
+-- to the audio, so it must store times the audio file itself can vouch for; the
+-- item's position, trim and playrate belong to the project, not the recording.
+local function safe_playrate(item)
+  local pr = item and item.playrate or 1.0
+  if pr <= 0 then pr = 1.0 end
+  return pr
+end
+
+function vo.ProjectTimeToSource(t, item)
+  return (t - ((item and item.pos) or 0)) * safe_playrate(item)
+       + ((item and item.start_offs) or 0)
+end
+
+function vo.SourceTimeToProject(t, item)
+  return ((item and item.pos) or 0)
+       + (t - ((item and item.start_offs) or 0)) / safe_playrate(item)
+end
+
+--------------------------------
 -- Pure layer: substitution table as editable text
 --------------------------------
 

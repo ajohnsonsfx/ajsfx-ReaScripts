@@ -2104,5 +2104,79 @@ test("an unmatched span is neither split nor moved", function()
   end
 end)
 
+--------------------------------
+-- SidecarPath
+--------------------------------
+print("\nSidecarPath:")
+
+test("the final extension is replaced with the sidecar suffix", function()
+  assert(vo.SidecarPath("D:/audio/RIVA_session.wav") == "D:/audio/RIVA_session_vo_report.csv",
+    "Got: " .. tostring(vo.SidecarPath("D:/audio/RIVA_session.wav")))
+end)
+
+test("a path with no extension just gains the suffix", function()
+  assert(vo.SidecarPath("D:/audio/RIVA") == "D:/audio/RIVA_vo_report.csv",
+    "Got: " .. tostring(vo.SidecarPath("D:/audio/RIVA")))
+end)
+
+test("a dot in a directory name is not mistaken for an extension", function()
+  assert(vo.SidecarPath("D:/my.session/RIVA") == "D:/my.session/RIVA_vo_report.csv",
+    "Got: " .. tostring(vo.SidecarPath("D:/my.session/RIVA")))
+end)
+
+test("a backslash path is handled", function()
+  assert(vo.SidecarPath("D:\\audio\\RIVA.wav") == "D:\\audio\\RIVA_vo_report.csv",
+    "Got: " .. tostring(vo.SidecarPath("D:\\audio\\RIVA.wav")))
+end)
+
+test("nil and empty input return nil", function()
+  assert(vo.SidecarPath(nil) == nil, "nil should return nil")
+  assert(vo.SidecarPath("") == nil, "empty should return nil")
+end)
+
+--------------------------------
+-- Project/source time conversion
+--------------------------------
+print("\nProject/source time conversion:")
+
+test("project time converts to source time through position and offset", function()
+  -- item at 10s, source starts at 5s: project 12s is source 7s
+  assert(near(vo.ProjectTimeToSource(12.0, item_at(10, 4, 5.0)), 7.0),
+    "Got: " .. vo.ProjectTimeToSource(12.0, item_at(10, 4, 5.0)))
+end)
+
+test("source time converts back to project time", function()
+  assert(near(vo.SourceTimeToProject(7.0, item_at(10, 4, 5.0)), 12.0),
+    "Got: " .. vo.SourceTimeToProject(7.0, item_at(10, 4, 5.0)))
+end)
+
+test("the conversions round-trip at unity playrate", function()
+  local it = item_at(10, 4, 5.0)
+  local back = vo.SourceTimeToProject(vo.ProjectTimeToSource(12.345, it), it)
+  assert(near(back, 12.345), "Got: " .. back)
+end)
+
+test("the conversions round-trip at a non-unity playrate", function()
+  local it = item_at(10, 4, 5.0, 2.0)
+  local back = vo.SourceTimeToProject(vo.ProjectTimeToSource(12.345, it), it)
+  assert(near(back, 12.345), "Got: " .. back)
+end)
+
+test("playrate scales the source interval, matching MapWordsToProject", function()
+  -- MapWordsToProject maps source t to pos + (t - start_offs) / playrate.
+  -- At playrate 2.0 with start_offs 0, source 4.0s lands at project 10 + 2 = 12.
+  assert(near(vo.SourceTimeToProject(4.0, item_at(10, 4, 0, 2.0)), 12.0),
+    "Got: " .. vo.SourceTimeToProject(4.0, item_at(10, 4, 0, 2.0)))
+  assert(near(vo.ProjectTimeToSource(12.0, item_at(10, 4, 0, 2.0)), 4.0),
+    "Got: " .. vo.ProjectTimeToSource(12.0, item_at(10, 4, 0, 2.0)))
+end)
+
+test("a playrate of zero or less is treated as 1.0", function()
+  assert(near(vo.ProjectTimeToSource(12.0, item_at(10, 4, 0, 0)), 2.0),
+    "Got: " .. vo.ProjectTimeToSource(12.0, item_at(10, 4, 0, 0)))
+  assert(near(vo.SourceTimeToProject(2.0, item_at(10, 4, 0, -1)), 12.0),
+    "Got: " .. vo.SourceTimeToProject(2.0, item_at(10, 4, 0, -1)))
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
