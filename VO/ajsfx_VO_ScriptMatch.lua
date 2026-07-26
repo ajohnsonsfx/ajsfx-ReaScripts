@@ -190,6 +190,11 @@ local state = {
   suffix_alt_names = cfg.suffix_alt_names or false,
   primary_last     = true,
   message          = "",
+  message_kind     = "error",   -- "error" (red) or "ok" (green) -- the sibling
+                                -- of status_kind for the message channel, so a
+                                -- successful "Saved layout preset X." is not
+                                -- painted the same red as a whisper failure.
+                                -- EVERY writer of message sets this too.
   summary          = {},        -- inline Cut result lines from FormatCutSummary,
                                  -- replacing the old end-of-cut message box
   running          = false,
@@ -361,6 +366,14 @@ local STATUS = {
   match     = { rank = 3, label = "matched",  colour = 0x66BB66FF },
   review    = { rank = 2, label = "review",   colour = 0xDDAA33FF },
   unmatched = { rank = 1, label = "no match", colour = 0x999999FF },
+}
+
+-- Colours for state.message, keyed by state.message_kind. Defined beside STATUS
+-- because it is the same idea: the text channel says WHAT, the kind says how it
+-- should read.
+local MESSAGE_COLOUR = {
+  error = 0xDD6666FF,
+  ok    = 0x66BB66FF,
 }
 
 -- Fold a plan's spans to one status per script line. A line can produce several
@@ -720,7 +733,7 @@ end
 -- Save the current layout under `name`, confirming an overwrite first.
 local function DoSave(name)
   local ok, reason = vo.ValidatePresetName(name)
-  if not ok then state.message = reason; return end
+  if not ok then state.message, state.message_kind = reason, "error"; return end
   local exists = false
   for _, n in ipairs(vo.ListLayoutPresets()) do if n == name then exists = true; break end end
   if exists and r.MB("Overwrite the layout preset \"" .. name .. "\" with the\n" ..
@@ -733,16 +746,19 @@ local function DoSave(name)
     -- Saving also makes this the droplist selection, so a second Save updates
     -- the same preset rather than falling back to a name prompt.
     state.layout_sel = name
-    state.message = "Saved layout preset \"" .. name .. "\"."
+    state.message, state.message_kind = "Saved layout preset \"" .. name .. "\".", "ok"
   else
-    state.message = "Could not save the layout preset."
+    state.message, state.message_kind = "Could not save the layout preset.", "error"
   end
 end
 
 -- Load a named preset into the dialog (mapping + skip + character list).
 local function LoadPresetByName(name)
   local layout = vo.LoadLayoutPreset(name)
-  if not layout then state.message = "Preset not found: " .. name; return end
+  if not layout then
+    state.message, state.message_kind = "Preset not found: " .. name, "error"
+    return
+  end
   ApplyLayoutTable(layout)
   state.layout_name, state.layout_dirty = name, false
   state.layout_sel = name
@@ -1076,15 +1092,16 @@ local function Run()
   if not state.header then
     state.message = (state.header_error ~= "" and state.header_error)
                     or "Load a script CSV first."
+    state.message_kind = "error"
     return
   end
   if state.header_error ~= "" then
-    state.message = state.header_error
+    state.message, state.message_kind = state.header_error, "error"
     return
   end
 
   local cols, err = vo.MapColumns(state.header, state.mapping)
-  if not cols then state.message = err; return end
+  if not cols then state.message, state.message_kind = err, "error"; return end
 
   local speakers, canon = CharacterFilter()
 
@@ -1094,7 +1111,7 @@ local function Run()
     canonicalize = canon,
   })
   if #lines == 0 then
-    state.message = "No script lines survived the filters."
+    state.message, state.message_kind = "No script lines survived the filters.", "error"
     return
   end
 
@@ -1212,8 +1229,9 @@ local function Run()
       if #words == 0 then
         state.running = false
         RestoreRetained()
-        state.message = "The transcription produced no words, so there is nothing to match. " ..
-                         "Check that the selected items contain speech."
+        state.message, state.message_kind =
+          "The transcription produced no words, so there is nothing to match. " ..
+          "Check that the selected items contain speech.", "error"
         return
       end
 
@@ -1322,7 +1340,7 @@ local function Run()
     function(message)
       state.running = false
       RestoreRetained()
-      state.message = message .. " Nothing in the project was changed."
+      state.message, state.message_kind = message .. " Nothing in the project was changed.", "error"
     end)
 end
 
@@ -1512,7 +1530,7 @@ local function loop()
             if state.layout_name == nm then
               state.layout_name, state.layout_dirty = "", true
             end
-            state.message = "Deleted layout preset \"" .. nm .. "\"."
+            state.message, state.message_kind = "Deleted layout preset \"" .. nm .. "\".", "ok"
           end
         end
         if no_sel then im.EndDisabled(ctx) end
@@ -1710,7 +1728,14 @@ local function loop()
     end
 
     if state.message ~= "" then
-      im.TextColored(ctx, 0xDD6666FF, state.message)
+      -- Coloured by kind, exactly as state.status/status_kind already is. This
+      -- channel used to render EVERY message in error red, so "Saved layout
+      -- preset X." and "Deleted layout preset X." were painted the same red as
+      -- "whisper-cli exited with code 1". Every writer sets the kind alongside
+      -- the text: a writer that set only the text would inherit the previous
+      -- one's colour, which is the whole bug this sibling field prevents.
+      im.TextColored(ctx, MESSAGE_COLOUR[state.message_kind] or MESSAGE_COLOUR.error,
+                     state.message)
     end
 
     -- The end-of-cut report, inline instead of the message box it replaced
@@ -1801,10 +1826,10 @@ local function loop()
   -- bailing out once state.running was set is what used to close the window
   -- for the whole transcription and never reopen it.
   if pressed_run then
-    state.message = ""
+    state.message, state.message_kind = "", "error"
     Run()
   elseif pressed_cut and state.plan then
-    state.message = ""
+    state.message, state.message_kind = "", "error"
     Finish(state.plan, state.plan_lines)
     -- Clear every verification field the plan being applied described, not
     -- just the plan itself -- otherwise "N transcribed span(s) fall outside
