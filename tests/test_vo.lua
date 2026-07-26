@@ -991,6 +991,114 @@ test("review spans do not consume take numbers from delivered takes", function()
   assert(spans[3].name == "vo_a", "primary: " .. spans[3].name)
 end)
 
+-- Two sources each holding a read of the same line. Each half was named on its
+-- own -- that is what BuildPlan does for a freshly transcribed source, and what
+-- each sidecar recorded -- so both halves claim take 1, primary, bare name.
+-- Concatenating them is exactly the merge in ajsfx_VO_ScriptMatch.lua, and if
+-- nothing re-names the union, Cut puts two items named "L001" on Selects.
+local function separately_named_halves(cfg)
+  local a = { { kind = "match", asset = "L001", score = 0.95, start = 0, stop = 1 } }
+  local b = { { kind = "match", asset = "L001", score = 0.96, start = 9, stop = 10 } }
+  vo.AssignNames(a, cfg)
+  vo.AssignNames(b, cfg)
+  local union = {}
+  for _, s in ipairs(a) do union[#union + 1] = s end
+  for _, s in ipairs(b) do union[#union + 1] = s end
+  return union
+end
+
+test("halves named in isolation both claim take 1 and primary (the collision)", function()
+  local u = separately_named_halves({ suffix_alt_names = true, primary_take = "last" })
+  assert(u[1].take_index == 1 and u[2].take_index == 1, "both should still be take 1")
+  assert(u[1].primary and u[2].primary, "both should still be primary")
+  assert(u[1].name == u[2].name, "both should still carry the same name")
+end)
+
+test("re-naming the union gives one primary and distinct take numbers", function()
+  local u = separately_named_halves({ suffix_alt_names = true, primary_take = "last" })
+  vo.AssignNames(u, { suffix_alt_names = true, primary_take = "last" })
+  assert(u[1].take_index == 1, "earlier take: " .. tostring(u[1].take_index))
+  assert(u[2].take_index == 2, "later take: " .. tostring(u[2].take_index))
+  local primaries = 0
+  for _, s in ipairs(u) do if s.primary then primaries = primaries + 1 end end
+  assert(primaries == 1, "exactly one primary, got " .. primaries)
+  assert(u[1].name ~= u[2].name, "names must differ: " .. u[1].name .. " / " .. u[2].name)
+  assert(u[1].name == "L001_tk01" and u[2].name == "L001", u[1].name .. " / " .. u[2].name)
+end)
+
+test("re-naming the union routes the non-primary to alts", function()
+  local u = separately_named_halves({ use_alts_track = true, primary_take = "last" })
+  vo.AssignNames(u, { use_alts_track = true, primary_take = "last" })
+  assert(u[1].dest == "alts", "earlier take dest: " .. tostring(u[1].dest))
+  assert(u[2].dest == "selects", "primary dest: " .. tostring(u[2].dest))
+end)
+
+test("AssignNames is idempotent over an already-named plan", function()
+  local cfg = { use_alts_track = true, suffix_alt_names = true, primary_take = "last" }
+  local once = take_spans()
+  vo.AssignNames(once, cfg)
+  local snapshot = {}
+  for i, s in ipairs(once) do
+    snapshot[i] = { s.take_index, s.primary, s.dest, s.name }
+  end
+  for _ = 1, 3 do vo.AssignNames(once, cfg) end
+  for i, s in ipairs(once) do
+    assert(s.take_index == snapshot[i][1], "take_index drifted at " .. i)
+    assert(s.primary    == snapshot[i][2], "primary drifted at " .. i)
+    assert(s.dest       == snapshot[i][3], "dest drifted at " .. i)
+    assert(s.name       == snapshot[i][4], "name drifted at " .. i)
+  end
+end)
+
+test("re-running over the union is itself idempotent", function()
+  local cfg = { suffix_alt_names = true, primary_take = "last" }
+  local u = separately_named_halves(cfg)
+  vo.AssignNames(u, cfg)
+  local n1, n2, t1, t2 = u[1].name, u[2].name, u[1].take_index, u[2].take_index
+  vo.AssignNames(u, cfg)
+  assert(u[1].name == n1 and u[2].name == n2, "names drifted on the second pass")
+  assert(u[1].take_index == t1 and u[2].take_index == t2, "take numbers drifted")
+end)
+
+test("take numbering does not depend on input order when four takes tie on every other key", function()
+  -- table.sort is not stable, so spans tied on start/stop/transcript must be
+  -- broken by a further key (score) or their relative order -- and thus
+  -- take_index -- depends on whatever order they happened to arrive in
+  -- (e.g. CSV row order from a reload), rather than on the spans themselves.
+  -- With only two tied elements, Lua 5.4's table.sort preserves input order
+  -- regardless of tie-break logic, so this needs at least four spans tied on
+  -- every key but `score` before an order-dependent (pre-fix) comparator
+  -- actually produces a different permutation for a different input order.
+  local cfg = { suffix_alt_names = true, primary_take = "last" }
+
+  local function make(order)
+    local by_id = {
+      { kind = "match", asset = "L001", start = 4, stop = 5, transcript = "x", score = 0.4, id = 1 },
+      { kind = "match", asset = "L001", start = 4, stop = 5, transcript = "x", score = 0.3, id = 2 },
+      { kind = "match", asset = "L001", start = 4, stop = 5, transcript = "x", score = 0.2, id = 3 },
+      { kind = "match", asset = "L001", start = 4, stop = 5, transcript = "x", score = 0.1, id = 4 },
+    }
+    local spans = {}
+    for i, id in ipairs(order) do spans[i] = by_id[id] end
+    return spans
+  end
+
+  local forward = make({ 1, 2, 3, 4 })
+  local reverse = make({ 4, 3, 2, 1 })
+  vo.AssignNames(forward, cfg)
+  vo.AssignNames(reverse, cfg)
+
+  local by_id_forward, by_id_reverse = {}, {}
+  for _, s in ipairs(forward) do by_id_forward[s.id] = s.take_index end
+  for _, s in ipairs(reverse) do by_id_reverse[s.id] = s.take_index end
+
+  for id = 1, 4 do
+    assert(by_id_forward[id] == by_id_reverse[id],
+      "take_index for span id " .. id .. " depends on input order: "
+      .. tostring(by_id_forward[id]) .. " vs " .. tostring(by_id_reverse[id]))
+  end
+end)
+
 --------------------------------
 -- BuildWhisperArgv
 --------------------------------
@@ -1328,81 +1436,158 @@ test("audio with no script match produces only unmatched spans", function()
 end)
 
 --------------------------------
--- BuildReport
+-- Sidecar serialize / parse
 --------------------------------
-print("\nBuildReport:")
+print("\nSidecar serialize/parse:")
 
-test("report starts with a header row", function()
-  local lines = load_fixture()
-  local report = vo.BuildReport({}, lines)
-  local first = report:match("^([^\n]*)")
-  assert(first:find("Filename"), "header: " .. first)
-  assert(first:find("score"), "header: " .. first)
+local SIDECAR_META = {
+  source       = "RIVA_session.wav",
+  source_bytes = 412839104,
+  script_csv   = "D:/proj/script.csv",
+  mapping      = { asset = "Filename", text = "Line Text", speaker = "Character" },
+}
+
+local function sample_spans()
+  return {
+    { start = 12.48, stop = 15.22, kind = "match", asset = "vo_riva_intro_01",
+      character = "RIVA", score = 0.9821, margin = 0.441, take_index = 1,
+      dest = "Selects", name = "vo_riva_intro_01", transcript = "we should not have come" },
+    { start = 20.00, stop = 22.50, kind = "review", asset = "vo_riva_intro_02",
+      character = "RIVA", score = 0.6, margin = 0.05, take_index = 2,
+      dest = "Review", name = "vo_riva_intro_02_tk02", transcript = "quiet, something is wrong" },
+  }
+end
+
+test("the sidecar starts with the format marker and version", function()
+  local text = vo.SerializeSidecar({}, {}, SIDECAR_META)
+  local rows = vo.ParseCSV(text)
+  assert(rows[1][1] == vo.SIDECAR_MARKER, "Marker: " .. tostring(rows[1][1]))
+  assert(tonumber(rows[1][2]) == vo.SIDECAR_VERSION, "Version: " .. tostring(rows[1][2]))
 end)
 
-test("a span that fell back to its raw times is marked in the report", function()
+test("the preamble carries source, size, script path and mapping", function()
+  local parsed = vo.ParseSidecar(vo.SerializeSidecar({}, {}, SIDECAR_META))
+  assert(parsed, "Parse returned nil")
+  assert(parsed.source == "RIVA_session.wav", "source: " .. tostring(parsed.source))
+  assert(parsed.source_bytes == 412839104, "bytes: " .. tostring(parsed.source_bytes))
+  assert(parsed.script_csv == "D:/proj/script.csv", "csv: " .. tostring(parsed.script_csv))
+  assert(parsed.mapping.asset == "Filename", "asset: " .. tostring(parsed.mapping.asset))
+  assert(parsed.mapping.speaker == "Character", "speaker: " .. tostring(parsed.mapping.speaker))
+  assert(parsed.mapping.text == "Line Text", "text: " .. tostring(parsed.mapping.text))
+end)
+
+-- Carried over from the padding-inversion fix on main, which added the
+-- degenerate flag and a report column for it. The report became the sidecar in
+-- this branch, so the assertion moves to SerializeSidecar; the behaviour it
+-- guards — a rescued span is visibly marked, a healthy one is not — is unchanged.
+test("a span that fell back to its raw times is marked in the sidecar", function()
   local plan = {
     { kind = "match", asset = "vo_a", start = 1.0, stop = 2.0, degenerate = true },
     { kind = "match", asset = "vo_b", start = 3.0, stop = 4.0 },
   }
-  local rows = vo.ParseCSV(vo.BuildReport(plan, {}))
-  local col
-  for i, name in ipairs(rows[1]) do if name == "degenerate" then col = i end end
-  assert(col, "No degenerate column in the report header")
-  assert(rows[2][col] == "yes", "Expected yes, got " .. tostring(rows[2][col]))
-  assert(rows[3][col] == "", "Healthy span marked: " .. tostring(rows[3][col]))
-end)
-
-test("report has one row per plan span", function()
-  local lines = load_fixture()
-  local words = synthesize(lines)
-  local plan  = vo.BuildPlan(lines, words, {})
-  local rows  = vo.ParseCSV(vo.BuildReport(plan, lines))
-  -- header + one row per span, then the no-match section
-  assert(#rows > #plan, "Report is missing rows")
-  assert(rows[2][4] == plan[1].asset, "First data row: " .. tostring(rows[2][4]))
-end)
-
-test("the report round-trips through our own CSV parser", function()
-  local lines = load_fixture()
-  local words = synthesize(lines, { slates = true })
-  local plan  = vo.BuildPlan(lines, words, {})
-  local rows  = vo.ParseCSV(vo.BuildReport(plan, lines))
-  for _, row in ipairs(rows) do
-    assert(#row >= 1, "Report produced an unparseable row")
+  local rows = vo.ParseCSV(vo.SerializeSidecar(plan, {}, SIDECAR_META))
+  -- The preamble sits above the span header, so find the header row by name.
+  local header_row, col
+  for i, row in ipairs(rows) do
+    if row[1] == vo.SIDECAR_HEADER[1] then header_row = i; break end
   end
+  assert(header_row, "No span header row in the sidecar")
+  for i, name in ipairs(rows[header_row]) do if name == "Degenerate" then col = i end end
+  assert(col, "No Degenerate column in the sidecar header")
+  assert(rows[header_row + 1][col] == "yes",
+    "Expected yes, got " .. tostring(rows[header_row + 1][col]))
+  assert(rows[header_row + 2][col] == "",
+    "Healthy span marked: " .. tostring(rows[header_row + 2][col]))
 end)
 
-test("script text containing a comma is quoted in the report", function()
-  local lines = load_fixture()
-  local plan  = { { kind = "match", asset = "vo_guard_gate_01",
-                    score = 0.9, margin = 0.5, start = 0, stop = 1,
-                    dest = "selects", name = "vo_guard_gate_01", transcript = "open the north gate quickly" } }
-  local report = vo.BuildReport(plan, lines)
-  assert(report:find('"Open the north gate, quickly."', 1, true),
-    "Script text with a comma was not quoted")
+test("every span field round-trips", function()
+  local parsed = vo.ParseSidecar(vo.SerializeSidecar(sample_spans(), {}, SIDECAR_META))
+  assert(#parsed.spans == 2, "Expected 2 spans, got " .. #parsed.spans)
+  local s = parsed.spans[1]
+  assert(near(s.start, 12.48), "start: " .. tostring(s.start))
+  assert(near(s.stop, 15.22), "stop: " .. tostring(s.stop))
+  assert(s.kind == "match", "kind: " .. tostring(s.kind))
+  assert(s.asset == "vo_riva_intro_01", "asset: " .. tostring(s.asset))
+  assert(s.character == "RIVA", "character: " .. tostring(s.character))
+  assert(near(s.score, 0.9821), "score: " .. tostring(s.score))
+  assert(near(s.margin, 0.441), "margin: " .. tostring(s.margin))
+  assert(s.take_index == 1, "take_index: " .. tostring(s.take_index))
+  assert(s.dest == "Selects", "dest: " .. tostring(s.dest))
+  assert(s.name == "vo_riva_intro_01", "name: " .. tostring(s.name))
+  assert(s.transcript == "we should not have come", "transcript: " .. tostring(s.transcript))
 end)
 
-test("lines that received no match are listed in their own section", function()
-  local lines = load_fixture()
-  local plan  = { { kind = "match", asset = "vo_guard_halt_01",
-                    score = 0.95, margin = 0.5, start = 0, stop = 1,
-                    dest = "selects", name = "vo_guard_halt_01" } }
-  local report = vo.BuildReport(plan, lines)
-
-  assert(report:find("SCRIPT LINES WITH NO MATCH", 1, true), "Missing no-match section")
-  local tail = report:match("SCRIPT LINES WITH NO MATCH(.*)$")
-  assert(tail:find("vo_hero_captain_01", 1, true), "Unmatched line vo_hero_captain_01 not listed")
-  assert(not tail:find("vo_guard_halt_01", 1, true), "Matched line vo_guard_halt_01 should not be listed")
+test("fields containing commas, quotes and newlines survive the round-trip", function()
+  local spans = { { start = 0, stop = 1, kind = "match", asset = "a",
+                    transcript = 'he said "go, now"\nand left' } }
+  local parsed = vo.ParseSidecar(vo.SerializeSidecar(spans, {}, SIDECAR_META))
+  assert(parsed.spans[1].transcript == 'he said "go, now"\nand left',
+    "Got: " .. tostring(parsed.spans[1].transcript))
 end)
 
-test("a review span does not count as a match for the no-match section", function()
-  local lines = load_fixture()
-  local plan  = { { kind = "review", asset = "vo_guard_halt_01",
-                    score = 0.60, margin = 0.5, start = 0, stop = 1,
-                    dest = "review", name = "REVIEW_vo_guard_halt_01_s0.60" } }
-  local tail = vo.BuildReport(plan, lines):match("SCRIPT LINES WITH NO MATCH(.*)$")
-  assert(tail:find("vo_guard_halt_01", 1, true), "A review-only line still needs flagging as unmatched")
+test("the trailing no-match section lists unmatched script lines", function()
+  local lines = {
+    { asset = "vo_riva_intro_01", speaker = "RIVA", text = "We should not have come." },
+    { asset = "vo_riva_deck_03",  speaker = "RIVA", text = "Seal it." },
+  }
+  local text = vo.SerializeSidecar(sample_spans(), lines, SIDECAR_META)
+  local tail = text:match("SCRIPT LINES WITH NO MATCH(.*)$")
+  assert(tail, "No trailing section")
+  assert(tail:find("vo_riva_deck_03", 1, true), "Unmatched line missing from tail")
+  assert(not tail:find("vo_riva_intro_01", 1, true), "Matched line should not be in tail")
+end)
+
+test("the trailing no-match section is ignored on load", function()
+  local lines = { { asset = "vo_riva_deck_03", speaker = "RIVA", text = "Seal it." } }
+  local parsed = vo.ParseSidecar(vo.SerializeSidecar(sample_spans(), lines, SIDECAR_META))
+  assert(#parsed.spans == 2, "Tail section leaked into spans: got " .. #parsed.spans)
+end)
+
+test("a review span still counts as unmatched in the tail", function()
+  local lines = { { asset = "vo_riva_intro_02", speaker = "RIVA", text = "Quiet." } }
+  local tail = vo.SerializeSidecar(sample_spans(), lines, SIDECAR_META)
+                 :match("SCRIPT LINES WITH NO MATCH(.*)$")
+  assert(tail:find("vo_riva_intro_02", 1, true), "Review-only line should be listed as unmatched")
+end)
+
+print("\nSidecar parse rejection:")
+
+test("empty text is rejected with a reason", function()
+  local parsed, reason = vo.ParseSidecar("")
+  assert(parsed == nil, "Empty text should not parse")
+  assert(type(reason) == "string" and reason ~= "", "Expected a reason string")
+end)
+
+test("nil text is rejected without erroring", function()
+  local parsed, reason = vo.ParseSidecar(nil)
+  assert(parsed == nil, "nil should not parse")
+  assert(type(reason) == "string", "Expected a reason string")
+end)
+
+test("a file that is not a sidecar is rejected", function()
+  local parsed, reason = vo.ParseSidecar("name,age\nalice,30\n")
+  assert(parsed == nil, "Arbitrary CSV should not parse as a sidecar")
+  assert(reason:find("ajsfx VO ScriptMatch", 1, true), "Reason should name the marker: " .. reason)
+end)
+
+test("an unrecognised version is rejected", function()
+  local text = vo.SerializeSidecar({}, {}, SIDECAR_META):gsub("^(.-),1\n", "%1,99\n", 1)
+  local parsed, reason = vo.ParseSidecar(text)
+  assert(parsed == nil, "Version 99 should not parse")
+  assert(reason:find("99", 1, true), "Reason should name the version: " .. reason)
+end)
+
+test("a sidecar with no span header row is rejected", function()
+  local text = vo.SIDECAR_MARKER .. ",1\nSource,RIVA.wav\n"
+  local parsed, reason = vo.ParseSidecar(text)
+  assert(parsed == nil, "Missing span header should not parse")
+  assert(type(reason) == "string" and reason ~= "", "Expected a reason string")
+end)
+
+test("a sidecar with a header but no span rows parses to zero spans", function()
+  local parsed = vo.ParseSidecar(vo.SerializeSidecar({}, {}, SIDECAR_META))
+  assert(parsed, "Should parse")
+  assert(#parsed.spans == 0, "Expected 0 spans, got " .. #parsed.spans)
 end)
 
 --------------------------------
@@ -2169,6 +2354,488 @@ test("an unmatched span is neither split nor moved", function()
              "The unmatched label was applied as a take name on " .. tostring(t.name))
     end
   end
+end)
+
+--------------------------------
+-- SidecarPath
+--------------------------------
+print("\nSidecarPath:")
+
+test("the final extension is replaced with the sidecar suffix", function()
+  assert(vo.SidecarPath("D:/audio/RIVA_session.wav") == "D:/audio/RIVA_session_vo_report.csv",
+    "Got: " .. tostring(vo.SidecarPath("D:/audio/RIVA_session.wav")))
+end)
+
+test("a path with no extension just gains the suffix", function()
+  assert(vo.SidecarPath("D:/audio/RIVA") == "D:/audio/RIVA_vo_report.csv",
+    "Got: " .. tostring(vo.SidecarPath("D:/audio/RIVA")))
+end)
+
+test("a dot in a directory name is not mistaken for an extension", function()
+  assert(vo.SidecarPath("D:/my.session/RIVA") == "D:/my.session/RIVA_vo_report.csv",
+    "Got: " .. tostring(vo.SidecarPath("D:/my.session/RIVA")))
+end)
+
+test("a backslash path is handled", function()
+  assert(vo.SidecarPath("D:\\audio\\RIVA.wav") == "D:\\audio\\RIVA_vo_report.csv",
+    "Got: " .. tostring(vo.SidecarPath("D:\\audio\\RIVA.wav")))
+end)
+
+test("nil and empty input return nil", function()
+  assert(vo.SidecarPath(nil) == nil, "nil should return nil")
+  assert(vo.SidecarPath("") == nil, "empty should return nil")
+end)
+
+--------------------------------
+-- Project/source time conversion
+--------------------------------
+print("\nProject/source time conversion:")
+
+test("project time converts to source time through position and offset", function()
+  -- item at 10s, source starts at 5s: project 12s is source 7s
+  assert(near(vo.ProjectTimeToSource(12.0, item_at(10, 4, 5.0)), 7.0),
+    "Got: " .. vo.ProjectTimeToSource(12.0, item_at(10, 4, 5.0)))
+end)
+
+test("source time converts back to project time", function()
+  assert(near(vo.SourceTimeToProject(7.0, item_at(10, 4, 5.0)), 12.0),
+    "Got: " .. vo.SourceTimeToProject(7.0, item_at(10, 4, 5.0)))
+end)
+
+test("the conversions round-trip at unity playrate", function()
+  local it = item_at(10, 4, 5.0)
+  local back = vo.SourceTimeToProject(vo.ProjectTimeToSource(12.345, it), it)
+  assert(near(back, 12.345), "Got: " .. back)
+end)
+
+test("the conversions round-trip at a non-unity playrate", function()
+  local it = item_at(10, 4, 5.0, 2.0)
+  local back = vo.SourceTimeToProject(vo.ProjectTimeToSource(12.345, it), it)
+  assert(near(back, 12.345), "Got: " .. back)
+end)
+
+test("playrate scales the source interval, matching MapWordsToProject", function()
+  -- MapWordsToProject maps source t to pos + (t - start_offs) / playrate.
+  -- At playrate 2.0 with start_offs 0, source 4.0s lands at project 10 + 2 = 12.
+  assert(near(vo.SourceTimeToProject(4.0, item_at(10, 4, 0, 2.0)), 12.0),
+    "Got: " .. vo.SourceTimeToProject(4.0, item_at(10, 4, 0, 2.0)))
+  assert(near(vo.ProjectTimeToSource(12.0, item_at(10, 4, 0, 2.0)), 4.0),
+    "Got: " .. vo.ProjectTimeToSource(12.0, item_at(10, 4, 0, 2.0)))
+end)
+
+test("a playrate of zero or less is treated as 1.0", function()
+  assert(near(vo.ProjectTimeToSource(12.0, item_at(10, 4, 0, 0)), 2.0),
+    "Got: " .. vo.ProjectTimeToSource(12.0, item_at(10, 4, 0, 0)))
+  assert(near(vo.SourceTimeToProject(2.0, item_at(10, 4, 0, -1)), 12.0),
+    "Got: " .. vo.SourceTimeToProject(2.0, item_at(10, 4, 0, -1)))
+end)
+
+--------------------------------
+-- PartitionPlanBySource
+--------------------------------
+print("\nPartitionPlanBySource:")
+
+-- Two items on the timeline, drawn from two different source files.
+local function two_source_items()
+  return {
+    { path = "A.wav", pos = 0,  length = 10, start_offs = 0, playrate = 1.0 },
+    { path = "B.wav", pos = 20, length = 10, start_offs = 0, playrate = 1.0 },
+  }
+end
+
+test("spans are grouped by the source of the item containing them", function()
+  local plan = {
+    { start = 1, stop = 2,  kind = "match", asset = "a" },
+    { start = 21, stop = 22, kind = "match", asset = "b" },
+  }
+  local by_source = vo.PartitionPlanBySource(plan, two_source_items())
+  assert(#by_source["A.wav"] == 1, "A.wav: " .. #(by_source["A.wav"] or {}))
+  assert(#by_source["B.wav"] == 1, "B.wav: " .. #(by_source["B.wav"] or {}))
+  assert(by_source["A.wav"][1].asset == "a", "Wrong span in A.wav")
+  assert(by_source["B.wav"][1].asset == "b", "Wrong span in B.wav")
+end)
+
+test("partitioned spans are converted to source time", function()
+  local plan = { { start = 21, stop = 22, kind = "match", asset = "b" } }
+  local by_source = vo.PartitionPlanBySource(plan, two_source_items())
+  -- Item B sits at project 20s with no offset, so project 21s is source 1s.
+  assert(near(by_source["B.wav"][1].start, 1.0), "start: " .. by_source["B.wav"][1].start)
+  assert(near(by_source["B.wav"][1].stop, 2.0), "stop: " .. by_source["B.wav"][1].stop)
+end)
+
+test("the input plan is not mutated", function()
+  local plan = { { start = 21, stop = 22, kind = "match", asset = "b" } }
+  vo.PartitionPlanBySource(plan, two_source_items())
+  assert(near(plan[1].start, 21), "Input span was mutated: " .. plan[1].start)
+end)
+
+test("a span inside no item is omitted", function()
+  local plan = { { start = 15, stop = 16, kind = "match", asset = "gap" } }
+  local by_source = vo.PartitionPlanBySource(plan, two_source_items())
+  assert(by_source["A.wav"] == nil, "A.wav should have no entry")
+  assert(by_source["B.wav"] == nil, "B.wav should have no entry")
+end)
+
+test("two items sharing one source produce one group", function()
+  local items = {
+    { path = "A.wav", pos = 0,  length = 10, start_offs = 0,  playrate = 1.0 },
+    { path = "A.wav", pos = 20, length = 10, start_offs = 30, playrate = 1.0 },
+  }
+  local plan = {
+    { start = 1,  stop = 2,  kind = "match", asset = "a" },
+    { start = 21, stop = 22, kind = "match", asset = "b" },
+  }
+  local by_source = vo.PartitionPlanBySource(plan, items)
+  assert(#by_source["A.wav"] == 2, "Expected 2 spans in A.wav, got " .. #by_source["A.wav"])
+  -- The second item plays the source from 30s, so project 21s is source 31s.
+  assert(near(by_source["A.wav"][2].start, 31.0), "start: " .. by_source["A.wav"][2].start)
+end)
+
+test("assignment uses the span midpoint, matching ClampSpansToItems", function()
+  -- A span starting before item A but centred inside it belongs to A.
+  local plan = { { start = -1, stop = 3, kind = "match", asset = "a" } }
+  local by_source = vo.PartitionPlanBySource(plan, two_source_items())
+  assert(by_source["A.wav"] and #by_source["A.wav"] == 1, "Midpoint 1.0s should land in A.wav")
+end)
+
+test("items with no path are skipped", function()
+  local items = { { pos = 0, length = 10, start_offs = 0, playrate = 1.0 } }
+  local by_source = vo.PartitionPlanBySource({ { start = 1, stop = 2 } }, items)
+  assert(next(by_source) == nil, "A pathless item should produce no groups")
+end)
+
+--------------------------------
+-- SpansBySourcePath
+--------------------------------
+print("\nSpansBySourcePath:")
+
+test("spans are grouped by source and left in project time", function()
+  local plan = {
+    { start = 1,  stop = 2,  kind = "match", asset = "a" },
+    { start = 21, stop = 22, kind = "match", asset = "b" },
+  }
+  local by_path = vo.SpansBySourcePath(plan, two_source_items())
+  assert(#by_path["A.wav"] == 1, "A.wav: " .. #(by_path["A.wav"] or {}))
+  assert(near(by_path["B.wav"][1].start, 21.0),
+    "B.wav span must stay in project time, got " .. by_path["B.wav"][1].start)
+end)
+
+test("a source with no spans has no entry", function()
+  local plan = { { start = 1, stop = 2, kind = "match", asset = "a" } }
+  local by_path = vo.SpansBySourcePath(plan, two_source_items())
+  assert(by_path["B.wav"] == nil, "B.wav should have no entry")
+end)
+
+--------------------------------
+-- SourcesNeedingTranscription
+--------------------------------
+print("\nSourcesNeedingTranscription:")
+
+test("only the source without a result is returned", function()
+  -- A has a sidecar span, B has none: paying whisper time for B alone is the
+  -- whole point, and the old global 'any plan at all' test skipped B too.
+  local plan = { { start = 1, stop = 2, kind = "match", asset = "a" } }
+  local need = vo.SourcesNeedingTranscription(plan, {}, two_source_items())
+  assert(#need == 1, "Expected 1, got " .. #need)
+  assert(need[1] == "B.wav", "Expected B.wav, got " .. tostring(need[1]))
+end)
+
+test("a stale source is returned even though it has spans", function()
+  local plan = {
+    { start = 1,  stop = 2,  kind = "match", asset = "a" },
+    { start = 21, stop = 22, kind = "match", asset = "b" },
+  }
+  local need = vo.SourcesNeedingTranscription(plan, { "A.wav" }, two_source_items())
+  assert(#need == 1, "Expected 1, got " .. #need)
+  assert(need[1] == "A.wav", "Expected A.wav, got " .. tostring(need[1]))
+end)
+
+test("a source whose sidecar yielded zero spans is returned", function()
+  local need = vo.SourcesNeedingTranscription({}, {}, two_source_items())
+  assert(#need == 2, "Expected both sources, got " .. #need)
+end)
+
+test("all sources fresh returns nothing", function()
+  local plan = {
+    { start = 1,  stop = 2,  kind = "match", asset = "a" },
+    { start = 21, stop = 22, kind = "match", asset = "b" },
+  }
+  local need = vo.SourcesNeedingTranscription(plan, {}, two_source_items())
+  assert(#need == 0, "Expected none, got " .. #need)
+end)
+
+test("four fresh sidecars do not vouch for a fifth source", function()
+  local items, plan = {}, {}
+  for i = 1, 4 do
+    items[i] = { path = "S" .. i .. ".wav", pos = (i - 1) * 10, length = 10,
+                 start_offs = 0, playrate = 1.0 }
+    plan[i]  = { start = (i - 1) * 10 + 1, stop = (i - 1) * 10 + 2,
+                 kind = "match", asset = "a" .. i }
+  end
+  items[5] = { path = "S5.wav", pos = 40, length = 10, start_offs = 0, playrate = 1.0 }
+  local need = vo.SourcesNeedingTranscription(plan, {}, items)
+  assert(#need == 1, "Expected only S5.wav, got " .. #need)
+  assert(need[1] == "S5.wav", "Expected S5.wav, got " .. tostring(need[1]))
+end)
+
+test("staleness is keyed by full path, not basename", function()
+  local items = {
+    { path = "/one/VO_take.wav", pos = 0,  length = 10, start_offs = 0, playrate = 1.0 },
+    { path = "/two/VO_take.wav", pos = 20, length = 10, start_offs = 0, playrate = 1.0 },
+  }
+  local plan = {
+    { start = 1,  stop = 2,  kind = "match", asset = "a" },
+    { start = 21, stop = 22, kind = "match", asset = "b" },
+  }
+  local need = vo.SourcesNeedingTranscription(plan, { "/one/VO_take.wav" }, items)
+  assert(#need == 1, "A same-named source in another folder must not be dragged in: " .. #need)
+  assert(need[1] == "/one/VO_take.wav", "Got " .. tostring(need[1]))
+end)
+
+test("each source is returned once however many items reference it", function()
+  local items = {
+    { path = "A.wav", pos = 0,  length = 10, start_offs = 0,  playrate = 1.0 },
+    { path = "A.wav", pos = 20, length = 10, start_offs = 30, playrate = 1.0 },
+  }
+  local need = vo.SourcesNeedingTranscription(nil, nil, items)
+  assert(#need == 1, "Expected 1, got " .. #need)
+end)
+
+-- FormatCutSummary (Task 8: inline, non-modal Cut summary) ------------------
+
+test("counts and clips-cut always produce exactly two non-warning lines", function()
+  local plan = {
+    { kind = "match" }, { kind = "match" }, { kind = "review" }, { kind = "unmatched" },
+  }
+  local lines = vo.FormatCutSummary(plan, 3, {}, {})
+  assert(#lines == 2, "Expected 2 lines, got " .. #lines)
+  assert(lines[1].text == "2 matched, 1 for review, 1 unmatched (left untouched on the source track).",
+    "Got: " .. lines[1].text)
+  assert(lines[1].warn == false, "Counts line must not be a warning")
+  assert(lines[2].text == "3 clip(s) cut and named.", "Got: " .. lines[2].text)
+  assert(lines[2].warn == false, "Clips-cut line must not be a warning")
+end)
+
+test("an empty plan still reports zero counts, not nil", function()
+  local lines = vo.FormatCutSummary({}, 0, nil, nil)
+  assert(#lines == 2, "Expected 2 lines, got " .. #lines)
+  assert(lines[1].text == "0 matched, 0 for review, 0 unmatched (left untouched on the source track).",
+    "Got: " .. lines[1].text)
+end)
+
+test("skipped items add one warning line naming the count and reasons", function()
+  local lines = vo.FormatCutSummary({}, 0, { "item at 1.000s: no source" }, {})
+  assert(#lines == 3, "Expected 3 lines, got " .. #lines)
+  assert(lines[3].warn == true, "Skipped-items line must be a warning")
+  assert(lines[3].text == "1 item(s) skipped: item at 1.000s: no source", "Got: " .. lines[3].text)
+end)
+
+test("apply failures add one warning line naming the count and reasons", function()
+  local lines = vo.FormatCutSummary({}, 0, {}, { "L001: span too short to cut" })
+  assert(#lines == 3, "Expected 3 lines, got " .. #lines)
+  assert(lines[3].warn == true, "Failures line must be a warning")
+  assert(lines[3].text == "1 problem(s) while cutting: L001: span too short to cut", "Got: " .. lines[3].text)
+end)
+
+test("skipped and failures both present produce two warning lines, in order", function()
+  local lines = vo.FormatCutSummary({}, 0, { "skip A" }, { "fail B" })
+  assert(#lines == 4, "Expected 4 lines, got " .. #lines)
+  assert(lines[3].text:find("skipped", 1, true) ~= nil, "Skipped line should come first")
+  assert(lines[4].text:find("problem", 1, true) ~= nil, "Failures line should come second")
+  assert(lines[3].warn == true and lines[4].warn == true, "Both must be warnings")
+end)
+
+--------------------------------
+-- CountLines
+--------------------------------
+print("CountLines:")
+
+test("no newline counts as one line", function()
+  assert(vo.CountLines("single line") == 1, "Expected 1")
+end)
+
+test("empty string counts as zero lines", function()
+  assert(vo.CountLines("") == 0, "Expected 0")
+  assert(vo.CountLines(nil) == 0, "Expected 0 for nil")
+end)
+
+test("trailing newline still counts once past it", function()
+  assert(vo.CountLines("line one\n") == 2, "Expected 2")
+end)
+
+test("multiple embedded newlines count every line", function()
+  assert(vo.CountLines("whisper-cli not found at:\n/some/path") == 2, "Expected 2")
+  assert(vo.CountLines("a\nb\nc") == 3, "Expected 3")
+end)
+
+test("cap clamps a pathological line count", function()
+  local long = string.rep("x\n", 40) .. "x" -- 41 lines
+  assert(vo.CountLines(long) == 41, "Expected 41 uncapped")
+  assert(vo.CountLines(long, 8) == 8, "Expected clamp to 8")
+end)
+
+test("cap does not affect a count under the cap", function()
+  assert(vo.CountLines("a\nb\nc", 8) == 3, "Expected 3, cap should not raise or clip below its own value")
+end)
+
+test("cap is a no-op for empty/nil input", function()
+  assert(vo.CountLines("", 8) == 0, "Expected 0")
+  assert(vo.CountLines(nil, 8) == 0, "Expected 0")
+end)
+
+--------------------------------
+-- ShallowCopy
+--------------------------------
+print("ShallowCopy:")
+
+test("copies top-level keys into a new table", function()
+  local src = { a = 1, b = "two", c = true }
+  local out = vo.ShallowCopy(src)
+  assert(out.a == 1 and out.b == "two" and out.c == true, "Expected values to match")
+  assert(out ~= src, "Expected a distinct table, not the same reference")
+end)
+
+test("later writes to the source do not affect the copy", function()
+  local src = { whisper_model = "base.en" }
+  local out = vo.ShallowCopy(src)
+  src.whisper_model = "large-v3"
+  assert(out.whisper_model == "base.en", "Copy must not see later top-level writes to the source")
+end)
+
+test("writes to the copy do not affect the source", function()
+  local src = { force_retranscribe = false }
+  local out = vo.ShallowCopy(src)
+  out.force_retranscribe = true
+  assert(src.force_retranscribe == false, "Source must not see writes to the copy")
+end)
+
+test("nested tables remain shared (shallow, not deep)", function()
+  local src = { column_mapping = { asset = "Asset" } }
+  local out = vo.ShallowCopy(src)
+  assert(out.column_mapping == src.column_mapping, "Expected nested table to be the same reference")
+end)
+
+--------------------------------
+print("\nSourceCoverageRanges:")
+
+test("one range per item, in source time", function()
+  local rs = vo.SourceCoverageRanges({ item_at(10, 4), item_at(30, 5, 20.0) })
+  assert(#rs == 2, "Expected 2 ranges, got " .. #rs)
+  assert(near(rs[1].from, 0) and near(rs[1].to, 4), "range 1: " .. rs[1].from .. ".." .. rs[1].to)
+  assert(near(rs[2].from, 20) and near(rs[2].to, 25), "range 2: " .. rs[2].from .. ".." .. rs[2].to)
+end)
+
+test("playrate stretches the source span the item covers", function()
+  local rs = vo.SourceCoverageRanges({ item_at(0, 4, 0, 2.0) })
+  assert(near(rs[1].to, 8.0), "4s at 2x plays 8s of source, got " .. rs[1].to)
+end)
+
+test("a zero playrate falls back to 1x rather than collapsing the range", function()
+  local rs = vo.SourceCoverageRanges({ item_at(0, 4, 0, 0) })
+  assert(near(rs[1].to, 4.0), "Expected 4.0, got " .. rs[1].to)
+end)
+
+test("no items yields no ranges", function()
+  assert(#vo.SourceCoverageRanges({}) == 0, "Expected no ranges")
+  assert(#vo.SourceCoverageRanges(nil) == 0, "Expected no ranges from nil")
+end)
+
+--------------------------------
+print("\nMergeSidecarSpans:")
+
+-- The regression this whole function exists for: RIVA.wav is cut into three
+-- timeline items and transcribed as one 60-span sidecar; the user then selects
+-- only the FIRST item and presses Cut. Before the merge, the rewrite kept only
+-- the 20 spans inside item 1 and the other 40 were erased from disk for good.
+test("spans outside every covered range survive the write", function()
+  local disk = {}
+  for i = 1, 6 do disk[i] = { start = i * 10, stop = i * 10 + 2, asset = "L00" .. i } end
+  local ranges = vo.SourceCoverageRanges({ item_at(0, 25) }) -- source 0..25s
+  local new    = { { start = 11, stop = 13, asset = "L001", kind = "match" } }
+  local merged, preserved = vo.MergeSidecarSpans(new, disk, ranges)
+  assert(preserved == 4, "Expected 4 out-of-range spans preserved, got " .. preserved)
+  assert(#merged == 5, "Expected 1 new + 4 preserved = 5, got " .. #merged)
+end)
+
+test("a disk span inside a covered range is superseded, not duplicated", function()
+  local disk   = { { start = 1.0, stop = 2.0, asset = "L001", kind = "review" } }
+  local ranges = vo.SourceCoverageRanges({ item_at(0, 10) })
+  local new    = { { start = 1.0, stop = 2.0, asset = "L001", kind = "match" } }
+  local merged, preserved = vo.MergeSidecarSpans(new, disk, ranges)
+  assert(preserved == 0, "A covered disk span must not be preserved, got " .. preserved)
+  assert(#merged == 1, "Expected exactly the new span, got " .. #merged)
+  assert(merged[1].kind == "match", "The new span must win, got " .. tostring(merged[1].kind))
+end)
+
+test("a re-transcription that finds fewer spans still shrinks the covered region", function()
+  local disk   = { { start = 1, stop = 2 }, { start = 3, stop = 4 }, { start = 5, stop = 6 } }
+  local ranges = vo.SourceCoverageRanges({ item_at(0, 10) })
+  local merged = vo.MergeSidecarSpans({ { start = 1, stop = 6 } }, disk, ranges)
+  assert(#merged == 1, "Expected the covered region to be replaced wholesale, got " .. #merged)
+end)
+
+test("the merged result is sorted by start", function()
+  local disk   = { { start = 90, stop = 91 }, { start = 50, stop = 51 } }
+  local ranges = vo.SourceCoverageRanges({ item_at(0, 10) })
+  local merged = vo.MergeSidecarSpans({ { start = 70, stop = 71 } }, disk, ranges)
+  assert(#merged == 3, "Expected 3, got " .. #merged)
+  assert(merged[1].start == 50 and merged[2].start == 70 and merged[3].start == 90,
+    "Out of order: " .. merged[1].start .. "," .. merged[2].start .. "," .. merged[3].start)
+end)
+
+test("membership is decided by midpoint, matching every other placement rule", function()
+  -- Starts inside the range, ends well outside: the midpoint is outside, so the
+  -- span belongs to a region this write could not see and must be kept.
+  local disk   = { { start = 9, stop = 21 } }
+  local ranges = vo.SourceCoverageRanges({ item_at(0, 10) })
+  local _, preserved = vo.MergeSidecarSpans({}, disk, ranges)
+  assert(preserved == 1, "Expected the span to be preserved, got " .. preserved)
+end)
+
+test("no ranges at all preserves every disk span", function()
+  local disk = { { start = 1, stop = 2 }, { start = 3, stop = 4 } }
+  local merged, preserved = vo.MergeSidecarSpans({}, disk, {})
+  assert(preserved == 2 and #merged == 2, "Expected both preserved, got " .. preserved)
+end)
+
+test("an empty disk side is a plain passthrough of the new spans", function()
+  local new = { { start = 1, stop = 2 } }
+  local merged, preserved = vo.MergeSidecarSpans(new, {}, vo.SourceCoverageRanges({ item_at(0, 10) }))
+  assert(preserved == 0 and #merged == 1, "Expected the new span alone")
+end)
+
+test("nil arguments are inert, never an error", function()
+  local merged, preserved = vo.MergeSidecarSpans(nil, nil, nil)
+  assert(#merged == 0 and preserved == 0, "Expected an empty merge")
+end)
+
+test("several items on one source cover several disjoint stretches", function()
+  -- Two items playing 0..5s and 40..45s of the same recording; a span at 20s
+  -- sits in the gap between them and must survive.
+  local ranges = vo.SourceCoverageRanges({ item_at(0, 5, 0), item_at(100, 5, 40) })
+  local disk   = { { start = 1, stop = 2 }, { start = 20, stop = 21 }, { start = 41, stop = 42 } }
+  local _, preserved = vo.MergeSidecarSpans({}, disk, ranges)
+  assert(preserved == 1, "Only the gap span may be preserved, got " .. preserved)
+end)
+
+--------------------------------
+print("\nDistinctTrackCount:")
+
+test("items on one track count as one", function()
+  local t = {}
+  assert(vo.DistinctTrackCount({ { track = t }, { track = t }, { track = t } }) == 1,
+    "Expected 1 distinct track")
+end)
+
+test("items on two tracks count as two", function()
+  assert(vo.DistinctTrackCount({ { track = {} }, { track = {} } }) == 2,
+    "Expected 2 distinct tracks")
+end)
+
+test("no items, or items with no track, count as zero", function()
+  assert(vo.DistinctTrackCount({}) == 0, "Expected 0")
+  assert(vo.DistinctTrackCount(nil) == 0, "Expected 0 from nil")
+  assert(vo.DistinctTrackCount({ { track = nil } }) == 0, "Expected 0 when no track is resolved")
 end)
 
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))

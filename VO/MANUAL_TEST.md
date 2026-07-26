@@ -1,7 +1,7 @@
 # VO ScriptMatch — Manual Test Procedure
 
 Everything in `VO/lib/ajsfx_vo.lua`'s pure layer is covered by `tests/test_vo.lua`
-(198 automated tests, run by `./run_tests.sh`). This document covers what those
+(run `./run_tests.sh` for the current count — all passing). This document covers what those
 tests **cannot** reach: REAPER itself, real audio, and the actual whisper-cli
 binary. Nothing below has been executed yet — see [SPEC.md §10](SPEC.md#10-explicitly-unverified).
 
@@ -91,14 +91,23 @@ Leave ~1s of silence between takes. Speak normally; do not over-enunciate.
 
 ## 3. First run — defaults
 
-Select the recorded item. Run **ajsfx VO ScriptMatch**.
+Run **ajsfx VO ScriptMatch** with nothing selected, then select the recorded item.
 
-- [ ] The run dialog opens and shows `1 item(s) selected, 0 skipped`.
+- [ ] With nothing selected, the dialog shows `Select the recorded session item(s)
+      on a track.` and **Transcribe** is disabled — no popup, no separate step to
+      reopen the script.
+- [ ] Select the recorded item. The table becomes active immediately, without
+      reopening the script.
 - [ ] Browse to the sample CSV. Leave the filters blank and all three toggles at
       their defaults (Alts off, suffix off, last take is primary).
-- [ ] Press **Transcribe and cut**. A progress window appears with a working
-      elapsed counter.
-- [ ] **The project does not change while it runs.**
+- [ ] Press **Transcribe**. The dialog stays open and shows an inline progress
+      line while it runs; both **Transcribe** and **Cut and name** are disabled
+      for the duration.
+- [ ] **The project does not change while it runs — Transcribe only reads the
+      audio and builds a plan.**
+- [ ] When it finishes, **Transcribe** relabels to **Re-transcribe** and the
+      table populates with the plan's results.
+- [ ] Press **Cut and name** to apply the plan to the project.
 
 ### Expected result
 
@@ -112,7 +121,8 @@ Select the recorded item. Run **ajsfx VO ScriptMatch**.
 - [ ] The slate and the chatter are on **Review**, not Selects.
 - [ ] Nothing is named for NPC_004.
 - [ ] Non-speech silence remains on the original track.
-- [ ] A `*_vo_report.csv` sits next to the project.
+- [ ] A `*_vo_report.csv` sits next to the recorded audio source file — written
+      when **Transcribe** ran, not only after Cut.
 
 ### Check the report
 
@@ -183,19 +193,20 @@ Enable **Create regions over Selects clips** in Settings, then run again.
 
 ## 7. Failure handling
 
-Each of these must show a clear message and change **nothing**:
+Each of these must show a clear inline message (no popup) and change **nothing**:
 
-- [ ] Run with no items selected.
+- [ ] Open the script with no items selected → `Select the recorded session
+      item(s) on a track.`, **Transcribe** disabled.
 - [ ] Point Settings at a nonexistent whisper-cli → message names the missing path
       and points at Settings.
 - [ ] Point Settings at a nonexistent model → same.
 - [ ] Point the run dialog at a CSV missing the Filename column → the message
       lists the headers actually found.
 - [ ] Point it at a file that is not a CSV at all.
-- [ ] Press **Cancel** mid-transcription → "Nothing in the project was changed",
-      and the project is untouched.
-- [ ] Select a **MIDI** item alongside the audio → it is skipped and named in the
-      summary; the audio still processes.
+- [ ] Press **Cancel** mid-transcription → inline status reads "Cancelled.
+      Nothing in the project was changed.", and the project is untouched.
+- [ ] Select a **MIDI** item alongside the audio → it is skipped and named
+      inline; the audio still processes.
 - [ ] Set an item's playrate to 0.5 → skipped with the playrate named. (The
       time-mapping math handles playrate and is unit-tested; v1 refuses it until
       this test confirms REAPER agrees.)
@@ -204,12 +215,17 @@ Each of these must show a clear message and change **nothing**:
 
 ## 8. The cache
 
-- [ ] Run once, then run again → the second run reaches the results almost
-      instantly, with no transcription window.
-- [ ] Change **Accept threshold** in Settings and run again → still instant. This
+- [ ] Transcribe once, then reopen the dialog on the same item(s) → the sidecar
+      restores the result instantly, with no whisper run and no progress line.
+- [ ] Change **Accept threshold** in Settings and reopen → still instant. This
       is the point of the cache: threshold tuning must be cheap.
-- [ ] Tick **Always re-transcribe** → it transcribes again.
-- [ ] Change the model → it transcribes again without being asked to.
+- [ ] Tick **Always re-transcribe** and press Transcribe → it transcribes again
+      even though a fresh sidecar exists.
+- [ ] Change the model and press Transcribe → it transcribes again without being
+      asked to.
+- [ ] With multiple items selected and only some sidecars stale, press
+      **Transcribe** → only the stale/missing sources cost whisper time; sources
+      with a fresh sidecar are skipped.
 
 ---
 
@@ -399,6 +415,27 @@ This is the item verified as part of Task 6's review fix — confirm it directly
   REAPER's `GetUserInputs` (it treats commas as its own field separator). Use a preset
   name without commas; `ValidatePresetName` does not special-case this because the
   dialog itself never delivers the comma to Lua.
+
+---
+
+## Per-source sidecar
+
+1. Open the script with nothing selected. No message box appears; the dialog shows
+   `Select the recorded session item(s) on a track.` and Transcribe is disabled.
+2. Select an item. The table becomes active without reopening the script.
+3. Transcribe. `<audio>_vo_report.csv` appears beside the audio file, and the Status
+   column populates.
+4. Close and reopen with the same item selected. Statuses return with no whisper run.
+5. Select a different recording that has its own sidecar. The table switches to it.
+6. Select both recordings at once. Both sidecars load and the statuses union.
+7. Drag the item along the timeline, then reopen. Spans still align with the audio.
+8. Re-record over the .wav so its size changes. An amber line names the file and
+   Cut is disabled; Re-transcribe clears it.
+9. Load a different script CSV. The mismatch line appears and Cut stays enabled.
+10. Press Re-transcribe. Whisper actually re-runs and the sidecar is rewritten.
+11. Cut. The summary appears inline; no message box takes focus.
+12. Make the audio directory read-only and transcribe. An inline warning names the
+    path and the session remains usable.
 
 ---
 

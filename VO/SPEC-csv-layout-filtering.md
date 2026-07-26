@@ -9,7 +9,7 @@ confirmation, explicit removal of the old free-text filters, and the dialog life
 > to just three roles — **Character** (optional), **Filename** (required), **Line Text**
 > (required). The **LineID** and **Type** columns are removed: LineID was never used by the
 > matcher, and the **Filename** is now the line's identity (repeated takes group by it, and
-> `AssignNames`/`BuildReport` key off it). The Type column and its future timeline-grouping
+> `AssignNames`/`SerializeSidecar` key off it). The Type column and its future timeline-grouping
 > TODO are dropped for now. Where sections below say `line_id` is required or `type` is
 > mapped, read this amendment instead. (A separate fix in the same change hardens
 > `ApplyPlan` against zero-length spans — see `vo.MIN_SPLIT_LENGTH`.)
@@ -226,8 +226,8 @@ lands on plain `Review`, not `<Character>_Review`.
   dialogue together), and/or route Types to separate tracks or sub-tracks. Design open; the
   Type column is already mapped so the data is available when this is picked up.
 - **Preset rename.** Save As + Delete suffices for now.
-- **Character in the run report.** `BuildReport` currently omits the destination
-  character/track; a column could be added when the report is next revised.
+- **Character in the run report.** `SerializeSidecar` currently omits the destination
+  character/track; a column could be added when the sidecar format is next revised.
 
 ---
 
