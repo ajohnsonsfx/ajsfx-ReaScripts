@@ -126,27 +126,13 @@ local state = {
   primary_last     = true,
   message          = "",
   running          = false,
+  source_key       = nil,
 }
 
-local items = vo.CollectSourceSpans()
-
-local skipped = {}
-for _, item in ipairs(items) do
-  if item.skip then
-    skipped[#skipped + 1] = string.format("item at %.3fs: %s", item.pos, item.skip)
-  end
-end
-
-local usable = {}
-for _, item in ipairs(items) do
-  if not item.skip then usable[#usable + 1] = item end
-end
-
-if #usable == 0 then
-  r.MB("None of the selected items can be transcribed:\n\n" ..
-       table.concat(skipped, "\n"), "ajsfx VO ScriptMatch", 0)
-  return
-end
+-- The selection is read every frame, not frozen at launch: the dialog follows
+-- whatever the user clicks. CollectSourceSpans is only re-run when the SET of
+-- source files changes, so dragging an item costs nothing.
+local items, skipped, usable = {}, {}, {}
 
 -- Write one sidecar per source file the plan touches. Called after transcription
 -- (so a session that is never cut still persists) and again after a cut, since
@@ -175,6 +161,35 @@ local function WriteSidecars(plan, lines)
     end
   end
   return written, failures
+end
+
+local function SourceKey(list)
+  local paths = {}
+  for _, it in ipairs(list) do
+    if it.path then paths[#paths + 1] = it.path end
+  end
+  table.sort(paths)
+  return table.concat(paths, "\31")
+end
+
+-- Returns true when the set of selected source files changed this frame.
+local function RefreshSelection()
+  local fresh = vo.CollectSourceSpans()
+  local key   = SourceKey(fresh)
+
+  items = fresh
+  skipped, usable = {}, {}
+  for _, item in ipairs(items) do
+    if item.skip then
+      skipped[#skipped + 1] = string.format("item at %.3fs: %s", item.pos, item.skip)
+    else
+      usable[#usable + 1] = item
+    end
+  end
+
+  if key == state.source_key then return false end
+  state.source_key = key
+  return true
 end
 
 -- -----------------------------------------------------------------------
@@ -776,6 +791,12 @@ end
 local function loop()
   if state.running then return end -- the transcription window has the floor
 
+  -- A changed source set invalidates any plan built from the old one.
+  if RefreshSelection() then
+    state.plan, state.plan_lines, state.line_status = nil, nil, nil
+    state.status, state.sidecar_warning = "", ""
+  end
+
   if not (ctx and im.ValidatePtr(ctx, 'ImGui_Context*')) then
     ctx = im.CreateContext('VO ScriptMatch')
   end
@@ -918,7 +939,11 @@ local function loop()
 
     -- Run gating. Both required roles must be mapped and the CSV must parse.
     local run_error
-    if not state.header then
+    if #usable == 0 then
+      run_error = (#skipped > 0)
+        and ("None of the selected items can be transcribed:\n" .. table.concat(skipped, "\n"))
+        or  "Select the recorded session item(s) on a track."
+    elseif not state.header then
       run_error = (state.header_error ~= "" and state.header_error) or "Load a script CSV."
     elseif state.header_error ~= "" then
       run_error = state.header_error
