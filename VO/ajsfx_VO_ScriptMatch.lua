@@ -175,10 +175,21 @@ local function WriteSidecars(plan, lines)
   return written, failures
 end
 
+-- A key over the SET of distinct source FILES behind a list of items -- which
+-- is what src_changed is supposed to mean everywhere it is used. Duplicates are
+-- collapsed and the result is sorted, so the key depends only on WHICH files are
+-- involved, never on how many items reference them or in what order they were
+-- clicked. Without the de-duplication, shift-clicking a second item on a source
+-- that is already selected read as a source-set change and forced an
+-- unconditional sidecar reload -- destroying a live, unsaved plan in exactly the
+-- case state.plan_saved exists to protect.
 local function SourceKey(list)
-  local paths = {}
+  local seen, paths = {}, {}
   for _, it in ipairs(list) do
-    if it.path then paths[#paths + 1] = it.path end
+    if it.path and not seen[it.path] then
+      seen[it.path] = true
+      paths[#paths + 1] = it.path
+    end
   end
   table.sort(paths)
   return table.concat(paths, "\31")
@@ -1025,15 +1036,19 @@ local function loop()
     --   The unsaved-plan-lost case is not silent: sidecar_warning already
     --   surfaced the write failure when it happened.
     -- * Same sources, different items (sel_changed and not src_changed):
-    --   reload ONLY IF state.plan_saved. A disk-backed plan must reload so a
-    --   newly selected item picks up spans that were previously out of range
-    --   (a shift-click adding a second item on the same source). A live,
-    --   unsaved plan is real work -- minutes of whisper transcription that
-    --   exists nowhere on disk if the write failed -- and must not be nil'd
-    --   out by a load that finds nothing there.
+    --   reload UNLESS doing so would destroy something. The only thing worth
+    --   protecting is a LIVE UNSAVED plan (plan ~= nil and not plan_saved):
+    --   minutes of whisper transcription that exists nowhere on disk. No plan
+    --   at all is nothing to lose, so load -- otherwise the sidecar Cut itself
+    --   just wrote would never come back and the user would be stranded with
+    --   an empty Status column and a dead Cut button. A disk-backed plan
+    --   round-trips harmlessly, so load -- that is also what lets a shift-click
+    --   adding a second item on the same source pick up spans that were
+    --   previously out of range, now that src_changed no longer fires there.
     -- * Neither changed: no load, no I/O.
     local sel_changed, src_changed = RefreshSelection()
-    local should_reload = src_changed or (sel_changed and state.plan_saved)
+    local should_reload = src_changed
+      or (sel_changed and (state.plan == nil or state.plan_saved))
     if should_reload then
       if src_changed then
         state.status, state.sidecar_warning = "", ""
@@ -1287,14 +1302,24 @@ local function loop()
     end
 
     im.SameLine(ctx)
-    local dis_cut = (state.plan == nil) or state.running or (#state.stale_sources > 0)
+    -- run_error also gates Cut. When the script side is unusable -- a required
+    -- column unmapped, the CSV unloaded, nothing selected -- RefreshPreview
+    -- returns early and leaves a surviving live plan paired with a STALE
+    -- plan_lines and no line_status, so the table honestly reads "0 of N rows
+    -- will run" while Cut would silently apply the OLD line list. The plan is
+    -- still valuable, so it is kept rather than discarded; it just cannot be
+    -- applied until the script is mapped again. The tooltip says which.
+    local dis_cut = (state.plan == nil) or state.running
+      or (#state.stale_sources > 0) or (run_error ~= nil)
     if dis_cut then im.BeginDisabled(ctx) end
     pressed_cut = im.Button(ctx, "Cut and name")
     if dis_cut then im.EndDisabled(ctx) end
     if im.IsItemHovered(ctx) then
       im.SetTooltip(ctx,
-        (#state.stale_sources > 0) and "The audio has changed since it was transcribed. Re-transcribe first."
-        or dis_cut and "Transcribe first — there is no plan to apply."
+        (state.plan == nil) and "Transcribe first — there is no plan to apply."
+        or (#state.stale_sources > 0) and "The audio has changed since it was transcribed. Re-transcribe first."
+        or state.running and "A transcription is already running."
+        or run_error and ("The plan is kept, but it cannot be applied until the script is usable again:\n" .. run_error)
         or "Split and name the clips from the transcribed plan.")
     end
   end
