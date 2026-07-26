@@ -60,20 +60,6 @@ end
 -- Helpers
 -- -----------------------------------------------------------------------
 
-local function ProjectDir()
-  local _, proj = r.EnumProjects(-1, "")
-  if proj and proj ~= "" then
-    return proj:match("^(.*)[/\\][^/\\]*$"), proj:match("([^/\\]+)%.[Rr][Pp][Pp]$")
-  end
-  return nil, nil
-end
-
-local function ReportPath()
-  local dir, name = ProjectDir()
-  if dir then return dir .. "/" .. (name or "session") .. "_vo_report.csv" end
-  return vo.ResolveScratchDir(cfg) .. "/vo_report.csv"
-end
-
 local function ReadFile(path)
   local f = io.open(path, "rb")
   if not f then return nil end
@@ -134,6 +120,7 @@ local state = {
   plan_lines       = nil,        -- the script lines that plan was built from
   line_status      = nil,        -- asset -> STATUS key, from the current plan
   status           = "",         -- neutral progress note, distinct from message
+  sidecar_warning  = "",         -- non-empty when a sidecar write failed (warning only)
   use_alts_track   = cfg.use_alts_track or false,
   suffix_alt_names = cfg.suffix_alt_names or false,
   primary_last     = true,
@@ -159,6 +146,35 @@ if #usable == 0 then
   r.MB("None of the selected items can be transcribed:\n\n" ..
        table.concat(skipped, "\n"), "ajsfx VO ScriptMatch", 0)
   return
+end
+
+-- Write one sidecar per source file the plan touches. Called after transcription
+-- (so a session that is never cut still persists) and again after a cut, since
+-- ApplyPlan can clamp spans and the file should reflect what was applied.
+-- Returns how many were written, and a list of {path, reason} for those that
+-- were not: a read-only media folder is a warning, never a failed run.
+local function WriteSidecars(plan, lines)
+  local by_source = vo.PartitionPlanBySource(plan, usable)
+  local written, failures = 0, {}
+  for source_path, spans in pairs(by_source) do
+    local path = vo.SidecarPath(source_path)
+    if not path then
+      failures[#failures + 1] = { path = source_path, reason = "no sidecar path" }
+    else
+      local text = vo.SerializeSidecar(spans, lines, {
+        source       = source_path:match("([^/\\]+)$") or source_path,
+        source_bytes = vo.FileSize(source_path) or 0,
+        script_csv   = state.csv_path or "",
+        mapping      = state.mapping,
+      })
+      if WriteFile(path, text) then
+        written = written + 1
+      else
+        failures[#failures + 1] = { path = path, reason = "could not write" }
+      end
+    end
+  end
+  return written, failures
 end
 
 -- -----------------------------------------------------------------------
@@ -590,9 +606,13 @@ local function Finish(plan, lines)
     applied, failures = vo.ApplyPlan(plan, cfg, usable[1].track)
   end)
 
-  local report = vo.BuildReport(plan, lines)
-  local path   = ReportPath()
-  local wrote  = WriteFile(path, report)
+  local written, sc_failures = WriteSidecars(plan, lines)
+  if #sc_failures > 0 then
+    state.sidecar_warning = string.format(
+      "Could not write %d sidecar file(s): %s", #sc_failures, sc_failures[1].path)
+  else
+    state.sidecar_warning = ""
+  end
 
   local summary = {}
   local counts  = { match = 0, review = 0, unmatched = 0 }
@@ -608,8 +628,6 @@ local function Finish(plan, lines)
   if #failures > 0 then
     summary[#summary + 1] = "\nProblems:\n" .. table.concat(failures, "\n")
   end
-  summary[#summary + 1] = wrote and ("\nReport: " .. path)
-                                or ("\nCould not write the report to " .. path)
 
   r.MB(table.concat(summary, "\n"), "ajsfx VO ScriptMatch", 0)
 end
@@ -708,6 +726,16 @@ local function Run()
         end
       end
       state.line_status = by_asset
+
+      -- Persist beside each recording now, not at cut time: a session where
+      -- the user transcribes, inspects and never cuts still leaves a result.
+      local written, sc_failures = WriteSidecars(plan, lines)
+      state.sidecar_warning = ""
+      if #sc_failures > 0 then
+        state.sidecar_warning = string.format(
+          "Could not write %d sidecar file(s): %s",
+          #sc_failures, sc_failures[1].path)
+      end
 
       local counts = { match = 0, review = 0, unmatched = 0 }
       for _, span in ipairs(plan) do counts[span.kind] = (counts[span.kind] or 0) + 1 end
