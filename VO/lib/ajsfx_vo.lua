@@ -1641,13 +1641,13 @@ function vo.SidecarPath(source_path)
   return strip_ext(source_path) .. "_vo_report.csv"
 end
 
--- The tracker for a project lives beside it: Session.rpp -> Session_vo_tracker.csv.
--- One per project, not one per source: it tracks the user's own work (verified,
--- notes, renames) across every recording at once, and unlike a sidecar it is
--- never regenerated from audio.
-function vo.TrackerPath(project_path)
+-- The project file lives beside the project: Session.rpp -> Session_vo.csv.
+-- One per project, not one per source: it holds the user's own work (selects,
+-- verified marks, notes, renames) plus the script it is all about. Unlike a
+-- transcript it is never regenerated from audio.
+function vo.ProjectFilePath(project_path)
   if not project_path or project_path == "" then return nil end
-  return strip_ext(project_path) .. "_vo_tracker.csv"
+  return strip_ext(project_path) .. "_vo.csv"
 end
 
 -- Exact inverses of the arithmetic in vo.MapWordsToProject. A sidecar lives next
@@ -1778,26 +1778,33 @@ function vo.ParseTranscript(text)
 end
 
 --------------------------------
--- Pure layer: the overview tracker
+-- Pure layer: the project file
 --------------------------------
 
--- The tracker holds the one kind of data in this tool that CANNOT be recomputed:
--- what the user did. Verified checkmarks, notes, and delivery-name overrides are
--- judgements about audio, not facts derived from it, so they live in their own
--- file. Re-transcribing a recording rewrites its sidecar wholesale; it must not
--- cost the user a single checkmark. That separation is the whole reason this
--- file format exists rather than more columns on the sidecar.
+-- The project file holds the one kind of data in this tool that CANNOT be
+-- recomputed: what the user did. Selects, verified checkmarks, notes and
+-- delivery-name overrides are judgements ABOUT audio, not facts derived FROM
+-- it, so they live in their own file. Re-transcribing a recording rewrites its
+-- transcript wholesale; it must not cost the user a single checkmark. That
+-- separation is the whole reason this format exists rather than more columns
+-- on the transcript.
+--
+-- It also carries the script CSV path and the column mapping, which used to
+-- live in ProjExtState. A project's VO state is now one file, and moving the
+-- project moves it.
 
-vo.TRACKER_MARKER  = "ajsfx VO Overview"
-vo.TRACKER_VERSION = 1
+vo.PROJECT_MARKER  = "ajsfx VO Project"
+vo.PROJECT_VERSION = 1
 
-vo.TRACKER_HEADER = {
-  "Key", "Source", "Source start", "Filename", "Status", "Name override",
-  "Notes", "Primary",
+vo.PROJECT_HEADER = {
+  "Key", "Filename", "Source", "Source start", "Select", "Status",
+  "Name override", "Notes",
 }
 
 -- Statuses the USER sets. Derived statuses (missing/recorded/review/orphan) are
--- computed from the sidecars every time and are deliberately never stored.
+-- computed from the transcripts every time and are deliberately never stored.
+-- Select is NOT one of these: a take can be both selected and flagged, so it
+-- gets its own column rather than competing for this one.
 vo.TRACKER_STATUSES = { verified = true, flagged = true }
 
 -- How far a span may move and still be recognised as "the same take". A
@@ -1807,9 +1814,9 @@ vo.TRACKER_STATUSES = { verified = true, flagged = true }
 vo.TRACKER_REMATCH_TOLERANCE = 0.5
 
 -- Portable half of a row's identity. Basename rather than full path so a project
--- that moves drives keeps its tracker; full-path disambiguation happens in the
+-- that moves drives keeps its marks; full-path disambiguation happens in the
 -- lookup below, which tries the exact path first. Milliseconds, rounded, because
--- the sidecar itself only stores 3 decimal places.
+-- the transcript itself only stores 3 decimal places.
 function vo.OverviewKey(source_path, source_start, asset)
   if not source_path or source_path == "" then
     return "|" .. tostring(asset or "")
@@ -1818,30 +1825,36 @@ function vo.OverviewKey(source_path, source_start, asset)
        .. string.format("%d", math.floor((source_start or 0) * 1000 + 0.5))
 end
 
-function vo.SerializeTracker(entries)
+-- `meta` carries the script this project's judgements are about:
+-- { script_csv, mapping }. It moves out of ProjExtState and in here so the
+-- project file is the WHOLE of a project's VO state.
+function vo.SerializeProjectFile(entries, meta)
+  meta = meta or {}
   local out = {
-    vo.FormatCSVRow({ vo.TRACKER_MARKER, tostring(vo.TRACKER_VERSION) }),
+    vo.FormatCSVRow({ vo.PROJECT_MARKER, tostring(vo.PROJECT_VERSION) }),
+    vo.FormatCSVRow({ "Script CSV", meta.script_csv or "" }),
+    vo.FormatCSVRow({ "Mapping",    encode_mapping(meta.mapping) }),
     "",
-    vo.FormatCSVRow(vo.TRACKER_HEADER),
+    vo.FormatCSVRow(vo.PROJECT_HEADER),
   }
 
   for _, e in ipairs(entries or {}) do
-    -- Only rows carrying actual user work are written. Without this the tracker
+    -- Only rows carrying actual user work are written. Without this the file
     -- would grow a line per script line per session and the signal would drown.
-    local has_work = (e.status and e.status ~= "")
+    local has_work = (e.select == true)
+                  or (e.status and e.status ~= "")
                   or (e.name_override and e.name_override ~= "")
                   or (e.notes and e.notes ~= "")
-                  or (e.primary == true)
     if has_work then
       out[#out + 1] = vo.FormatCSVRow({
         e.key or "",
+        e.asset or "",
         e.source or "",
         e.source_start and string.format("%.3f", e.source_start) or "",
-        e.asset or "",
+        e.select and "yes" or "",
         e.status or "",
         e.name_override or "",
         e.notes or "",
-        e.primary and "yes" or "",
       })
     end
   end
@@ -1849,54 +1862,61 @@ function vo.SerializeTracker(entries)
   return table.concat(out, "\n") .. "\n"
 end
 
--- Returns the parsed entries, or nil plus a reason. Nothing here raises: a
--- tracker mangled by a spreadsheet round-trip must never stop the window
--- opening, because the window is the only place the user can fix it.
-function vo.ParseTracker(text)
+-- Returns the parsed file, or nil plus a reason. Nothing here raises: a project
+-- file mangled by a spreadsheet round-trip must never stop the window opening,
+-- because the window is the only place the user can fix it.
+function vo.ParseProjectFile(text)
   if type(text) ~= "string" or text == "" then
-    return nil, "The tracker file is empty."
+    return nil, "The project file is empty."
   end
 
   local rows = vo.ParseCSV(text)
-  if not rows[1] or rows[1][1] ~= vo.TRACKER_MARKER then
-    return nil, "Not an " .. vo.TRACKER_MARKER .. " file."
+  if not rows[1] or rows[1][1] ~= vo.PROJECT_MARKER then
+    return nil, "Not an " .. vo.PROJECT_MARKER .. " file."
   end
 
   local version = tonumber(rows[1][2] or "")
-  if version ~= vo.TRACKER_VERSION then
-    return nil, "Unsupported tracker version: " .. tostring(rows[1][2])
+  if version ~= vo.PROJECT_VERSION then
+    return nil, "Unsupported project file version: " .. tostring(rows[1][2])
   end
 
-  local header_at
-  for i = 2, #rows do
-    if (rows[i][1] or "") == vo.TRACKER_HEADER[1] then header_at = i; break end
+  local parsed = { version = version, script_csv = "", mapping = {}, entries = {} }
+
+  local i, header_at = 2, nil
+  while rows[i] do
+    local key = rows[i][1] or ""
+    if key == vo.PROJECT_HEADER[1] then header_at = i; break end
+    if     key == "Script CSV" then parsed.script_csv = rows[i][2] or ""
+    elseif key == "Mapping"    then parsed.mapping    = decode_mapping(rows[i][2])
+    end
+    i = i + 1
   end
+
   if not header_at then
-    return nil, "The tracker has no header row."
+    return nil, "The project file has no header row."
   end
 
-  local entries = {}
-  for i = header_at + 1, #rows do
-    local row = rows[i]
+  for j = header_at + 1, #rows do
+    local row = rows[j]
     local key = row[1] or ""
     if key ~= "" then
-      local status = fold(row[5] or "")
-      entries[#entries + 1] = {
+      local status = fold(row[6] or "")
+      parsed.entries[#parsed.entries + 1] = {
         key           = key,
-        source        = row[2] ~= "" and row[2] or nil,
-        source_start  = tonumber(row[3] or ""),
-        asset         = row[4] ~= "" and row[4] or nil,
+        asset         = row[2] ~= "" and row[2] or nil,
+        source        = row[3] ~= "" and row[3] or nil,
+        source_start  = tonumber(row[4] or ""),
+        select        = fold(row[5] or "") == "yes",
         -- An unrecognised status is dropped rather than carried: it would
         -- otherwise render as an unknown badge with no way to clear it.
         status        = vo.TRACKER_STATUSES[status] and status or nil,
-        name_override = row[6] ~= "" and row[6] or nil,
-        notes         = row[7] ~= "" and row[7] or nil,
-        primary       = fold(row[8] or "") == "yes",
+        name_override = row[7] ~= "" and row[7] or nil,
+        notes         = row[8] ~= "" and row[8] or nil,
       }
     end
   end
 
-  return entries
+  return parsed
 end
 
 -- Index tracker entries for lookup, bucketed by full source path AND by
@@ -1998,13 +2018,12 @@ local function resolve_tracker(index, recs)
 end
 
 -- Assemble the unified overview: every line the script SAYS should exist, every
--- span the sidecars say DOES exist, and the user's own marks over the top.
+-- span the live match says DOES exist, and the user's own marks over the top.
 --
 -- Inputs are already-parsed structures so this runs headless:
---   lines    -- from vo.BuildScriptLines: { text, asset, speaker, row }
---   sidecars -- array of { path = <source file>, spans = <vo.ParseSidecar spans> }
---   tracker  -- from vo.ParseTracker, or nil
---   cfg      -- for primary_take only
+--   lines   -- from vo.BuildScriptLines: { text, asset, speaker, row }
+--   matches -- from vo.BuildMatch: array of { path = <source file>, spans = … }
+--   entries -- the `entries` array from vo.ParseProjectFile, or nil
 --
 -- Take numbering is done here rather than by vo.AssignNames because AssignNames
 -- sorts a group by `start` alone, which is only meaningful inside ONE source
@@ -2012,18 +2031,17 @@ end
 -- ordinal ahead of the timestamp, so the rule is shared but the code is not.
 function vo.BuildOverview(input)
   input = input or {}
-  local lines    = input.lines or {}
-  local tracker  = input.tracker
-  local first_is_primary = vo.Opt(input.cfg, "primary_take") == "first"
+  local lines   = input.lines or {}
+  local entries = input.entries
 
   -- Sources in a stable order, so take numbers do not shuffle between openings.
   local sidecars = {}
-  for _, sc in ipairs(input.sidecars or {}) do
+  for _, sc in ipairs(input.matches or {}) do
     if sc and sc.path then sidecars[#sidecars + 1] = sc end
   end
   table.sort(sidecars, function(a, b) return a.path < b.path end)
 
-  local index = index_tracker(tracker)
+  local index = index_tracker(entries)
 
   -- Flatten every span, tagged with its source and its global ordering key.
   local spans = {}
@@ -2082,7 +2100,7 @@ function vo.BuildOverview(input)
       user_status   = t and t.status or nil,
       name_override = t and t.name_override or nil,
       notes         = t and t.notes or nil,
-      user_primary  = t and t.primary == true or false,
+      user_select   = t and t.select == true or false,
     }
   end
 
@@ -2103,13 +2121,14 @@ function vo.BuildOverview(input)
         built[#built + 1] = make_row(rec, line, i, #g)
       end
 
-      -- The select: the user's explicit choice if they made one, else the
-      -- configured first/last rule.
+      -- The user's explicit Select IS the primary. There is no first/last
+      -- fallback: guessing which take was meant is exactly what the Select
+      -- column exists to stop, and a group with no select simply has no
+      -- primary -- which Cut reports as needing a decision.
       local chosen
       for _, row in ipairs(built) do
-        if row.user_primary then chosen = row; break end
+        if row.user_select then chosen = row; break end
       end
-      chosen = chosen or (first_is_primary and built[1] or built[#built])
       for _, row in ipairs(built) do
         row.is_primary = (row == chosen)
         rows[#rows + 1] = row
@@ -2129,7 +2148,7 @@ function vo.BuildOverview(input)
         name_override = t and t.name_override or nil,
         notes         = t and t.notes or nil,
         is_primary    = false,
-        user_primary  = false,
+        user_select   = t and t.select == true or false,
       }
     end
   end
@@ -2148,10 +2167,11 @@ function vo.BuildOverview(input)
   return rows
 end
 
--- Fold the overview back into tracker entries for writing. Rows carrying no
--- user work are still returned; SerializeTracker is what drops them, so a row
--- the user CLEARED is written as empty here and then vanishes from the file.
-function vo.TrackerEntriesFromRows(rows)
+-- Fold the overview back into project-file entries for writing. Rows carrying
+-- no user work are still returned; SerializeProjectFile is what drops them, so
+-- a row the user CLEARED is written as empty here and then vanishes from the
+-- file.
+function vo.ProjectEntriesFromRows(rows)
   local entries = {}
   for _, row in ipairs(rows or {}) do
     entries[#entries + 1] = {
@@ -2159,10 +2179,10 @@ function vo.TrackerEntriesFromRows(rows)
       source        = row.source_path,
       source_start  = row.source_start,
       asset         = row.asset,
+      select        = row.user_select == true,
       status        = row.user_status,
       name_override = row.name_override,
       notes         = row.notes,
-      primary       = row.user_primary == true,
     }
   end
   return entries
