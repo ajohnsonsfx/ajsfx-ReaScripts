@@ -1670,6 +1670,42 @@ function vo.ParseTranscript(text)
   return parsed
 end
 
+-- Reassemble a transcript's one-word-per-row storage into display prose.
+--
+-- Display only. Nothing here is stored, and matching never sees it: `-ml 1`
+-- destroyed whisper's own sentence grouping, and the SCRIPT is what says where
+-- lines divide anyway. This is purely a reading aid for the detail panel.
+--
+-- Words are grouped so a new paragraph starts after any word whose text ends
+-- in `.`, `?` or `!` (optionally followed by a closing quote).
+-- Returns: array of paragraphs, each an array of the original word tables (so
+-- a caller needing per-word timing -- the detail panel's word interaction --
+-- can index into the same objects vo.Paragraphs summarizes).
+function vo.ParagraphWords(words)
+  local paras, current = {}, {}
+  for _, w in ipairs(words or {}) do
+    current[#current + 1] = w
+    if w.text:match("[%.%?%!]['\"]?$") then
+      paras[#paras + 1] = current
+      current = {}
+    end
+  end
+  if #current > 0 then paras[#paras + 1] = current end
+  return paras
+end
+
+-- vo.ParagraphWords, joined to display prose. Returns: array of paragraph
+-- strings.
+function vo.Paragraphs(words)
+  local out = {}
+  for _, para in ipairs(vo.ParagraphWords(words)) do
+    local texts = {}
+    for _, w in ipairs(para) do texts[#texts + 1] = w.text end
+    out[#out + 1] = table.concat(texts, " ")
+  end
+  return out
+end
+
 --------------------------------
 -- Pure layer: the project file
 --------------------------------

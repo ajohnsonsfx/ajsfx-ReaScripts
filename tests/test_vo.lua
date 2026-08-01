@@ -3632,6 +3632,52 @@ test("a missing word header is rejected with a reason", function()
 end)
 
 --------------------------------
+print("\nParagraphs / ParagraphWords:")
+
+test("a word ending in a sentence terminator closes a paragraph", function()
+  local words = {
+    { t0 = 0, t1 = 1, text = "we" },
+    { t0 = 1, t1 = 2, text = "should" },
+    { t0 = 2, t1 = 3, text = "go." },
+    { t0 = 3, t1 = 4, text = "okay" },
+  }
+  local paras = vo.Paragraphs(words)
+  assert(#paras == 2, "Expected 2 paragraphs, got " .. #paras)
+  assert(paras[1] == "we should go.", "Para 1: " .. tostring(paras[1]))
+  assert(paras[2] == "okay", "Para 2: " .. tostring(paras[2]))
+end)
+
+test("? and ! and a trailing closing quote also close a paragraph", function()
+  local paras = vo.Paragraphs({
+    { text = "really?" }, { text = "yes!" }, { text = "he" }, { text = "said" },
+    { text = 'stop."' }, { text = "done" },
+  })
+  assert(#paras == 4, "Expected 4 paragraphs, got " .. #paras)
+  assert(paras[1] == "really?", "Para 1: " .. tostring(paras[1]))
+  assert(paras[2] == "yes!", "Para 2: " .. tostring(paras[2]))
+  assert(paras[3] == 'he said stop."', "Para 3: " .. tostring(paras[3]))
+end)
+
+test("a trailing run with no terminator still becomes its own paragraph", function()
+  local paras = vo.Paragraphs({ { text = "hello" }, { text = "there" } })
+  assert(#paras == 1, "Expected 1 paragraph, got " .. #paras)
+  assert(paras[1] == "hello there", "Got: " .. tostring(paras[1]))
+end)
+
+test("an empty or nil word list produces no paragraphs", function()
+  assert(#vo.Paragraphs({}) == 0, "Expected 0 for empty list")
+  assert(#vo.Paragraphs(nil) == 0, "Expected 0 for nil")
+end)
+
+test("ParagraphWords groups the same original word tables Paragraphs summarizes", function()
+  local w1, w2, w3 = { t0 = 0, t1 = 1, text = "hi." }, { t0 = 1, t1 = 2, text = "there" }, { t0 = 2, t1 = 3, text = "friend." }
+  local groups = vo.ParagraphWords({ w1, w2, w3 })
+  assert(#groups == 2, "Expected 2 groups, got " .. #groups)
+  assert(#groups[1] == 1 and groups[1][1] == w1, "Group 1 should be {w1}")
+  assert(#groups[2] == 2 and groups[2][1] == w2 and groups[2][2] == w3, "Group 2 should be {w2, w3}")
+end)
+
+--------------------------------
 print("\nFileFingerprint / TranscriptMeta:")
 
 local function write_file(path, bytes)

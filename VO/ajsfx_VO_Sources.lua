@@ -84,6 +84,7 @@ local state = {
   run_started = nil,
   write_fails = {},
   detail    = nil,     -- path of the row whose detail panel is open (Task 9)
+  detail_paragraph = 1, -- index into that transcript's paragraphs whose words are shown
   cfg       = vo.LoadConfig(),
   backend   = nil,     -- { ready = bool, reason = string }
   backend_check_t = 0,
@@ -409,11 +410,18 @@ local function DrawTableBody(visible)
       local at = i
       pending_action = function() ClickRow(row, at, captured, visible) end
     end
-    -- Double-click hook for the per-file detail panel. Task 9 builds the
-    -- panel; this script only records which row was asked for.
+    -- Double-click toggles the per-file detail panel: a second double-click on
+    -- the same row that opened it closes it again.
     if im.IsItemHovered(ctx) and im.IsMouseDoubleClicked(ctx, im.MouseButton_Left) then
       local target = row.path
-      pending_action = function() state.detail = target end
+      pending_action = function()
+        if state.detail == target then
+          state.detail = nil
+        else
+          state.detail = target
+          state.detail_paragraph = 1
+        end
+      end
     end
 
     -- Transcribed -------------------------------------------------------
@@ -529,6 +537,186 @@ local function DrawMessage()
 end
 
 -- -----------------------------------------------------------------------
+-- Detail panel (Task 9)
+--
+-- The list screen's second screen: everything known about ONE source file,
+-- reached by double-clicking its row. It owns no state of its own beyond
+-- which row is open and which paragraph's words are currently interactive —
+-- everything else it draws comes straight off row.transcript.
+-- -----------------------------------------------------------------------
+
+-- Move the edit cursor to a word's position in the arrange view. `t` is
+-- SOURCE time (as stored in the transcript); the first project item that
+-- plays this source converts it to project time. A source with no item left
+-- in the project (trimmed out, or the item deleted) has nothing to seek to.
+local function GoToWord(source_path, t)
+  for _, it in ipairs(vo.CollectProjectSpans()) do
+    if it.path == source_path then
+      r.SetEditCurPos(vo.SourceTimeToProject(t, it), true, false)
+      return true
+    end
+  end
+  return false
+end
+
+local function DetailRow()
+  if not state.detail then return nil end
+  for _, row in ipairs(state.rows) do
+    if row.path == state.detail then return row end
+  end
+  return nil
+end
+
+-- The focused paragraph's words, one im.SmallButton each, wrapped onto
+-- multiple lines by hand: SameLine is skipped whenever the next word would not
+-- fit in what is left of the current line.
+local function DrawFocusedWords(row, paragraph_words, index)
+  local words = paragraph_words[index]
+  if not words or #words == 0 then return end
+
+  im.Spacing(ctx)
+  im.TextDisabled(ctx, "Click a word to move the edit cursor there:")
+
+  local avail_w = im.GetContentRegionAvail(ctx)
+  local line_used = 0
+  for wi, w in ipairs(words) do
+    local text_w = im.CalcTextSize(ctx, w.text)
+    local item_w = text_w + 14  -- rough SmallButton frame padding
+
+    if wi > 1 then
+      if line_used + item_w <= avail_w then
+        im.SameLine(ctx)
+      else
+        line_used = 0
+      end
+    end
+
+    im.PushID(ctx, wi)
+    if im.SmallButton(ctx, w.text) then
+      GoToWord(row.path, w.t0)
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, string.format("%.3f \226\128\147 %.3f s", w.t0, w.t1))
+    end
+    im.PopID(ctx)
+
+    line_used = line_used + item_w
+  end
+end
+
+-- Everything a "yes" or "stale" row shows: the identity preamble, the
+-- reassembled prose, the focused paragraph's clickable words, and the
+-- re-transcribe action. A "stale" row gets the same panel plus a warning line
+-- — its transcript is still readable, just no longer current.
+local function DrawTranscriptDetail(row)
+  local t = row.transcript
+
+  im.Text(ctx, row.name)
+  if row.status == "stale" then
+    im.TextColored(ctx, STATUS_STYLE.stale.colour,
+      "Stale \226\128\148 the source audio has changed since this transcript was made.")
+  end
+
+  im.Text(ctx, "Source: " .. (t.source or ""))
+  im.Text(ctx, "Source bytes: " .. tostring(t.source_bytes or 0))
+  im.Text(ctx, "Source hash: " .. (t.source_hash or ""))
+  im.Text(ctx, "Backend: " .. (t.backend or ""))
+  im.Text(ctx, "Model: " .. (t.model or ""))
+  im.Text(ctx, "Language: " .. (t.language or ""))
+  im.Text(ctx, "Words: " .. tostring(#t.words))
+  im.Spacing(ctx)
+
+  local paragraph_words = vo.ParagraphWords(t.words)
+  local paragraphs      = vo.Paragraphs(t.words)
+
+  if #paragraphs == 0 then
+    im.TextDisabled(ctx, "No words in this transcript.")
+  else
+    -- Clamp: a re-transcribe can shrink the word list out from under whatever
+    -- paragraph index was focused before it landed.
+    if not state.detail_paragraph or state.detail_paragraph > #paragraphs then
+      state.detail_paragraph = 1
+    end
+    for i, text in ipairs(paragraphs) do
+      im.PushID(ctx, i)
+      im.TextWrapped(ctx, text)
+      if im.IsItemClicked(ctx, im.MouseButton_Left) then
+        state.detail_paragraph = i
+      end
+      im.PopID(ctx)
+    end
+    DrawFocusedWords(row, paragraph_words, state.detail_paragraph)
+  end
+
+  im.Spacing(ctx)
+  local backend_ready = state.backend and state.backend.ready == true
+  local disabled = state.running or not backend_ready
+  if disabled then im.BeginDisabled(ctx, true) end
+  if im.Button(ctx, "Re-transcribe this file") then
+    pending_action = function() RunTranscribe({ row }, true) end
+  end
+  if disabled then im.EndDisabled(ctx) end
+  if state.running then
+    TooltipEvenWhenDisabled("A transcription is already running.")
+  elseif not backend_ready then
+    TooltipEvenWhenDisabled(state.backend and state.backend.reason
+      or "The speech backend is not ready.")
+  end
+end
+
+-- A "no" row has nothing to show but its name and a way to transcribe it.
+local function DrawUntranscribedDetail(row)
+  im.Text(ctx, row.name)
+  im.Spacing(ctx)
+  local backend_ready = state.backend and state.backend.ready == true
+  local disabled = state.running or not backend_ready
+  if disabled then im.BeginDisabled(ctx, true) end
+  if im.Button(ctx, "Transcribe") then
+    pending_action = function() RunTranscribe({ row }, false) end
+  end
+  if disabled then im.EndDisabled(ctx) end
+  if state.running then
+    TooltipEvenWhenDisabled("A transcription is already running.")
+  elseif not backend_ready then
+    TooltipEvenWhenDisabled(state.backend and state.backend.reason
+      or "The speech backend is not ready.")
+  end
+end
+
+-- An "error" row's transcript could not be parsed; name the reason and the
+-- file so the user can go delete it rather than guess.
+local function DrawErrorDetail(row)
+  im.Text(ctx, row.name)
+  im.TextColored(ctx, STATUS_STYLE.error.colour,
+    row.reason or "Could not parse the transcript.")
+  im.TextDisabled(ctx, vo.TranscriptPath(row.path) or row.path)
+end
+
+local function DrawDetailPanel()
+  if not state.detail then return end
+
+  local visible = im.BeginChild(ctx, "detail", 0, 0, im.ChildFlags_Border)
+  if visible then
+    local row = DetailRow()
+    if not row then
+      im.TextDisabled(ctx, "This file is no longer in the list.")
+    elseif row.status == "no" then
+      DrawUntranscribedDetail(row)
+    elseif row.status == "error" then
+      DrawErrorDetail(row)
+    else
+      DrawTranscriptDetail(row)
+    end
+
+    im.Spacing(ctx)
+    if im.Button(ctx, "Close") then
+      pending_action = function() state.detail = nil end
+    end
+  end
+  im.EndChild(ctx)
+end
+
+-- -----------------------------------------------------------------------
 -- Main loop
 -- -----------------------------------------------------------------------
 
@@ -559,13 +747,20 @@ local function loop()
     if state.message  then reserve_rows = reserve_rows + vo.CountLines(state.message.text, 8) end
 
     local _, avail_h = im.GetContentRegionAvail(ctx)
-    DrawTable(math.max(120, avail_h - im.GetFrameHeightWithSpacing(ctx) * reserve_rows), rows)
+    local table_h = avail_h - im.GetFrameHeightWithSpacing(ctx) * reserve_rows
+    -- With the detail panel open, give it most of what's left rather than
+    -- letting the table claim it all: the panel fills whatever remains below
+    -- the row-count/progress/message lines (im.BeginChild's 0-height autosizes
+    -- to that), so the table only needs enough room to stay usable.
+    if state.detail then table_h = math.min(table_h, avail_h * 0.4) end
+    DrawTable(math.max(120, table_h), rows)
 
     im.TextDisabled(ctx, string.format("%d of %d file%s shown.",
       #rows, #state.rows, #state.rows == 1 and "" or "s"))
 
     DrawProgress()
     DrawMessage()
+    DrawDetailPanel()
 
     im.End(ctx)
 
