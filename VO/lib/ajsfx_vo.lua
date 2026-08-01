@@ -1222,38 +1222,55 @@ end
 -- Pure layer: plan composition
 --------------------------------
 
--- Compose the whole matching pipeline. Pure: no REAPER, no audio, no I/O.
--- lines: script lines from BuildScriptLines
--- words: whisper words from ParseWhisperCSV, already in project time
--- Returns: chronological array of span records ready for ApplyPlan.
-function vo.BuildPlan(lines, words, cfg)
-  local tokens     = vo.BuildWordTokens(words, cfg)
-  local index      = vo.BuildIndex(lines, cfg)
-  local candidates = vo.FindCandidates(tokens, lines, index, cfg)
-  local spans      = vo.SelectSpans(candidates, cfg)
-  local gaps       = vo.FindGaps(tokens, spans)
+-- Match stored words against the script, one source file at a time.
+-- Pure: no REAPER, no audio, no I/O.
+--
+--   transcripts -- array of { path = <source file>, words = <vo.ParseTranscript
+--                  words> }, in SOURCE time
+--   lines       -- script lines from vo.BuildScriptLines
+--   Returns     -- array of { path, spans }, spans in SOURCE time
+--
+-- Per-source rather than pooled, deliberately: two recordings' words occupy
+-- overlapping time ranges in their own files, so pooling them would let the
+-- matcher build a span that starts in one recording and ends in another. The
+-- index is built once and shared -- it depends only on the script.
+--
+-- Padding and naming are NOT done here. Padding needs sample access to snap to
+-- silence (vo.ApplyPadding + vo.SnapBoundary), and take numbering needs every
+-- source at once (vo.BuildOverview). Both belong to the caller, and keeping
+-- this function free of them is what lets Overview re-run it on every script
+-- change without touching audio.
+function vo.BuildMatch(transcripts, lines, cfg)
+  local index = vo.BuildIndex(lines, cfg)
+  local out = {}
 
-  local plan = {}
-  for _, s in ipairs(spans) do plan[#plan + 1] = s end
-  for _, g in ipairs(gaps)  do plan[#plan + 1] = g end
-  table.sort(plan, function(a, b)
-    if a.i0 ~= b.i0 then return a.i0 < b.i0 end
-    return a.i1 < b.i1
-  end)
+  for _, t in ipairs(transcripts or {}) do
+    local tokens     = vo.BuildWordTokens(t.words, cfg)
+    local candidates = vo.FindCandidates(tokens, lines, index, cfg)
+    local spans      = vo.SelectSpans(candidates, cfg)
+    local gaps       = vo.FindGaps(tokens, spans)
 
-  -- Matched spans need their transcript too, for the report.
-  for _, s in ipairs(plan) do
-    if not s.transcript then
-      local text = {}
-      for k = s.i0, s.i1 do text[#text + 1] = tokens[k].text end
-      s.transcript = table.concat(text, " ")
+    local plan = {}
+    for _, s in ipairs(spans) do plan[#plan + 1] = s end
+    for _, g in ipairs(gaps)  do plan[#plan + 1] = g end
+    table.sort(plan, function(a, b)
+      if a.i0 ~= b.i0 then return a.i0 < b.i0 end
+      return a.i1 < b.i1
+    end)
+
+    -- Matched spans need their transcript too, for the table and the report.
+    for _, s in ipairs(plan) do
+      if not s.transcript then
+        local text = {}
+        for k = s.i0, s.i1 do text[#text + 1] = tokens[k].text end
+        s.transcript = table.concat(text, " ")
+      end
     end
+
+    out[#out + 1] = { path = t.path, spans = plan }
   end
 
-  vo.ApplyPadding(plan, cfg, cfg and cfg.bounds)
-  vo.AssignNames(plan, cfg)
-
-  return plan
+  return out
 end
 
 --------------------------------

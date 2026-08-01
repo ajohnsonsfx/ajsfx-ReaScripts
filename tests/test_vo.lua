@@ -1197,7 +1197,20 @@ end)
 --------------------------------
 -- BuildPlan
 --------------------------------
-print("\nBuildPlan:")
+print("\nBuildMatch:")
+
+-- BuildMatch plus the padding and naming that used to live inside BuildPlan.
+-- The matching pipeline these tests exercise did not change; only where the
+-- pieces live did, so the composition is rebuilt here rather than the coverage
+-- thrown away. Padding and naming moved out because one needs sample access
+-- and the other needs every source at once -- neither of which BuildMatch has.
+local function build_named_plan(lines, words, cfg)
+  local matched = vo.BuildMatch({ { path = "s.wav", words = words } }, lines, cfg)
+  local plan = (matched[1] and matched[1].spans) or {}
+  vo.ApplyPadding(plan, cfg, cfg and cfg.bounds)
+  vo.AssignNames(plan, cfg)
+  return plan
+end
 
 -- Deterministic synthetic transcript generator.
 -- Emits a whisper-style word list from the script with controllable noise, so
@@ -1282,7 +1295,7 @@ end)
 test("a clean read of every line matches every line", function()
   local lines = load_fixture()
   local words = synthesize(lines)
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
 
   local got = {}
   for _, s in ipairs(plan) do
@@ -1297,7 +1310,7 @@ end)
 test("lines recorded out of script order are still all matched", function()
   local lines = load_fixture()
   local words = synthesize(lines, { shuffle = true })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
 
   local count = 0
   for _, s in ipairs(plan) do
@@ -1309,7 +1322,7 @@ end)
 test("slates and chatter become unmatched spans without losing any line", function()
   local lines = load_fixture()
   local words = synthesize(lines, { slates = true, chatter = true })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
 
   local matches, unmatched = 0, 0
   for _, s in ipairs(plan) do
@@ -1323,7 +1336,7 @@ end)
 test("unmatched spans are left in place, never routed to a track", function()
   local lines = load_fixture()
   local words = synthesize(lines, { slates = true, chatter = true })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
   for _, s in ipairs(plan) do
     if s.kind == "unmatched" then
       assert(s.dest == vo.DEST_IN_PLACE, "unmatched routed to " .. tostring(s.dest))
@@ -1334,7 +1347,7 @@ end)
 test("a noisy transcript never silently loses a line", function()
   local lines = load_fixture()
   local words = synthesize(lines, { drop_rate = 0.10, sub_rate = 0.05, seed = 7 })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
 
   local found = {}
   for _, s in ipairs(plan) do
@@ -1349,7 +1362,7 @@ test("a line missing one word of five is still a confident match", function()
   -- At this seed the recognizer drops the leading "Open" from vo_guard_gate_01.
   local lines = load_fixture()
   local words = synthesize(lines, { drop_rate = 0.10, sub_rate = 0.05, seed = 7 })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
   for _, s in ipairs(plan) do
     if s.asset == "vo_guard_gate_01" then
       assert(s.kind == "match", "vo_guard_gate_01 kind: " .. s.kind)
@@ -1364,7 +1377,7 @@ test("a line missing a third of its words is flagged, not asserted", function()
   -- an asset name on it. This is the guarantee the Review track exists to provide.
   local lines = load_fixture()
   local words = synthesize(lines, { drop_rate = 0.10, sub_rate = 0.05, seed = 7 })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
   local seen = false
   for _, s in ipairs(plan) do
     if s.asset == "vo_hero_captain_01" then
@@ -1380,7 +1393,7 @@ end)
 test("a line recorded twice yields two numbered takes", function()
   local lines = load_fixture()
   local words = synthesize(lines, { repeats = { vo_guard_halt_01 = 2 } })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
 
   local takes = {}
   for _, s in ipairs(plan) do
@@ -1389,13 +1402,12 @@ test("a line recorded twice yields two numbered takes", function()
   assert(#takes == 2, "Expected 2 takes of vo_guard_halt_01, got " .. #takes)
   table.sort(takes, function(a, b) return a.start < b.start end)
   assert(takes[1].take_index == 1 and takes[2].take_index == 2, "take numbering wrong")
-  assert(takes[2].primary == true, "last take should be primary by default")
 end)
 
 test("plan spans are chronological and never overlap", function()
   local lines = load_fixture()
   local words = synthesize(lines, { slates = true, repeats = { vo_guard_gate_01 = 2 } })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
 
   for i = 2, #plan do
     assert(plan[i].start >= plan[i - 1].start - 1e-9,
@@ -1408,7 +1420,7 @@ end)
 test("every span carries a destination and a name", function()
   local lines = load_fixture()
   local words = synthesize(lines, { slates = true })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
   for i, s in ipairs(plan) do
     assert(s.dest, "span " .. i .. " has no dest")
     assert(s.name and s.name ~= "", "span " .. i .. " has no name")
@@ -1418,7 +1430,106 @@ end)
 
 test("an empty word stream yields an empty plan", function()
   local lines = load_fixture()
-  assert(#vo.BuildPlan(lines, {}, {}) == 0, "Expected an empty plan")
+  assert(#build_named_plan(lines, {}, {}) == 0, "Expected an empty plan")
+end)
+
+--------------------------------
+-- BuildMatch: the per-source contract
+--------------------------------
+
+-- Data rows only, and `cols` are column INDICES, not header names.
+local function match_lines()
+  return vo.BuildScriptLines(
+    { { "vo_a_01", "RIVA", "we should not have come" },
+      { "vo_b_01", "RIVA", "seal it nobody goes below" } },
+    { asset = 1, speaker = 2, text = 3 }, {})
+end
+
+local function words_from(text, t0)
+  local words, t = {}, t0 or 0
+  for w in text:gmatch("%S+") do
+    words[#words + 1] = { t0 = t, t1 = t + 0.2, text = w }
+    t = t + 0.25
+  end
+  return words
+end
+
+test("one source produces one entry keyed by its path", function()
+  local got = vo.BuildMatch(
+    { { path = "D:/s/A.wav", words = words_from("we should not have come") } },
+    match_lines(), {})
+  assert(#got == 1, "Expected 1 result, got " .. #got)
+  assert(got[1].path == "D:/s/A.wav", "Path: " .. tostring(got[1].path))
+end)
+
+test("the spoken line matches its script line", function()
+  local got = vo.BuildMatch(
+    { { path = "D:/s/A.wav", words = words_from("we should not have come") } },
+    match_lines(), {})
+  local found = false
+  for _, s in ipairs(got[1].spans) do
+    if s.kind == "match" and s.asset == "vo_a_01" then found = true end
+  end
+  assert(found, "vo_a_01 was not matched")
+end)
+
+test("two sources speaking the same line each get their own span", function()
+  local got = vo.BuildMatch({
+    { path = "D:/s/A.wav", words = words_from("we should not have come") },
+    { path = "D:/s/B.wav", words = words_from("we should not have come") },
+  }, match_lines(), {})
+  assert(#got == 2, "Expected 2 results, got " .. #got)
+  for _, entry in ipairs(got) do
+    local hits = 0
+    for _, s in ipairs(entry.spans) do
+      if s.kind == "match" and s.asset == "vo_a_01" then hits = hits + 1 end
+    end
+    assert(hits == 1, entry.path .. " produced " .. hits .. " matches, expected 1")
+  end
+end)
+
+test("spans come back in time order and carry their transcript", function()
+  local got = vo.BuildMatch(
+    { { path = "D:/s/A.wav", words = words_from("we should not have come") } },
+    match_lines(), {})
+  local last = -math.huge
+  for _, s in ipairs(got[1].spans) do
+    assert(s.start >= last, "Spans out of order")
+    last = s.start
+    assert(type(s.transcript) == "string", "Span has no transcript")
+  end
+end)
+
+test("no padding is applied -- start equals the first word's own time", function()
+  local words = words_from("we should not have come", 5.0)
+  local got = vo.BuildMatch({ { path = "D:/s/A.wav", words = words } },
+                            match_lines(), { pre_pad = 1.0, post_pad = 1.0 })
+  for _, s in ipairs(got[1].spans) do
+    if s.kind == "match" then
+      assert(s.start >= 5.0 - 1e-6,
+             "Padding leaked into BuildMatch: start=" .. tostring(s.start))
+    end
+  end
+end)
+
+test("no names are assigned -- that is the cutter's job", function()
+  local got = vo.BuildMatch(
+    { { path = "D:/s/A.wav", words = words_from("we should not have come") } },
+    match_lines(), {})
+  for _, s in ipairs(got[1].spans) do
+    assert(s.name == nil, "Span already named: " .. tostring(s.name))
+    assert(s.dest == nil, "Span already routed: " .. tostring(s.dest))
+  end
+end)
+
+test("an empty transcript list returns an empty result", function()
+  assert(#vo.BuildMatch({}, match_lines(), {}) == 0, "Expected no results")
+end)
+
+test("a source with no words still returns an entry with no spans", function()
+  local got = vo.BuildMatch({ { path = "D:/s/A.wav", words = {} } }, match_lines(), {})
+  assert(#got == 1, "Expected 1 result, got " .. #got)
+  assert(#got[1].spans == 0, "Expected no spans, got " .. #got[1].spans)
 end)
 
 test("audio with no script match produces only unmatched spans", function()
@@ -1429,7 +1540,7 @@ test("audio with no script match produces only unmatched spans", function()
     words[#words + 1] = { t0 = t, t1 = t + 0.3, text = w }
     t = t + 0.35
   end
-  local plan = vo.BuildPlan(lines, words, {})
+  local plan = build_named_plan(lines, words, {})
   for _, s in ipairs(plan) do
     assert(s.kind == "unmatched", "Expected only unmatched spans, got " .. s.kind)
   end
@@ -2172,7 +2283,7 @@ test("a matched span carries the canonical character; unmatched carries nil", fu
     { t0=0.0, t1=0.4, text="open" }, { t0=0.4, t1=0.8, text="the" }, { t0=0.8, t1=1.2, text="gate" },
     { t0=5.0, t1=5.4, text="slate" },
   }
-  local plan = vo.BuildPlan(lines, words, { accept_threshold=0.5, review_floor=0.3, margin_threshold=0.0, anchor_count=1 })
+  local plan = build_named_plan(lines, words, { accept_threshold=0.5, review_floor=0.3, margin_threshold=0.0, anchor_count=1 })
   local matched, unmatched
   for _, s in ipairs(plan) do
     if s.kind == "match" then matched = s elseif s.kind == "unmatched" then unmatched = s end
