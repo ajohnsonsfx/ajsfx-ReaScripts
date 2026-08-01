@@ -3,11 +3,13 @@
 --
 -- ajsfx VO Overview — a project-wide picture of the dialogue in a session.
 --
--- Every line the script says should exist, every span the sidecars say does
--- exist, in one table across every recording in the project. This script does
--- not transcribe, cut, or pull selects: it reads what ScriptMatch wrote and
--- adds the one thing nothing else records, which is what the USER decided.
--- See VO/SPEC-overview.md.
+-- Every line the script says should exist, every span a LIVE match against
+-- each source's transcript says does exist, in one table across every
+-- recording in the project. This script does not transcribe (ajsfx VO
+-- Sources) or cut (ajsfx VO Cut): it reads the per-source transcripts plus
+-- one project file (<project>_vo.csv) and adds the one thing nothing else
+-- records, which is what the USER decided. The match itself is never stored
+-- -- see the memoised LoadMatches below. See VO/SPEC-overview.md.
 
 local r = reaper
 
@@ -50,16 +52,13 @@ local KEY_LSUPER     = Api('Key_LeftSuper')
 local HEADER_ROW_FLAGS = Api('TableRowFlags_Headers')
 local KEY_RSUPER     = Api('Key_RightSuper')
 
--- Shared with ScriptMatch on purpose: the script CSV and its column layout are
--- properties of the PROJECT, not of whichever dialog is open. Map the columns
--- once in ScriptMatch and this window already knows them.
-local PROJ_SECTION = "ajsfx_vo"
-
--- Sidecars are read off disk, so the rebuild cannot sit on the per-frame path.
--- A project-state probe decides WHETHER to rebuild; this decides how often that
--- question may lead to actual file I/O.
-local RELOAD_THROTTLE = 1.5   -- seconds
-local FLUSH_THROTTLE  = 2.0   -- seconds between tracker writes while typing
+-- Transcripts and the project file are read off disk, and matching is linear
+-- in the project's whole word count, so the rebuild cannot sit on the
+-- per-frame path. A project-state counter decides WHETHER to rebuild; this
+-- decides how often that question may lead to actual file I/O and matching
+-- (CLAUDE.md: use GetProjectStateChangeCount(0) for cache invalidation).
+local RELOAD_THROTTLE = 1.5   -- seconds between row rescans
+local FLUSH_THROTTLE  = 2.0   -- seconds between project file writes while typing
 
 local STATUS_STYLE = {
   recorded = { label = "Recorded", colour = 0x66BB66FF },
@@ -71,7 +70,7 @@ local STATUS_STYLE = {
 local COLUMNS = {
   { key = "verify",     label = "OK",         width =  28 },
   { key = "status",     label = "Status",     width =  74 },
-  { key = "primary",    label = "Sel",        width =  32 },
+  { key = "select",     label = "Select",     width =  60 },
   { key = "character",  label = "Character",  width =  90 },
   -- Two names, deliberately. "Item name" is what the user is changing and what
   -- REAPER's render patterns read; "CSV filename" is the script's own name for
@@ -127,20 +126,24 @@ local STATUS_FILTERS = {
 }
 
 local state = {
-  csv_path      = "",
+  script_csv    = "",
   header        = nil,
   rows          = nil,        -- raw script CSV rows
   mapping       = {},
-  skip_values   = nil,
   header_error  = "",
+  lines         = {},         -- vo.BuildScriptLines(state.rows, ...)
 
   items         = {},         -- vo.CollectProjectSpans()
-  sidecars      = {},         -- { { path=, spans= }, ... }
-  sidecar_errors = {},
 
-  tracker       = {},         -- vo.ParseTracker entries, the in-memory truth
-  tracker_path  = nil,
-  tracker_error = "",
+  -- Matching is DERIVED, never stored -- see LoadMatches. Memoised on exactly
+  -- the inputs that can change it, so the frame loop never pays to re-run it.
+  matches       = {},         -- vo.BuildMatch result: { { path=, spans= }, ... }
+  match_key     = nil,
+
+  entries       = {},         -- vo.ParseProjectFile entries, the in-memory truth
+  project_path  = nil,
+  project_error = "",
+  parse_failed  = false,      -- the project file is unreadable; saving is refused
   dirty         = false,
   last_flush    = 0,
 
@@ -148,8 +151,8 @@ local state = {
   visible       = {},         -- after filters
   summary       = {},
 
-  probe         = nil,
-  last_reload   = 0,
+  scanned_at    = -1,         -- GetProjectStateChangeCount when rows were built
+  last_rescan   = 0,
 
   selection     = {},         -- set of row UIDs, spreadsheet-style
   focus_key     = nil,        -- the row the caret is on
@@ -231,21 +234,15 @@ local function LoadCSV(path)
   if #rows == 0 then state.header_error = "The script CSV has no data rows." end
 end
 
--- The mapping ScriptMatch persisted for this project, falling back to whatever
--- the header itself suggests. A project whose columns were never mapped still
--- opens with something sensible rather than an empty table.
-local function RestoreLayout()
-  local _, serialized = r.GetProjExtState(0, PROJ_SECTION, "layout")
-  local layout = (serialized ~= "") and vo.DeserializeLayout(serialized) or nil
-
-  if layout and layout.mapping and next(layout.mapping) then
-    state.mapping = layout.mapping
-  elseif state.header then
-    state.mapping = vo.AutoDetectMapping(state.header)
-  else
-    state.mapping = {}
-  end
-  state.skip_values = layout and layout.skip_values or nil
+-- The mapping the project file persisted, falling back to whatever the header
+-- itself suggests. A project whose columns were never mapped still opens with
+-- something sensible rather than an empty table. Skip values are not part of
+-- the project file (vo.PROJECT_HEADER carries only the mapping); the default
+-- skip list (vo.DEFAULT_SKIP_VALUES) is what vo.BuildScriptLines falls back to
+-- when none is supplied.
+local function ApplyMappingDefaults()
+  if state.mapping and next(state.mapping) then return end
+  state.mapping = state.header and vo.AutoDetectMapping(state.header) or {}
 end
 
 -- The script lines this project expects, after skip tokens and the character
@@ -254,65 +251,107 @@ local function ScriptLines()
   if not state.header or not state.rows or state.header_error ~= "" then return {} end
   local cols = vo.MapColumns(state.header, state.mapping)
   if not cols then return {} end
-  return vo.BuildScriptLines(state.rows, cols, { skip_values = state.skip_values })
+  return vo.BuildScriptLines(state.rows, cols)
 end
 
 -- -----------------------------------------------------------------------
 -- The audio side
 -- -----------------------------------------------------------------------
 
-local function LoadSidecars()
-  state.items = vo.CollectProjectSpans()
-  state.sidecars, state.sidecar_errors = {}, {}
+local function LoadProjectFile()
+  state.entries, state.project_error, state.parse_failed = {}, "", false
+  state.script_csv, state.mapping = "", {}
 
-  for _, path in ipairs(vo.ProjectSourcePaths(state.items)) do
-    local sc_path = vo.SidecarPath(path)
-    local text = sc_path and ReadFile(sc_path) or nil
-    if text then
-      local parsed, reason = vo.ParseSidecar(text)
-      if parsed then
-        state.sidecars[#state.sidecars + 1] = { path = path, spans = parsed.spans }
-      else
-        -- Named, not swallowed: a sidecar that stopped loading is exactly the
-        -- kind of silent gap this window exists to make visible.
-        state.sidecar_errors[#state.sidecar_errors + 1] =
-          vo.Basename(sc_path) .. ": " .. tostring(reason)
-      end
-    end
-  end
-end
-
-local function LoadTracker()
-  state.tracker, state.tracker_error = {}, ""
   local proj = ProjectPath()
-  state.tracker_path = (proj ~= "") and vo.TrackerPath(proj) or nil
-  if not state.tracker_path then return end
+  state.project_path = (proj ~= "") and vo.ProjectFilePath(proj) or nil
+  if not state.project_path then return end
 
-  local text = ReadFile(state.tracker_path)
-  if not text then return end          -- no tracker yet is the normal first run
+  local text = ReadFile(state.project_path)
+  if not text then return end          -- no project file yet is the normal first run
 
-  local entries, reason = vo.ParseTracker(text)
-  if entries then
-    state.tracker = entries
+  local parsed, reason = vo.ParseProjectFile(text)
+  if parsed then
+    state.entries    = parsed.entries
+    state.script_csv = parsed.script_csv
+    state.mapping     = parsed.mapping
   else
     -- The file is NOT overwritten on a parse failure: writing would destroy
     -- whatever the user still has in there. Saving stays off until they fix or
     -- remove it, and the window says so.
-    state.tracker_error = "Cannot read " .. vo.Basename(state.tracker_path)
+    state.parse_failed = true
+    state.project_error = "Cannot read " .. vo.Basename(state.project_path)
                        .. ": " .. tostring(reason)
   end
 end
 
-local function FlushTracker(force)
-  if not state.dirty or state.tracker_error ~= "" or not state.tracker_path then return end
+local function SaveProjectFile()
+  if state.parse_failed then
+    state.message, state.message_kind =
+      "The project file could not be read, so it will not be overwritten. " ..
+      "Fix or delete it first:\n" .. tostring(state.project_path), "error"
+    return false
+  end
+
+  local path = vo.ProjectFilePath(ProjectPath())
+  if not path then
+    state.message, state.message_kind =
+      "Save the project before marking anything — the VO project file lives beside it.",
+      "error"
+    return false
+  end
+  state.project_path = path
+
+  local ok = WriteFile(path, vo.SerializeProjectFile(
+    vo.ProjectEntriesFromRows(state.overview),
+    { script_csv = state.script_csv, mapping = state.mapping }))
+  if not ok then
+    state.message, state.message_kind = "Cannot write " .. tostring(path), "error"
+    return false
+  end
+  return true
+end
+
+local function FlushProjectFile(force)
+  if not state.dirty or state.parse_failed or not state.project_path then return end
   if not force and (r.time_precise() - state.last_flush) < FLUSH_THROTTLE then return end
 
-  if WriteFile(state.tracker_path, vo.SerializeTracker(state.tracker)) then
+  if SaveProjectFile() then
     state.dirty, state.last_flush = false, r.time_precise()
-  else
-    state.message, state.message_kind =
-      "Cannot write " .. tostring(state.tracker_path), "error"
   end
+end
+
+-- Matching is DERIVED, never stored. It is recomputed when the script, the
+-- mapping, or the set of transcripts changes -- and memoised on exactly those
+-- inputs, because it is linear in the project's whole word count and the frame
+-- loop must not pay for it.
+--
+-- Keyed on the TRANSCRIPT file's size, not the audio's: re-transcribing does
+-- not touch the audio (so the audio's own size never changes), but it always
+-- rewrites the transcript, which is what actually needs to invalidate the
+-- cache. No staleness bookkeeping is needed in this window as a result.
+local function MatchKey(paths, script_csv, mapping)
+  local parts = { script_csv or "", vo.SerializeLayout({ mapping = mapping }) }
+  for _, p in ipairs(paths) do
+    local tpath = vo.TranscriptPath(p)
+    parts[#parts + 1] = p .. ":" .. tostring(tpath and vo.FileSize(tpath) or 0)
+  end
+  return table.concat(parts, "|")
+end
+
+local function LoadMatches(cfg)
+  local paths = vo.ProjectSourcePaths(state.items)
+  local key   = MatchKey(paths, state.script_csv, state.mapping)
+  if key == state.match_key then return state.matches end
+
+  local transcripts = {}
+  for _, path in ipairs(paths) do
+    local parsed = vo.ReadTranscript(path)
+    if parsed then transcripts[#transcripts + 1] = { path = path, words = parsed.words } end
+  end
+
+  state.matches   = vo.BuildMatch(transcripts, state.lines or {}, cfg)
+  state.match_key = key
+  return state.matches
 end
 
 -- -----------------------------------------------------------------------
@@ -320,11 +359,15 @@ end
 -- -----------------------------------------------------------------------
 
 local function Rebuild()
+  state.items = vo.CollectProjectSpans()
+  state.lines = ScriptLines()
+  local cfg   = vo.LoadConfig()
+
   state.overview = vo.BuildOverview({
-    lines    = ScriptLines(),
-    sidecars = state.sidecars,
-    tracker  = state.tracker,
-    cfg      = vo.LoadConfig(),
+    lines   = state.lines,
+    matches = LoadMatches(cfg),
+    entries = state.entries,
+    cfg     = cfg,
   })
   state.summary = vo.SummarizeOverview(state.overview)
 
@@ -351,9 +394,9 @@ local function Rebuild()
   -- Row keys are NOT unique. A script line with no audio yet keys as
   -- "|<asset>", so a whole character's un-recorded lines collapse onto one key
   -- whenever they share an asset name (or have none). Keys stay as they are —
-  -- the tracker matches on them — but anything that addresses ONE ROW gets its
-  -- own identifier: the key plus an ordinal among the rows sharing it. Stable
-  -- across rebuilds because BuildOverview is deterministic.
+  -- the project file matches on them — but anything that addresses ONE ROW
+  -- gets its own identifier: the key plus an ordinal among the rows sharing
+  -- it. Stable across rebuilds because BuildOverview is deterministic.
   local seen = {}
   for _, row in ipairs(state.overview) do
     local n = (seen[row.key] or 0) + 1
@@ -362,34 +405,45 @@ local function Rebuild()
   end
 end
 
+-- An immediate, unthrottled rebuild -- for a deliberate user action (Refresh,
+-- a timeline sort) rather than the automatic per-frame path below.
 local function Reload()
-  LoadSidecars()
   Rebuild()
-  state.last_reload = r.time_precise()
+  state.scanned_at  = r.GetProjectStateChangeCount(0)
+  state.last_rescan = r.time_precise()
 end
 
--- Cheap enough to run every frame. The state-change counter moves on any edit
--- (an item split, moved, renamed, deleted), which is precisely when a row's
--- resolved item and the sidecar coverage can go stale.
-local function Probe()
-  return tostring(r.GetProjectStateChangeCount(0)) .. ":" .. tostring(r.CountMediaItems(0))
+-- Rebuild rows when the project-state counter moves, throttled so a drag
+-- gesture (which can move the counter every frame) cannot force a matching
+-- pass, a transcript stat, and a project-file read on every frame. The
+-- state-change counter moves on any edit (an item split, moved, renamed,
+-- deleted), which is precisely when a row's resolved item can go stale.
+local function MaybeRescan()
+  local count = r.GetProjectStateChangeCount(0)
+  if count == state.scanned_at then return end
+  if state.scanned_at ~= -1
+     and (r.time_precise() - state.last_rescan) < RELOAD_THROTTLE then
+    return
+  end
+  Reload()
 end
 
 -- -----------------------------------------------------------------------
 -- User edits
 -- -----------------------------------------------------------------------
 
--- The tracker entry backing a row, created on demand. Rows are rebuilt often,
--- so edits are written to the tracker (which survives) rather than to the row.
+-- The project-file entry backing a row, created on demand. Rows are rebuilt
+-- often, so edits are written to the entry (which survives) rather than to
+-- the row.
 local function EntryFor(row)
-  for _, e in ipairs(state.tracker) do
+  for _, e in ipairs(state.entries) do
     if e.key == row.key and (e.source or "") == (row.source_path or "") then return e end
   end
   local e = {
     key = row.key, source = row.source_path, source_start = row.source_start,
-    asset = row.asset, primary = false,
+    asset = row.asset, select = false,
   }
-  state.tracker[#state.tracker + 1] = e
+  state.entries[#state.entries + 1] = e
   return e
 end
 
@@ -407,21 +461,25 @@ local function SetNotes(row, notes)
   Mutate(row, function(e) e.notes = (notes ~= "") and notes or nil end)
 end
 
--- Exactly one take of a line may be the select, so choosing one clears the rest
--- of its group. Without this the tracker could hold two "yes" rows for one
--- filename and BuildOverview would silently pick whichever came first.
-local function SetPrimary(row)
-  for _, other in ipairs(state.overview) do
-    if other.asset == row.asset and other.status ~= "orphan" and other.user_primary then
-      Mutate(other, function(e) e.primary = false end)
+-- Exactly one take of a line may be the select, so turning one ON clears the
+-- rest of its group. Without this the project file could hold two selected
+-- rows for one filename and BuildOverview would silently pick whichever the
+-- build order put first (see vo.BuildOverview's "no first/last fallback").
+local function SetSelect(row, on)
+  if on then
+    for _, other in ipairs(state.overview) do
+      if other ~= row and other.asset == row.asset and other.status ~= "orphan"
+         and other.user_select then
+        Mutate(other, function(e) e.select = false end)
+      end
     end
   end
-  Mutate(row, function(e) e.primary = true end)
+  Mutate(row, function(e) e.select = on end)
 end
 
--- Renaming is the one edit that reaches into the project. It is recorded in the
--- tracker AND applied to the take, so the delivery name survives even if the
--- item is later deleted, and one edit is one undo step.
+-- Renaming is the one edit that reaches into the project. It is recorded in
+-- the project file AND applied to the take, so the delivery name survives
+-- even if the item is later deleted, and one edit is one undo step.
 local function Rename(row, name)
   local clean = vo.SanitizeName(name)
   if clean == "" then
@@ -430,7 +488,7 @@ local function Rename(row, name)
     return
   end
 
-  -- The take is written BEFORE the tracker, because Mutate rebuilds and the
+  -- The take is written BEFORE the entry, because Mutate rebuilds and the
   -- rebuild reads the take's live name back into the row.
   if row.item then
     core.Transaction("VO Overview: rename take", function()
@@ -448,9 +506,9 @@ local function Rename(row, name)
   state.message, state.message_kind = "Renamed to " .. clean .. ".", "ok"
 end
 
--- Putting the script's own name back. The tracker override is CLEARED rather
+-- Putting the script's own name back. The entry's override is CLEARED rather
 -- than set to the asset name: an override equal to the script's name is not a
--- judgement about anything, and the tracker holds only judgements.
+-- judgement about anything, and the project file holds only judgements.
 local function ResetName(row)
   local clean = vo.SanitizeName(row.asset or "")
   if clean == "" then return end
@@ -1044,8 +1102,8 @@ local function DrawFilters()
   im.SameLine(ctx)
   if im.Button(ctx, "Refresh") then Reload() end
   if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Re-read every sidecar from disk.\n" ..
-                       "Do this after transcribing in ScriptMatch.")
+    im.SetTooltip(ctx, "Re-read every transcript and re-match against the script.\n" ..
+                       "Do this after transcribing in ajsfx VO Sources.")
   end
 end
 
@@ -1421,7 +1479,7 @@ local function DrawTableBody()
     im.TableNextRow(ctx)
     im.TableSetColumnIndex(ctx, 0)
     im.TextDisabled(ctx, #state.overview == 0
-      and "Nothing to show yet. Load a script CSV, or transcribe a recording in ScriptMatch."
+      and "Nothing to show yet. Load a script CSV, or transcribe a recording in ajsfx VO Sources."
       or  "No rows match the current filters.")
     return
   end
@@ -1483,10 +1541,9 @@ local function DrawTableBody()
     -- Select --------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 2)
     if row.status ~= "missing" and row.status ~= "orphan" and (row.take_count or 0) > 0 then
-      CellWidget("primary", row_h)
-      if im.RadioButton(ctx, "##sel", row.is_primary == true) then
-        pending_action = function() SetPrimary(row) end
-      end
+      CellWidget("select", row_h)
+      local hit, now = im.Checkbox(ctx, "##sel", row.user_select == true)
+      if hit then pending_action = function() SetSelect(row, now) end end
       if im.IsItemHovered(ctx) then
         im.SetTooltip(ctx, (row.take_count > 1)
           and "Mark this take as the select."
@@ -1500,7 +1557,7 @@ local function DrawTableBody()
     -- Filename ------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 4)
     -- The live take name where there is a take, so a rename made anywhere else
-    -- in REAPER shows up here too. The tracker's override is the fallback, so a
+    -- in REAPER shows up here too. The project file's override is the fallback, so a
     -- name chosen for a line whose audio is not loaded is not lost.
     local shown = row.take_name or row.name_override or row.asset or ""
     if row.status == "missing" then
@@ -1736,15 +1793,12 @@ end
 -- Startup and loop
 -- -----------------------------------------------------------------------
 
-local _, remembered = r.GetProjExtState(0, PROJ_SECTION, "script_csv")
-state.csv_path = remembered or ""
-LoadCSV(state.csv_path)
-RestoreLayout()
+LoadProjectFile()
+LoadCSV(state.script_csv)
+ApplyMappingDefaults()
 LoadLayoutSettings()
 LoadViewSettings()
-LoadTracker()
 Reload()
-state.probe = Probe()
 
 local function loop()
   if not (ctx and im.ValidatePtr(ctx, 'ImGui_Context*')) then
@@ -1757,16 +1811,10 @@ local function loop()
   -- take effect for that frame.
   EnsureFonts()
 
-  -- A project edit invalidates every row's resolved item, so rebuild -- but
-  -- throttle the disk read behind it, since a drag gesture moves the counter
-  -- every frame.
-  local probe = Probe()
-  if probe ~= state.probe then
-    state.probe = probe
-    if (r.time_precise() - state.last_reload) >= RELOAD_THROTTLE then Reload() end
-  end
+  -- MaybeRescan is throttled internally; keep drawing every frame regardless.
+  MaybeRescan()
 
-  FlushTracker(false)
+  FlushProjectFile(false)
   ApplyFilters()
 
   im.SetNextWindowSize(ctx, 1180, 720, im.Cond_FirstUseEver)
@@ -1778,21 +1826,21 @@ local function loop()
     -- Script CSV ----------------------------------------------------------
     im.Text(ctx, "Script:")
     im.SameLine(ctx)
-    if state.csv_path == "" then
+    if state.script_csv == "" then
       im.TextDisabled(ctx, "none chosen")
     else
-      im.TextDisabled(ctx, vo.Basename(state.csv_path))
-      if im.IsItemHovered(ctx) then im.SetTooltip(ctx, state.csv_path) end
+      im.TextDisabled(ctx, vo.Basename(state.script_csv))
+      if im.IsItemHovered(ctx) then im.SetTooltip(ctx, state.script_csv) end
     end
     im.SameLine(ctx)
     if im.Button(ctx, "Choose…") then
-      local ok, path = r.GetUserFileNameForRead(state.csv_path, "Select the session script", "csv")
+      local ok, path = r.GetUserFileNameForRead(state.script_csv, "Select the session script", "csv")
       if ok then
-        state.csv_path = path
-        r.SetProjExtState(0, PROJ_SECTION, "script_csv", path)
+        state.script_csv = path
         LoadCSV(path)
-        RestoreLayout()
-        Rebuild()
+        ApplyMappingDefaults()
+        state.dirty = true    -- the Script CSV field in the project file needs saving
+        Reload()
       end
     end
     im.SameLine(ctx)
@@ -1802,8 +1850,10 @@ local function loop()
       im.TextColored(ctx, 0xDD6666FF, state.header_error)
     elseif state.header and not (state.mapping.asset and state.mapping.text) then
       im.TextColored(ctx, 0xDDAA33FF,
-        "This script's Filename and Line Text columns are not mapped.\n" ..
-        "Map them once in ajsfx VO ScriptMatch — this window shares that setting.")
+        "This script's Filename and Line Text columns are not mapped, and could not\n" ..
+        "be guessed automatically. Rename the CSV's headers to something recognisable\n" ..
+        "(e.g. \"Filename\" and \"Line Text\"), or edit the Mapping row of " ..
+        vo.Basename(state.project_path or "the project's _vo.csv") .. " directly.")
     end
 
     im.Separator(ctx)
@@ -1817,9 +1867,8 @@ local function loop()
     -- Reserve room for whatever notices are showing; the table takes the rest.
     local rows = 1                                     -- the count line below
     if state.message ~= ""       then rows = rows + vo.CountLines(state.message, 4) end
-    if state.tracker_error ~= "" then rows = rows + vo.CountLines(state.tracker_error, 4) end
-    if not state.tracker_path    then rows = rows + 1 end
-    rows = rows + #state.sidecar_errors
+    if state.project_error ~= "" then rows = rows + vo.CountLines(state.project_error, 4) end
+    if not state.project_path    then rows = rows + 1 end
 
     -- GetContentRegionAvail returns width first, so height is the SECOND value.
     local _, avail_h = im.GetContentRegionAvail(ctx)
@@ -1828,15 +1877,12 @@ local function loop()
     im.TextDisabled(ctx, string.format("%d of %d rows shown.",
       #state.visible, #state.overview))
 
-    if not state.tracker_path then
+    if not state.project_path then
       im.TextColored(ctx, 0xDDAA33FF,
         "Save the project to keep verified marks, notes and renames.")
     end
-    if state.tracker_error ~= "" then
-      im.TextColored(ctx, 0xDD6666FF, state.tracker_error .. "\nNothing will be saved until this is fixed.")
-    end
-    for _, e in ipairs(state.sidecar_errors) do
-      im.TextColored(ctx, 0xDDAA33FF, e)
+    if state.project_error ~= "" then
+      im.TextColored(ctx, 0xDD6666FF, state.project_error .. "\nNothing will be saved until this is fixed.")
     end
     if state.message ~= "" then
       im.TextColored(ctx, state.message_kind == "error" and 0xDD6666FF or 0x66BB66FF,
@@ -1876,7 +1922,7 @@ local function loop()
   if open then
     r.defer(loop)
   else
-    FlushTracker(true)
+    FlushProjectFile(true)
   end
 end
 
