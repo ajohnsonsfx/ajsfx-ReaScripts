@@ -3638,5 +3638,99 @@ test("planning nothing is empty, not an error", function()
   assert(#moves == 0 and n.clusters == 0, "Nothing to lay out")
 end)
 
+--------------------------------
+-- Transcript sidecar
+--------------------------------
+print("\nTranscriptPath:")
+
+test("swaps the final extension for _vo_transcript.csv", function()
+  assert(vo.TranscriptPath("D:/s/RIVA.wav") == "D:/s/RIVA_vo_transcript.csv",
+         "Got: " .. tostring(vo.TranscriptPath("D:/s/RIVA.wav")))
+end)
+
+test("a path with no extension just gains the suffix", function()
+  assert(vo.TranscriptPath("D:/s/RIVA") == "D:/s/RIVA_vo_transcript.csv",
+         "Got: " .. tostring(vo.TranscriptPath("D:/s/RIVA")))
+end)
+
+test("a dot in a directory name is not treated as an extension", function()
+  local got = vo.TranscriptPath("D:/my.session/RIVA.wav")
+  assert(got == "D:/my.session/RIVA_vo_transcript.csv", "Got: " .. tostring(got))
+end)
+
+test("nil and empty return nil", function()
+  assert(vo.TranscriptPath(nil) == nil, "nil should return nil")
+  assert(vo.TranscriptPath("") == nil, "empty should return nil")
+end)
+
+print("\nSerializeTranscript / ParseTranscript:")
+
+local function sample_words()
+  return {
+    { t0 = 12.480, t1 = 12.660, text = "we" },
+    { t0 = 12.660, t1 = 12.910, text = "should" },
+    { t0 = 12.910, t1 = 13.040, text = "not," },
+  }
+end
+
+local function sample_meta()
+  return { source = "RIVA.wav", source_bytes = 412839104,
+           backend = "whisper.cpp", model = "ggml-medium.bin", language = "en" }
+end
+
+test("round-trip preserves every word and every preamble field", function()
+  local text = vo.SerializeTranscript(sample_words(), sample_meta())
+  local got, why = vo.ParseTranscript(text)
+  assert(got, "Parse failed: " .. tostring(why))
+  assert(got.version == 1, "Version: " .. tostring(got.version))
+  assert(got.source == "RIVA.wav", "Source: " .. tostring(got.source))
+  assert(got.source_bytes == 412839104, "Bytes: " .. tostring(got.source_bytes))
+  assert(got.backend == "whisper.cpp", "Backend: " .. tostring(got.backend))
+  assert(got.model == "ggml-medium.bin", "Model: " .. tostring(got.model))
+  assert(got.language == "en", "Language: " .. tostring(got.language))
+  assert(#got.words == 3, "Word count: " .. #got.words)
+  assert(math.abs(got.words[1].t0 - 12.480) < 1e-6, "t0: " .. tostring(got.words[1].t0))
+  assert(math.abs(got.words[3].t1 - 13.040) < 1e-6, "t1: " .. tostring(got.words[3].t1))
+  assert(got.words[3].text == "not,", "text: " .. tostring(got.words[3].text))
+end)
+
+test("a word containing a comma, a quote and a newline survives", function()
+  local words = { { t0 = 0, t1 = 1, text = 'he said "go,"\nquietly' } }
+  local got = vo.ParseTranscript(vo.SerializeTranscript(words, sample_meta()))
+  assert(got, "Parse failed")
+  assert(got.words[1].text == 'he said "go,"\nquietly', "Got: " .. tostring(got.words[1].text))
+end)
+
+test("times are written to three decimals", function()
+  local text = vo.SerializeTranscript({ { t0 = 1.23456, t1 = 2.5, text = "x" } }, sample_meta())
+  assert(text:find("1.235,2.500,x", 1, true), "Row not found in:\n" .. text)
+end)
+
+test("an empty word list still produces a parseable file", function()
+  local got, why = vo.ParseTranscript(vo.SerializeTranscript({}, sample_meta()))
+  assert(got, "Parse failed: " .. tostring(why))
+  assert(#got.words == 0, "Expected no words, got " .. #got.words)
+end)
+
+test("empty text is rejected with a reason", function()
+  local got, why = vo.ParseTranscript("")
+  assert(got == nil and type(why) == "string", "Expected nil + reason")
+end)
+
+test("a foreign file is rejected with a reason", function()
+  local got, why = vo.ParseTranscript("Start,End,Text\n1,2,hi\n")
+  assert(got == nil and type(why) == "string", "Expected nil + reason")
+end)
+
+test("an unknown version is rejected with a reason", function()
+  local got, why = vo.ParseTranscript("ajsfx VO Transcript,99\n\nStart,End,Text\n")
+  assert(got == nil and type(why) == "string", "Expected nil + reason")
+end)
+
+test("a missing word header is rejected with a reason", function()
+  local got, why = vo.ParseTranscript("ajsfx VO Transcript,1\nSource,a.wav\n")
+  assert(got == nil and type(why) == "string", "Expected nil + reason")
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

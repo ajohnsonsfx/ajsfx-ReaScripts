@@ -1689,6 +1689,95 @@ function vo.SourceCoverageRanges(items)
 end
 
 --------------------------------
+-- Pure layer: the transcript sidecar
+--------------------------------
+
+-- WORDS, not spans. A recording's transcription is a fact about the audio and
+-- nothing else: no script, no mapping, no match. Storing whisper's own segment
+-- grouping would store its guess at where lines divide, and the script -- not
+-- the recogniser -- is what says that. `-ml 1` makes every whisper segment one
+-- word anyway, so there is no grouping left to store.
+
+vo.TRANSCRIPT_MARKER  = "ajsfx VO Transcript"
+vo.TRANSCRIPT_VERSION = 1
+vo.TRANSCRIPT_HEADER  = { "Start", "End", "Text" }
+
+function vo.TranscriptPath(source_path)
+  if not source_path or source_path == "" then return nil end
+  return strip_ext(source_path) .. "_vo_transcript.csv"
+end
+
+-- `words` are in SOURCE time, as vo.ParseWhisperCSV produces them. This
+-- function converts nothing, so it cannot silently write project times.
+function vo.SerializeTranscript(words, meta)
+  meta = meta or {}
+  local out = {
+    vo.FormatCSVRow({ vo.TRANSCRIPT_MARKER, tostring(vo.TRANSCRIPT_VERSION) }),
+    vo.FormatCSVRow({ "Source",       meta.source or "" }),
+    vo.FormatCSVRow({ "Source bytes", tostring(meta.source_bytes or 0) }),
+    vo.FormatCSVRow({ "Backend",      meta.backend or "" }),
+    vo.FormatCSVRow({ "Model",        meta.model or "" }),
+    vo.FormatCSVRow({ "Language",     meta.language or "" }),
+    "",
+    vo.FormatCSVRow(vo.TRANSCRIPT_HEADER),
+  }
+  for _, w in ipairs(words or {}) do
+    out[#out + 1] = vo.FormatCSVRow({
+      string.format("%.3f", w.t0 or 0),
+      string.format("%.3f", w.t1 or 0),
+      w.text or "",
+    })
+  end
+  return table.concat(out, "\n") .. "\n"
+end
+
+function vo.ParseTranscript(text)
+  if type(text) ~= "string" or text == "" then
+    return nil, "The transcript file is empty."
+  end
+
+  local rows = vo.ParseCSV(text)
+  if not rows[1] or rows[1][1] ~= vo.TRANSCRIPT_MARKER then
+    return nil, "Not an " .. vo.TRANSCRIPT_MARKER .. " file."
+  end
+
+  local version = tonumber(rows[1][2] or "")
+  if version ~= vo.TRANSCRIPT_VERSION then
+    return nil, "Unsupported transcript version: " .. tostring(rows[1][2])
+  end
+
+  local parsed = { version = version, source = "", source_bytes = 0,
+                   backend = "", model = "", language = "", words = {} }
+
+  local i, header_at = 2, nil
+  while rows[i] do
+    local key = rows[i][1] or ""
+    if key == vo.TRANSCRIPT_HEADER[1] then header_at = i; break end
+    if     key == "Source"       then parsed.source       = rows[i][2] or ""
+    elseif key == "Source bytes" then parsed.source_bytes = tonumber(rows[i][2] or "") or 0
+    elseif key == "Backend"      then parsed.backend      = rows[i][2] or ""
+    elseif key == "Model"        then parsed.model        = rows[i][2] or ""
+    elseif key == "Language"     then parsed.language     = rows[i][2] or ""
+    end
+    i = i + 1
+  end
+
+  if not header_at then
+    return nil, "The transcript has no word header row."
+  end
+
+  for j = header_at + 1, #rows do
+    local row = rows[j]
+    local t0, t1 = tonumber(row[1] or ""), tonumber(row[2] or "")
+    if t0 and t1 then
+      parsed.words[#parsed.words + 1] = { t0 = t0, t1 = t1, text = row[3] or "" }
+    end
+  end
+
+  return parsed
+end
+
+--------------------------------
 -- Pure layer: the overview tracker
 --------------------------------
 
