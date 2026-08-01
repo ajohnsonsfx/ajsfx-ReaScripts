@@ -143,12 +143,15 @@ Start,End,Text
   single spaces and breaks a paragraph after a word ending in `.`, `?` or `!` —
   a display rule, computed at draw time, never stored and never consulted by
   matching.
-- **Preamble** records what produced the words. `Source bytes` is the staleness
-  check. `Backend`, `Model` and `Language` are informational, shown in the
+- **Preamble** records what produced the words. `Source bytes` and `Source hash`
+  are the staleness check: size is the cheap first pass, and the fingerprint
+  (size folded with three 64 KB windows, via `vo.FileFingerprint`) catches the
+  in-place edit that leaves the file the same length. `vo.TranscriptMeta` builds
+  the block so a writer cannot record one without the other. `Backend`, `Model` and `Language` are informational, shown in the
   detail view so the user can see a file was done on the small model.
 
 `vo.SerializeTranscript(words, meta)` writes it; `vo.ParseTranscript(text)`
-returns `{ version, source, source_bytes, backend, model, language, words }` or
+returns `{ version, source, source_bytes, source_hash, backend, model, language, words }` or
 `nil, reason`. A malformed sidecar is reported inline, never thrown: a bad file
 next to the audio must not stop a window opening.
 

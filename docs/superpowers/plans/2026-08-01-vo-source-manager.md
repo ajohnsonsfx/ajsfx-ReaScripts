@@ -55,8 +55,8 @@
 - Produces:
   - `vo.TRANSCRIPT_MARKER = "ajsfx VO Transcript"`, `vo.TRANSCRIPT_VERSION = 1`, `vo.TRANSCRIPT_HEADER = { "Start", "End", "Text" }`
   - `vo.TranscriptPath(source_path) -> string|nil`
-  - `vo.SerializeTranscript(words, meta) -> string` where `words` is `{ {t0=number, t1=number, text=string}, ... }` (exactly `vo.ParseWhisperCSV`'s output shape) and `meta` is `{ source=string, source_bytes=number, backend=string, model=string, language=string }`
-  - `vo.ParseTranscript(text) -> table|nil, string` returning `{ version, source, source_bytes, backend, model, language, words }`
+  - `vo.SerializeTranscript(words, meta) -> string` where `words` is `{ {t0=number, t1=number, text=string}, ... }` (exactly `vo.ParseWhisperCSV`'s output shape) and `meta` is `{ source=string, source_bytes=number, source_hash=string, backend=string, model=string, language=string }`
+  - `vo.ParseTranscript(text) -> table|nil, string` returning `{ version, source, source_bytes, source_hash, backend, model, language, words }`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1699,7 +1699,7 @@ end
 
 Draw below the table, inside `im.BeginChild(ctx, "detail", 0, 0, 1)`, when `state.detail` names a row:
 
-- **Preamble block:** Source, Source bytes, Backend, Model, Language, word count — one `im.Text` line each, from `row.transcript`.
+- **Preamble block:** Source, Source bytes, Source hash, Backend, Model, Language, word count — one `im.Text` line each, from `row.transcript`.
 - **Transcript text:** reassemble words per the spec's display rule:
 
 ```lua

@@ -1605,6 +1605,7 @@ function vo.SerializeTranscript(words, meta)
     vo.FormatCSVRow({ vo.TRANSCRIPT_MARKER, tostring(vo.TRANSCRIPT_VERSION) }),
     vo.FormatCSVRow({ "Source",       meta.source or "" }),
     vo.FormatCSVRow({ "Source bytes", tostring(meta.source_bytes or 0) }),
+    vo.FormatCSVRow({ "Source hash",  meta.source_hash or "" }),
     vo.FormatCSVRow({ "Backend",      meta.backend or "" }),
     vo.FormatCSVRow({ "Model",        meta.model or "" }),
     vo.FormatCSVRow({ "Language",     meta.language or "" }),
@@ -1637,7 +1638,8 @@ function vo.ParseTranscript(text)
   end
 
   local parsed = { version = version, source = "", source_bytes = 0,
-                   backend = "", model = "", language = "", words = {} }
+                   source_hash = "", backend = "", model = "", language = "",
+                   words = {} }
 
   local i, header_at = 2, nil
   while rows[i] do
@@ -1645,6 +1647,7 @@ function vo.ParseTranscript(text)
     if key == vo.TRANSCRIPT_HEADER[1] then header_at = i; break end
     if     key == "Source"       then parsed.source       = rows[i][2] or ""
     elseif key == "Source bytes" then parsed.source_bytes = tonumber(rows[i][2] or "") or 0
+    elseif key == "Source hash"  then parsed.source_hash  = rows[i][2] or ""
     elseif key == "Backend"      then parsed.backend      = rows[i][2] or ""
     elseif key == "Model"        then parsed.model        = rows[i][2] or ""
     elseif key == "Language"     then parsed.language     = rows[i][2] or ""
@@ -2650,6 +2653,59 @@ function vo.FileSize(path)
   return size
 end
 
+-- A content fingerprint cheap enough to run on every status check. Hashing a
+-- 30-minute wav in Lua would cost more than it buys, so this folds the file's
+-- size together with three 64 KB windows -- head, middle, tail. It exists to
+-- catch what size alone misses: an in-place edit that leaves the file the same
+-- length. It is not a security hash and does not try to be.
+vo.FINGERPRINT_WINDOW = 65536
+
+function vo.FileFingerprint(path)
+  if not path or path == "" then return nil end
+  local f = io.open(path, "rb")
+  if not f then return nil end
+
+  local size = f:seek("end")
+  local w    = vo.FINGERPRINT_WINDOW
+  local offsets = { 0 }
+  if size > w then
+    offsets[#offsets + 1] = math.floor((size - w) / 2)
+    offsets[#offsets + 1] = size - w
+  end
+
+  -- Polynomial rolling hash in plain arithmetic: every intermediate stays under
+  -- 2^53, so this behaves identically on any Lua the script might run under.
+  local h = 2166136261
+  local function fold(n) h = (h * 31 + n) % 4294967291 end
+
+  fold(size % 4294967291)
+  for _, off in ipairs(offsets) do
+    f:seek("set", off)
+    local chunk = f:read(w) or ""
+    for i = 1, #chunk, 256 do
+      local bytes = { string.byte(chunk, i, math.min(i + 255, #chunk)) }
+      for j = 1, #bytes do fold(bytes[j]) end
+    end
+  end
+
+  f:close()
+  return string.format("%08x", h)
+end
+
+-- The identity block every transcript carries. Built in one place so a writer
+-- cannot record a size without a fingerprint, or either without the path.
+function vo.TranscriptMeta(source_path, extra)
+  extra = extra or {}
+  return {
+    source       = source_path or "",
+    source_bytes = vo.FileSize(source_path) or 0,
+    source_hash  = vo.FileFingerprint(source_path) or "",
+    backend      = extra.backend or "",
+    model        = extra.model or "",
+    language     = extra.language or "",
+  }
+end
+
 function vo.IsWindows()
   return (r.GetOS() or ""):find("Win") ~= nil
 end
@@ -3201,6 +3257,14 @@ function vo.TranscriptState(source_path)
   if size and parsed.source_bytes and parsed.source_bytes > 0
      and size ~= parsed.source_bytes then
     return "stale", parsed
+  end
+  -- Same length is not the same audio. The fingerprint is the check that catches
+  -- an in-place re-render or edit; size is only the cheap first pass.
+  if parsed.source_hash and parsed.source_hash ~= "" then
+    local hash = vo.FileFingerprint(source_path)
+    if hash and hash ~= parsed.source_hash then
+      return "stale", parsed
+    end
   end
   return "yes", parsed
 end

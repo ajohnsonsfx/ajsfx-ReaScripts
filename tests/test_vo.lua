@@ -3572,7 +3572,7 @@ local function sample_words()
 end
 
 local function sample_meta()
-  return { source = "RIVA.wav", source_bytes = 412839104,
+  return { source = "RIVA.wav", source_bytes = 412839104, source_hash = "deadbeef",
            backend = "whisper.cpp", model = "ggml-medium.bin", language = "en" }
 end
 
@@ -3583,6 +3583,7 @@ test("round-trip preserves every word and every preamble field", function()
   assert(got.version == 1, "Version: " .. tostring(got.version))
   assert(got.source == "RIVA.wav", "Source: " .. tostring(got.source))
   assert(got.source_bytes == 412839104, "Bytes: " .. tostring(got.source_bytes))
+  assert(got.source_hash == "deadbeef", "Hash: " .. tostring(got.source_hash))
   assert(got.backend == "whisper.cpp", "Backend: " .. tostring(got.backend))
   assert(got.model == "ggml-medium.bin", "Model: " .. tostring(got.model))
   assert(got.language == "en", "Language: " .. tostring(got.language))
@@ -3630,5 +3631,113 @@ test("a missing word header is rejected with a reason", function()
   assert(got == nil and type(why) == "string", "Expected nil + reason")
 end)
 
+--------------------------------
+print("\nFileFingerprint / TranscriptMeta:")
+
+local function write_file(path, bytes)
+  local f = assert(io.open(path, "wb"))
+  f:write(bytes)
+  f:close()
+end
+
+test("the same bytes fingerprint the same way twice", function()
+  local p = os.tmpname()
+  write_file(p, string.rep("abc", 1000))
+  local a, b = vo.FileFingerprint(p), vo.FileFingerprint(p)
+  os.remove(p)
+  assert(a and a == b, "Got " .. tostring(a) .. " and " .. tostring(b))
+end)
+
+test("one changed byte at the same length changes the fingerprint", function()
+  local p, q = os.tmpname(), os.tmpname()
+  write_file(p, string.rep("abc", 1000))
+  write_file(q, string.rep("abc", 999) .. "abX")
+  local a, b = vo.FileFingerprint(p), vo.FileFingerprint(q)
+  os.remove(p); os.remove(q)
+  assert(a ~= b, "Both fingerprinted as " .. tostring(a))
+end)
+
+test("a file larger than three windows still fingerprints its tail", function()
+  local w = vo.FINGERPRINT_WINDOW
+  local p, q = os.tmpname(), os.tmpname()
+  write_file(p, string.rep("a", w * 3) .. "tail")
+  write_file(q, string.rep("a", w * 3) .. "TAIL")
+  local a, b = vo.FileFingerprint(p), vo.FileFingerprint(q)
+  os.remove(p); os.remove(q)
+  assert(a ~= b, "Tail change was not seen: " .. tostring(a))
+end)
+
+test("a missing file has no fingerprint", function()
+  assert(vo.FileFingerprint("no/such/file.wav") == nil, "Expected nil")
+  assert(vo.FileFingerprint(nil) == nil, "Expected nil for nil")
+end)
+
+test("TranscriptMeta records path, size and fingerprint together", function()
+  local p = os.tmpname()
+  write_file(p, string.rep("x", 128))
+  local meta = vo.TranscriptMeta(p, { backend = "whisper.cpp", model = "m", language = "en" })
+  os.remove(p)
+  assert(meta.source == p, "Source: " .. tostring(meta.source))
+  assert(meta.source_bytes == 128, "Bytes: " .. tostring(meta.source_bytes))
+  assert(meta.source_hash ~= "" and meta.source_hash ~= nil, "Missing hash")
+  assert(meta.backend == "whisper.cpp", "Backend: " .. tostring(meta.backend))
+end)
+
+--------------------------------
+print("\nTranscriptState:")
+
+-- Writes an audio stand-in plus its transcript, runs the state check, and
+-- cleans both up. `mutate` is handed the audio path after the transcript is
+-- written, so a test can edit the file behind the transcript's back.
+local function state_of(bytes, mutate)
+  local audio = os.tmpname() .. ".wav"
+  write_file(audio, bytes)
+  vo.WriteTranscript(audio, { { t0 = 0, t1 = 1, text = "hi" } }, vo.TranscriptMeta(audio))
+  if mutate then mutate(audio) end
+  local state, parsed, why = vo.TranscriptState(audio)
+  os.remove(audio)
+  os.remove(vo.TranscriptPath(audio))
+  return state, parsed, why
+end
+
+test("an untranscribed source reads as no", function()
+  local audio = os.tmpname() .. ".wav"
+  write_file(audio, "data")
+  local state = vo.TranscriptState(audio)
+  os.remove(audio)
+  assert(state == "no", "Got " .. tostring(state))
+end)
+
+test("an untouched source reads as yes", function()
+  local state = state_of(string.rep("a", 4096))
+  assert(state == "yes", "Got " .. tostring(state))
+end)
+
+test("a resized source reads as stale", function()
+  local state = state_of(string.rep("a", 4096), function(audio)
+    write_file(audio, string.rep("a", 8192))
+  end)
+  assert(state == "stale", "Got " .. tostring(state))
+end)
+
+test("a same-length rewrite reads as stale, which size alone would miss", function()
+  local state = state_of(string.rep("a", 4096), function(audio)
+    write_file(audio, string.rep("b", 4096))
+  end)
+  assert(state == "stale", "Got " .. tostring(state))
+end)
+
+test("an unparseable transcript reads as error with a reason", function()
+  local audio = os.tmpname() .. ".wav"
+  write_file(audio, "data")
+  write_file(vo.TranscriptPath(audio), "not a transcript at all\n")
+  local state, _, why = vo.TranscriptState(audio)
+  os.remove(audio)
+  os.remove(vo.TranscriptPath(audio))
+  assert(state == "error", "Got " .. tostring(state))
+  assert(type(why) == "string", "Expected a reason")
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
