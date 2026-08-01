@@ -1215,9 +1215,16 @@ local wrap_depth = 0
 -- Move the caret down so this cell sits where its column's alignment says. The
 -- height of what is about to be drawn has to be passed in: ImGui cannot be
 -- asked after the fact without having already drawn it in the wrong place.
+-- Moved in SCREEN coordinates, not window-local ones. GetCursorPosY/SetCursorPosY
+-- are relative to the window origin and go through a Pos/Scroll conversion; the
+-- window here is the table's inner scrolling child, and that round trip is the
+-- only non-trivial arithmetic in this path. Screen coordinates have no
+-- conversion to get wrong.
 local function AlignCell(key, row_h, cell_h)
   local offset = view.AlignOffset(row_h, cell_h, ColumnView(key).align)
-  if offset > 0 then im.SetCursorPosY(ctx, im.GetCursorPosY(ctx) + offset) end
+  if offset <= 0 then return end
+  local x, y = im.GetCursorScreenPos(ctx)
+  im.SetCursorScreenPos(ctx, x, y + offset)
 end
 
 -- One text cell: right font, right vertical position, wrapped or not.
@@ -1266,6 +1273,33 @@ end
 local function CellWidget(key, index, row_h)
   RecordCellWidth(index)
   AlignCell(key, row_h, im.GetFrameHeight(ctx))
+end
+
+-- Depth of the style stack, unwound by DrawTable alongside the ID, font and
+-- wrap stacks.
+local style_depth = 0
+
+-- An editable cell whose frame FILLS its row. The blue frame is the affordance
+-- that says "you can type here"; on a tall row a one-line-high field floating
+-- in a three-line-high cell reads as a gap between fields rather than as the
+-- field itself.
+--
+-- Grown with FramePadding rather than by switching to InputTextMultiline: the
+-- field stays single-line, so Enter still commits a rename instead of inserting
+-- a newline into a filename. The text sits centred because padding is applied
+-- above and below equally, which is also why these cells ignore the column's
+-- own vertical alignment — a filled cell has nowhere to align to.
+local function PushFilledField(row_h)
+  local pad_x, pad_y = im.GetStyleVar(ctx, im.StyleVar_FramePadding)
+  local grown = math.max(pad_y, (row_h - im.GetTextLineHeight(ctx)) / 2)
+  im.PushStyleVar(ctx, im.StyleVar_FramePadding, pad_x, grown)
+  style_depth = style_depth + 1
+  im.SetNextItemWidth(ctx, -1)
+end
+
+local function PopFilledField()
+  im.PopStyleVar(ctx)
+  style_depth = style_depth - 1
 end
 
 -- The header menu.
@@ -1426,10 +1460,11 @@ local function DrawTableBody()
       CellText("item_name", 4, row_h, shown, "disabled")
       TooltipEvenWhenDisabled("This line has no take yet, so there is no item to name.")
     else
-      CellWidget("item_name", 4, row_h)
-      im.SetNextItemWidth(ctx, -1)
+      RecordCellWidth(4)
+      PushFilledField(row_h)
       local fchanged, fname = im.InputText(ctx, "##fn", shown,
                                            im.InputTextFlags_EnterReturnsTrue)
+      PopFilledField()
       -- Committed on Enter or on losing focus after an edit, never per
       -- keystroke: each commit is its own undo point in the project.
       if fchanged or im.IsItemDeactivatedAfterEdit(ctx) then
@@ -1493,9 +1528,10 @@ local function DrawTableBody()
 
     -- Notes ---------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 11)
-    CellWidget("notes", 11, row_h)
-    im.SetNextItemWidth(ctx, -1)
+    RecordCellWidth(11)
+    PushFilledField(row_h)
     local nchanged, notes = im.InputText(ctx, "##notes", row.notes or "")
+    PopFilledField()
     if nchanged then
       local captured = notes
       pending_action = function() SetNotes(row, captured) end
@@ -1538,6 +1574,10 @@ local function DrawTable(height)
   while wrap_depth > 0 do
     im.PopTextWrapPos(ctx)
     wrap_depth = wrap_depth - 1
+  end
+  while style_depth > 0 do
+    im.PopStyleVar(ctx)
+    style_depth = style_depth - 1
   end
   im.EndTable(ctx)
   if not ok then state.message, state.message_kind = tostring(err), "error" end
