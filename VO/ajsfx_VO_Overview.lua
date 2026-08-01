@@ -28,6 +28,27 @@ if not success then
   return
 end
 
+-- ReaImGui's shim raises on ANY unknown field rather than returning nil, so
+-- `im.Maybe and im.Maybe(ctx)` is not a guard — it is a crash on the bindings
+-- that lack the field. Every optional entry point has to come through here.
+local function Api(name) return rawget(im, name) end
+
+-- Modifier state, read live. GetKeyMods is not in every 0.9.x binding; where it
+-- is missing the individual modifier keys still answer.
+local GET_KEY_MODS   = Api('GetKeyMods')
+local MOD_SHORTCUT   = Api('Mod_Shortcut') or Api('Mod_Ctrl')
+local MOD_SHIFT      = Api('Mod_Shift')
+local KEY_LSHIFT     = Api('Key_LeftShift')
+local KEY_RSHIFT     = Api('Key_RightShift')
+local KEY_LCTRL      = Api('Key_LeftCtrl')
+local KEY_RCTRL      = Api('Key_RightCtrl')
+local KEY_LSUPER     = Api('Key_LeftSuper')
+
+-- Needed to draw the header row by hand; without it the table falls back to
+-- TableHeadersRow and simply has no header tooltips.
+local HEADER_ROW_FLAGS = Api('TableRowFlags_Headers')
+local KEY_RSUPER     = Api('Key_RightSuper')
+
 -- Shared with ScriptMatch on purpose: the script CSV and its column layout are
 -- properties of the PROJECT, not of whichever dialog is open. Map the columns
 -- once in ScriptMatch and this window already knows them.
@@ -51,7 +72,15 @@ local COLUMNS = {
   { key = "status",     label = "Status",     width =  74 },
   { key = "primary",    label = "Sel",        width =  32 },
   { key = "character",  label = "Character",  width =  90 },
-  { key = "asset",      label = "Filename",   width = 190 },
+  -- Two names, deliberately. "Item name" is what the user is changing and what
+  -- REAPER's render patterns read; "CSV filename" is the script's own name for
+  -- the line, kept visible and read-only so a rename never loses the original.
+  { key = "item_name",  label = "Item name",  width = 190,
+    tip = "The take's name in REAPER. Editable, and what the stock render\n" ..
+          "patterns read. Nothing here renames a file on disk." },
+  { key = "asset",      label = "CSV filename", width = 160,
+    tip = "The filename from the script CSV. Not editable.\n" ..
+          "Right-click a cell to copy it or to put it back on the item." },
   { key = "take",       label = "Take",       width =  44 },
   { key = "line_text",  label = "Line text",  width = 240 },
   { key = "transcript", label = "Transcript", width = 240 },
@@ -66,6 +95,16 @@ local SORTS = {
   { key = "filename",  label = "Filename" },
   { key = "character", label = "Character" },
   { key = "timeline",  label = "Timeline position" },
+}
+
+local LAYOUT_ORDERS = {
+  { key = "script", label = "Script order" },
+  { key = "record", label = "Record order" },
+}
+
+local LAYOUT_SPACINGS = {
+  { key = "fixed",    label = "Fixed gap" },
+  { key = "original", label = "Original spacing" },
 }
 
 local STATUS_FILTERS = {
@@ -102,7 +141,15 @@ local state = {
 
   probe         = nil,
   last_reload   = 0,
-  selected_key  = nil,
+
+  selection     = {},         -- set of row UIDs, spreadsheet-style
+  focus_key     = nil,        -- the row the caret is on
+  anchor        = nil,        -- row UID a shift-range extends from
+
+  layout_order   = "script",  -- "script" | "record"
+  layout_spacing = "fixed",   -- "fixed"  | "original"
+  layout_gap     = 2.0,
+  layout_src_gap = 60.0,
 
   sort          = "script",
   status_filter = "all",
@@ -271,9 +318,32 @@ local function Rebuild()
   -- frame rate on a long session.
   for _, row in ipairs(state.overview) do
     if row.source_path and row.source_start then
-      local item, proj_time = vo.ResolveSourceTime(row.source_path, row.source_start, state.items)
+      local item, proj_time =
+        vo.ResolveSourceTime(row.source_path, row.source_start, state.items)
       row.item, row.proj_time = item, proj_time
     end
+    -- The name REAPER is showing on the item right now, so the Item name column
+    -- reflects a rename made anywhere else in the project, not just here.
+    if row.item then
+      local take = r.GetActiveTake(row.item)
+      if take then
+        local _, name = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+        row.take_name = (name ~= "") and name or nil
+      end
+    end
+  end
+
+  -- Row keys are NOT unique. A script line with no audio yet keys as
+  -- "|<asset>", so a whole character's un-recorded lines collapse onto one key
+  -- whenever they share an asset name (or have none). Keys stay as they are —
+  -- the tracker matches on them — but anything that addresses ONE ROW gets its
+  -- own identifier: the key plus an ordinal among the rows sharing it. Stable
+  -- across rebuilds because BuildOverview is deterministic.
+  local seen = {}
+  for _, row in ipairs(state.overview) do
+    local n = (seen[row.key] or 0) + 1
+    seen[row.key] = n
+    row.uid = row.key .. "#" .. n
   end
 end
 
@@ -345,25 +415,112 @@ local function Rename(row, name)
     return
   end
 
-  Mutate(row, function(e) e.name_override = clean end)
+  -- The take is written BEFORE the tracker, because Mutate rebuilds and the
+  -- rebuild reads the take's live name back into the row.
+  if row.item then
+    core.Transaction("VO Overview: rename take", function()
+      local take = r.GetActiveTake(row.item)
+      if take then
+        r.GetSetMediaItemTakeInfo_String(take, "P_NAME", clean, true)
+      end
+    end)
+    -- Transaction holds UI refresh off for its duration, so the arrange view
+    -- would otherwise keep showing the old name until something else redrew it.
+    r.UpdateArrange()
+  end
 
-  if not row.item then return end     -- tracked only; the audio is not loaded
-  core.Transaction("VO Overview: rename take", function()
-    local take = r.GetActiveTake(row.item)
-    if take then
-      r.GetSetMediaItemTakeInfo_String(take, "P_NAME", clean, true)
-    end
-  end)
+  Mutate(row, function(e) e.name_override = clean end)
   state.message, state.message_kind = "Renamed to " .. clean .. ".", "ok"
 end
 
-local function GoTo(row)
-  state.selected_key = row.key
-  if not row.item or not row.proj_time then return end
+-- Putting the script's own name back. The tracker override is CLEARED rather
+-- than set to the asset name: an override equal to the script's name is not a
+-- judgement about anything, and the tracker holds only judgements.
+local function ResetName(row)
+  local clean = vo.SanitizeName(row.asset or "")
+  if clean == "" then return end
+
+  if row.item then
+    core.Transaction("VO Overview: reset take name", function()
+      local take = r.GetActiveTake(row.item)
+      if take then
+        r.GetSetMediaItemTakeInfo_String(take, "P_NAME", clean, true)
+      end
+    end)
+    r.UpdateArrange()
+  end
+
+  Mutate(row, function(e) e.name_override = nil end)
+  state.message, state.message_kind = "Reset to " .. clean .. ".", "ok"
+end
+
+-- -----------------------------------------------------------------------
+-- Selection
+--
+-- Spreadsheet rules: click replaces, ctrl/cmd-click toggles, shift-click takes
+-- the range from the anchor. Ranges walk state.visible rather than the full
+-- overview, so a shift-click selects what the user can actually see between the
+-- two rows they clicked.
+-- -----------------------------------------------------------------------
+
+local function SelectedRows()
+  local out = {}
+  for _, row in ipairs(state.visible) do
+    if state.selection[row.uid] then out[#out + 1] = row end
+  end
+  return out
+end
+
+-- Push the row selection out to the project. The edit cursor follows the FOCUS
+-- row only: seeking once per gesture rather than once per selected row keeps a
+-- fifty-row shift-click from thrashing the transport.
+local function SyncProjectSelection()
   r.Main_OnCommand(40289, 0)                       -- unselect all items
-  r.SetMediaItemSelected(row.item, true)
-  r.SetEditCurPos(row.proj_time, true, true)       -- move and seek playback
+  local seen = {}
+  for _, row in ipairs(SelectedRows()) do
+    if row.item and not seen[row.item] then
+      seen[row.item] = true
+      r.SetMediaItemSelected(row.item, true)
+    end
+  end
+  for _, row in ipairs(state.visible) do
+    if row.uid == state.focus_key and row.proj_time then
+      r.SetEditCurPos(row.proj_time, true, true)   -- move and seek playback
+      break
+    end
+  end
   r.UpdateArrange()
+end
+
+local function ClickRow(row, index, mods)
+  local ctrl  = (mods.shortcut == true)
+  local shift = (mods.shift == true)
+
+  -- The anchor is remembered as a row UID, not an index: a re-sort between the
+  -- two clicks would leave an index pointing at an unrelated row.
+  local anchor_index
+  for i, other in ipairs(state.visible) do
+    if other.uid == state.anchor then anchor_index = i; break end
+  end
+
+  if shift and anchor_index then
+    state.selection = {}
+    local from, to = anchor_index, index
+    if from > to then from, to = to, from end
+    for i = from, to do
+      local other = state.visible[i]
+      if other then state.selection[other.uid] = true end
+    end
+  elseif ctrl then
+    state.selection[row.uid] = (not state.selection[row.uid]) or nil
+    state.anchor = row.uid
+  else
+    state.selection = { [row.uid] = true }
+    state.anchor = row.uid
+  end
+
+  state.focus_key = row.uid
+  SyncProjectSelection()
 end
 
 -- -----------------------------------------------------------------------
@@ -422,6 +579,208 @@ local function ApplyFilters()
   end
 
   state.visible = out
+
+  -- The selection never outlives the filter. Keeping hidden rows selected would
+  -- let a Sort move items the user cannot see, which is the one surprise this
+  -- tool must not spring.
+  local kept = {}
+  for _, row in ipairs(out) do
+    if state.selection[row.uid] then kept[row.uid] = true end
+  end
+  state.selection = kept
+
+  local visible_key = {}
+  for _, row in ipairs(out) do visible_key[row.uid] = true end
+  if state.focus_key and not visible_key[state.focus_key] then state.focus_key = nil end
+  if state.anchor    and not visible_key[state.anchor]    then state.anchor    = nil end
+end
+
+-- -----------------------------------------------------------------------
+-- Laying out the timeline
+--
+-- This moves ITEMS, never spans, and never cuts: cutting is ScriptMatch's job
+-- (SPEC-overview.md section 1). An item holding several lines is positioned by
+-- its first recognised line, and the next item is placed clear of the whole of
+-- it. Overlapping items on one track travel together so crossfades survive.
+-- -----------------------------------------------------------------------
+
+local LAYOUT_KEYS = {
+  layout_order   = "order",
+  layout_spacing = "spacing",
+  layout_gap     = "gap",
+  layout_src_gap = "src_gap",
+}
+
+local function LoadLayoutSettings()
+  for field, key in pairs(LAYOUT_KEYS) do
+    -- Deliberately not part of vo.CONFIG_SCHEMA: that schema drives the Settings
+    -- dialog, and these belong to this window's toolbar, not to matching.
+    local raw = r.GetExtState(vo.EXT_SECTION, "layout_" .. key)
+    if raw and raw ~= "" then
+      if type(state[field]) == "number" then
+        state[field] = tonumber(raw) or state[field]
+      else
+        state[field] = raw
+      end
+    end
+  end
+end
+
+local function SaveLayoutSettings()
+  for field, key in pairs(LAYOUT_KEYS) do
+    r.SetExtState(vo.EXT_SECTION, "layout_" .. key, tostring(state[field]), true)
+  end
+end
+
+-- The rows the tool acts on: the selection if there is one, otherwise every row
+-- currently visible. Filters therefore scope the sort when the selection does not.
+local function AffectedRows()
+  local sel = SelectedRows()
+  if #sel > 0 then return sel, true end
+  return state.visible, false
+end
+
+-- Clusters worth moving, each tagged with the sort key of its earliest member.
+-- Returns the clusters and the number skipped for being locked.
+local function BuildSortClusters()
+  local rows = AffectedRows()
+
+  -- One key per ITEM, taken from its earliest recognised line: an uncut item
+  -- holding five lines is a single thing you can drag, so the first line in it
+  -- decides where the whole thing goes.
+  local keys, wanted = {}, {}
+  for _, row in ipairs(rows) do
+    if row.item then
+      wanted[row.item] = true
+      local start = row.source_start or 0
+      local existing = keys[row.item]
+      if not existing or start < existing.source_start then
+        keys[row.item] = {
+          script_row   = row.script_row,
+          source_start = start,
+          source_path  = row.source_path,
+          orphan       = (row.status == "orphan") or (row.script_row == nil),
+        }
+      end
+    end
+  end
+
+  local chosen, locked = {}, 0
+  for _, cluster in ipairs(vo.ClusterItems(vo.CollectItemGeometry())) do
+    local touches = false
+    for _, member in ipairs(cluster.members) do
+      if wanted[member.item] then touches = true; break end
+    end
+    if touches then
+      if cluster.locked then
+        -- Moving half a cluster would destroy the crossfade the cluster exists
+        -- to protect, so a locked member protects all of them.
+        locked = locked + 1
+      else
+        -- Members are in timeline order, so the first one that carries a key is
+        -- the head of the edit.
+        for _, member in ipairs(cluster.members) do
+          if keys[member.item] then cluster.key = keys[member.item]; break end
+        end
+        chosen[#chosen + 1] = cluster
+      end
+    end
+  end
+
+  return chosen, locked
+end
+
+local function FormatSpan(seconds)
+  seconds = math.max(0, math.floor((seconds or 0) + 0.5))
+  return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+local function SortOnTimeline()
+  local clusters, locked = BuildSortClusters()
+  if #clusters == 0 then
+    state.message, state.message_kind =
+      (locked > 0)
+        and "Every item in range is locked; nothing was moved."
+        or  "No audio in range to lay out.", "error"
+    return
+  end
+
+  -- File dates are only read here, on Apply, never per frame.
+  local ages, wanted_dates, got_dates = {}, 0, 0
+  if state.layout_order == "record" then
+    local paths, seen = {}, {}
+    for _, c in ipairs(clusters) do
+      local path = c.key and c.key.source_path
+      if path and path ~= "" and not seen[path] then
+        seen[path] = true
+        paths[#paths + 1] = path
+      end
+    end
+    -- One recording needs no ordering at all, so nothing has to be dated.
+    wanted_dates = (#paths > 1) and #paths or 0
+    ages, got_dates = vo.SourceModifiedTimes(paths)
+  end
+
+  local moves, n = vo.PlanTimelineLayout({
+    clusters   = clusters,
+    order      = state.layout_order,
+    spacing    = state.layout_spacing,
+    gap        = state.layout_gap,
+    source_gap = state.layout_src_gap,
+    source_age = ages,
+  })
+
+  -- Every run lays its audio out on fresh child tracks rather than shuffling it
+  -- where it sits, so a sort can never land on top of audio it was not asked to
+  -- touch. Distinct tracks first, in the order the members were seen, so the
+  -- destination set is deterministic.
+  local sources, seen_track = {}, {}
+  for _, move in ipairs(moves) do
+    for _, member in ipairs(move.cluster.members) do
+      if member.track and not seen_track[member.track] then
+        seen_track[member.track] = true
+        sources[#sources + 1] = member.track
+      end
+    end
+  end
+
+  local run
+  core.Transaction("VO Overview: sort on timeline", function()
+    local dest
+    dest, run = vo.EnsureSortChildTracks(sources)
+    for _, move in ipairs(moves) do
+      for _, member in ipairs(move.cluster.members) do
+        -- Track first, then position: a member keeps its OWN source-to-
+        -- destination mapping, so a group welded across two tracks stays spread
+        -- across two destinations instead of collapsing onto one.
+        local target = dest[member.track]
+        if target then r.MoveMediaItemToTrack(member.item, target) end
+        r.SetMediaItemInfo_Value(member.item, "D_POSITION", member.pos + move.delta)
+      end
+    end
+  end)
+  r.UpdateArrange()
+  r.TrackList_AdjustWindows(false)
+  Reload()
+
+  local notes = {}
+  if n.groups > 1  then notes[#notes + 1] = n.groups .. " recordings" end
+  if n.orphans > 0 then notes[#notes + 1] = n.orphans .. " orphans appended" end
+  if n.clamped > 0 then notes[#notes + 1] = n.clamped .. " spaced closer to avoid overlap" end
+  if locked > 0    then notes[#notes + 1] = locked .. " locked, left alone" end
+  if wanted_dates > 0 and got_dates < wanted_dates then
+    notes[#notes + 1] = (got_dates == 0)
+      and "no file dates available, ordered by filename"
+      or  string.format("only %d of %d recordings could be dated; the rest sort last",
+                        got_dates, wanted_dates)
+  end
+
+  state.message = string.format('Laid out %d items over %s, on %d new "sorted %d" track%s.%s',
+    n.items, FormatSpan(n.span), #sources, run or 1, #sources == 1 and "" or "s",
+    (#notes > 0) and (" " .. table.concat(notes, " · ") .. ".") or "")
+  -- The sort succeeded. Locked clusters and missing dates are things the user
+  -- needs told, not failures, so they do not turn the line red.
+  state.message_kind = "ok"
 end
 
 -- -----------------------------------------------------------------------
@@ -492,12 +851,154 @@ end
 
 local pending_action = nil   -- deferred so nothing mutates mid-table
 
+local function Copy(text)
+  local set = rawget(im, 'SetClipboardText')
+  if set then
+    set(ctx, text)
+  elseif r.CF_SetClipboard then
+    r.CF_SetClipboard(text)
+  else
+    state.message, state.message_kind =
+      "No clipboard is available. Install SWS or a newer ReaImGui.", "error"
+    return
+  end
+  state.message, state.message_kind = "Copied " .. text .. ".", "ok"
+end
+
+local function KeyDown(key)
+  return key ~= nil and im.IsKeyDown(ctx, key) or false
+end
+
+local function ReadModifiers()
+  if GET_KEY_MODS then
+    local mods = GET_KEY_MODS(ctx)
+    return {
+      shortcut = MOD_SHORTCUT ~= nil and (mods & MOD_SHORTCUT) ~= 0 or false,
+      shift    = MOD_SHIFT    ~= nil and (mods & MOD_SHIFT)    ~= 0 or false,
+    }
+  end
+  return {
+    shortcut = KeyDown(KEY_LCTRL) or KeyDown(KEY_RCTRL)
+            or KeyDown(KEY_LSUPER) or KeyDown(KEY_RSUPER),
+    shift    = KeyDown(KEY_LSHIFT) or KeyDown(KEY_RSHIFT),
+  }
+end
+
+-- A hovered tooltip that still works on a disabled widget, so the greyed-out
+-- spacing control can explain WHY it is greyed out.
+local function TooltipEvenWhenDisabled(text)
+  local flags = Api('HoveredFlags_AllowWhenDisabled') or 0
+  if im.IsItemHovered(ctx, flags) then im.SetTooltip(ctx, text) end
+end
+
+local function GapField(label, width, value, tip)
+  im.SetNextItemWidth(ctx, width)
+  local changed, v = im.InputDouble(ctx, label, value, 0, 0, "%.2f s")
+  if tip then TooltipEvenWhenDisabled(tip) end
+  if changed then return true, math.max(0, v) end
+  return false, value
+end
+
+local function DrawLayoutBar()
+  im.Text(ctx, "Sort on timeline:")
+  im.SameLine(ctx)
+
+  Combo("##layout_order", 120, LAYOUT_ORDERS, state.layout_order, function(k)
+    state.layout_order = k
+    SaveLayoutSettings()
+  end)
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx,
+      "Script order: the order the CSV lists the lines.\n" ..
+      "Record order: the order they were captured, oldest recording first.")
+  end
+  im.SameLine(ctx)
+
+  -- Original spacing replays a recording's own gaps, which script order has no
+  -- equivalent of. The control greys out rather than silently doing nothing.
+  local by_script = state.layout_order == "script"
+  if by_script then im.BeginDisabled(ctx, true) end
+  Combo("##layout_spacing", 140, LAYOUT_SPACINGS,
+        by_script and "fixed" or state.layout_spacing,
+        function(k) state.layout_spacing = k; SaveLayoutSettings() end)
+  if by_script then im.EndDisabled(ctx) end
+  TooltipEvenWhenDisabled(by_script
+    and "Original spacing needs an order the recording actually had.\nSwitch to record order to use it."
+    or  "Fixed gap: the same space after every item.\nOriginal spacing: the gaps as they were recorded.")
+  im.SameLine(ctx)
+
+  local fixed = by_script or state.layout_spacing == "fixed"
+  if not fixed then im.BeginDisabled(ctx, true) end
+  local changed, gap = GapField("between items##layout_gap", 80, state.layout_gap,
+    "Space left after the end of each item.")
+  if not fixed then im.EndDisabled(ctx) end
+  if changed then state.layout_gap = gap; SaveLayoutSettings() end
+  im.SameLine(ctx)
+
+  local by_record = state.layout_order == "record"
+  if not by_record then im.BeginDisabled(ctx, true) end
+  local schanged, sgap = GapField("between recordings##layout_src_gap", 80,
+    state.layout_src_gap,
+    "Space left between the last item of one recording\nand the first of the next, so it is clear where a file ended.")
+  if not by_record then im.EndDisabled(ctx) end
+  if schanged then state.layout_src_gap = sgap; SaveLayoutSettings() end
+  im.SameLine(ctx)
+
+  if im.Button(ctx, "Sort") then
+    pending_action = SortOnTimeline
+  end
+
+  -- Counted from the rows alone: clustering walks every item in the project and
+  -- has no business running at frame rate.
+  local rows, from_selection = AffectedRows()
+  local items, sources, item_seen, source_seen = 0, 0, {}, {}
+  for _, row in ipairs(rows) do
+    if row.item and not item_seen[row.item] then
+      item_seen[row.item] = true
+      items = items + 1
+    end
+    local path = row.source_path
+    if path and not source_seen[path] then
+      source_seen[path] = true
+      sources = sources + 1
+    end
+  end
+  im.SameLine(ctx)
+  im.TextDisabled(ctx, string.format("%d item%s from %d recording%s (%s)",
+    items, items == 1 and "" or "s", sources, sources == 1 and "" or "s",
+    from_selection and "selected rows" or "all shown rows"))
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx,
+      "With rows selected, only those items move.\n" ..
+      "With nothing selected, every item behind the rows shown here moves.\n" ..
+      "Overlapping items on one track always travel together, so crossfades survive.")
+  end
+end
+
+-- Depth of the row ID stack, so an error thrown mid-row can be unwound. ImGui
+-- does NOT balance PushID for us at EndTable: it raises "Mismatching
+-- PushID/PopID" instead, which buries the real error under a second one.
+local id_depth = 0
+
 local function DrawTableBody()
   for _, c in ipairs(COLUMNS) do
     im.TableSetupColumn(ctx, c.label, im.TableColumnFlags_WidthFixed, c.width)
   end
   im.TableSetupScrollFreeze(ctx, 0, 1)
-  im.TableHeadersRow(ctx)
+  -- Headers drawn by hand rather than with TableHeadersRow, which draws them
+  -- all in one call and leaves nothing to hang a per-column tooltip on. The
+  -- explanation of a column belongs on its header, read once, not under the
+  -- cursor on every row of the table.
+  if HEADER_ROW_FLAGS then
+    im.TableNextRow(ctx, HEADER_ROW_FLAGS)
+    for i, c in ipairs(COLUMNS) do
+      im.TableSetColumnIndex(ctx, i - 1)
+      im.TableHeader(ctx, c.label)
+      if c.tip and im.IsItemHovered(ctx) then im.SetTooltip(ctx, c.tip) end
+    end
+  else
+    im.TableHeadersRow(ctx)
+  end
 
   if #state.visible == 0 then
     im.TableNextRow(ctx)
@@ -515,6 +1016,7 @@ local function DrawTableBody()
   for i, row in ipairs(state.visible) do
     im.TableNextRow(ctx)
     im.PushID(ctx, i)
+    id_depth = id_depth + 1
 
     -- Verified ------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 0)
@@ -527,12 +1029,15 @@ local function DrawTableBody()
     -- Drawn first in the row and spanning it, so a click anywhere that is not a
     -- widget navigates. AllowOverlap lets the inputs drawn afterwards win.
     local sel_flags = im.SelectableFlags_SpanAllColumns
-    if im.SelectableFlags_AllowOverlap then
-      sel_flags = sel_flags | im.SelectableFlags_AllowOverlap
-    end
+    local overlap = Api('SelectableFlags_AllowOverlap')
+    if overlap then sel_flags = sel_flags | overlap end
     local style = STATUS_STYLE[row.status]
-    if im.Selectable(ctx, "##row", state.selected_key == row.key, sel_flags) then
-      pending_action = function() GoTo(row) end
+    if im.Selectable(ctx, "##row", state.selection[row.uid] == true, sel_flags) then
+      -- Read the modifiers now, inside the frame that saw the click; by the time
+      -- the deferred action runs the key could already be up.
+      local captured = ReadModifiers()
+      local at = i
+      pending_action = function() ClickRow(row, at, captured) end
     end
     if im.IsItemHovered(ctx) and not row.item then
       im.SetTooltip(ctx, row.status == "missing"
@@ -564,10 +1069,14 @@ local function DrawTableBody()
 
     -- Filename ------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 4)
-    local shown = row.name_override or row.asset or ""
+    -- The live take name where there is a take, so a rename made anywhere else
+    -- in REAPER shows up here too. The tracker's override is the fallback, so a
+    -- name chosen for a line whose audio is not loaded is not lost.
+    local shown = row.take_name or row.name_override or row.asset or ""
     if row.status == "missing" then
-      -- Nothing to rename: there is no take. The script's filename is the fact.
+      -- Nothing to rename: there is no take at all.
       im.TextDisabled(ctx, shown)
+      TooltipEvenWhenDisabled("This line has no take yet, so there is no item to name.")
     else
       im.SetNextItemWidth(ctx, -1)
       local fchanged, fname = im.InputText(ctx, "##fn", shown,
@@ -580,26 +1089,40 @@ local function DrawTableBody()
           pending_action = function() Rename(row, captured) end
         end
       end
-      if row.name_override then
-        im.SameLine(ctx, 0, 2)
-        im.TextColored(ctx, 0xDDAA33FF, "*")
-        if im.IsItemHovered(ctx) then
-          im.SetTooltip(ctx, "Renamed from the script's " .. (row.asset or "") .. ".")
-        end
-      end
     end
 
+    -- CSV filename ---------------------------------------------------------
+    -- Read-only on purpose: this is the script's own name for the line, and the
+    -- reason a rename can never leave the user wondering what it used to be.
     im.TableSetColumnIndex(ctx, 5)
+    local csv_name = row.asset or ""
+    im.TextDisabled(ctx, csv_name)
+    -- No per-cell tooltip: the explanation belongs on the header, where it is
+    -- read once, not under the cursor on every row. An explicit popup ID is
+    -- what lets a plain Text item own a context menu.
+    if csv_name ~= "" and im.BeginPopupContextItem(ctx, "##csv_menu") then
+      if im.MenuItem(ctx, "Copy") then Copy(csv_name) end
+      local can_reset = row.status ~= "missing" and shown ~= csv_name
+      if im.MenuItem(ctx, "Reset item name", nil, nil, can_reset) then
+        pending_action = function() ResetName(row) end
+      end
+      if not can_reset then
+        TooltipEvenWhenDisabled("The item is already named " .. csv_name .. ".")
+      end
+      im.EndPopup(ctx)
+    end
+
+    im.TableSetColumnIndex(ctx, 6)
     if (row.take_count or 0) > 1 then
       im.Text(ctx, string.format("%d/%d", row.take_index or 0, row.take_count))
     elseif row.take_index then
       im.TextDisabled(ctx, "1/1")
     end
 
-    im.TableSetColumnIndex(ctx, 6)
+    im.TableSetColumnIndex(ctx, 7)
     im.Text(ctx, row.line_text or "")
 
-    im.TableSetColumnIndex(ctx, 7)
+    im.TableSetColumnIndex(ctx, 8)
     if row.score and row.status == "review" then
       im.TextColored(ctx, 0xDDAA33FF, row.transcript or "")
       if im.IsItemHovered(ctx) then
@@ -609,14 +1132,14 @@ local function DrawTableBody()
       im.TextDisabled(ctx, row.transcript or "")
     end
 
-    im.TableSetColumnIndex(ctx, 8)
+    im.TableSetColumnIndex(ctx, 9)
     im.TextDisabled(ctx, row.source_path and vo.Basename(row.source_path) or "")
 
-    im.TableSetColumnIndex(ctx, 9)
+    im.TableSetColumnIndex(ctx, 10)
     im.TextDisabled(ctx, FormatTime(row.proj_time))
 
     -- Notes ---------------------------------------------------------------
-    im.TableSetColumnIndex(ctx, 10)
+    im.TableSetColumnIndex(ctx, 11)
     im.SetNextItemWidth(ctx, -1)
     local nchanged, notes = im.InputText(ctx, "##notes", row.notes or "")
     if nchanged then
@@ -625,6 +1148,7 @@ local function DrawTableBody()
     end
 
     im.PopID(ctx)
+    id_depth = id_depth - 1
   end
 end
 
@@ -636,10 +1160,14 @@ local function DrawTable(height)
   end
   -- The body runs inside pcall for the same reason ScriptMatch's does: an error
   -- escaping between BeginTable and EndTable leaves ImGui's stack corrupted for
-  -- every later frame. Nothing here pushes a combo or a disabled scope, so
-  -- EndTable alone is enough to unwind; PushID is balanced by ImGui itself when
-  -- the table ends.
+  -- every later frame. Nothing here pushes a combo or a disabled scope, but the
+  -- per-row PushID has to be unwound by hand — EndTable raises on an unbalanced
+  -- ID stack, which would replace the real error with a useless one.
   local ok, err = pcall(DrawTableBody)
+  while id_depth > 0 do
+    im.PopID(ctx)
+    id_depth = id_depth - 1
+  end
   im.EndTable(ctx)
   if not ok then state.message, state.message_kind = tostring(err), "error" end
 end
@@ -677,6 +1205,7 @@ local _, remembered = r.GetProjExtState(0, PROJ_SECTION, "script_csv")
 state.csv_path = remembered or ""
 LoadCSV(state.csv_path)
 RestoreLayout()
+LoadLayoutSettings()
 LoadTracker()
 Reload()
 state.probe = Probe()
@@ -738,6 +1267,8 @@ local function loop()
     im.Spacing(ctx)
     DrawFilters()
     im.Spacing(ctx)
+    DrawLayoutBar()
+    im.Spacing(ctx)
 
     -- Reserve room for whatever notices are showing; the table takes the rest.
     local rows = 1                                     -- the count line below
@@ -770,11 +1301,11 @@ local function loop()
 
     -- Space toggles the selected row, but only when no text field has focus --
     -- otherwise typing a space in Notes would fire it.
-    if state.selected_key and not im.IsAnyItemActive(ctx)
+    if state.focus_key and not im.IsAnyItemActive(ctx)
        and im.IsWindowFocused(ctx, im.FocusedFlags_RootAndChildWindows)
        and im.IsKeyPressed(ctx, im.Key_Space) then
       for _, row in ipairs(state.visible) do
-        if row.key == state.selected_key then
+        if row.uid == state.focus_key then
           SetStatus(row, row.user_status == "verified" and nil or "verified")
           break
         end

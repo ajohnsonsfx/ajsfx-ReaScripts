@@ -2103,6 +2103,314 @@ function vo.SummarizeOverview(rows)
 end
 
 --------------------------------
+-- Pure layer: timeline layout
+--------------------------------
+
+-- Laying the session out along the timeline moves ITEMS, never spans. An item
+-- holding five lines is one thing you can drag, so it is positioned by its
+-- first recognised line and everything after it is placed clear of its whole
+-- length. Cutting stays ScriptMatch's job -- see SPEC-overview.md section 1.
+
+-- How much two items must overlap before they are treated as one welded unit.
+-- REAPER trims adjacent takes to abut exactly, and float error can make the
+-- second start a hair before the first ends; a millisecond is well inside that
+-- noise and well below any crossfade a person would actually draw.
+vo.OVERLAP_EPSILON = 0.001
+
+-- Order two geometry records the way the timeline shows them.
+local function geometry_before(a, b)
+  if (a.pos or 0) ~= (b.pos or 0) then return (a.pos or 0) < (b.pos or 0) end
+  return (a.index or 0) < (b.index or 0)
+end
+
+-- Weld items that must travel together into clusters moved by a single delta.
+--
+-- Two relations weld, and they chain through each other:
+--
+-- 1. OVERLAP, same track only. A crossfade is nothing but an overlap: move one
+--    side of it and the fade is gone. Cross-track overlaps do NOT weld --
+--    ScriptMatch pulls selects onto per-character tracks, where two characters
+--    overlapping in time is the normal case and means nothing about editing;
+--    welding those would chain a multi-character session into one immovable blob.
+--
+-- 2. ITEM GROUP, across tracks. A group is the user saying "these belong
+--    together" out loud. Moving one member and stranding the rest is the same
+--    damage as breaking a crossfade, so a nonzero group id welds every item
+--    carrying it, whatever track they sit on. Group id 0 means ungrouped and
+--    never welds.
+--
+-- `geometry` is { { item=, index=, track=, pos=, length=, locked=, group= }, ... }.
+-- Nothing here touches REAPER, so the caller decides what an "item" is.
+function vo.ClusterItems(geometry)
+  geometry = geometry or {}
+
+  -- Tracks are numbered by first appearance so the cluster ordering tiebreak
+  -- stays deterministic without the pure layer knowing what a track is.
+  local track_rank, ranks = {}, 0
+  for _, g in ipairs(geometry) do
+    if track_rank[g.track] == nil then
+      ranks = ranks + 1
+      track_rank[g.track] = ranks
+    end
+  end
+
+  local parent = {}
+  for i = 1, #geometry do parent[i] = i end
+  local function find(i)
+    while parent[i] ~= i do
+      parent[i] = parent[parent[i]]   -- path halving
+      i = parent[i]
+    end
+    return i
+  end
+  local function union(a, b)
+    a, b = find(a), find(b)
+    if a ~= b then parent[b] = a end
+  end
+
+  -- Relation 1: overlap within a track ------------------------------------
+  local by_track, track_order = {}, {}
+  for i, g in ipairs(geometry) do
+    local list = by_track[g.track]
+    if list == nil then
+      list = {}
+      by_track[g.track] = list
+      track_order[#track_order + 1] = g.track
+    end
+    list[#list + 1] = { at = i, g = g }
+  end
+
+  for _, track in ipairs(track_order) do
+    local list = by_track[track]
+    table.sort(list, function(a, b) return geometry_before(a.g, b.g) end)
+
+    local chain_at, chain_stop
+    for _, entry in ipairs(list) do
+      local pos  = entry.g.pos or 0
+      local stop = pos + (entry.g.length or 0)
+      if chain_at and pos < (chain_stop - vo.OVERLAP_EPSILON) then
+        union(chain_at, entry.at)
+        if stop > chain_stop then chain_stop = stop end
+      else
+        chain_at, chain_stop = entry.at, stop
+      end
+    end
+  end
+
+  -- Relation 2: item groups, across tracks ---------------------------------
+  local group_head = {}
+  for i, g in ipairs(geometry) do
+    local id = tonumber(g.group) or 0
+    if id ~= 0 then
+      if group_head[id] then union(group_head[id], i) else group_head[id] = i end
+    end
+  end
+
+  -- Emit one cluster per component, in first-appearance order --------------
+  local clusters, by_root = {}, {}
+  for i, g in ipairs(geometry) do
+    local root = find(i)
+    local cluster = by_root[root]
+    if not cluster then
+      cluster = { members = {}, pos = g.pos or 0,
+                  stop = (g.pos or 0) + (g.length or 0), locked = false }
+      by_root[root] = cluster
+      clusters[#clusters + 1] = cluster
+    end
+    cluster.members[#cluster.members + 1] = g
+    if (g.pos or 0) < cluster.pos then cluster.pos = g.pos or 0 end
+    local stop = (g.pos or 0) + (g.length or 0)
+    if stop > cluster.stop then cluster.stop = stop end
+    -- Moving half a cluster would destroy the very thing the cluster exists to
+    -- protect, so one locked member locks all of them.
+    if g.locked then cluster.locked = true end
+  end
+
+  for _, cluster in ipairs(clusters) do
+    -- Callers read the head of the edit off members[1], so timeline order here
+    -- is part of the contract, not a convenience.
+    table.sort(cluster.members, geometry_before)
+    local head = cluster.members[1]
+    cluster.track       = head.track
+    cluster.track_order = track_rank[head.track] or 0
+  end
+
+  table.sort(clusters, function(a, b)
+    if a.pos ~= b.pos then return a.pos < b.pos end
+    return a.track_order < b.track_order
+  end)
+  return clusters
+end
+
+-- Order clusters by the age of the recording they came from, oldest first, then
+-- by position within that recording. Unknown ages sort after known ones, and
+-- ties break on the path, so the result never depends on table iteration order.
+local function order_source_paths(ids, ages)
+  table.sort(ids, function(a, b)
+    if (a == "") ~= (b == "") then return b == "" end
+    local aa, ab = ages[a], ages[b]
+    if (aa == nil) ~= (ab == nil) then return ab == nil end
+    if aa and ab and aa ~= ab then return aa < ab end
+    return a < b
+  end)
+  return ids
+end
+
+-- Decide where every cluster should sit. Returns `moves` and a `summary`;
+-- applying them is the caller's job, so this whole function is testable with no
+-- REAPER at all.
+--
+--   input.clusters   as returned by vo.ClusterItems, each with a `.key` of
+--                    { script_row=, source_path=, source_start=, orphan= }
+--   input.order      "script" | "record"
+--   input.spacing    "fixed" | "original"   (original is record order only)
+--   input.gap        seconds between consecutive items
+--   input.source_gap seconds between two different recordings
+--   input.source_age { [path] = <number>, ... }
+--   input.start      project time the run begins at
+function vo.PlanTimelineLayout(input)
+  input = input or {}
+
+  local clusters = {}
+  for _, c in ipairs(input.clusters or {}) do clusters[#clusters + 1] = c end
+
+  local order      = (input.order == "record") and "record" or "script"
+  -- "Original spacing" means "replay this recording's own gaps". Script order is
+  -- an order the recording never had, so there is nothing to replay and the
+  -- fixed gap is the only honest answer. The dialog greys the control out; this
+  -- makes it true even if a caller asks for it anyway.
+  local spacing    = (order == "record" and input.spacing == "original")
+                     and "original" or "fixed"
+  local gap        = tonumber(input.gap) or 2.0
+  local source_gap = tonumber(input.source_gap) or 60.0
+  local ages       = input.source_age or {}
+
+  local summary = { clusters = #clusters, items = 0, groups = 0,
+                    clamped = 0, orphans = 0, span = 0 }
+  for _, c in ipairs(clusters) do
+    summary.items = summary.items + #(c.members or {})
+  end
+  if #clusters == 0 then return {}, summary end
+
+  local start = tonumber(input.start)
+  if not start then
+    start = math.huge
+    for _, c in ipairs(clusters) do
+      if c.pos < start then start = c.pos end
+    end
+  end
+
+  -- Group the clusters, in the order the groups will be laid down --------
+  local groups = {}
+  if order == "record" then
+    local buckets, ids = {}, {}
+    for _, c in ipairs(clusters) do
+      local path = (c.key and c.key.source_path) or ""
+      if not buckets[path] then
+        buckets[path] = {}
+        ids[#ids + 1] = path
+      end
+      local bucket = buckets[path]
+      bucket[#bucket + 1] = c
+    end
+    for _, path in ipairs(order_source_paths(ids, ages)) do
+      local bucket = buckets[path]
+      table.sort(bucket, function(a, b)
+        local sa = (a.key and a.key.source_start) or 0
+        local sb = (b.key and b.key.source_start) or 0
+        if sa ~= sb then return sa < sb end
+        return a.pos < b.pos
+      end)
+      groups[#groups + 1] = { path = path, clusters = bucket }
+    end
+  else
+    -- Orphans -- audio matching no script line -- have no place in script order,
+    -- so they follow the run instead of being left behind for a sorted item to
+    -- land on top of.
+    local main, orphans = {}, {}
+    for _, c in ipairs(clusters) do
+      local k = c.key or {}
+      if k.orphan or not k.script_row then
+        orphans[#orphans + 1] = c
+      else
+        main[#main + 1] = c
+      end
+    end
+    table.sort(main, function(a, b)
+      if a.key.script_row ~= b.key.script_row then
+        return a.key.script_row < b.key.script_row
+      end
+      local sa = a.key.source_start or 0
+      local sb = b.key.source_start or 0
+      if sa ~= sb then return sa < sb end
+      return a.pos < b.pos
+    end)
+    table.sort(orphans, function(a, b) return a.pos < b.pos end)
+
+    summary.orphans = #orphans
+    for _, c in ipairs(orphans) do main[#main + 1] = c end
+    groups[1] = { path = "", clusters = main }
+  end
+  summary.groups = #groups
+
+  -- Place them ----------------------------------------------------------
+  local moves, cursor, prev_stop = {}, start, nil
+
+  for gi, group in ipairs(groups) do
+    if gi > 1 and prev_stop then cursor = prev_stop + source_gap end
+    local group_start = cursor
+    local base = (group.clusters[1] and group.clusters[1].key
+                  and group.clusters[1].key.source_start) or 0
+
+    for _, c in ipairs(group.clusters) do
+      local length = c.stop - c.pos
+      local pos
+      if spacing == "original" then
+        pos = group_start + (((c.key and c.key.source_start) or 0) - base)
+        -- An item retimed since it was recorded can be longer than the gap it
+        -- originally sat in. Preserving the source layout would then stack it on
+        -- its neighbour, so it slides forward and the count is reported.
+        if prev_stop and pos < prev_stop then
+          pos = prev_stop
+          summary.clamped = summary.clamped + 1
+        end
+      else
+        pos = cursor
+      end
+
+      moves[#moves + 1] = { cluster = c, pos = pos, delta = pos - c.pos }
+
+      local stop = pos + length
+      prev_stop = (prev_stop and stop < prev_stop) and prev_stop or stop
+      cursor = prev_stop + gap
+    end
+  end
+
+  summary.span = (prev_stop or start) - start
+  return moves, summary
+end
+
+-- I_FOLDERDEPTH is a DELTA applied after a track, not a level, so nesting a new
+-- child under an existing track is arithmetic rather than a special case.
+--
+-- Inserting child C directly below parent T, where T's current depth is d:
+--   T becomes 1      -- opens a folder, so C sits one level in
+--   C becomes d - 1  -- returns the level to exactly where T left it
+--
+-- That one rule covers every shape T can be in:
+--   d =  0  a plain track      -> C = -1, C closes the folder T just opened
+--   d = -1  the last child     -> C = -2, C closes both T's folder and its parent's
+--   d =  1  already a folder   -> C =  0, T stays a folder and C becomes its first child
+--   d = -2  closes two levels  -> C = -3, and so on
+--
+-- Getting this wrong re-indents every track BELOW the parent, which is why it
+-- lives here with tests rather than inline at the call site.
+function vo.FolderDepthForChild(parent_depth)
+  local d = tonumber(parent_depth) or 0
+  return 1, d - 1
+end
+
+--------------------------------
 -- Pure layer: substitution table as editable text
 --------------------------------
 
@@ -2885,6 +3193,95 @@ function vo.CollectProjectSpans()
   return items
 end
 
+-- Position, length, track and lock state of EVERY item in the project.
+--
+-- Deliberately not built on inspect_item: clustering has to see items that
+-- window skips (MIDI, time-stretched), because a crossfade partner still has to
+-- travel with its neighbour whether or not this tool understands its contents.
+-- No take is touched -- this is geometry only.
+function vo.CollectItemGeometry()
+  local out = {}
+  for i = 0, r.CountMediaItems(0) - 1 do
+    local item = r.GetMediaItem(0, i)
+    out[#out + 1] = {
+      item   = item,
+      index  = i,
+      track  = r.GetMediaItem_Track(item),
+      pos    = r.GetMediaItemInfo_Value(item, "D_POSITION"),
+      length = r.GetMediaItemInfo_Value(item, "D_LENGTH"),
+      locked = r.GetMediaItemInfo_Value(item, "C_LOCK") >= 0.5,
+      -- 0 means ungrouped. Grouped items weld across tracks; see vo.ClusterItems.
+      group  = r.GetMediaItemInfo_Value(item, "I_GROUPID"),
+    }
+  end
+  return out
+end
+
+-- Modification time of each source file, as a comparable number.
+--
+-- Lua has no stat, so this needs help from outside. js_ReaScriptAPI provides it
+-- silently and is used when present; on macOS and Linux a single batched `stat`
+-- covers the rest. On Windows without js_ReaScriptAPI nothing here can read a
+-- file date without flashing a console window per file, so the map comes back
+-- empty and the caller falls back to filename order and says so -- guessing at
+-- "oldest" would reorder a session wrongly and silently.
+--
+-- Returns the map and HOW MANY of the requested paths it managed to date. A
+-- count rather than a boolean because a partial read is the dangerous case: if
+-- three of four files date, the fourth still sorts last with nothing said about
+-- it, and the caller can only warn about that if it knows the difference.
+function vo.SourceModifiedTimes(paths)
+  local ages, found = {}, 0
+  paths = paths or {}
+  if #paths == 0 then return ages, 0 end
+
+  if r.JS_File_Stat then
+    for _, path in ipairs(paths) do
+      -- retval 0 is success; the times come back as "YYYY-MM-DD HH:MM:SS".
+      local retval, _size, _accessed, modified = r.JS_File_Stat(path)
+      if retval == 0 and type(modified) == "string" then
+        local y, mo, d, h, mi, s =
+          modified:match("(%d+)-(%d+)-(%d+)%s+(%d+):(%d+):(%d+)")
+        if y then
+          ages[path] = os.time({ year = tonumber(y), month = tonumber(mo),
+                                 day = tonumber(d), hour = tonumber(h),
+                                 min = tonumber(mi), sec = tonumber(s) })
+          found = found + 1
+        end
+      end
+    end
+    if found > 0 then return ages, found end
+  end
+
+  if not vo.IsWindows() then
+    local quoted, wanted = {}, {}
+    for _, path in ipairs(paths) do
+      quoted[#quoted + 1] = "'" .. path:gsub("'", "'\\''") .. "'"
+      wanted[path] = true
+    end
+    -- GNU coreutils and BSD stat disagree on the flag, so try both in one shell.
+    local cmd = "stat -c '%Y %n' " .. table.concat(quoted, " ")
+             .. " 2>/dev/null || stat -f '%m %N' " .. table.concat(quoted, " ")
+             .. " 2>/dev/null"
+    local pipe = io.popen(cmd)
+    if pipe then
+      for line in pipe:lines() do
+        -- Only paths we asked about count: the `||` fallback can run both stats
+        -- on a system where the first partly succeeds, and a path echoed back in
+        -- a shape we did not send is not an answer to the question we asked.
+        local stamp, path = line:match("^(%d+)%s+(.+)$")
+        if stamp and path and wanted[path] and ages[path] == nil then
+          ages[path] = tonumber(stamp)
+          found = found + 1
+        end
+      end
+      pipe:close()
+    end
+  end
+
+  return ages, found
+end
+
 -- The distinct source files present in the project, as a sorted array of paths.
 -- This is the list of sidecars worth trying to read.
 function vo.ProjectSourcePaths(items)
@@ -2936,6 +3333,67 @@ function vo.EnsureTrackBelow(track, name)
   local created = r.GetTrack(0, insert_at)
   r.GetSetMediaTrackInfo_String(created, "P_NAME", name, true)
   return created
+end
+
+-- The name a track answers to, falling back to its number when it has none.
+local function track_label(track)
+  local _, name = r.GetSetMediaTrackInfo_String(track, "P_NAME", "", false)
+  if name and name ~= "" then return name end
+  return string.format("Track %d",
+    math.floor(r.GetMediaTrackInfo_Value(track, "IP_TRACKNUMBER")))
+end
+
+-- One destination child track per source track, nested under it.
+--
+-- Sorting lays audio out somewhere new every time rather than shuffling it in
+-- place, so a run can never drop an item on top of audio it was not asked to
+-- touch. One child PER SOURCE, not one for the lot: ScriptMatch pulls selects
+-- onto per-character tracks, and collapsing ALEX and JORDAN onto a single track
+-- would throw away the separation that step exists to create.
+--
+-- Every child of one run shares a run number, so a run reads as one set at a
+-- glance and the run before it is still sitting there untouched.
+--
+-- Returns { [source_track] = destination_track } and the run number used.
+function vo.EnsureSortChildTracks(source_tracks)
+  source_tracks = source_tracks or {}
+
+  local taken = {}
+  for i = 0, r.CountTracks(0) - 1 do
+    local _, name = r.GetSetMediaTrackInfo_String(r.GetTrack(0, i), "P_NAME", "", false)
+    taken[name or ""] = true
+  end
+
+  local labels = {}
+  for _, track in ipairs(source_tracks) do labels[track] = track_label(track) end
+
+  local function child_name(track, run)
+    return string.format("%s sorted %d", labels[track], run)
+  end
+
+  -- The run number is shared, so it has to be free for EVERY source at once.
+  local run = 1
+  while true do
+    local free = true
+    for _, track in ipairs(source_tracks) do
+      if taken[child_name(track, run)] then free = false break end
+    end
+    if free then break end
+    run = run + 1
+  end
+
+  local dest = {}
+  for _, track in ipairs(source_tracks) do
+    -- Read the parent's depth BEFORE inserting: the rule turns on what it was.
+    local parent_depth, child_depth =
+      vo.FolderDepthForChild(r.GetMediaTrackInfo_Value(track, "I_FOLDERDEPTH"))
+    local child = vo.EnsureTrackBelow(track, child_name(track, run))
+    r.SetMediaTrackInfo_Value(track, "I_FOLDERDEPTH", parent_depth)
+    r.SetMediaTrackInfo_Value(child, "I_FOLDERDEPTH", child_depth)
+    dest[track] = child
+  end
+
+  return dest, run
 end
 
 --------------------------------

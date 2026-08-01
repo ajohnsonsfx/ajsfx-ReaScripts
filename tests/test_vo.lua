@@ -3339,5 +3339,304 @@ test("summarizing nothing is zero, not an error", function()
   assert(n.total == 0 and n.lines == 0 and n.delivered == 0, "All zero")
 end)
 
+--------------------------------
+-- ClusterItems
+--------------------------------
+print("\nClusterItems:")
+
+-- Tracks are opaque to the pure layer, so plain tables stand in for them.
+local TRACK_A, TRACK_B = { "A" }, { "B" }
+
+local function geo(track, pos, length, opts)
+  opts = opts or {}
+  return { item = opts.item or (tostring(pos) .. "@" .. tostring(track[1])),
+           index = opts.index or 0, track = track,
+           pos = pos, length = length, locked = opts.locked, group = opts.group }
+end
+
+test("items that do not touch stay separate", function()
+  local c = vo.ClusterItems({ geo(TRACK_A, 0, 1), geo(TRACK_A, 5, 1) })
+  assert(#c == 2, "Expected 2 clusters, got " .. #c)
+  assert(c[1].pos == 0 and c[1].stop == 1, "First cluster spans its item")
+end)
+
+test("an overlap on one track welds into a single cluster", function()
+  local c = vo.ClusterItems({ geo(TRACK_A, 0, 2), geo(TRACK_A, 1.5, 2) })
+  assert(#c == 1, "Expected 1 cluster, got " .. #c)
+  assert(#c[1].members == 2, "Both items are members")
+  assert(c[1].pos == 0 and math.abs(c[1].stop - 3.5) < 1e-9,
+    "Cluster spans from the first start to the last end")
+end)
+
+test("the same overlap across two tracks does not cluster", function()
+  -- Two characters talking over each other is not an edit; welding them would
+  -- chain a multi-character session into one immovable blob.
+  local c = vo.ClusterItems({ geo(TRACK_A, 0, 2), geo(TRACK_B, 1.5, 2) })
+  assert(#c == 2, "Expected 2 clusters, got " .. #c)
+end)
+
+test("exactly abutting items do not cluster", function()
+  local c = vo.ClusterItems({ geo(TRACK_A, 0, 2), geo(TRACK_A, 2, 2) })
+  assert(#c == 2, "A trimmed butt-join is not a crossfade, got " .. #c)
+end)
+
+test("a sub-millisecond gap error still does not cluster", function()
+  local c = vo.ClusterItems({ geo(TRACK_A, 0, 2), geo(TRACK_A, 2 - 0.0002, 2) })
+  assert(#c == 2, "Float noise below the epsilon is not an overlap, got " .. #c)
+end)
+
+test("a chain of overlaps is one cluster even when the ends do not overlap", function()
+  local c = vo.ClusterItems({
+    geo(TRACK_A, 0, 2), geo(TRACK_A, 1.5, 2), geo(TRACK_A, 3, 2),
+  })
+  assert(#c == 1, "Expected 1 chained cluster, got " .. #c)
+  assert(#c[1].members == 3, "All three travel together")
+end)
+
+test("a locked member locks the whole cluster", function()
+  local c = vo.ClusterItems({
+    geo(TRACK_A, 0, 2), geo(TRACK_A, 1.5, 2, { locked = true }),
+  })
+  assert(c[1].locked == true, "Half a crossfade must never move on its own")
+end)
+
+test("clusters come back in timeline order regardless of input order", function()
+  local c = vo.ClusterItems({ geo(TRACK_B, 9, 1), geo(TRACK_A, 3, 1) })
+  assert(c[1].pos == 3 and c[2].pos == 9, "Sorted by position")
+end)
+
+test("clustering nothing is empty, not an error", function()
+  assert(#vo.ClusterItems(nil) == 0, "nil is an empty project")
+end)
+
+test("a shared item group welds across tracks", function()
+  -- A group is the user saying "these belong together" out loud. Stranding one
+  -- half on its old track is the same damage as breaking a crossfade.
+  local c = vo.ClusterItems({
+    geo(TRACK_A, 0, 1, { group = 7 }), geo(TRACK_B, 40, 1, { group = 7 }),
+  })
+  assert(#c == 1, "Expected 1 cluster, got " .. #c)
+  assert(#c[1].members == 2, "Both travel together")
+  assert(c[1].pos == 0 and c[1].stop == 41, "The cluster spans both members")
+end)
+
+test("group id 0 is ungrouped and never welds", function()
+  local c = vo.ClusterItems({
+    geo(TRACK_A, 0, 1, { group = 0 }), geo(TRACK_B, 40, 1, { group = 0 }),
+  })
+  assert(#c == 2, "Zero is 'no group', not a group, got " .. #c)
+end)
+
+test("different groups stay apart", function()
+  local c = vo.ClusterItems({
+    geo(TRACK_A, 0, 1, { group = 1 }), geo(TRACK_B, 40, 1, { group = 2 }),
+  })
+  assert(#c == 2, "Expected 2 clusters, got " .. #c)
+end)
+
+test("a group and an overlap sharing a member form one cluster", function()
+  -- The crossfaded partner on track A has no group of its own, but it is welded
+  -- to one that does, so the whole chain has to move as a unit.
+  local c = vo.ClusterItems({
+    geo(TRACK_A, 0, 2),
+    geo(TRACK_A, 1.5, 2, { group = 3 }),
+    geo(TRACK_B, 90, 1, { group = 3 }),
+  })
+  assert(#c == 1, "Expected 1 chained cluster, got " .. #c)
+  assert(#c[1].members == 3, "All three travel together")
+end)
+
+test("cluster members stay in timeline order", function()
+  -- Callers read the head of the edit off members[1]; this is contract, not luck.
+  local c = vo.ClusterItems({
+    geo(TRACK_B, 90, 1, { group = 3 }), geo(TRACK_A, 5, 1, { group = 3 }),
+  })
+  assert(c[1].members[1].pos == 5, "Earliest member first")
+  assert(c[1].track == TRACK_A, "The cluster reports its head's track")
+end)
+
+--------------------------------
+-- FolderDepthForChild
+--------------------------------
+print("\nFolderDepthForChild:")
+
+test("nesting a child under a plain track opens and closes a folder", function()
+  local parent, child = vo.FolderDepthForChild(0)
+  assert(parent == 1 and child == -1, "Got " .. parent .. ", " .. child)
+end)
+
+test("nesting under the last child of a folder closes both levels", function()
+  local parent, child = vo.FolderDepthForChild(-1)
+  assert(parent == 1 and child == -2, "Got " .. parent .. ", " .. child)
+end)
+
+test("nesting under an existing folder makes the child its first child", function()
+  local parent, child = vo.FolderDepthForChild(1)
+  assert(parent == 1 and child == 0, "The parent stays a folder; got "
+    .. parent .. ", " .. child)
+end)
+
+test("nesting under a track that closes two levels closes three", function()
+  local parent, child = vo.FolderDepthForChild(-2)
+  assert(parent == 1 and child == -3, "Got " .. parent .. ", " .. child)
+end)
+
+test("a missing depth is read as a plain track", function()
+  local parent, child = vo.FolderDepthForChild(nil)
+  assert(parent == 1 and child == -1, "nil is depth 0")
+end)
+
+--------------------------------
+-- PlanTimelineLayout
+--------------------------------
+print("\nPlanTimelineLayout:")
+
+local function cl(pos, length, key)
+  return { members = { {} }, pos = pos, stop = pos + length,
+           track = TRACK_A, track_order = 1, key = key or {} }
+end
+
+local function positions(moves)
+  local out = {}
+  for i, m in ipairs(moves) do out[i] = m.pos end
+  return out
+end
+
+test("script order follows the CSV rows, not the timeline", function()
+  local moves = vo.PlanTimelineLayout({
+    clusters = { cl(0, 1, { script_row = 3 }), cl(10, 1, { script_row = 1 }) },
+    order = "script", gap = 2, start = 0,
+  })
+  assert(moves[1].cluster.key.script_row == 1, "Row 1 lays down first")
+  assert(moves[1].pos == 0, "The run begins at start")
+  assert(moves[2].pos == 3, "1s item + 2s gap")
+end)
+
+test("a long item pushes the next one clear of its whole length", function()
+  -- The whole reason sorting does not need to cut: an item holding five lines
+  -- is placed by its first line and the next item clears all of it.
+  local moves = vo.PlanTimelineLayout({
+    clusters = { cl(0, 30, { script_row = 1 }), cl(100, 1, { script_row = 2 }) },
+    order = "script", gap = 2, start = 0,
+  })
+  assert(moves[2].pos == 32, "Expected 32, got " .. moves[2].pos)
+end)
+
+test("script order appends orphans after the run", function()
+  local moves, n = vo.PlanTimelineLayout({
+    clusters = {
+      cl(0, 1, { orphan = true }),
+      cl(10, 1, { script_row = 2 }),
+      cl(20, 1, { script_row = 1 }),
+    },
+    order = "script", gap = 1, start = 0,
+  })
+  assert(n.orphans == 1, "One orphan counted")
+  assert(moves[3].cluster.key.orphan == true, "The orphan lands last")
+  assert(moves[3].pos == 4, "After both sorted items, got " .. moves[3].pos)
+end)
+
+test("the run starts at the earliest affected item when no start is given", function()
+  local moves = vo.PlanTimelineLayout({
+    clusters = { cl(50, 1, { script_row = 2 }), cl(20, 1, { script_row = 1 }) },
+    order = "script", gap = 1,
+  })
+  assert(moves[1].pos == 20, "Expected 20, got " .. moves[1].pos)
+  assert(moves[1].delta == 0, "The anchor item does not move")
+end)
+
+test("record order puts the older recording first and gaps between them", function()
+  local moves, n = vo.PlanTimelineLayout({
+    clusters = {
+      cl(0,  1, { source_path = "new.wav", source_start = 0 }),
+      cl(10, 1, { source_path = "old.wav", source_start = 5 }),
+      cl(20, 1, { source_path = "old.wav", source_start = 1 }),
+    },
+    order = "record", spacing = "fixed", gap = 2, source_gap = 60, start = 0,
+    source_age = { ["old.wav"] = 100, ["new.wav"] = 200 },
+  })
+  assert(n.groups == 2, "Two recordings, got " .. n.groups)
+  assert(moves[1].cluster.key.source_start == 1, "Oldest file, earliest take first")
+  assert(moves[2].pos == 3, "2s gap inside a recording")
+  assert(moves[3].cluster.key.source_path == "new.wav", "Newer file second")
+  assert(moves[3].pos == 64, "60s between recordings, got " .. moves[3].pos)
+end)
+
+test("record order falls back to the path when ages are unknown", function()
+  local moves = vo.PlanTimelineLayout({
+    clusters = {
+      cl(0, 1, { source_path = "b.wav", source_start = 0 }),
+      cl(5, 1, { source_path = "a.wav", source_start = 0 }),
+    },
+    order = "record", gap = 1, source_gap = 10, start = 0, source_age = {},
+  })
+  assert(moves[1].cluster.key.source_path == "a.wav", "Deterministic without ages")
+end)
+
+test("a file with a known age sorts before one with none", function()
+  local moves = vo.PlanTimelineLayout({
+    clusters = {
+      cl(0, 1, { source_path = "a.wav", source_start = 0 }),
+      cl(5, 1, { source_path = "b.wav", source_start = 0 }),
+    },
+    order = "record", gap = 1, source_gap = 10, start = 0,
+    source_age = { ["b.wav"] = 1 },
+  })
+  assert(moves[1].cluster.key.source_path == "b.wav", "Known age wins")
+end)
+
+test("original spacing replays the recording's own gaps", function()
+  local moves, n = vo.PlanTimelineLayout({
+    clusters = {
+      cl(0,  1, { source_path = "s.wav", source_start = 10 }),
+      cl(50, 1, { source_path = "s.wav", source_start = 42 }),
+    },
+    order = "record", spacing = "original", gap = 2, start = 5,
+    source_age = { ["s.wav"] = 1 },
+  })
+  assert(moves[1].pos == 5, "The group begins at start")
+  assert(moves[2].pos == 37, "32s apart, exactly as recorded; got " .. moves[2].pos)
+  assert(n.clamped == 0, "Nothing had to slide")
+end)
+
+test("original spacing slides a retimed item forward instead of stacking it", function()
+  local moves, n = vo.PlanTimelineLayout({
+    clusters = {
+      cl(0,  20, { source_path = "s.wav", source_start = 0 }),
+      cl(50,  1, { source_path = "s.wav", source_start = 5 }),
+    },
+    order = "record", spacing = "original", gap = 2, start = 0,
+    source_age = { ["s.wav"] = 1 },
+  })
+  assert(moves[2].pos == 20, "Clamped to the previous end, got " .. moves[2].pos)
+  assert(n.clamped == 1, "And reported, got " .. n.clamped)
+end)
+
+test("original spacing is refused for script order", function()
+  -- There is no original layout for an order the recording never had.
+  local moves = vo.PlanTimelineLayout({
+    clusters = { cl(0, 1, { script_row = 1, source_start = 0 }),
+                 cl(9, 1, { script_row = 2, source_start = 100 }) },
+    order = "script", spacing = "original", gap = 2, start = 0,
+  })
+  assert(moves[2].pos == 3, "Fixed gap applied anyway, got " .. moves[2].pos)
+end)
+
+test("the summary counts what will move", function()
+  local c = vo.ClusterItems({ geo(TRACK_A, 0, 2), geo(TRACK_A, 1.5, 2),
+                              geo(TRACK_A, 10, 1) })
+  for i, cluster in ipairs(c) do cluster.key = { script_row = i } end
+  local _, n = vo.PlanTimelineLayout({ clusters = c, order = "script",
+                                       gap = 1, start = 0 })
+  assert(n.clusters == 2, "Two clusters, got " .. n.clusters)
+  assert(n.items == 3, "Three items, got " .. n.items)
+  assert(math.abs(n.span - 5.5) < 1e-9, "3.5s + 1s gap + 1s, got " .. n.span)
+end)
+
+test("planning nothing is empty, not an error", function()
+  local moves, n = vo.PlanTimelineLayout({ clusters = {} })
+  assert(#moves == 0 and n.clusters == 0, "Nothing to lay out")
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

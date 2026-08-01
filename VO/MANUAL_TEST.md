@@ -505,6 +505,72 @@ that was never recorded.
 
 ---
 
+## Overview: selection and Sort on timeline
+
+Use a project with **two** recordings, a matched script CSV, and audio already
+cut into one item per line.
+
+### Selection
+
+22. Click a row, then Ctrl-click two others. All three stay lit, and the three
+    matching items are selected in the arrange view. Shift-click a fourth row —
+    the whole range from the last-clicked row fills in.
+23. With several rows selected, change the status filter so some of them are
+    hidden. The hidden ones leave the selection; the count beside the **Sort**
+    button drops to match.
+24. Select a fifty-row range. The edit cursor moves once, to the row you clicked
+    — not once per row.
+
+### Sorting
+
+25. Select nothing. Set **Record order · Fixed gap · 2.00 s between items ·
+    60.00 s between recordings** and press **Sort**. Confirm: a new track named
+    `<source> sorted 1` appears **nested as a child under** the track the audio
+    came from, all the sorted items are on it, items sit 2 s apart end-to-start,
+    the two recordings are 60 s apart with the older file first, and a single
+    Ctrl+Z puts the tracks *and* the positions back together.
+26. Look at the tracks **below** the new folder. Their indent level did not
+    change — nesting the child must not re-indent the rest of the project.
+27. Sort again without undoing. A second set named `sorted 2` appears; the
+    `sorted 1` tracks are still sitting there untouched.
+28. **Crossfade two adjacent takes**, then Sort. The crossfade is still intact,
+    the pair moved together as one unit, and both landed on the same new track.
+29. Trim a word out of the middle of a take and crossfade the join; Sort. The
+    repair survives.
+30. **Group two items that sit on different tracks** (select both, `G`), then
+    Sort. Both moved by the same amount, they kept their spacing relative to
+    each other, and each landed on the child of *its own* source track — not
+    collapsed together onto one.
+31. Switch to **Script order**. The spacing droplist greys out, and hovering it
+    explains why. Sort — items now follow the CSV row order, and any orphan
+    (audio matching no script line) lands after the last sorted item.
+32. Back to **Record order · Original spacing**. Sort. The gaps from the original
+    recording return. If anything had to slide forward to avoid an overlap, the
+    status line says how many.
+33. Select six rows from the middle of one recording and Sort. Only those items
+    move; everything else stays where it was, on its original track.
+34. **Lock** one item and Sort. Its cluster is skipped and the status line
+    reports how many were left alone — in the normal colour, not red: the sort
+    still succeeded.
+35. Close and reopen the window. The order, spacing and both gap values are as
+    you left them.
+36. *(Windows without js_ReaScriptAPI only)* Sort by record order across two
+    recordings. The status line says file dates were unavailable and that the
+    ordering fell back to filename.
+37. Filter to one character, click one of its lines, then Shift-click a line of
+    the same character further down with **another character's lines in
+    between**. Only the rows between the two clicks are selected. Nothing
+    belonging to the other character lights up beyond that range — including
+    lines with no audio yet, which used to select as a block.
+38. Type a new name into **Item name** and press Enter. The item in the arrange
+    view shows the new name immediately, without clicking anything else. The
+    **CSV filename** beside it still shows the script's original name, greyed
+    and not editable. Hover it to see both names.
+39. Rename the same item in REAPER itself (F2 on the item). The Item name column
+    catches up within a second or two, without a Refresh.
+
+---
+
 ## Recording results
 
 Note anything that differs from the expectations above directly in
