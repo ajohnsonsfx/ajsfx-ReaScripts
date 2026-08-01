@@ -521,7 +521,6 @@ vo.DEFAULTS = {
   -- identically, leaving the user to audition and delete.
   use_alts_track   = false,
   suffix_alt_names = false,
-  primary_take     = "last", -- "last" or "first"
 
   review_prefix           = "REVIEW_",
   unmatched_prefix        = "UNMATCHED_",
@@ -977,15 +976,40 @@ end
 -- crosses the containing item's bounds. Colliding neighbours meet at the
 -- midpoint of their original gap, which keeps the result independent of the
 -- order spans were selected in. Mutates and returns `spans`.
+--
 -- bounds: optional { start = number, stop = number }
-function vo.ApplyPadding(spans, cfg, bounds)
+-- probe, floor_db: optional. Supply BOTH (and leave cfg.snap_boundaries on) to
+--   place each edge by looking for silence instead of applying a fixed pad;
+--   each span then carries `snapped` = "silence" or "pad". With either absent
+--   this behaves exactly as it always did, which is why the fixed-pad tests
+--   still describe the truth.
+function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db)
   local pre  = vo.Opt(cfg, "pre_pad")
   local post = vo.Opt(cfg, "post_pad")
+  local snap = vo.Opt(cfg, "snap_boundaries") and probe and floor_db
 
-  for _, s in ipairs(spans) do
-    s.raw_start, s.raw_stop = s.start, s.stop
-    s.start = s.start - pre
-    s.stop  = s.stop + post
+  for _, s in ipairs(spans) do s.raw_start, s.raw_stop = s.start, s.stop end
+
+  for i, s in ipairs(spans) do
+    if snap then
+      -- The search window is bounded by the NEIGHBOURING WORD, not by the
+      -- neighbour's already-padded edge: raw boundaries are the only ones that
+      -- describe where audio actually is. This bound is what makes it
+      -- structurally impossible for a clip to contain a syllable of the next
+      -- line, whatever the amplitude does inside the window.
+      local start_limit = s.raw_start - pre
+      if spans[i - 1] then start_limit = math.max(start_limit, spans[i - 1].raw_stop) end
+      local stop_limit = s.raw_stop + post
+      if spans[i + 1] then stop_limit = math.min(stop_limit, spans[i + 1].raw_start) end
+
+      local a, how_a = vo.SnapBoundary(s.raw_start, start_limit, -1, floor_db, probe, cfg)
+      local b, how_b = vo.SnapBoundary(s.raw_stop,  stop_limit,   1, floor_db, probe, cfg)
+      s.start, s.stop = a, b
+      s.snapped = (how_a == "silence" and how_b == "silence") and "silence" or "pad"
+    else
+      s.start = s.raw_start - pre
+      s.stop  = s.raw_stop + post
+    end
   end
 
   for i = 2, #spans do
@@ -1052,8 +1076,8 @@ end
 -- every one of them re-derived from kind/asset/start/score/transcript plus cfg,
 -- and unconditionally overwritten -- nothing here reads a previously assigned
 -- value. That is what lets the two callers that assemble a plan out of
--- separately-named halves (the transcribe/retain merge and the multi-sidecar
--- load, both in ajsfx_VO_ScriptMatch.lua) simply re-run it over the union: two
+-- separately-named halves (the transcribe/retain merge and the multi-source
+-- load) simply re-run it over the union: two
 -- spans of the same line arriving from two different sources are only seen as
 -- takes of one line if something numbers them TOGETHER, and the halves were each
 -- numbered when they were the only spans for that asset.
@@ -1063,7 +1087,6 @@ end
 function vo.AssignNames(spans, cfg)
   local use_alts         = vo.Opt(cfg, "use_alts_track")
   local suffix           = vo.Opt(cfg, "suffix_alt_names")
-  local primary_take     = vo.Opt(cfg, "primary_take")
   local review_prefix    = vo.Opt(cfg, "review_prefix")
   local unmatched_prefix = vo.Opt(cfg, "unmatched_prefix")
   local snippet_words    = vo.Opt(cfg, "unmatched_snippet_words")
@@ -1092,7 +1115,24 @@ function vo.AssignNames(spans, cfg)
       return (a.score or 0) < (b.score or 0)
     end)
     for i, s in ipairs(g) do s.take_index = i end
-    local primary = (primary_take == "first") and g[1] or g[#g]
+
+    -- The user's explicit Select IS the primary. Guessing "first" or "last" is
+    -- exactly what the Select column exists to stop, so a group of several
+    -- takes with no select simply has no primary -- and Cut reports it as
+    -- needing a decision rather than picking one.
+    --
+    -- A group of ONE is the exception: there is nothing to choose between, so
+    -- the lone take is primary whether or not it was ticked. Without this a
+    -- single unticked take would be routed to Alts and suffixed _tk01, which
+    -- is not a decision the user declined to make -- it is one they never had.
+    local primary = nil
+    if #g == 1 then
+      primary = g[1]
+    else
+      for _, s in ipairs(g) do
+        if s.select == true then primary = s; break end
+      end
+    end
     for _, s in ipairs(g) do s.primary = (s == primary) end
   end
 

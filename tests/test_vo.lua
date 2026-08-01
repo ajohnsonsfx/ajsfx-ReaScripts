@@ -957,6 +957,70 @@ test("ordinary padding is untouched by the inversion guard", function()
 end)
 
 --------------------------------
+print("\nApplyPadding (snapping):")
+
+local function pad_span(a, b) return { start = a, stop = b, kind = "match", asset = "x" } end
+
+test("without a probe the fixed pads are applied exactly as before", function()
+  local spans = { pad_span(2.0, 3.0) }
+  vo.ApplyPadding(spans, { pre_pad = 0.1, post_pad = 0.2 })
+  assert(near(spans[1].start, 1.9), "start: " .. spans[1].start)
+  assert(near(spans[1].stop,  3.2), "stop: " .. spans[1].stop)
+  assert(spans[1].snapped == nil, "snapped should not be set without a probe")
+end)
+
+test("with a probe the boundary lands in silence inside the pad", function()
+  local spans = { pad_span(2.0, 3.0) }
+  local probe = function(t0, t1) if t1 > 2.0 and t0 < 3.0 then return -10 end return -80 end
+  vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.05 },
+                  nil, probe, -60)
+  assert(near(spans[1].start, 1.95), "start: " .. spans[1].start)
+  assert(near(spans[1].stop,  3.05), "stop: " .. spans[1].stop)
+  assert(spans[1].snapped == "silence", "snapped: " .. tostring(spans[1].snapped))
+end)
+
+test("a boundary never crosses into the neighbouring take's audio", function()
+  local spans = { pad_span(2.0, 3.0), pad_span(3.1, 4.0) }
+  -- Silent everywhere: maximum temptation for the search to run away.
+  vo.ApplyPadding(spans, { pre_pad = 1.0, post_pad = 1.0, snap_min_silence = 0.02 },
+                  nil, function() return -80 end, -60)
+  assert(spans[1].stop <= 3.1 + 1e-9, "span 1 stop ate into span 2: " .. spans[1].stop)
+  assert(spans[2].start >= 3.0 - 1e-9, "span 2 start ate into span 1: " .. spans[2].start)
+  assert(spans[1].stop <= spans[2].start + 1e-9, "spans overlap after snapping")
+end)
+
+test("no silence found is reported as pad, not silence", function()
+  local spans = { pad_span(2.0, 3.0) }
+  vo.ApplyPadding(spans, { pre_pad = 0.2, post_pad = 0.2, snap_min_silence = 0.05 },
+                  nil, function() return -10 end, -60)
+  assert(spans[1].snapped == "pad", "snapped: " .. tostring(spans[1].snapped))
+  assert(near(spans[1].stop, 3.2), "stop should fall back to the pad: " .. spans[1].stop)
+end)
+
+test("snap_boundaries = false ignores the probe entirely", function()
+  local spans = { pad_span(2.0, 3.0) }
+  vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_boundaries = false },
+                  nil, function() return -80 end, -60)
+  assert(near(spans[1].start, 1.5), "start: " .. spans[1].start)
+  assert(spans[1].snapped == nil, "snapped should not be set when disabled")
+end)
+
+test("bounds still clamp a snapped boundary", function()
+  local spans = { pad_span(0.1, 1.0) }
+  vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.1, snap_min_silence = 0.02 },
+                  { start = 0.0, stop = 10.0 }, function() return -80 end, -60)
+  assert(spans[1].start >= 0.0 - 1e-9, "start escaped bounds: " .. spans[1].start)
+end)
+
+test("raw boundaries are still recorded when snapping", function()
+  local spans = { pad_span(2.0, 3.0) }
+  vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.05 },
+                  nil, function() return -80 end, -60)
+  assert(near(spans[1].raw_start, 2.0) and near(spans[1].raw_stop, 3.0),
+    "raw boundaries must survive so the report can compare them")
+end)
+
+--------------------------------
 -- AssignNames
 --------------------------------
 print("\nAssignNames:")
@@ -971,8 +1035,11 @@ local function take_spans()
   }
 end
 
-local function assigned(cfg)
+-- `select_index` is the span the user ticked in Overview. There is no
+-- first/last fallback any more: an unticked multi-take line has no primary.
+local function assigned(cfg, select_index)
   local spans = take_spans()
+  if select_index then spans[select_index].select = true end
   vo.AssignNames(spans, cfg)
   return spans
 end
@@ -990,58 +1057,72 @@ test("a line with one take is always its own primary", function()
   assert(s[2].dest == "selects" and s[2].name == "vo_b", "L2 routing/name")
 end)
 
-test("combo 1 - alts off, suffix off, primary last: all to selects, bare names", function()
-  local s = assigned({ use_alts_track = false, suffix_alt_names = false, primary_take = "last" })
+test("combo 1 - alts off, suffix off, later take selected: all to selects, bare names", function()
+  local s = assigned({ use_alts_track = false, suffix_alt_names = false }, 3)
   assert(s[1].dest == "selects" and s[3].dest == "selects", "both to selects")
   assert(s[1].name == "vo_a" and s[3].name == "vo_a", "both bare")
 end)
 
-test("combo 2 - alts off, suffix off, primary first: all to selects, bare names", function()
-  local s = assigned({ use_alts_track = false, suffix_alt_names = false, primary_take = "first" })
+test("combo 2 - alts off, suffix off, earlier take selected: all to selects, bare names", function()
+  local s = assigned({ use_alts_track = false, suffix_alt_names = false }, 1)
   assert(s[1].dest == "selects" and s[3].dest == "selects", "both to selects")
   assert(s[1].name == "vo_a" and s[3].name == "vo_a", "both bare")
 end)
 
-test("combo 3 - alts off, suffix on, primary last: earlier take suffixed", function()
-  local s = assigned({ use_alts_track = false, suffix_alt_names = true, primary_take = "last" })
+test("combo 3 - alts off, suffix on, later take selected: earlier take suffixed", function()
+  local s = assigned({ use_alts_track = false, suffix_alt_names = true }, 3)
   assert(s[1].name == "vo_a_tk01", "take 1: " .. s[1].name)
   assert(s[3].name == "vo_a", "primary: " .. s[3].name)
   assert(s[1].dest == "selects" and s[3].dest == "selects", "both to selects")
 end)
 
-test("combo 4 - alts off, suffix on, primary first: later take suffixed", function()
-  local s = assigned({ use_alts_track = false, suffix_alt_names = true, primary_take = "first" })
+test("combo 4 - alts off, suffix on, earlier take selected: later take suffixed", function()
+  local s = assigned({ use_alts_track = false, suffix_alt_names = true }, 1)
   assert(s[1].name == "vo_a", "primary: " .. s[1].name)
   assert(s[3].name == "vo_a_tk02", "take 2: " .. s[3].name)
 end)
 
-test("combo 5 - alts on, suffix off, primary last: earlier take to alts", function()
-  local s = assigned({ use_alts_track = true, suffix_alt_names = false, primary_take = "last" })
+test("combo 5 - alts on, suffix off, later take selected: earlier take to alts", function()
+  local s = assigned({ use_alts_track = true, suffix_alt_names = false }, 3)
   assert(s[1].dest == "alts", "take 1 dest: " .. s[1].dest)
   assert(s[3].dest == "selects", "primary dest: " .. s[3].dest)
   assert(s[1].name == "vo_a" and s[3].name == "vo_a", "both bare")
 end)
 
-test("combo 6 - alts on, suffix off, primary first: later take to alts", function()
-  local s = assigned({ use_alts_track = true, suffix_alt_names = false, primary_take = "first" })
+test("combo 6 - alts on, suffix off, earlier take selected: later take to alts", function()
+  local s = assigned({ use_alts_track = true, suffix_alt_names = false }, 1)
   assert(s[1].dest == "selects", "primary dest: " .. s[1].dest)
   assert(s[3].dest == "alts", "take 2 dest: " .. s[3].dest)
 end)
 
-test("combo 7 - alts on, suffix on, primary last", function()
-  local s = assigned({ use_alts_track = true, suffix_alt_names = true, primary_take = "last" })
+test("combo 7 - alts on, suffix on, later take selected", function()
+  local s = assigned({ use_alts_track = true, suffix_alt_names = true }, 3)
   assert(s[1].dest == "alts" and s[1].name == "vo_a_tk01", s[1].dest .. "/" .. s[1].name)
   assert(s[3].dest == "selects" and s[3].name == "vo_a", s[3].dest .. "/" .. s[3].name)
 end)
 
-test("combo 8 - alts on, suffix on, primary first", function()
-  local s = assigned({ use_alts_track = true, suffix_alt_names = true, primary_take = "first" })
+test("combo 8 - alts on, suffix on, earlier take selected", function()
+  local s = assigned({ use_alts_track = true, suffix_alt_names = true }, 1)
   assert(s[1].dest == "selects" and s[1].name == "vo_a", s[1].dest .. "/" .. s[1].name)
   assert(s[3].dest == "alts" and s[3].name == "vo_a_tk02", s[3].dest .. "/" .. s[3].name)
 end)
 
 test("a single-take line never goes to alts even with the toggle on", function()
-  local s = assigned({ use_alts_track = true, suffix_alt_names = true, primary_take = "last" })
+  local s = assigned({ use_alts_track = true, suffix_alt_names = true }, 3)
+  assert(s[2].dest == "selects" and s[2].name == "vo_b", s[2].dest .. "/" .. s[2].name)
+end)
+
+test("a several-take line with no select has no primary at all", function()
+  local s = assigned({ suffix_alt_names = true })
+  assert(s[1].primary == false and s[3].primary == false,
+    "Guessing which take was meant is what Select exists to stop")
+  assert(s[1].name == "vo_a_tk01" and s[3].name == "vo_a_tk02",
+    "Both takes are suffixed when none is the primary")
+end)
+
+test("a single take is primary even without a select, so it is never suffixed", function()
+  local s = assigned({ use_alts_track = true, suffix_alt_names = true })
+  assert(s[2].primary == true, "A group of one has nothing to choose between")
   assert(s[2].dest == "selects" and s[2].name == "vo_b", s[2].dest .. "/" .. s[2].name)
 end)
 
@@ -1093,22 +1174,23 @@ test("review spans do not consume take numbers from delivered takes", function()
   local spans = {
     { kind = "review", asset = "vo_a", score = 0.60, start = 0, stop = 1 },
     { kind = "match",  asset = "vo_a", score = 0.95, start = 2, stop = 3 },
-    { kind = "match",  asset = "vo_a", score = 0.97, start = 4, stop = 5 },
+    { kind = "match",  asset = "vo_a", score = 0.97, start = 4, stop = 5, select = true },
   }
-  vo.AssignNames(spans, { suffix_alt_names = true, primary_take = "last" })
+  vo.AssignNames(spans, { suffix_alt_names = true })
   assert(spans[2].take_index == 1, "first delivered take: " .. tostring(spans[2].take_index))
   assert(spans[2].name == "vo_a_tk01", "name: " .. spans[2].name)
   assert(spans[3].name == "vo_a", "primary: " .. spans[3].name)
 end)
 
 -- Two sources each holding a read of the same line. Each half was named on its
--- own -- that is what BuildPlan does for a freshly transcribed source, and what
--- each sidecar recorded -- so both halves claim take 1, primary, bare name.
--- Concatenating them is exactly the merge in ajsfx_VO_ScriptMatch.lua, and if
+-- own -- a group of one, so each is its own primary with a bare name -- and if
 -- nothing re-names the union, Cut puts two items named "L001" on Selects.
+-- The later read carries the user's Select, which is what makes it the primary
+-- once the two halves are numbered together.
 local function separately_named_halves(cfg)
   local a = { { kind = "match", asset = "L001", score = 0.95, start = 0, stop = 1 } }
-  local b = { { kind = "match", asset = "L001", score = 0.96, start = 9, stop = 10 } }
+  local b = { { kind = "match", asset = "L001", score = 0.96, start = 9, stop = 10,
+                select = true } }
   vo.AssignNames(a, cfg)
   vo.AssignNames(b, cfg)
   local union = {}
@@ -1118,15 +1200,15 @@ local function separately_named_halves(cfg)
 end
 
 test("halves named in isolation both claim take 1 and primary (the collision)", function()
-  local u = separately_named_halves({ suffix_alt_names = true, primary_take = "last" })
+  local u = separately_named_halves({ suffix_alt_names = true })
   assert(u[1].take_index == 1 and u[2].take_index == 1, "both should still be take 1")
   assert(u[1].primary and u[2].primary, "both should still be primary")
   assert(u[1].name == u[2].name, "both should still carry the same name")
 end)
 
 test("re-naming the union gives one primary and distinct take numbers", function()
-  local u = separately_named_halves({ suffix_alt_names = true, primary_take = "last" })
-  vo.AssignNames(u, { suffix_alt_names = true, primary_take = "last" })
+  local u = separately_named_halves({ suffix_alt_names = true })
+  vo.AssignNames(u, { suffix_alt_names = true })
   assert(u[1].take_index == 1, "earlier take: " .. tostring(u[1].take_index))
   assert(u[2].take_index == 2, "later take: " .. tostring(u[2].take_index))
   local primaries = 0
@@ -1137,14 +1219,14 @@ test("re-naming the union gives one primary and distinct take numbers", function
 end)
 
 test("re-naming the union routes the non-primary to alts", function()
-  local u = separately_named_halves({ use_alts_track = true, primary_take = "last" })
-  vo.AssignNames(u, { use_alts_track = true, primary_take = "last" })
+  local u = separately_named_halves({ use_alts_track = true })
+  vo.AssignNames(u, { use_alts_track = true })
   assert(u[1].dest == "alts", "earlier take dest: " .. tostring(u[1].dest))
   assert(u[2].dest == "selects", "primary dest: " .. tostring(u[2].dest))
 end)
 
 test("AssignNames is idempotent over an already-named plan", function()
-  local cfg = { use_alts_track = true, suffix_alt_names = true, primary_take = "last" }
+  local cfg = { use_alts_track = true, suffix_alt_names = true }
   local once = take_spans()
   vo.AssignNames(once, cfg)
   local snapshot = {}
@@ -1161,7 +1243,7 @@ test("AssignNames is idempotent over an already-named plan", function()
 end)
 
 test("re-running over the union is itself idempotent", function()
-  local cfg = { suffix_alt_names = true, primary_take = "last" }
+  local cfg = { suffix_alt_names = true }
   local u = separately_named_halves(cfg)
   vo.AssignNames(u, cfg)
   local n1, n2, t1, t2 = u[1].name, u[2].name, u[1].take_index, u[2].take_index
@@ -1179,7 +1261,7 @@ test("take numbering does not depend on input order when four takes tie on every
   -- regardless of tie-break logic, so this needs at least four spans tied on
   -- every key but `score` before an order-dependent (pre-fix) comparator
   -- actually produces a different permutation for a different input order.
-  local cfg = { suffix_alt_names = true, primary_take = "last" }
+  local cfg = { suffix_alt_names = true }
 
   local function make(order)
     local by_id = {
