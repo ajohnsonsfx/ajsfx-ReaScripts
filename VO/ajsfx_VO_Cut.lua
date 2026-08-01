@@ -353,7 +353,18 @@ local function DoCut()
     local take = r.GetActiveTake(g.item)
     local probe, destroy = vo.MakeTakeProbe(take)
     local ok, err = pcall(function()
-      local words = state.words_by_path[g.info.path] or {}
+      -- Only the words this ITEM covers. A source already split across several
+      -- items -- the ordinary state of a re-cut session -- has words belonging
+      -- to its siblings, and mapping those through this item's own
+      -- pos/start_offs/playrate points the probe outside the take entirely. The
+      -- accessor answers silence out there, which drags the measured floor down
+      -- and quietly costs us the snapping this window exists to do.
+      local covered = vo.SourceCoverageRanges({ g.info })[1]
+      local words = {}
+      for _, w in ipairs(state.words_by_path[g.info.path] or {}) do
+        if w.t1 >= covered.from and w.t0 <= covered.to then words[#words + 1] = w end
+      end
+
       local gaps = {}
       for _, gp in ipairs(vo.InterWordGaps(words)) do
         gaps[#gaps + 1] = {
