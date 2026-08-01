@@ -359,14 +359,21 @@ The defaults, the validation and the alignment arithmetic live in
 `im.CreateContext` at load time and so cannot be required by a test. That module
 is pure but for `ExtState`, and is covered by `tests/test_vo_view.lua`.
 
-Row heights are measured from the PREVIOUS frame's column widths: ImGui has no
-`TableGetColumnWidth`, and a cell's usable width is only knowable from inside
-that cell, which is a frame too late to size the row it belongs to. Dragging a
-column edge therefore leaves heights one frame stale; they settle on the next
-frame. Heights are cached against a generation counter bumped by a rebuild, a
-width change or a settings edit, so a table nobody is touching costs one
-comparison per row per frame — this table emits every row every frame, with no
-ListClipper.
+Row heights are MEASURED, never predicted. Each text cell reads back what it
+actually drew (`GetItemRectSize`) and the row keeps the tallest; the next frame
+aligns against that. The obvious alternative — predicting with
+`CalcTextSize(text, wrap_width)` where the width comes from
+`GetContentRegionAvail` — is wrong, and was the first implementation: inside a
+table cell that call reports more than the column's own width, so the prediction
+wraps the text into fewer lines than ImGui goes on to draw, and every offset
+computed from it falls short by the difference. Reading back what was drawn
+cannot fail that way.
+
+The cost is one frame of lag, which is not perceptible at frame rate, and which
+is also why the Item name and Notes fields size themselves from the same
+measurement. Those two grow their `FramePadding` to fill the row rather than
+switching to `InputTextMultiline`, so the field stays single-line and Enter
+still commits a rename instead of putting a newline in a filename.
 
 The full design is in
 `docs/superpowers/specs/2026-08-01-vo-overview-view-settings-design.md`.

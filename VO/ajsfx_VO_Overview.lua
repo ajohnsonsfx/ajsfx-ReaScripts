@@ -174,11 +174,6 @@ local state = {
   settings_open = false,
 }
 
--- Bumped whenever anything that changes a row's height changes: a settings
--- edit, a column resize, or a rebuild. The row-height cache is keyed on it;
--- declared here so every mutator, Rebuild included, is below it.
-local view_gen = 0
-local function BumpViewGen() view_gen = view_gen + 1 end
 
 -- -----------------------------------------------------------------------
 -- Disk
@@ -365,9 +360,6 @@ local function Rebuild()
     seen[row.key] = n
     row.uid = row.key .. "#" .. n
   end
-
-  -- Row text may have changed, so every cached row height is stale.
-  BumpViewGen()
 end
 
 local function Reload()
@@ -674,7 +666,6 @@ local function LoadViewSettings()
     state.view.cols[key] = state.view.restore and view.LoadColumn(key)
                            or view.NormalizeColumn(key, nil)
   end
-  BumpViewGen()
 end
 
 local function ColumnView(key)
@@ -686,7 +677,6 @@ local function SetColumnView(key, field, value)
   col[field] = value
   state.view.cols[key] = col
   if state.view.restore then view.SaveColumn(key, col) end
-  BumpViewGen()
 end
 
 -- Turning restore OFF clears the stored per-column settings outright rather
@@ -706,7 +696,6 @@ local function SetRestore(on)
       view.SaveColumn(key, ColumnView(key))
     end
   end
-  BumpViewGen()
 end
 
 -- The rows the tool acts on: the selection if there is one, otherwise every row
@@ -1156,56 +1145,52 @@ local id_depth = 0
 -- table every frame.
 -- -----------------------------------------------------------------------
 
-local cell_width = {}   -- [column index, 0-based] = last seen content width
+-- Heights are MEASURED, never predicted.
+--
+-- The obvious approach — CalcTextSize(text, wrap_width) with a width taken from
+-- GetContentRegionAvail — does not work: inside a table cell that call reports
+-- more than the column's own width, so the prediction wraps the text into fewer
+-- lines than ImGui goes on to draw. The row comes out genuinely taller than the
+-- estimate, and every offset computed from the estimate is short by the
+-- difference. Reading back what was actually drawn cannot be wrong in that way,
+-- and costs one GetItemRectSize per text cell instead of a CalcTextSize.
+--
+-- The cost is a frame of lag, which this file already accepts elsewhere, and
+-- which is not perceptible at frame rate.
+--
+-- Rows carry their own measurements:
+--   row._h        the tallest cell drawn last frame — the row's content height
+--   row._ch[i]    the height column i drew last frame
+-- Both are absent on a row's first frame and after a rebuild, where the frame
+-- height stands in until the first measurement lands.
 
--- Recording a width is what invalidates cached heights on a resize or reorder.
-local function RecordCellWidth(index)
-  local w = im.GetContentRegionAvail(ctx)
-  local prev = cell_width[index]
-  if not prev or math.abs(prev - w) > 0.5 then
-    cell_width[index] = w
-    BumpViewGen()
-  end
+-- What alignment is computed against. Floored at the frame height so a row
+-- holding an InputText is never treated as shorter than the widget in it.
+local function RowHeight(row)
+  local floor_h = im.GetFrameHeight(ctx)
+  local h = row._h or floor_h
+  return (h > floor_h) and h or floor_h
 end
 
--- Which columns can wrap, and what text they wrap. Kept next to the measurer so
--- adding a wrapping column is one edit, not two.
-local WRAPPABLE = {
-  { index = 3, key = "character",  text = function(row) return row.character or "" end },
-  { index = 5, key = "asset",      text = function(row) return row.asset or "" end },
-  { index = 7, key = "line_text",  text = function(row) return row.line_text or "" end },
-  { index = 8, key = "transcript", text = function(row) return row.transcript or "" end },
-  { index = 9, key = "source",
-    text = function(row) return row.source_path and vo.Basename(row.source_path) or "" end },
-}
+-- Start of a row: the accumulator is seeded with the frame height, so widget
+-- cells need no measuring of their own — none of them is taller than that,
+-- except the filled fields, which are exactly RowHeight by construction and so
+-- cannot make the row grow.
+local function BeginRowMeasure(row)
+  row._ch  = row._ch or {}
+  row._acc = im.GetFrameHeight(ctx)
+end
 
--- The height this row needs, cached against the generation counter so a table
--- nobody is touching costs one comparison per row per frame. DrawTableBody
--- emits every row every frame (no ListClipper — ReaImGui rejects it here), so
--- an uncached CalcTextSize per wrapping cell would be paid on every row.
-local function RowHeight(row)
-  if row._vh_gen == view_gen and row._vh then return row._vh end
+local function EndRowMeasure(row)
+  row._h = row._acc
+end
 
-  -- Floored at the frame height so a row holding an InputText is never shorter
-  -- than the widget in it.
-  local h = im.GetFrameHeight(ctx)
-
-  for _, w in ipairs(WRAPPABLE) do
-    local col = ColumnView(w.key)
-    local text = w.text(row)
-    if col.wrap and text ~= "" then
-      local width = cell_width[w.index]
-      if width and width > 1 then
-        local f = PushCellFont(w.key)
-        local _, th = im.CalcTextSize(ctx, text, nil, width)
-        PopCellFont(f)
-        if th > h then h = th end
-      end
-    end
-  end
-
-  row._vh, row._vh_gen = h, view_gen
-  return h
+-- Read back what the cell just drew. Called only from CellText: it is the only
+-- helper whose content can exceed one line.
+local function MeasureCell(row, index)
+  local _, h = im.GetItemRectSize(ctx)
+  row._ch[index] = h
+  if h > row._acc then row._acc = h end
 end
 
 -- Depth of the text-wrap stack, unwound by DrawTable for the same reason the ID
@@ -1229,17 +1214,16 @@ end
 
 -- One text cell: right font, right vertical position, wrapped or not.
 -- `kind` is "plain" | "disabled" | a colour integer.
-local function CellText(key, index, row_h, text, kind)
-  RecordCellWidth(index)
+local function CellText(row, key, index, row_h, text, kind)
   text = text or ""
   local col = ColumnView(key)
   local f = PushCellFont(key)
 
+  -- A wrapped cell's height is whatever it drew last frame; an unwrapped one is
+  -- always a single line, which needs no measuring.
   local cell_h
   if col.wrap and text ~= "" then
-    local width = cell_width[index]
-    local _, th = im.CalcTextSize(ctx, text, nil, (width and width > 1) and width or nil)
-    cell_h = th
+    cell_h = row._ch[index] or im.GetTextLineHeight(ctx)
   else
     cell_h = im.GetTextLineHeight(ctx)
   end
@@ -1264,14 +1248,15 @@ local function CellText(key, index, row_h, text, kind)
     im.PopTextWrapPos(ctx)
     wrap_depth = wrap_depth - 1
   end
+  -- Measured under the cell's own font, before it is popped.
+  MeasureCell(row, index)
   PopCellFont(f)
 end
 
 -- A widget cell. Widgets never wrap: a single-line InputText cannot, and making
 -- these multiline would change what Enter means in a field where Enter commits
 -- a rename. They take the vertical offset all the same.
-local function CellWidget(key, index, row_h)
-  RecordCellWidth(index)
+local function CellWidget(key, row_h)
   AlignCell(key, row_h, im.GetFrameHeight(ctx))
 end
 
@@ -1383,21 +1368,23 @@ local function DrawTableBody()
   -- here as excessive creation of short-lived resources, which is why
   -- ScriptMatch dropped it from its preview table too.
   for i, row in ipairs(state.visible) do
+    -- No min_row_height: ImGui already sizes the row from its tallest cell,
+    -- and row_h is the measurement of that from last frame.
     local row_h = RowHeight(row)
-    im.TableNextRow(ctx, 0, row_h)
+    BeginRowMeasure(row)
+    im.TableNextRow(ctx)
     im.PushID(ctx, i)
     id_depth = id_depth + 1
 
     -- Verified ------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 0)
-    CellWidget("verify", 0, row_h)
+    CellWidget("verify", row_h)
     local checked = row.user_status == "verified"
     local hit, now = im.Checkbox(ctx, "##ok", checked)
     if hit then pending_action = function() SetStatus(row, now and "verified" or nil) end end
 
     -- Status --------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 1)
-    RecordCellWidth(1)
     -- Drawn first in the row and spanning it, so a click anywhere that is not a
     -- widget navigates. AllowOverlap lets the inputs drawn afterwards win.
     -- Given the row's full height so a click anywhere in a TALL row still
@@ -1433,7 +1420,7 @@ local function DrawTableBody()
     -- Select --------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 2)
     if row.status ~= "missing" and row.status ~= "orphan" and (row.take_count or 0) > 0 then
-      CellWidget("primary", 2, row_h)
+      CellWidget("primary", row_h)
       if im.RadioButton(ctx, "##sel", row.is_primary == true) then
         pending_action = function() SetPrimary(row) end
       end
@@ -1442,12 +1429,10 @@ local function DrawTableBody()
           and "Mark this take as the select."
           or  "The only take of this line.")
       end
-    else
-      RecordCellWidth(2)
     end
 
     im.TableSetColumnIndex(ctx, 3)
-    CellText("character", 3, row_h, row.character, "plain")
+    CellText(row, "character", 3, row_h, row.character, "plain")
 
     -- Filename ------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 4)
@@ -1457,10 +1442,9 @@ local function DrawTableBody()
     local shown = row.take_name or row.name_override or row.asset or ""
     if row.status == "missing" then
       -- Nothing to rename: there is no take at all.
-      CellText("item_name", 4, row_h, shown, "disabled")
+      CellText(row, "item_name", 4, row_h, shown, "disabled")
       TooltipEvenWhenDisabled("This line has no take yet, so there is no item to name.")
     else
-      RecordCellWidth(4)
       PushFilledField(row_h)
       local fchanged, fname = im.InputText(ctx, "##fn", shown,
                                            im.InputTextFlags_EnterReturnsTrue)
@@ -1480,7 +1464,7 @@ local function DrawTableBody()
     -- reason a rename can never leave the user wondering what it used to be.
     im.TableSetColumnIndex(ctx, 5)
     local csv_name = row.asset or ""
-    CellText("asset", 5, row_h, csv_name, "disabled")
+    CellText(row, "asset", 5, row_h, csv_name, "disabled")
     -- No per-cell tooltip: the explanation belongs on the header, where it is
     -- read once, not under the cursor on every row. An explicit popup ID is
     -- what lets a plain Text item own a context menu.
@@ -1498,37 +1482,34 @@ local function DrawTableBody()
 
     im.TableSetColumnIndex(ctx, 6)
     if (row.take_count or 0) > 1 then
-      CellText("take", 6, row_h,
+      CellText(row, "take", 6, row_h,
                string.format("%d/%d", row.take_index or 0, row.take_count), "plain")
     elseif row.take_index then
-      CellText("take", 6, row_h, "1/1", "disabled")
-    else
-      RecordCellWidth(6)
+      CellText(row, "take", 6, row_h, "1/1", "disabled")
     end
 
     im.TableSetColumnIndex(ctx, 7)
-    CellText("line_text", 7, row_h, row.line_text, "plain")
+    CellText(row, "line_text", 7, row_h, row.line_text, "plain")
 
     im.TableSetColumnIndex(ctx, 8)
     if row.score and row.status == "review" then
-      CellText("transcript", 8, row_h, row.transcript, 0xDDAA33FF)
+      CellText(row, "transcript", 8, row_h, row.transcript, 0xDDAA33FF)
       if im.IsItemHovered(ctx) then
         im.SetTooltip(ctx, string.format("Match confidence %.0f%%.", row.score * 100))
       end
     else
-      CellText("transcript", 8, row_h, row.transcript, "disabled")
+      CellText(row, "transcript", 8, row_h, row.transcript, "disabled")
     end
 
     im.TableSetColumnIndex(ctx, 9)
-    CellText("source", 9, row_h,
+    CellText(row, "source", 9, row_h,
              row.source_path and vo.Basename(row.source_path) or "", "disabled")
 
     im.TableSetColumnIndex(ctx, 10)
-    CellText("time", 10, row_h, FormatTime(row.proj_time), "disabled")
+    CellText(row, "time", 10, row_h, FormatTime(row.proj_time), "disabled")
 
     -- Notes ---------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 11)
-    RecordCellWidth(11)
     PushFilledField(row_h)
     local nchanged, notes = im.InputText(ctx, "##notes", row.notes or "")
     PopFilledField()
@@ -1539,6 +1520,7 @@ local function DrawTableBody()
 
     im.PopID(ctx)
     id_depth = id_depth - 1
+    EndRowMeasure(row)
   end
 end
 
@@ -1652,8 +1634,7 @@ local function DrawSettingsWindow()
         state.view.sizes[key] = view.ClampFontSize(size, view.FONT_DEFAULTS[key])
         view.SaveFontSizes(state.view.sizes)
         fonts_dirty = true
-        BumpViewGen()
-      end
+            end
     end
 
     im.End(ctx)
