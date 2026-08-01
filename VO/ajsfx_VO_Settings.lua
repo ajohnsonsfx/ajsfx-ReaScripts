@@ -331,13 +331,48 @@ local function DrawMatching()
   changed, cfg.margin_threshold = im.InputDouble(ctx, "Margin threshold", cfg.margin_threshold, 0.01, 0.05, "%.2f")
   changed, cfg.anchor_count     = im.InputInt(ctx,    "Anchor tokens",    cfg.anchor_count)
   im.Spacing(ctx)
-  changed, cfg.pre_pad  = im.InputDouble(ctx, "Pre-roll (s)",  cfg.pre_pad,  0.01, 0.05, "%.3f")
-  changed, cfg.post_pad = im.InputDouble(ctx, "Post-roll (s)", cfg.post_pad, 0.01, 0.05, "%.3f")
-
-  im.Spacing(ctx)
   im.TextDisabled(ctx, "Score is textual agreement with the script — never a\n" ..
                        "judgement of the performance. Margin is the lead over the\n" ..
                        "next-best script line, which catches near-duplicate lines.")
+end
+
+local PAD_TOOLTIP =
+  "With snapping on this is the furthest the edge may travel, not a fixed amount."
+
+local function PadTooltip()
+  if im.IsItemHovered(ctx) then im.SetTooltip(ctx, PAD_TOOLTIP) end
+end
+
+local function DrawBoundaries()
+  local changed
+  changed, cfg.snap_boundaries =
+    im.Checkbox(ctx, "Snap clip edges to silence", cfg.snap_boundaries)
+
+  im.Spacing(ctx)
+  changed, cfg.pre_pad =
+    im.DragDouble(ctx, "Maximum head room (s)", cfg.pre_pad, 0.01, 0.0, 2.0, "%.3f")
+  PadTooltip()
+  changed, cfg.post_pad =
+    im.DragDouble(ctx, "Maximum tail (s)", cfg.post_pad, 0.01, 0.0, 2.0, "%.3f")
+  PadTooltip()
+
+  -- The three measurement controls mean nothing with snapping off: without a
+  -- measured floor ApplyPadding takes the plain-padding path and never reads
+  -- them. Greyed rather than hidden, so the user can see what snapping buys.
+  im.Spacing(ctx)
+  im.BeginDisabled(ctx, not cfg.snap_boundaries)
+  changed, cfg.snap_min_silence =
+    im.DragDouble(ctx, "Minimum silence (s)", cfg.snap_min_silence, 0.005, 0.01, 0.5, "%.3f")
+  changed, cfg.snap_floor_offset =
+    im.DragDouble(ctx, "Noise floor headroom (dB)", cfg.snap_floor_offset, 0.1, 0.0, 24.0, "%.1f")
+  changed, cfg.snap_floor_window =
+    im.DragDouble(ctx, "Floor measurement window (s)", cfg.snap_floor_window, 0.01, 0.1, 2.0, "%.3f")
+  im.EndDisabled(ctx)
+
+  im.Spacing(ctx)
+  im.TextDisabled(ctx, "An edge only moves into audio quieter than the measured noise\n" ..
+                       "floor plus the headroom, and never past the neighbouring word.\n" ..
+                       "With snapping off, both pads apply as fixed amounts.")
 end
 
 local function DrawOutput()
@@ -387,7 +422,8 @@ local function loop()
     if im.CollapsingHeader(ctx, 'Speech backend', nil, im.TreeNodeFlags_DefaultOpen) then
       DrawBackend()
     end
-    if im.CollapsingHeader(ctx, 'Matching') then DrawMatching() end
+    if im.CollapsingHeader(ctx, 'Matching')   then DrawMatching()   end
+    if im.CollapsingHeader(ctx, 'Boundaries') then DrawBoundaries() end
     if im.CollapsingHeader(ctx, 'Output')   then DrawOutput()   end
     if im.CollapsingHeader(ctx, 'Substitutions') then DrawScript()  end
     if im.CollapsingHeader(ctx, 'Advanced') then DrawAdvanced() end

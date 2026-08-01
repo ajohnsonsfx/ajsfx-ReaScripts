@@ -2506,6 +2506,11 @@ vo.CONFIG_SCHEMA = {
   { key = "pre_pad",            kind = "number", default = vo.DEFAULTS.pre_pad },
   { key = "post_pad",           kind = "number", default = vo.DEFAULTS.post_pad },
 
+  { key = "snap_boundaries",    kind = "bool",   default = vo.DEFAULTS.snap_boundaries },
+  { key = "snap_min_silence",   kind = "number", default = vo.DEFAULTS.snap_min_silence },
+  { key = "snap_floor_offset",  kind = "number", default = vo.DEFAULTS.snap_floor_offset },
+  { key = "snap_floor_window",  kind = "number", default = vo.DEFAULTS.snap_floor_window },
+
   { key = "track_selects",      kind = "string", default = "Selects" },
   { key = "track_alts",         kind = "string", default = "Alts" },
   { key = "track_review",       kind = "string", default = "Review" },

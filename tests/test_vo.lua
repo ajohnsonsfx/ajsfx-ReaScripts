@@ -1827,6 +1827,34 @@ test("numbers round-trip through save and load", function()
   assert(back.whisper_threads == 12, "threads: " .. tostring(back.whisper_threads))
 end)
 
+-- The snapping keys existed in vo.DEFAULTS before they were in the schema, so
+-- vo.Opt answered with them while LoadConfig did not -- a setting the user could
+-- change and never keep. These two assert the whole path, not just the default.
+test("the snapping settings default to the documented values", function()
+  mock.reset()
+  local cfg = vo.LoadConfig()
+  assert(cfg.snap_boundaries == true, "snap: " .. tostring(cfg.snap_boundaries))
+  assert(math.abs(cfg.snap_min_silence - 0.060) < 1e-9, "min silence: " .. tostring(cfg.snap_min_silence))
+  assert(math.abs(cfg.snap_floor_offset - 6.0) < 1e-9, "offset: " .. tostring(cfg.snap_floor_offset))
+  assert(math.abs(cfg.snap_floor_window - 0.500) < 1e-9, "window: " .. tostring(cfg.snap_floor_window))
+end)
+
+test("the snapping settings round-trip through save and load", function()
+  mock.reset()
+  local cfg = vo.LoadConfig()
+  cfg.snap_boundaries   = false
+  cfg.snap_min_silence  = 0.12
+  cfg.snap_floor_offset = 9.5
+  cfg.snap_floor_window = 0.25
+  vo.SaveConfig(cfg)
+
+  local back = vo.LoadConfig()
+  assert(back.snap_boundaries == false, "snap: " .. tostring(back.snap_boundaries))
+  assert(math.abs(back.snap_min_silence - 0.12) < 1e-9, "min silence: " .. tostring(back.snap_min_silence))
+  assert(math.abs(back.snap_floor_offset - 9.5) < 1e-9, "offset: " .. tostring(back.snap_floor_offset))
+  assert(math.abs(back.snap_floor_window - 0.25) < 1e-9, "window: " .. tostring(back.snap_floor_window))
+end)
+
 test("booleans round-trip rather than becoming truthy strings", function()
   mock.reset()
   local cfg = vo.LoadConfig()
