@@ -3070,30 +3070,61 @@ function vo.WriteSilentWav(path, seconds)
 end
 
 -- Transcribe a list of unique source files in sequence, reusing cached
--- transcripts. Calls on_done(map) with path -> word array.
+-- transcripts.
+--
+-- Built for batches. A project where every line was recorded to its own file
+-- is not the exception -- it is a normal delivery shape, and it means 50+
+-- sources in one run. Two consequences are baked in here rather than left to
+-- the caller:
+--
+--   1. `cb.on_source(path, words, i, total)` fires as EACH file finishes, so
+--      the caller can write that file's transcript immediately. Handing back
+--      one big map at the end would mean a cancel at file 40 threw away 39
+--      completed whisper runs, which on a large model is most of an hour.
+--   2. A file that fails does NOT abort the batch. Its reason is collected and
+--      the run moves to the next source; `cb.on_done(results, failures)` reports
+--      them together at the end. One unreadable wav must not cost the other 56.
+--
+-- A user CANCEL is different from a failure and does stop the run: it is an
+-- instruction, not an accident. Everything already written stays written.
+--
+-- cb = { on_source, on_done, on_cancel, on_error }. on_error is called only for
+-- a failure that stopped the whole run (there are none left today); per-source
+-- failures arrive through on_done.
 -- UNVERIFIED outside REAPER — see SPEC.md §10.
-function vo.TranscribeSources(cfg, sources, on_done, on_cancel, on_error)
+function vo.TranscribeSources(cfg, sources, cb)
+  cb = cb or {}
   local scratch = vo.ResolveScratchDir(cfg)
   vo.EnsureDir(scratch)
 
-  local results = {}
-  local index   = 0
+  local results, failures = {}, {}
+  local index = 0
 
-  local function step()
+  local function finish(source, words)
+    results[source.path] = words
+    if cb.on_source then cb.on_source(source.path, words, index, #sources) end
+  end
+
+  local function fail(source, reason)
+    failures[#failures + 1] = { path = source.path, reason = reason }
+  end
+
+  local step
+  step = function()
     index = index + 1
     if index > #sources then
-      on_done(results)
+      if cb.on_done then cb.on_done(results, failures) end
       return
     end
 
-    local source    = sources[index]
-    local key       = vo.CacheKey(source.path, source.size, cfg)
-    local prefix    = scratch .. "/" .. key
-    local csv_path  = prefix .. ".csv"
+    local source   = sources[index]
+    local key      = vo.CacheKey(source.path, source.size, cfg)
+    local prefix   = scratch .. "/" .. key
+    local csv_path = prefix .. ".csv"
 
     if not cfg.force_retranscribe and vo.FileExists(csv_path) then
       local f = io.open(csv_path, "r")
-      results[source.path] = vo.ParseWhisperCSV(f:read("a"))
+      finish(source, vo.ParseWhisperCSV(f:read("a")))
       f:close()
       step()
       return
@@ -3103,25 +3134,142 @@ function vo.TranscribeSources(cfg, sources, on_done, on_cancel, on_error)
     vo.RunWhisperAsync(cfg, argv, scratch,
       function(code, log)
         if code ~= 0 then
-          local tail = log:sub(-1500)
-          on_error(string.format("whisper-cli exited with code %d for:\n%s\n\n%s",
-                                 code, source.path, tail))
+          fail(source, string.format("whisper-cli exited with code %d\n\n%s",
+                                     code, log:sub(-1500)))
+          step()
           return
         end
         local f = io.open(csv_path, "r")
         if not f then
-          on_error("whisper-cli reported success but wrote no CSV:\n" .. csv_path)
+          fail(source, "whisper-cli reported success but wrote no CSV:\n" .. csv_path)
+          step()
           return
         end
-        results[source.path] = vo.ParseWhisperCSV(f:read("a"))
+        finish(source, vo.ParseWhisperCSV(f:read("a")))
         f:close()
         step()
       end,
-      on_cancel,
-      on_error)
+      cb.on_cancel,
+      function(err) fail(source, err); step() end)
   end
 
   step()
+end
+
+--------------------------------
+-- Coupled layer: transcript files
+--------------------------------
+
+function vo.ReadTranscript(source_path)
+  local path = vo.TranscriptPath(source_path)
+  if not path then return nil, "No source path." end
+  local f = io.open(path, "r")
+  -- This exact string is how vo.TranscriptState tells "never transcribed" from
+  -- "transcribed, but the file is broken". Do not reword it without changing
+  -- that check too.
+  if not f then return nil, "no transcript" end
+  local text = f:read("a")
+  f:close()
+  return vo.ParseTranscript(text)
+end
+
+-- Returns false plus a reason rather than raising: a read-only or network media
+-- directory must leave the session usable, just not persistent.
+function vo.WriteTranscript(source_path, words, meta)
+  local path = vo.TranscriptPath(source_path)
+  if not path then return false, "No source path." end
+  local f, err = io.open(path, "w")
+  if not f then return false, tostring(err or ("Could not write " .. path)) end
+  f:write(vo.SerializeTranscript(words, meta))
+  f:close()
+  return true, path
+end
+
+-- What Sources puts in its Transcribed column.
+--   "no"    -- no transcript file beside the audio
+--   "error" -- a file is there but could not be parsed; reason says why
+--   "stale" -- parsed, but the audio has changed size since it was made
+--   "yes"   -- parsed and current
+-- Returns: state, parsed transcript or nil, reason or nil.
+function vo.TranscriptState(source_path)
+  local parsed, why = vo.ReadTranscript(source_path)
+  if not parsed then
+    if why == "no transcript" then return "no" end
+    return "error", nil, why
+  end
+  local size = vo.FileSize(source_path)
+  if size and parsed.source_bytes and parsed.source_bytes > 0
+     and size ~= parsed.source_bytes then
+    return "stale", parsed
+  end
+  return "yes", parsed
+end
+
+--------------------------------
+-- Coupled layer: launching sibling scripts
+--------------------------------
+
+-- AddRemoveReaScript is idempotent: it returns the EXISTING command ID when the
+-- script is already in the action list, so this both installs and launches. A
+-- hardcoded _RS… command ID would be machine-local and is never used.
+--
+-- `filename` is a sibling of the VO scripts, i.e. one level above lib/.
+function vo.LaunchSibling(filename)
+  local here = debug.getinfo(1, "S").source:match("@?(.*[\\/])")
+  if not here then return false, "Could not resolve the script directory." end
+  local path = here .. "../" .. filename
+  local id = r.AddRemoveReaScript(true, 0, path, true)
+  if not id or id == 0 then
+    return false, "Could not register " .. filename .. " as an action."
+  end
+  r.Main_OnCommand(id, 0)
+  return true, path
+end
+
+--------------------------------
+-- Coupled layer: amplitude probing
+--------------------------------
+
+vo.PROBE_FLOOR_DB = -150.0  -- what digital silence reports as, instead of -inf
+
+-- An amplitude reader over one take, for vo.SnapBoundary and
+-- vo.MeasureNoiseFloor. Times are PROJECT time, matching the accessor's own
+-- base -- convert source times with vo.SourceTimeToProject before probing.
+--
+-- Returns the probe and a destroy function. ALWAYS call destroy, including on
+-- the error path: an undestroyed accessor holds the media file open.
+function vo.MakeTakeProbe(take)
+  if not take or not r.CreateTakeAudioAccessor then return nil, function() end end
+  local acc = r.CreateTakeAudioAccessor(take)
+  if not acc then return nil, function() end end
+
+  local source = r.GetMediaItemTake_Source(take)
+  local rate   = source and r.GetMediaSourceSampleRate and
+                 r.GetMediaSourceSampleRate(source) or 48000
+  if not rate or rate <= 0 then rate = 48000 end
+  local chans  = source and r.GetMediaSourceNumChannels and
+                 r.GetMediaSourceNumChannels(source) or 1
+  if not chans or chans < 1 then chans = 1 end
+
+  local function probe(t0, t1)
+    local n = math.floor((t1 - t0) * rate)
+    if n < 1 then return nil end
+    -- Cap the read so a pathological window cannot allocate without bound.
+    if n > 65536 then n = 65536 end
+    local buf = r.new_array(n * chans)
+    buf.clear()
+    if r.GetAudioAccessorSamples(acc, rate, chans, t0, n, buf) ~= 1 then return nil end
+    local sum = 0.0
+    for i = 1, n * chans do
+      local v = buf[i] or 0.0
+      sum = sum + v * v
+    end
+    local rms = math.sqrt(sum / (n * chans))
+    if rms <= 0 then return vo.PROBE_FLOOR_DB end
+    return 20.0 * math.log(rms, 10)
+  end
+
+  return probe, function() r.DestroyAudioAccessor(acc) end
 end
 
 --------------------------------
