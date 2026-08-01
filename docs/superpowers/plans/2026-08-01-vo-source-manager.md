@@ -1538,13 +1538,37 @@ local function TranscribeLabel(rows)
 end
 ```
 
+**Batch is the normal case, not the exception.** A project where every line was
+recorded to its own file means 50+ rows, so the list must make a large run easy
+to start and safe to interrupt:
+
+- **Select all** and **Select untranscribed** buttons above the table, plus a
+  text filter box that narrows by filename. Shift-click extends a range;
+  Ctrl/Cmd-click toggles one row.
+- The Transcribe button names the count: `Transcribe 47 files`.
+- **Progress is per file**: `Transcribing 12 of 47 — RIVA_line_012.wav`, with
+  the elapsed count visible. The row being worked on is highlighted.
+- **Each transcript is written the moment its file finishes**, via
+  `vo.TranscribeSources`'s `on_source` callback (`ajsfx_vo.lua`). Never
+  accumulate and write at the end — a cancel at file 40 would throw away 39
+  completed whisper runs.
+- **One bad file does not stop the batch.** `vo.TranscribeSources` collects
+  failures and continues; `on_done(results, failures)` reports them together.
+  List the failed filenames inline with their reasons, and leave every other
+  row transcribed.
+- **Cancel stops the run** and keeps everything already written.
+- Already-transcribed rows are skipped unless the run is a re-transcribe, so
+  re-running a batch after fixing two files costs two files, not fifty.
+
 Running a transcription:
 
 ```lua
 local function RunTranscribe(rows, force)
-  local sources = {}
+  local sources, size_of = {}, {}
   for _, row in ipairs(rows) do
-    sources[#sources + 1] = { path = row.path, size = vo.FileSize(row.path) or 0 }
+    local size = vo.FileSize(row.path) or 0
+    size_of[row.path] = size
+    sources[#sources + 1] = { path = row.path, size = size }
   end
   if #sources == 0 then return end
 
@@ -1552,40 +1576,66 @@ local function RunTranscribe(rows, force)
   for k, v in pairs(state.cfg) do cfg[k] = v end
   cfg.force_retranscribe = force
 
-  state.running  = true
-  state.progress = { done = 0, total = #sources }
+  state.running   = true
+  state.progress  = { done = 0, total = #sources, current = nil }
+  state.write_fails = {}
 
-  vo.TranscribeSources(cfg, sources,
-    function(results)
-      state.running = false
-      local failures = {}
-      for _, src in ipairs(sources) do
-        local words = results[src.path]
-        if words then
-          local ok, why = vo.WriteTranscript(src.path, words, {
-            source       = src.path:match("([^\\/]+)$") or src.path,
-            source_bytes = src.size,
-            backend      = "whisper.cpp",
-            model        = cfg.whisper_model or "",
-            language     = cfg.whisper_language or "",
-          })
-          if not ok then failures[#failures + 1] = why end
-        end
+  vo.TranscribeSources(cfg, sources, {
+    -- Written per file, as each finishes. A cancel at file 40 of 47 must not
+    -- discard 39 completed whisper runs.
+    on_source = function(path, words, i, total)
+      local ok, why = vo.WriteTranscript(path, words, {
+        source       = path:match("([^\\/]+)$") or path,
+        source_bytes = size_of[path] or 0,
+        backend      = "whisper.cpp",
+        model        = cfg.whisper_model or "",
+        language     = cfg.whisper_language or "",
+      })
+      if not ok then
+        state.write_fails[#state.write_fails + 1] = (path .. ": " .. tostring(why))
       end
-      state.scanned_at = -1  -- force a rescan so the column refreshes
-      if #failures > 0 then
-        state.message = { text = "Transcribed, but could not write beside the audio:\n"
-                                 .. table.concat(failures, "\n"), tone = "warn" }
-      else
-        state.message = { text = "Transcribed " .. #sources .. " file(s).", tone = "info" }
-      end
+      state.progress = { done = i, total = total, current = path }
+      state.scanned_at = -1   -- rescan so the row's column flips as it lands
     end,
-    function() state.running = false
-               state.message = { text = "Cancelled.", tone = "info" } end,
-    function(err) state.running = false
-                  state.message = { text = err, tone = "error" } end)
+
+    on_done = function(results, failures)
+      state.running    = false
+      state.progress   = nil
+      state.scanned_at = -1
+      local done = 0
+      for _ in pairs(results) do done = done + 1 end
+
+      local lines = { string.format("Transcribed %d of %d file(s).", done, #sources) }
+      for _, f in ipairs(failures or {}) do
+        lines[#lines + 1] = (f.path:match("([^\\/]+)$") or f.path) .. ": " .. f.reason
+      end
+      for _, w in ipairs(state.write_fails) do lines[#lines + 1] = w end
+
+      local tone = "info"
+      if #(failures or {}) > 0 or #state.write_fails > 0 then tone = "warn" end
+      state.message = { text = table.concat(lines, "\n"), tone = tone }
+    end,
+
+    on_cancel = function()
+      state.running  = false
+      state.progress = nil
+      state.scanned_at = -1
+      state.message = { text = "Cancelled. Files already transcribed were kept.",
+                        tone = "info" }
+    end,
+
+    on_error = function(err)
+      state.running  = false
+      state.progress = nil
+      state.message  = { text = err, tone = "error" }
+    end,
+  })
 end
 ```
+
+Note the callback table: `vo.TranscribeSources(cfg, sources, cb)` takes one
+table, not four positional functions. Per-source failures arrive through
+`on_done`'s second argument, never through `on_error`.
 
 Backend readiness: re-evaluate `vo.IsBackendReady(state.cfg)` on a throttle, not per frame — copy the throttle pattern from `ajsfx_VO_ScriptMatch.lua` (search for `IsBackendReady` there). When not ready, disable Transcribe and draw an inline red line with the reason plus a `Settings…` button calling `vo.LaunchSibling("ajsfx_VO_Settings.lua")`.
 
@@ -1607,6 +1657,16 @@ Expected: no output.
 4. Select the transcribed row alone; confirm the button reads `Re-transcribe`.
 5. Select both; confirm it reads `Transcribe`.
 6. Re-record over the transcribed wav so its size changes; confirm the row reads `stale`.
+7. **Batch:** open a project with 50+ one-line-per-file wavs. Press
+   `Select untranscribed`, then Transcribe. Confirm the progress line counts
+   `n of N` and names the current file, and that transcript files appear
+   beside the audio *as the run proceeds*, not all at the end.
+8. **Batch cancel:** cancel a 50-file run partway. Confirm the files already
+   done keep their transcripts and their rows read `yes`, and re-running
+   transcribes only the remainder.
+9. **Batch with a bad file:** put an unreadable/zero-byte wav in the middle of
+   the selection. Confirm the run completes, that file is listed by name with
+   its reason, and every other file still transcribed.
 
 - [ ] **Step 4: Commit**
 
