@@ -1275,11 +1275,28 @@ local style_depth = 0
 -- above and below equally, which is also why these cells ignore the column's
 -- own vertical alignment — a filled cell has nowhere to align to.
 local function PushFilledField(row_h)
-  local pad_x, pad_y = im.GetStyleVar(ctx, im.StyleVar_FramePadding)
-  local grown = math.max(pad_y, (row_h - im.GetTextLineHeight(ctx)) / 2)
-  im.PushStyleVar(ctx, im.StyleVar_FramePadding, pad_x, grown)
+  local cpad_x, cpad_y = im.GetStyleVar(ctx, im.StyleVar_CellPadding)
+  local fpad_x         = im.GetStyleVar(ctx, im.StyleVar_FramePadding)
+
+  -- The cell padding sits OUTSIDE the frame on all four sides, which is what
+  -- left a margin around the blue and made the column read as ragged. Reclaim
+  -- it: start one padding up and left of where the cell's content would begin,
+  -- and take two paddings of extra width and height back. The frame then
+  -- reaches the column borders — the blue rectangle IS the cell rather than a
+  -- box sitting inside it.
+  local avail = im.GetContentRegionAvail(ctx)
+  local x, y  = im.GetCursorScreenPos(ctx)
+  im.SetCursorScreenPos(ctx, x - cpad_x, y - cpad_y)
+
+  -- Height is reached through FramePadding rather than a size argument, since
+  -- InputText takes no height. Padding above and below is equal, so the text
+  -- sits centred, and the field stays single-line — Enter still commits a
+  -- rename instead of putting a newline in a filename.
+  local h     = row_h + cpad_y * 2
+  local grown = math.max(0, (h - im.GetTextLineHeight(ctx)) / 2)
+  im.PushStyleVar(ctx, im.StyleVar_FramePadding, fpad_x, grown)
   style_depth = style_depth + 1
-  im.SetNextItemWidth(ctx, -1)
+  im.SetNextItemWidth(ctx, avail + cpad_x * 2)
 end
 
 local function PopFilledField()
