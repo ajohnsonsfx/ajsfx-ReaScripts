@@ -329,8 +329,33 @@ end
 -- not touch the audio (so the audio's own size never changes), but it always
 -- rewrites the transcript, which is what actually needs to invalidate the
 -- cache. No staleness bookkeeping is needed in this window as a result.
-local function MatchKey(paths, script_csv, mapping)
-  local parts = { script_csv or "", vo.SerializeLayout({ mapping = mapping }) }
+--
+-- The settings are inputs too: anchor_count, review_floor, window_slack and the
+-- substitution list all steer matching, and a user who changes one in Settings
+-- while this window is open must see the result. Rather than list the knobs --
+-- a list that would rot the next time one is added -- the whole config folds
+-- into the key.
+local function CfgKey(cfg)
+  local keys = {}
+  for k in pairs(cfg or {}) do keys[#keys + 1] = k end
+  table.sort(keys)
+
+  local parts = {}
+  for _, k in ipairs(keys) do
+    local v = cfg[k]
+    if type(v) == "table" then
+      local inner = {}
+      for ik, iv in pairs(v) do inner[#inner + 1] = tostring(ik) .. "=" .. tostring(iv) end
+      table.sort(inner)
+      v = "{" .. table.concat(inner, ",") .. "}"
+    end
+    parts[#parts + 1] = k .. "=" .. tostring(v)
+  end
+  return table.concat(parts, ";")
+end
+
+local function MatchKey(paths, script_csv, mapping, cfg)
+  local parts = { script_csv or "", vo.SerializeLayout({ mapping = mapping }), CfgKey(cfg) }
   for _, p in ipairs(paths) do
     local tpath = vo.TranscriptPath(p)
     parts[#parts + 1] = p .. ":" .. tostring(tpath and vo.FileSize(tpath) or 0)
@@ -340,7 +365,7 @@ end
 
 local function LoadMatches(cfg)
   local paths = vo.ProjectSourcePaths(state.items)
-  local key   = MatchKey(paths, state.script_csv, state.mapping)
+  local key   = MatchKey(paths, state.script_csv, state.mapping, cfg)
   if key == state.match_key then return state.matches end
 
   local transcripts = {}
