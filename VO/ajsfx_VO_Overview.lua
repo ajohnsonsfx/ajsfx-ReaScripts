@@ -1260,48 +1260,47 @@ local function CellWidget(key, row_h)
   AlignCell(key, row_h, im.GetFrameHeight(ctx))
 end
 
--- Depth of the style stack, unwound by DrawTable alongside the ID, font and
--- wrap stacks.
-local style_depth = 0
+-- Depth of the style-colour stack, unwound by DrawTable alongside the ID, font
+-- and wrap stacks.
+local colour_depth = 0
 
--- An editable cell whose frame FILLS its row. The blue frame is the affordance
+-- An editable cell, shaded across its whole area. The shading is the affordance
 -- that says "you can type here"; on a tall row a one-line-high field floating
 -- in a three-line-high cell reads as a gap between fields rather than as the
 -- field itself.
 --
--- Grown with FramePadding rather than by switching to InputTextMultiline: the
--- field stays single-line, so Enter still commits a rename instead of inserting
--- a newline into a filename. The text sits centred because padding is applied
--- above and below equally, which is also why these cells ignore the column's
--- own vertical alignment — a filled cell has nowhere to align to.
-local function PushFilledField(row_h)
-  local cpad_x, cpad_y = im.GetStyleVar(ctx, im.StyleVar_CellPadding)
-  local fpad_x         = im.GetStyleVar(ctx, im.StyleVar_FramePadding)
+-- Shade the CELL, not the widget.
+--
+-- Growing the widget's own frame to fill the cell was the first attempt, and
+-- it could not be made to land: the frame reaches its height through
+-- FramePadding, which is applied above and below in whole pixels, so on some
+-- row heights it fell a pixel short of the border and on others it spilled
+-- past. TableSetBgColor paints the cell rectangle ImGui already computed, so
+-- the edges are exact at every row height by construction, and there is no
+-- geometry here to get wrong.
+--
+-- The field then draws its text only. All three frame colours go transparent:
+-- with the whole cell shaded, an inset hover box would read as the field
+-- shrinking under the cursor. The caret and the selection highlight still
+-- appear on click, which is where the feedback actually matters.
+local FIELD_COLOURS = { 'Col_FrameBg', 'Col_FrameBgHovered', 'Col_FrameBgActive' }
 
-  -- The cell padding sits OUTSIDE the frame on all four sides, which is what
-  -- left a margin around the blue and made the column read as ragged. Reclaim
-  -- it: start one padding up and left of where the cell's content would begin,
-  -- and take two paddings of extra width and height back. The frame then
-  -- reaches the column borders — the blue rectangle IS the cell rather than a
-  -- box sitting inside it.
-  local avail = im.GetContentRegionAvail(ctx)
-  local x, y  = im.GetCursorScreenPos(ctx)
-  im.SetCursorScreenPos(ctx, x - cpad_x, y - cpad_y)
-
-  -- Height is reached through FramePadding rather than a size argument, since
-  -- InputText takes no height. Padding above and below is equal, so the text
-  -- sits centred, and the field stays single-line — Enter still commits a
-  -- rename instead of putting a newline in a filename.
-  local h     = row_h + cpad_y * 2
-  local grown = math.max(0, (h - im.GetTextLineHeight(ctx)) / 2)
-  im.PushStyleVar(ctx, im.StyleVar_FramePadding, fpad_x, grown)
-  style_depth = style_depth + 1
-  im.SetNextItemWidth(ctx, avail + cpad_x * 2)
+local function PushFilledField(key, row_h)
+  im.TableSetBgColor(ctx, im.TableBgTarget_CellBg,
+                     im.GetStyleColor(ctx, im.Col_FrameBg), -1)
+  for _, name in ipairs(FIELD_COLOURS) do
+    im.PushStyleColor(ctx, im[name], 0x00000000)
+    colour_depth = colour_depth + 1
+  end
+  -- Now that the shading is the cell itself, the text inside can honour the
+  -- column's own vertical alignment like every other cell does.
+  AlignCell(key, row_h, im.GetFrameHeight(ctx))
+  im.SetNextItemWidth(ctx, -1)
 end
 
 local function PopFilledField()
-  im.PopStyleVar(ctx)
-  style_depth = style_depth - 1
+  im.PopStyleColor(ctx, #FIELD_COLOURS)
+  colour_depth = colour_depth - #FIELD_COLOURS
 end
 
 -- The header menu.
@@ -1462,7 +1461,7 @@ local function DrawTableBody()
       CellText(row, "item_name", 4, row_h, shown, "disabled")
       TooltipEvenWhenDisabled("This line has no take yet, so there is no item to name.")
     else
-      PushFilledField(row_h)
+      PushFilledField("item_name", row_h)
       local fchanged, fname = im.InputText(ctx, "##fn", shown,
                                            im.InputTextFlags_EnterReturnsTrue)
       PopFilledField()
@@ -1527,7 +1526,7 @@ local function DrawTableBody()
 
     -- Notes ---------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 11)
-    PushFilledField(row_h)
+    PushFilledField("notes", row_h)
     local nchanged, notes = im.InputText(ctx, "##notes", row.notes or "")
     PopFilledField()
     if nchanged then
@@ -1574,9 +1573,9 @@ local function DrawTable(height)
     im.PopTextWrapPos(ctx)
     wrap_depth = wrap_depth - 1
   end
-  while style_depth > 0 do
-    im.PopStyleVar(ctx)
-    style_depth = style_depth - 1
+  while colour_depth > 0 do
+    im.PopStyleColor(ctx)
+    colour_depth = colour_depth - 1
   end
   im.EndTable(ctx)
   if not ok then state.message, state.message_kind = tostring(err), "error" end

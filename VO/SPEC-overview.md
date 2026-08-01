@@ -369,11 +369,17 @@ wraps the text into fewer lines than ImGui goes on to draw, and every offset
 computed from it falls short by the difference. Reading back what was drawn
 cannot fail that way.
 
-The cost is one frame of lag, which is not perceptible at frame rate, and which
-is also why the Item name and Notes fields size themselves from the same
-measurement. Those two grow their `FramePadding` to fill the row rather than
-switching to `InputTextMultiline`, so the field stays single-line and Enter
-still commits a rename instead of putting a newline in a filename.
+The cost is one frame of lag, which is not perceptible at frame rate.
+
+The Item name and Notes cells are shaded across their whole area with
+`TableSetBgColor`, and their inputs draw with all three `FrameBg` colours
+transparent. Growing each input's own frame to fill its cell was tried first and
+could not be made to land: a frame reaches its height through `FramePadding`,
+applied above and below in whole pixels, so at some row heights it fell short of
+the border and at others it spilled past. Painting the cell rectangle ImGui has
+already computed is exact at every row height, and leaves no geometry to get
+wrong. The inputs stay single-line — `InputTextMultiline` would make Enter put a
+newline in a filename instead of committing the rename.
 
 The full design is in
 `docs/superpowers/specs/2026-08-01-vo-overview-view-settings-design.md`.
