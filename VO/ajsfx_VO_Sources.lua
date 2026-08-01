@@ -50,8 +50,6 @@ local KEY_RSUPER     = Api('Key_RightSuper')
 -- TableHeadersRow and simply has no header tooltips.
 local HEADER_ROW_FLAGS = Api('TableRowFlags_Headers')
 
-local PROJ_SECTION = "ajsfx_vo"
-
 -- vo.TranscriptState and vo.IsBackendReady both stat the filesystem, so both
 -- are gated behind a throttle rather than run every frame (CLAUDE.md: use
 -- GetProjectStateChangeCount(0) for cache invalidation).
