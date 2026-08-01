@@ -1649,6 +1649,17 @@ local function DrawTableBody()
     im.TableSetColumnIndex(ctx, 9)
     CellText(row, "source", 9, row_h,
              row.source_path and vo.Basename(row.source_path) or "", "disabled")
+    if row.source_path and im.IsItemHovered(ctx) and im.IsMouseDoubleClicked(ctx, 0) then
+      local captured = row.source_path
+      pending_action = function()
+        -- Written BEFORE the launch and read every frame by Sources, so an
+        -- already-open Sources window picks the handoff up too, rather than
+        -- only a freshly launched one.
+        r.SetExtState(vo.EXT_SECTION, "focus_source", captured, false)
+        local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
+        if not ok then state.message, state.message_kind = tostring(why), "error" end
+      end
+    end
 
     im.TableSetColumnIndex(ctx, 10)
     CellText(row, "time", 10, row_h, FormatTime(row.proj_time), "disabled")
@@ -1870,6 +1881,19 @@ local function loop()
     end
     im.SameLine(ctx)
     if im.Button(ctx, "Settings") then state.settings_open = true end
+    im.SameLine(ctx)
+    -- The other two windows of the set. Overview is where a session is read, so
+    -- it is also where the user reaches for the window that makes the words and
+    -- the window that makes the clips.
+    if im.Button(ctx, "Sources…") then
+      local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
+      if not ok then state.message, state.message_kind = tostring(why), "error" end
+    end
+    im.SameLine(ctx)
+    if im.Button(ctx, "Cut…") then
+      local ok, why = vo.LaunchSibling("ajsfx_VO_Cut.lua")
+      if not ok then state.message, state.message_kind = tostring(why), "error" end
+    end
 
     if state.header_error ~= "" then
       im.TextColored(ctx, 0xDD6666FF, state.header_error)

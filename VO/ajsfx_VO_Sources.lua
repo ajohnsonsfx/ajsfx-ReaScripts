@@ -83,6 +83,7 @@ local state = {
   progress  = nil,
   run_started = nil,
   write_fails = {},
+  scroll_to = nil,     -- path Overview asked us to bring into view, once
   detail    = nil,     -- path of the row whose detail panel is open (Task 9)
   detail_paragraph = 1, -- index into that transcript's paragraphs whose words are shown
   cfg       = vo.LoadConfig(),
@@ -403,6 +404,12 @@ local function DrawTableBody(visible)
 
     -- File ------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 0)
+    -- A handoff from Overview can land on a row far down a long list; bring it
+    -- to the middle of the view once, then forget the request.
+    if state.scroll_to == row.path then
+      im.SetScrollHereY(ctx, 0.5)
+      state.scroll_to = nil
+    end
     if im.Selectable(ctx, row.name, state.selected[row.path] == true, sel_flags) then
       -- Read the modifiers now, inside the frame that saw the click; by the
       -- time the deferred action runs the key could already be up.
@@ -720,6 +727,29 @@ end
 -- Main loop
 -- -----------------------------------------------------------------------
 
+-- Overview hands a file over by writing it to ExtState. Read every frame rather
+-- than once at startup: the window Overview hands off to is usually one that is
+-- already open, and only the reader knows when it has rows to match against.
+local function ConsumeFocusRequest()
+  local focus = r.GetExtState(vo.EXT_SECTION, "focus_source")
+  if focus == "" then return end
+  r.DeleteExtState(vo.EXT_SECTION, "focus_source", false)
+
+  for _, row in ipairs(state.rows) do
+    if row.path == focus then
+      -- A filter that hides the requested file would make the handoff look
+      -- like it did nothing, so the filter loses.
+      if not row.name:lower():find(state.filter:lower(), 1, true) then state.filter = "" end
+      state.selected         = { [focus] = true }
+      state.anchor           = focus
+      state.detail           = focus
+      state.detail_paragraph = 1
+      state.scroll_to        = focus
+      return
+    end
+  end
+end
+
 local function loop()
   -- RefreshBackend is throttled internally, so this call is cheap every frame.
   RefreshBackend()
@@ -728,6 +758,9 @@ local function loop()
   -- so the per-file progress line and row highlight update every frame, the
   -- same way ScriptMatch keeps its own window alive during a run.
   MaybeRescan()
+  -- After the rescan, so a file that has only just appeared in the project can
+  -- still be focused on the frame it arrives.
+  ConsumeFocusRequest()
 
   im.SetNextWindowSize(ctx, 900, 560, im.Cond_FirstUseEver)
   local visible_win, open = im.Begin(ctx, 'ajsfx VO Sources', true)
