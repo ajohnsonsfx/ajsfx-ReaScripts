@@ -121,10 +121,10 @@ Backend,whisper.cpp
 Model,ggml-medium.en.bin
 Language,en
 
-Start,End,Text,Segment
-12.480,12.660,we,0
-12.660,12.910,should,0
-12.910,13.040,not,0
+Start,End,Text
+12.480,12.660,we
+12.660,12.910,should
+12.910,13.040,not
 ```
 
 - **Times are source-relative, in seconds**, to three decimals. The file must
@@ -132,12 +132,17 @@ Start,End,Text,Segment
   of which the audio knows about. `vo.ProjectTimeToSource` and
   `vo.SourceTimeToProject` (already present, `ajsfx_vo.lua:1662`) convert at
   the boundary.
-- **One row per word.** `whisper-cli -ml 1 -sow -ocsv` already emits exactly
-  this, so writing it is a passthrough, not extra work.
-- **`Segment`** is whisper's own segment index, carried as a hint only. Nothing
-  in matching may treat it as a line boundary — that is the mistake this
-  rewrite exists to undo. It is retained because it is free and is useful when
-  displaying raw transcript text in the detail view.
+- **One row per word.** `whisper-cli -ml 1 -sow -ocsv` (`vo.BuildWhisperArgv`,
+  `ajsfx_vo.lua:1074`) already emits exactly this, so writing it is a
+  passthrough, not extra work.
+- **No segment column.** `-ml 1` makes every whisper segment exactly one word,
+  so the recogniser's own sentence grouping does not survive the invocation and
+  storing an index for it would store nothing. This is fine, and slightly
+  fortunate: the grouping is the guess this rewrite exists to stop persisting.
+  Where the detail view (§6.1) wants readable prose it reassembles words with
+  single spaces and breaks a paragraph after a word ending in `.`, `?` or `!` —
+  a display rule, computed at draw time, never stored and never consulted by
+  matching.
 - **Preamble** records what produced the words. `Source bytes` is the staleness
   check. `Backend`, `Model` and `Language` are informational, shown in the
   detail view so the user can see a file was done on the small model.
@@ -159,10 +164,16 @@ ajsfx VO Project,1
 Script CSV,D:\Session\script.csv
 Mapping,speaker=Character;asset=Filename;text=Line Text
 
-Key,Filename,Source,Source start,Select,Verified,Name override,Notes
-RIVA_session.wav|12480,vo_riva_intro_01,D:\Session\RIVA_session.wav,12.480,yes,yes,,great read
+Key,Filename,Source,Source start,Select,Status,Name override,Notes
+RIVA_session.wav|12480,vo_riva_intro_01,D:\Session\RIVA_session.wav,12.480,yes,verified,,great read
 |vo_riva_deck_03,vo_riva_deck_03,,,,,,re-record next session
 ```
+
+`Status` is the user-set mark and keeps its existing vocabulary — `verified`
+or `flagged`, anything else dropped on load (`vo.TRACKER_STATUSES`, carried
+over unchanged). `Select` is new and is what Cut acts on; it is a separate
+column rather than a third status because a take can be both selected and
+flagged.
 
 - **Keys** are `<basename>|<source start in ms>` for a row backed by audio, and
   `|<filename>` for a script line with no audio. This is `vo.OverviewKey`,
@@ -246,7 +257,7 @@ async progress reporting from `vo.RunWhisperAsync`.
 
 **Double-clicking a row opens the detail panel** in the same window — a split
 below or beside the list, not a new script. It shows the preamble, the raw
-transcript as flowing text grouped by whisper segment, per-word timings on
+transcript as flowing text (reassembled per §4.1), per-word timings on
 hover, and a `Re-transcribe this file` button. Clicking a word moves the edit
 cursor to that position in the first project item referencing the source.
 
