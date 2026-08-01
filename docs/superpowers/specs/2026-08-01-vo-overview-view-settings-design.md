@@ -1,8 +1,11 @@
 # VO Overview — view settings, column reorder, per-column presentation
 
 Date: 2026-08-01
-Scope: `VO/ajsfx_VO_Overview.lua` only. No changes to `VO/lib/ajsfx_vo.lua`,
-ScriptMatch, or the Settings script.
+Scope: `VO/ajsfx_VO_Overview.lua`, plus a new pure module
+`VO/lib/ajsfx_vo_view.lua` holding the parts worth unit-testing. No changes to
+`VO/lib/ajsfx_vo.lua` or the Settings script; `ajsfx_VO_ScriptMatch.lua` changes
+only in its `@provides` and version header, since it is the package that ships
+these files.
 
 ## Problem
 
