@@ -16,6 +16,7 @@ if not script_path then script_path = "" end
 package.path = script_path .. "?.lua;" .. script_path .. "../?.lua;" .. package.path
 local core = require("lib.ajsfx_core")
 local vo   = require("lib.ajsfx_vo")
+local view = require("lib.ajsfx_vo_view")
 
 local success, im = pcall(function()
   package.path = r.ImGui_GetBuiltinPath() .. '/?.lua;' .. package.path
@@ -89,6 +90,14 @@ local COLUMNS = {
   { key = "notes",      label = "Notes",      width = 200 },
 }
 
+-- Every column key, in declaration order. Used to load, save and clear the
+-- per-column settings without anything having to restate the list.
+local function ColumnKeys()
+  local keys = {}
+  for i, c in ipairs(COLUMNS) do keys[i] = c.key end
+  return keys
+end
+
 local SORTS = {
   { key = "script",    label = "Script order" },
   { key = "status",    label = "Status" },
@@ -158,7 +167,18 @@ local state = {
 
   message       = "",
   message_kind  = "ok",
+
+  -- Presentation. Loaded once at startup and written through on every change;
+  -- nothing reads ExtState per frame.
+  view          = { restore = true, sizes = {}, cols = {} },
+  settings_open = false,
 }
+
+-- Bumped whenever anything that changes a row's height changes: a settings
+-- edit, a column resize, or a rebuild. The row-height cache is keyed on it;
+-- declared here so every mutator, Rebuild included, is below it.
+local view_gen = 0
+local function BumpViewGen() view_gen = view_gen + 1 end
 
 -- -----------------------------------------------------------------------
 -- Disk
@@ -345,6 +365,9 @@ local function Rebuild()
     seen[row.key] = n
     row.uid = row.key .. "#" .. n
   end
+
+  -- Row text may have changed, so every cached row height is stale.
+  BumpViewGen()
 end
 
 local function Reload()
@@ -632,6 +655,60 @@ local function SaveLayoutSettings()
   end
 end
 
+-- -----------------------------------------------------------------------
+-- Presentation settings
+--
+-- How the table LOOKS belongs to the user, not to the session, so all of this
+-- lives in ExtState and is shared by every project. Column widths and order are
+-- not here: ImGui persists those itself, into REAPER/ReaImGui/<hash>.ini.
+-- -----------------------------------------------------------------------
+
+local function LoadViewSettings()
+  state.view.restore = view.LoadRestore()
+  state.view.sizes   = view.LoadFontSizes()
+  state.view.cols    = {}
+  for _, key in ipairs(ColumnKeys()) do
+    -- With restore off the stored per-column settings are ignored AND cleared
+    -- (see SetRestore), so this branch only ever sees an empty store. Reading
+    -- the defaults explicitly keeps that true even if a key survives somehow.
+    state.view.cols[key] = state.view.restore and view.LoadColumn(key)
+                           or view.NormalizeColumn(key, nil)
+  end
+  BumpViewGen()
+end
+
+local function ColumnView(key)
+  return state.view.cols[key] or view.NormalizeColumn(key, nil)
+end
+
+local function SetColumnView(key, field, value)
+  local col = ColumnView(key)
+  col[field] = value
+  state.view.cols[key] = col
+  if state.view.restore then view.SaveColumn(key, col) end
+  BumpViewGen()
+end
+
+-- Turning restore OFF clears the stored per-column settings outright rather
+-- than merely ignoring them, so "off" means one thing. Leaving them in place
+-- would hide a layer of preferences that reappears the moment the box is
+-- ticked again, which is a surprise with no upside.
+local function SetRestore(on)
+  state.view.restore = on
+  view.SaveRestore(on)
+  if not on then
+    view.ClearColumns(ColumnKeys())
+    for _, key in ipairs(ColumnKeys()) do
+      state.view.cols[key] = view.NormalizeColumn(key, nil)
+    end
+  else
+    for _, key in ipairs(ColumnKeys()) do
+      view.SaveColumn(key, ColumnView(key))
+    end
+  end
+  BumpViewGen()
+end
+
 -- The rows the tool acts on: the selection if there is one, otherwise every row
 -- currently visible. Filters therefore scope the sort when the selection does not.
 local function AffectedRows()
@@ -788,6 +865,93 @@ end
 -- -----------------------------------------------------------------------
 
 local ctx = im.CreateContext('VO Overview')
+
+-- -----------------------------------------------------------------------
+-- Fonts
+--
+-- ReaImGui fonts are created at a fixed size and must be attached to the
+-- context before the frame that uses them, so a size change cannot take effect
+-- until the next frame. At frame rate that is invisible.
+--
+-- Medium pushes its own font rather than relying on the default, so all three
+-- presets are editable in the same way.
+--
+-- Everything below uses ctx, which is why the block sits here rather than with
+-- the other settings code: a function written above that local would bind the
+-- GLOBAL ctx, which is nil.
+-- -----------------------------------------------------------------------
+
+local fonts       = {}     -- [size_key] = font object, or nil if creation failed
+local fonts_dirty = true   -- set whenever a preset size changes
+local fonts_off   = false  -- a push failed once; stop trying (see PushCellFont)
+
+local function EnsureFonts()
+  if not fonts_dirty or fonts_off then return end
+  fonts_dirty = false
+
+  for _, key in ipairs(view.FONT_KEYS) do
+    local old = fonts[key]
+    if old then
+      -- Detach before dropping the reference: an attached font ReaImGui still
+      -- holds outlives the Lua variable that made it.
+      pcall(function() im.Detach(ctx, old) end)
+      fonts[key] = nil
+    end
+    local size = state.view.sizes[key] or view.FONT_DEFAULTS[key]
+    local ok, font = pcall(function()
+      local f = im.CreateFont('sans-serif', size)
+      im.Attach(ctx, f)
+      return f
+    end)
+    if ok then
+      fonts[key] = font
+    else
+      -- The table still draws, in the default font. Named rather than
+      -- swallowed: a font that would not load is exactly the kind of silent
+      -- difference a user would otherwise blame on the setting not working.
+      state.message, state.message_kind =
+        "Could not create the " .. key .. " font; that size will draw at the default.", "error"
+    end
+  end
+end
+
+-- Depth of the font stack, so an error thrown mid-row can be unwound. ImGui
+-- raises on an unbalanced font stack at EndTable, which would bury the real
+-- error under a second one.
+local font_depth = 0
+
+-- Paired by return value, not by testing the depth: when a font failed to
+-- create the push is skipped, and a Pop that only checked `font_depth > 0`
+-- would then pop an OUTER caller's font instead of nothing.
+-- The push is guarded, and one failure turns the whole pool off for the
+-- session. ReaImGui 0.10 reworked fonts — they became sizeless, with the size
+-- moving to PushFont — and this script pins the '0.9.3' shim, which is supposed
+-- to keep the old two-argument form working. If some binding does not adapt it,
+-- the alternative to this guard is an error thrown on every cell of every row.
+-- Degrading to the default font costs the user a preference; it does not cost
+-- them the table.
+local function PushCellFont(key)
+  if fonts_off then return false end
+  local font = fonts[ColumnView(key).font]
+  if not font then return false end
+
+  local ok = pcall(im.PushFont, ctx, font)
+  if not ok then
+    fonts_off, fonts = true, {}
+    state.message, state.message_kind =
+      "This ReaImGui build did not accept the font sizes; the table is drawing " ..
+      "at its default size. Everything else still works.", "error"
+    return false
+  end
+  font_depth = font_depth + 1
+  return true
+end
+
+local function PopCellFont(pushed)
+  if not pushed then return end
+  im.PopFont(ctx)
+  font_depth = font_depth - 1
+end
 
 local function FormatTime(t)
   if not t then return "" end
@@ -980,6 +1144,173 @@ end
 -- PushID/PopID" instead, which buries the real error under a second one.
 local id_depth = 0
 
+-- -----------------------------------------------------------------------
+-- Row heights
+--
+-- ImGui has no TableGetColumnWidth: a cell's usable width is only knowable from
+-- inside that cell, which is a frame too late to size the row it belongs to.
+-- So cells record their width as they draw, and the NEXT frame measures with
+-- it. While a column edge is being dragged the heights are therefore one frame
+-- stale; they settle on the following frame, which at frame rate is not
+-- perceptible. The alternative — a hidden measuring pass — costs a whole extra
+-- table every frame.
+-- -----------------------------------------------------------------------
+
+local cell_width = {}   -- [column index, 0-based] = last seen content width
+
+-- Recording a width is what invalidates cached heights on a resize or reorder.
+local function RecordCellWidth(index)
+  local w = im.GetContentRegionAvail(ctx)
+  local prev = cell_width[index]
+  if not prev or math.abs(prev - w) > 0.5 then
+    cell_width[index] = w
+    BumpViewGen()
+  end
+end
+
+-- Which columns can wrap, and what text they wrap. Kept next to the measurer so
+-- adding a wrapping column is one edit, not two.
+local WRAPPABLE = {
+  { index = 3, key = "character",  text = function(row) return row.character or "" end },
+  { index = 5, key = "asset",      text = function(row) return row.asset or "" end },
+  { index = 7, key = "line_text",  text = function(row) return row.line_text or "" end },
+  { index = 8, key = "transcript", text = function(row) return row.transcript or "" end },
+  { index = 9, key = "source",
+    text = function(row) return row.source_path and vo.Basename(row.source_path) or "" end },
+}
+
+-- The height this row needs, cached against the generation counter so a table
+-- nobody is touching costs one comparison per row per frame. DrawTableBody
+-- emits every row every frame (no ListClipper — ReaImGui rejects it here), so
+-- an uncached CalcTextSize per wrapping cell would be paid on every row.
+local function RowHeight(row)
+  if row._vh_gen == view_gen and row._vh then return row._vh end
+
+  -- Floored at the frame height so a row holding an InputText is never shorter
+  -- than the widget in it.
+  local h = im.GetFrameHeight(ctx)
+
+  for _, w in ipairs(WRAPPABLE) do
+    local col = ColumnView(w.key)
+    local text = w.text(row)
+    if col.wrap and text ~= "" then
+      local width = cell_width[w.index]
+      if width and width > 1 then
+        local f = PushCellFont(w.key)
+        local _, th = im.CalcTextSize(ctx, text, nil, width)
+        PopCellFont(f)
+        if th > h then h = th end
+      end
+    end
+  end
+
+  row._vh, row._vh_gen = h, view_gen
+  return h
+end
+
+-- Depth of the text-wrap stack, unwound by DrawTable for the same reason the ID
+-- and font stacks are.
+local wrap_depth = 0
+
+-- Move the caret down so this cell sits where its column's alignment says. The
+-- height of what is about to be drawn has to be passed in: ImGui cannot be
+-- asked after the fact without having already drawn it in the wrong place.
+local function AlignCell(key, row_h, cell_h)
+  local offset = view.AlignOffset(row_h, cell_h, ColumnView(key).align)
+  if offset > 0 then im.SetCursorPosY(ctx, im.GetCursorPosY(ctx) + offset) end
+end
+
+-- One text cell: right font, right vertical position, wrapped or not.
+-- `kind` is "plain" | "disabled" | a colour integer.
+local function CellText(key, index, row_h, text, kind)
+  RecordCellWidth(index)
+  text = text or ""
+  local col = ColumnView(key)
+  local f = PushCellFont(key)
+
+  local cell_h
+  if col.wrap and text ~= "" then
+    local width = cell_width[index]
+    local _, th = im.CalcTextSize(ctx, text, nil, (width and width > 1) and width or nil)
+    cell_h = th
+  else
+    cell_h = im.GetTextLineHeight(ctx)
+  end
+  AlignCell(key, row_h, cell_h)
+
+  if col.wrap then
+    -- 0.0 means "wrap at the end of the content region", which inside a table
+    -- cell is the column edge.
+    im.PushTextWrapPos(ctx, 0.0)
+    wrap_depth = wrap_depth + 1
+  end
+
+  if kind == "disabled" then
+    im.TextDisabled(ctx, text)
+  elseif type(kind) == "number" then
+    im.TextColored(ctx, kind, text)
+  else
+    im.Text(ctx, text)
+  end
+
+  if col.wrap then
+    im.PopTextWrapPos(ctx)
+    wrap_depth = wrap_depth - 1
+  end
+  PopCellFont(f)
+end
+
+-- A widget cell. Widgets never wrap: a single-line InputText cannot, and making
+-- these multiline would change what Enter means in a field where Enter commits
+-- a rename. They take the vertical offset all the same.
+local function CellWidget(key, index, row_h)
+  RecordCellWidth(index)
+  AlignCell(key, row_h, im.GetFrameHeight(ctx))
+end
+
+-- The header menu.
+--
+-- BeginPopupContextItem is not used. TableHeader opens ImGui's OWN column menu
+-- on right-click as soon as the table is Reorderable, and two popups cannot be
+-- open at one level. Opening ours explicitly in the same frame, AFTER
+-- TableHeader has opened ImGui's, replaces it — which is the behaviour wanted:
+-- the built-in menu offers only column visibility, which this window does not
+-- support.
+local function DrawHeaderMenu(c)
+  local popup_id = "hdr_" .. c.key
+  if im.IsItemClicked(ctx, 1) then im.OpenPopup(ctx, popup_id) end
+  if not im.BeginPopup(ctx, popup_id) then return end
+
+  local col = ColumnView(c.key)
+
+  if im.BeginMenu(ctx, "Vertical align") then
+    for _, a in ipairs(view.ALIGNS) do
+      local label = a:sub(1, 1):upper() .. a:sub(2)
+      if im.MenuItem(ctx, label, nil, col.align == a) then
+        SetColumnView(c.key, "align", a)
+      end
+    end
+    im.EndMenu(ctx)
+  end
+
+  if im.MenuItem(ctx, "Word wrap", nil, col.wrap) then
+    SetColumnView(c.key, "wrap", not col.wrap)
+  end
+
+  if im.BeginMenu(ctx, "Font size") then
+    for _, f in ipairs(view.FONT_KEYS) do
+      local label = f:sub(1, 1):upper() .. f:sub(2)
+      local size  = state.view.sizes[f] or view.FONT_DEFAULTS[f]
+      if im.MenuItem(ctx, string.format("%s (%d)", label, size), nil, col.font == f) then
+        SetColumnView(c.key, "font", f)
+      end
+    end
+    im.EndMenu(ctx)
+  end
+
+  im.EndPopup(ctx)
+end
+
 local function DrawTableBody()
   for _, c in ipairs(COLUMNS) do
     im.TableSetupColumn(ctx, c.label, im.TableColumnFlags_WidthFixed, c.width)
@@ -995,6 +1326,10 @@ local function DrawTableBody()
       im.TableSetColumnIndex(ctx, i - 1)
       im.TableHeader(ctx, c.label)
       if c.tip and im.IsItemHovered(ctx) then im.SetTooltip(ctx, c.tip) end
+      -- The TableHeadersRow fallback below gets no menu: that branch only runs
+      -- on a binding too old to expose TableRowFlags_Headers, and there is no
+      -- per-column item there to hang a popup on.
+      DrawHeaderMenu(c)
     end
   else
     im.TableHeadersRow(ctx)
@@ -1014,25 +1349,30 @@ local function DrawTableBody()
   -- here as excessive creation of short-lived resources, which is why
   -- ScriptMatch dropped it from its preview table too.
   for i, row in ipairs(state.visible) do
-    im.TableNextRow(ctx)
+    local row_h = RowHeight(row)
+    im.TableNextRow(ctx, 0, row_h)
     im.PushID(ctx, i)
     id_depth = id_depth + 1
 
     -- Verified ------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 0)
+    CellWidget("verify", 0, row_h)
     local checked = row.user_status == "verified"
     local hit, now = im.Checkbox(ctx, "##ok", checked)
     if hit then pending_action = function() SetStatus(row, now and "verified" or nil) end end
 
     -- Status --------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 1)
+    RecordCellWidth(1)
     -- Drawn first in the row and spanning it, so a click anywhere that is not a
     -- widget navigates. AllowOverlap lets the inputs drawn afterwards win.
+    -- Given the row's full height so a click anywhere in a TALL row still
+    -- selects, rather than only in its top FrameHeight pixels.
     local sel_flags = im.SelectableFlags_SpanAllColumns
     local overlap = Api('SelectableFlags_AllowOverlap')
     if overlap then sel_flags = sel_flags | overlap end
     local style = STATUS_STYLE[row.status]
-    if im.Selectable(ctx, "##row", state.selection[row.uid] == true, sel_flags) then
+    if im.Selectable(ctx, "##row", state.selection[row.uid] == true, sel_flags, 0, row_h) then
       -- Read the modifiers now, inside the frame that saw the click; by the time
       -- the deferred action runs the key could already be up.
       local captured = ReadModifiers()
@@ -1045,15 +1385,21 @@ local function DrawTableBody()
         or  "The audio for this row is not in this project.")
     end
     im.SameLine(ctx)
+    -- SameLine returns the caret to the TOP of the tall selectable, so the
+    -- status word needs its own offset.
+    local sf = PushCellFont("status")
+    AlignCell("status", row_h, im.GetTextLineHeight(ctx))
     if row.user_status == "flagged" then
       im.TextColored(ctx, 0xDD6666FF, "Flagged")
     elseif style then
       im.TextColored(ctx, style.colour, style.label)
     end
+    PopCellFont(sf)
 
     -- Select --------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 2)
     if row.status ~= "missing" and row.status ~= "orphan" and (row.take_count or 0) > 0 then
+      CellWidget("primary", 2, row_h)
       if im.RadioButton(ctx, "##sel", row.is_primary == true) then
         pending_action = function() SetPrimary(row) end
       end
@@ -1062,10 +1408,12 @@ local function DrawTableBody()
           and "Mark this take as the select."
           or  "The only take of this line.")
       end
+    else
+      RecordCellWidth(2)
     end
 
     im.TableSetColumnIndex(ctx, 3)
-    im.Text(ctx, row.character or "")
+    CellText("character", 3, row_h, row.character, "plain")
 
     -- Filename ------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 4)
@@ -1075,9 +1423,10 @@ local function DrawTableBody()
     local shown = row.take_name or row.name_override or row.asset or ""
     if row.status == "missing" then
       -- Nothing to rename: there is no take at all.
-      im.TextDisabled(ctx, shown)
+      CellText("item_name", 4, row_h, shown, "disabled")
       TooltipEvenWhenDisabled("This line has no take yet, so there is no item to name.")
     else
+      CellWidget("item_name", 4, row_h)
       im.SetNextItemWidth(ctx, -1)
       local fchanged, fname = im.InputText(ctx, "##fn", shown,
                                            im.InputTextFlags_EnterReturnsTrue)
@@ -1096,7 +1445,7 @@ local function DrawTableBody()
     -- reason a rename can never leave the user wondering what it used to be.
     im.TableSetColumnIndex(ctx, 5)
     local csv_name = row.asset or ""
-    im.TextDisabled(ctx, csv_name)
+    CellText("asset", 5, row_h, csv_name, "disabled")
     -- No per-cell tooltip: the explanation belongs on the header, where it is
     -- read once, not under the cursor on every row. An explicit popup ID is
     -- what lets a plain Text item own a context menu.
@@ -1114,32 +1463,37 @@ local function DrawTableBody()
 
     im.TableSetColumnIndex(ctx, 6)
     if (row.take_count or 0) > 1 then
-      im.Text(ctx, string.format("%d/%d", row.take_index or 0, row.take_count))
+      CellText("take", 6, row_h,
+               string.format("%d/%d", row.take_index or 0, row.take_count), "plain")
     elseif row.take_index then
-      im.TextDisabled(ctx, "1/1")
+      CellText("take", 6, row_h, "1/1", "disabled")
+    else
+      RecordCellWidth(6)
     end
 
     im.TableSetColumnIndex(ctx, 7)
-    im.Text(ctx, row.line_text or "")
+    CellText("line_text", 7, row_h, row.line_text, "plain")
 
     im.TableSetColumnIndex(ctx, 8)
     if row.score and row.status == "review" then
-      im.TextColored(ctx, 0xDDAA33FF, row.transcript or "")
+      CellText("transcript", 8, row_h, row.transcript, 0xDDAA33FF)
       if im.IsItemHovered(ctx) then
         im.SetTooltip(ctx, string.format("Match confidence %.0f%%.", row.score * 100))
       end
     else
-      im.TextDisabled(ctx, row.transcript or "")
+      CellText("transcript", 8, row_h, row.transcript, "disabled")
     end
 
     im.TableSetColumnIndex(ctx, 9)
-    im.TextDisabled(ctx, row.source_path and vo.Basename(row.source_path) or "")
+    CellText("source", 9, row_h,
+             row.source_path and vo.Basename(row.source_path) or "", "disabled")
 
     im.TableSetColumnIndex(ctx, 10)
-    im.TextDisabled(ctx, FormatTime(row.proj_time))
+    CellText("time", 10, row_h, FormatTime(row.proj_time), "disabled")
 
     -- Notes ---------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 11)
+    CellWidget("notes", 11, row_h)
     im.SetNextItemWidth(ctx, -1)
     local nchanged, notes = im.InputText(ctx, "##notes", row.notes or "")
     if nchanged then
@@ -1154,7 +1508,16 @@ end
 
 local function DrawTable(height)
   local flags = im.TableFlags_Borders | im.TableFlags_Resizable
+              | im.TableFlags_Reorderable
               | im.TableFlags_ScrollY | im.TableFlags_RowBg
+  -- With restore off ImGui neither reads nor writes this table's widths and
+  -- order, so it opens at the widths COLUMNS declares. ImGui keys table
+  -- settings by (table id, column count) anyway, so adding a column in a later
+  -- version invalidates a saved layout by itself — which is correct.
+  if not state.view.restore then
+    local no_saved = Api('TableFlags_NoSavedSettings')
+    if no_saved then flags = flags | no_saved end
+  end
   if not im.BeginTable(ctx, "vo_overview", #COLUMNS, flags, 0, height) then
     return
   end
@@ -1167,6 +1530,14 @@ local function DrawTable(height)
   while id_depth > 0 do
     im.PopID(ctx)
     id_depth = id_depth - 1
+  end
+  while font_depth > 0 do
+    im.PopFont(ctx)
+    font_depth = font_depth - 1
+  end
+  while wrap_depth > 0 do
+    im.PopTextWrapPos(ctx)
+    wrap_depth = wrap_depth - 1
   end
   im.EndTable(ctx)
   if not ok then state.message, state.message_kind = tostring(err), "error" end
@@ -1198,6 +1569,58 @@ local function DrawSummary()
 end
 
 -- -----------------------------------------------------------------------
+-- Settings
+--
+-- A window, not a modal: the point of changing a font size is watching the
+-- table change under it.
+-- -----------------------------------------------------------------------
+
+local function DrawSettingsWindow()
+  if not state.settings_open then return end
+
+  im.SetNextWindowSize(ctx, 360, 200, im.Cond_FirstUseEver)
+  local visible, open = im.Begin(ctx, 'VO Overview Settings', true)
+  state.settings_open = open
+
+  -- End is called only when Begin returned visible, matching the main window's
+  -- loop. That is ReaImGui's contract, and it differs from upstream Dear ImGui.
+  if visible then
+    local changed, on = im.Checkbox(ctx, "Restore view settings", state.view.restore)
+    if changed then SetRestore(on) end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx,
+        "Remember the column widths, the column order, and each column's\n" ..
+        "alignment, word wrap and font size, and put them back next time.\n" ..
+        "Turning this off clears what is already stored.")
+    end
+
+    im.Spacing(ctx)
+    -- SeparatorText is not in every 0.9.x binding, and the shim raises on an
+    -- unknown field, so `im.SeparatorText and ...` would itself be the crash.
+    local SeparatorText = Api('SeparatorText')
+    if SeparatorText then SeparatorText(ctx, "Font sizes") else im.Separator(ctx) end
+    im.TextDisabled(ctx, "Right-click a column header to pick which one it uses.")
+
+    for _, key in ipairs(view.FONT_KEYS) do
+      im.SetNextItemWidth(ctx, 100)
+      local label = key:sub(1, 1):upper() .. key:sub(2)
+      local hit, size = im.InputInt(ctx, label .. "##font_" .. key,
+                                    state.view.sizes[key] or view.FONT_DEFAULTS[key])
+      if hit then
+        -- Clamped rather than rejected: there is no number a user can type here
+        -- that should produce an error message.
+        state.view.sizes[key] = view.ClampFontSize(size, view.FONT_DEFAULTS[key])
+        view.SaveFontSizes(state.view.sizes)
+        fonts_dirty = true
+        BumpViewGen()
+      end
+    end
+
+    im.End(ctx)
+  end
+end
+
+-- -----------------------------------------------------------------------
 -- Startup and loop
 -- -----------------------------------------------------------------------
 
@@ -1206,6 +1629,7 @@ state.csv_path = remembered or ""
 LoadCSV(state.csv_path)
 RestoreLayout()
 LoadLayoutSettings()
+LoadViewSettings()
 LoadTracker()
 Reload()
 state.probe = Probe()
@@ -1213,7 +1637,13 @@ state.probe = Probe()
 local function loop()
   if not (ctx and im.ValidatePtr(ctx, 'ImGui_Context*')) then
     ctx = im.CreateContext('VO Overview')
+    -- A recreated context has no fonts attached at all.
+    fonts, fonts_dirty = {}, true
   end
+
+  -- Between frames, before Begin: attaching during a frame is not guaranteed to
+  -- take effect for that frame.
+  EnsureFonts()
 
   -- A project edit invalidates every row's resolved item, so rebuild -- but
   -- throttle the disk read behind it, since a drag gesture moves the counter
@@ -1253,6 +1683,8 @@ local function loop()
         Rebuild()
       end
     end
+    im.SameLine(ctx)
+    if im.Button(ctx, "Settings") then state.settings_open = true end
 
     if state.header_error ~= "" then
       im.TextColored(ctx, 0xDD6666FF, state.header_error)
@@ -1313,6 +1745,9 @@ local function loop()
     end
 
     im.End(ctx)
+
+    -- Drawn after the main window's End so it is a sibling, not a child.
+    DrawSettingsWindow()
 
     -- Run after End so ImGui's frame is closed before anything mutates state
     -- or the project. One action per frame is enough: they are all user clicks.
