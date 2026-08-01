@@ -1036,7 +1036,7 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db)
   -- Both clamps above move one boundary without consulting the other, so either
   -- can push a boundary past its own opposite edge and invert the span. The
   -- neighbour clamp does it whenever the plan's order is not chronological —
-  -- BuildPlan sorts by token index, and whisper timestamps are not guaranteed
+  -- BuildMatch sorts by token index, and whisper timestamps are not guaranteed
   -- monotonic (nor distinct: every token expanded from one word shares its
   -- times), so `mid` can land beyond the later span's own end. The bounds clamp
   -- does it for a span lying wholly outside the item.
@@ -1422,19 +1422,8 @@ function vo.FormatCSVRow(fields)
   return table.concat(out, ",")
 end
 
-vo.SIDECAR_MARKER  = "ajsfx VO ScriptMatch"
-vo.SIDECAR_VERSION = 1
-
-vo.SIDECAR_HEADER = {
-  "Source start", "Source stop", "Kind", "Filename", "Character", "Score",
-  "Margin", "Take", "Dest", "Name", "Transcript", "Line text", "Clamped",
-  "Degenerate",
-}
-
-vo.SIDECAR_TAIL_MARKER = "SCRIPT LINES WITH NO MATCH"
-
--- role=column pairs joined by ";". Kept human-legible because the sidecar is
--- opened in spreadsheets; the role order matches vo.SerializeLayout.
+-- role=column pairs joined by ";". Kept human-legible because the project file
+-- is opened in spreadsheets; the role order matches vo.SerializeLayout.
 local function encode_mapping(mapping)
   local out = {}
   for _, role in ipairs({ "asset", "text", "speaker" }) do
@@ -1451,213 +1440,6 @@ local function decode_mapping(text)
     if role then mapping[role:match("^%s*(.-)%s*$")] = col end
   end
   return mapping
-end
-
--- Serialize a plan to its sidecar. `spans` must already be in SOURCE time (see
--- vo.PartitionPlanBySource); this function does no conversion, so it cannot
--- silently write project times. `lines` supplies script text for the readable
--- columns and the trailing unmatched section, and may be empty.
-function vo.SerializeSidecar(spans, lines, meta)
-  meta = meta or {}
-  local by_asset = {}
-  for _, l in ipairs(lines or {}) do by_asset[l.asset] = l end
-
-  local out = {
-    vo.FormatCSVRow({ vo.SIDECAR_MARKER, tostring(vo.SIDECAR_VERSION) }),
-    vo.FormatCSVRow({ "Source",      meta.source or "" }),
-    vo.FormatCSVRow({ "Source bytes", tostring(meta.source_bytes or 0) }),
-    vo.FormatCSVRow({ "Script CSV",  meta.script_csv or "" }),
-    vo.FormatCSVRow({ "Mapping",     encode_mapping(meta.mapping) }),
-    "",
-    vo.FormatCSVRow(vo.SIDECAR_HEADER),
-  }
-
-  local matched = {}
-  for _, s in ipairs(spans or {}) do
-    if s.kind == "match" and s.asset then matched[s.asset] = true end
-    local line = s.asset and by_asset[s.asset] or nil
-    out[#out + 1] = vo.FormatCSVRow({
-      string.format("%.3f", s.start or 0),
-      string.format("%.3f", s.stop or 0),
-      s.kind or "",
-      s.asset or "",
-      s.character or "",
-      s.score  and string.format("%.4f", s.score)  or "",
-      s.margin and string.format("%.4f", s.margin) or "",
-      s.take_index and tostring(s.take_index) or "",
-      s.dest or "",
-      s.name or "",
-      s.transcript or "",
-      line and line.text or "",
-      s.clamped and "yes" or "",
-      -- Padding would have inverted this span, so it carries its raw recognized
-      -- boundaries instead. Worth surfacing: it is the one row whose times are
-      -- not the padded times, and the likely explanation for a skipped cut.
-      s.degenerate and "yes" or "",
-    })
-  end
-
-  -- Readable only. ParseSidecar stops at this marker, so it can never become a
-  -- second source of truth that disagrees with the spans above it.
-  out[#out + 1] = ""
-  out[#out + 1] = vo.FormatCSVRow({ vo.SIDECAR_TAIL_MARKER })
-  out[#out + 1] = vo.FormatCSVRow({ "Filename", "Character", "Text" })
-  for _, l in ipairs(lines or {}) do
-    if not matched[l.asset] then
-      out[#out + 1] = vo.FormatCSVRow({ l.asset, l.speaker or "", l.text })
-    end
-  end
-
-  return table.concat(out, "\n") .. "\n"
-end
-
--- Returns the parsed sidecar, or nil plus a reason. A malformed file beside the
--- audio must never stop the dialog opening, so nothing here raises.
-function vo.ParseSidecar(text)
-  if type(text) ~= "string" or text == "" then
-    return nil, "The sidecar file is empty."
-  end
-
-  local rows = vo.ParseCSV(text)
-  if not rows[1] or rows[1][1] ~= vo.SIDECAR_MARKER then
-    return nil, "Not an " .. vo.SIDECAR_MARKER .. " file."
-  end
-
-  local version = tonumber(rows[1][2] or "")
-  if version ~= vo.SIDECAR_VERSION then
-    return nil, "Unsupported sidecar version: " .. tostring(rows[1][2])
-  end
-
-  local parsed = { version = version, source = "", source_bytes = 0,
-                   script_csv = "", mapping = {}, spans = {} }
-
-  -- Walk the preamble until the span header row, then read spans until the
-  -- readable tail marker.
-  local i, header_at = 2, nil
-  while rows[i] do
-    local key = rows[i][1] or ""
-    if key == vo.SIDECAR_HEADER[1] then header_at = i; break end
-    if     key == "Source"       then parsed.source       = rows[i][2] or ""
-    elseif key == "Source bytes" then parsed.source_bytes = tonumber(rows[i][2] or "") or 0
-    elseif key == "Script CSV"   then parsed.script_csv   = rows[i][2] or ""
-    elseif key == "Mapping"      then parsed.mapping      = decode_mapping(rows[i][2])
-    end
-    i = i + 1
-  end
-
-  if not header_at then
-    return nil, "The sidecar has no span header row."
-  end
-
-  for j = header_at + 1, #rows do
-    local row = rows[j]
-    local first = row[1] or ""
-    if first == vo.SIDECAR_TAIL_MARKER then break end
-    if first ~= "" and tonumber(first) then
-      parsed.spans[#parsed.spans + 1] = {
-        start      = tonumber(row[1]) or 0,
-        stop       = tonumber(row[2]) or 0,
-        kind       = row[3] ~= "" and row[3] or nil,
-        asset      = row[4] ~= "" and row[4] or nil,
-        character  = row[5] ~= "" and row[5] or nil,
-        score      = tonumber(row[6] or ""),
-        margin     = tonumber(row[7] or ""),
-        take_index = tonumber(row[8] or ""),
-        dest       = row[9] ~= "" and row[9] or nil,
-        name       = row[10] ~= "" and row[10] or nil,
-        transcript = row[11] ~= "" and row[11] or nil,
-      }
-    end
-  end
-
-  return parsed
-end
-
--- Split a project-time plan into one source-time span list per source file.
--- The midpoint decides which item a span belongs to, matching how the dialog's
--- ClampSpansToItems already assigns them, so the two cannot disagree.
--- Spans matching no item (gaps between items) are omitted.
-function vo.PartitionPlanBySource(plan, items)
-  local by_source = {}
-  for _, span in ipairs(plan or {}) do
-    local midpoint = ((span.raw_start or span.start or 0)
-                    + (span.raw_stop  or span.stop  or 0)) / 2
-    for _, item in ipairs(items or {}) do
-      if item.path and midpoint >= item.pos and midpoint <= item.pos + (item.length or 0) then
-        local copy = {}
-        for k, v in pairs(span) do copy[k] = v end
-        copy.start = vo.ProjectTimeToSource(span.start or 0, item)
-        copy.stop  = vo.ProjectTimeToSource(span.stop  or 0, item)
-        by_source[item.path] = by_source[item.path] or {}
-        table.insert(by_source[item.path], copy)
-        break
-      end
-    end
-  end
-  return by_source
-end
-
--- Group a plan's spans by the source file whose item plays them, WITHOUT
--- converting the times: spans come back exactly as they went in. This is the
--- project-time sibling of PartitionPlanBySource (which converts to source time
--- for writing sidecars) and exists for callers that must keep a SUBSET of a
--- live plan -- a partial re-transcription retaining the sources it skipped --
--- where converting would corrupt the very times it is trying to preserve.
-function vo.SpansBySourcePath(plan, items)
-  local by_source = {}
-  for _, span in ipairs(plan or {}) do
-    local midpoint = ((span.raw_start or span.start or 0)
-                    + (span.raw_stop  or span.stop  or 0)) / 2
-    for _, item in ipairs(items or {}) do
-      if item.path and midpoint >= item.pos and midpoint <= item.pos + (item.length or 0) then
-        by_source[item.path] = by_source[item.path] or {}
-        table.insert(by_source[item.path], span)
-        break
-      end
-    end
-  end
-  return by_source
-end
-
--- Merge a freshly written span list with what is already on disk for the SAME
--- source file. Both lists must be in SOURCE time (SerializeSidecar's base, i.e.
--- the output of vo.PartitionPlanBySource on one side and vo.ParseSidecar on the
--- other) -- this function converts nothing, so it can never double-convert.
---
--- Why it exists: a sidecar write rewrites a source's file WHOLE, but the plan
--- being written only ever covers the items currently SELECTED. Narrow the
--- selection to one of three items cut from the same recording and the other
--- two items' spans were dropped at load; writing then erased them from disk
--- permanently, losing transcription work the write simply could not see.
---
--- The rule is exactly that: a disk span is kept when its MIDPOINT falls inside
--- none of `ranges` (the source-time stretches the current items play, from
--- vo.SourceCoverageRanges). A disk span inside a covered range is superseded by
--- whatever `new_spans` says about that region -- including its absence, so a
--- re-transcription that legitimately produces fewer spans still shrinks the
--- file. Midpoints, not endpoints, because that is how every other placement
--- decision in this file is made (PartitionPlanBySource, SpansBySourcePath).
---
--- Returns: merged array sorted by start, plus how many disk spans were
--- preserved (so the dialog can say so inline).
-function vo.MergeSidecarSpans(new_spans, disk_spans, ranges)
-  local merged, preserved = {}, 0
-  for _, s in ipairs(new_spans or {}) do merged[#merged + 1] = s end
-
-  for _, s in ipairs(disk_spans or {}) do
-    local mid = ((s.start or 0) + (s.stop or 0)) / 2
-    local covered = false
-    for _, range in ipairs(ranges or {}) do
-      if mid >= range.from and mid <= range.to then covered = true; break end
-    end
-    if not covered then
-      merged[#merged + 1] = s
-      preserved = preserved + 1
-    end
-  end
-
-  table.sort(merged, function(a, b) return (a.start or 0) < (b.start or 0) end)
-  return merged, preserved
 end
 
 -- How many distinct tracks a list of items sits on. vo.ApplyPlan resolves every
@@ -1683,38 +1465,6 @@ function vo.DistinctTrackCount(items)
   return n
 end
 
--- Which of the selected sources still need transcribing. The question is asked
--- PER SOURCE FILE, never globally: a source is skipped only when it has a
--- usable result OF ITS OWN. Deciding from "does the plan contain anything at
--- all" would let four good sidecars vouch for a fifth source that has none.
---
--- A source needs transcription when:
---   * nothing in the plan belongs to it (no sidecar, or one that parsed to zero
---     usable spans), or
---   * it is listed stale -- its audio changed, so its timings are why Cut is
---     blocked; skipping it would leave the user no way to refresh it.
---
--- Pure: three plain tables in, an array of source paths out. `stale` is keyed
--- by FULL PATH, not basename, so two selected recordings that share a filename
--- in different folders cannot stand in for each other.
-function vo.SourcesNeedingTranscription(plan, stale, items)
-  local is_stale = {}
-  for _, path in ipairs(stale or {}) do is_stale[path] = true end
-
-  local have = vo.SpansBySourcePath(plan, items)
-
-  local need, seen = {}, {}
-  for _, item in ipairs(items or {}) do
-    if item.path and not seen[item.path] then
-      seen[item.path] = true
-      local spans = have[item.path]
-      if is_stale[item.path] or not spans or #spans == 0 then
-        need[#need + 1] = item.path
-      end
-    end
-  end
-  return need
-end
 
 --------------------------------
 -- Pure layer: shell quoting
@@ -1763,7 +1513,7 @@ function vo.CacheKey(source_path, file_size, cfg)
 end
 
 --------------------------------
--- Pure layer: sidecar paths and time base
+-- Pure layer: file paths and time base
 --------------------------------
 
 -- Only the final extension is stripped, and the character class excludes path
@@ -1781,12 +1531,6 @@ end
 
 vo.Basename = basename
 
--- The sidecar for a media source lives beside it: RIVA.wav -> RIVA_vo_report.csv.
-function vo.SidecarPath(source_path)
-  if not source_path or source_path == "" then return nil end
-  return strip_ext(source_path) .. "_vo_report.csv"
-end
-
 -- The project file lives beside the project: Session.rpp -> Session_vo.csv.
 -- One per project, not one per source: it holds the user's own work (selects,
 -- verified marks, notes, renames) plus the script it is all about. Unlike a
@@ -1796,9 +1540,10 @@ function vo.ProjectFilePath(project_path)
   return strip_ext(project_path) .. "_vo.csv"
 end
 
--- Exact inverses of the arithmetic in vo.MapWordsToProject. A sidecar lives next
--- to the audio, so it must store times the audio file itself can vouch for; the
--- item's position, trim and playrate belong to the project, not the recording.
+-- Exact inverses of the arithmetic in vo.MapWordsToProject. A transcript lives
+-- next to the audio, so it must store times the audio file itself can vouch
+-- for; the item's position, trim and playrate belong to the project, not the
+-- recording.
 local function safe_playrate(item)
   local pr = item and item.playrate or 1.0
   if pr <= 0 then pr = 1.0 end
@@ -1816,14 +1561,13 @@ function vo.SourceTimeToProject(t, item)
 end
 
 -- The SOURCE-TIME stretch of a media source that a list of items actually
--- plays: one range per item, in the same time base ParseSidecar/SerializeSidecar
--- use. Mirrors the placement arithmetic in the dialog's LoadSidecars, so a span
--- LoadSidecars could place is exactly a span that falls inside one of these
--- ranges. All items passed in are expected to reference the same source file;
--- the caller groups them.
--- Defined HERE, below safe_playrate, and not beside vo.MergeSidecarSpans which
--- it partners: safe_playrate is a plain file local, so a definition above it
--- would resolve the name as a nil global and only fail inside REAPER.
+-- plays: one range per item, in the same time base the transcript uses. A span
+-- outside every one of these ranges has no audio behind it in this project --
+-- the item was trimmed after transcription -- and Cut drops it rather than
+-- cutting silence. All items passed in are expected to reference the same
+-- source file; the caller groups them.
+-- Defined HERE, below safe_playrate: it is a plain file local, so a definition
+-- above it would resolve the name as a nil global and only fail inside REAPER.
 function vo.SourceCoverageRanges(items)
   local out = {}
   for _, item in ipairs(items or {}) do
@@ -2181,17 +1925,17 @@ function vo.BuildOverview(input)
   local entries = input.entries
 
   -- Sources in a stable order, so take numbers do not shuffle between openings.
-  local sidecars = {}
+  local by_source = {}
   for _, sc in ipairs(input.matches or {}) do
-    if sc and sc.path then sidecars[#sidecars + 1] = sc end
+    if sc and sc.path then by_source[#by_source + 1] = sc end
   end
-  table.sort(sidecars, function(a, b) return a.path < b.path end)
+  table.sort(by_source, function(a, b) return a.path < b.path end)
 
   local index = index_tracker(entries)
 
   -- Flatten every span, tagged with its source and its global ordering key.
   local spans = {}
-  for si, sc in ipairs(sidecars) do
+  for si, sc in ipairs(by_source) do
     local ordered = {}
     for _, s in ipairs(sc.spans or {}) do ordered[#ordered + 1] = s end
     table.sort(ordered, function(a, b) return (a.start or 0) < (b.start or 0) end)
@@ -3538,7 +3282,7 @@ function vo.SourceModifiedTimes(paths)
 end
 
 -- The distinct source files present in the project, as a sorted array of paths.
--- This is the list of sidecars worth trying to read.
+-- This is the list of transcripts worth trying to read.
 function vo.ProjectSourcePaths(items)
   local seen, paths = {}, {}
   for _, info in ipairs(items or {}) do
@@ -3553,7 +3297,7 @@ end
 
 -- Find the live item playing a given SOURCE-time position, and that position in
 -- project time. Returns nil when the audio is not in the project at all -- a
--- sidecar can outlive the item that produced it.
+-- transcript can outlive the item that produced it.
 --
 -- This resolves correctly both BEFORE and AFTER a cut, and that is not luck:
 -- splitting an item leaves each piece pointing at the same source file with an
