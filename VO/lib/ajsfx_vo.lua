@@ -508,6 +508,15 @@ vo.DEFAULTS = {
   pre_pad          = 0.150, -- seconds of head room before the first aligned word
   post_pad         = 0.250, -- seconds of tail after the last aligned word
 
+  -- Boundary snapping. With it on, pre_pad/post_pad above become the MAXIMUM
+  -- reach of the search rather than a fixed amount; the search itself is also
+  -- bounded by the neighbouring word's timestamp, which is what makes it
+  -- structurally impossible for a clip to contain a syllable of the next line.
+  snap_boundaries   = true,
+  snap_min_silence  = 0.060, -- seconds below the floor needed to place a boundary
+  snap_floor_offset = 6.0,   -- dB above the measured noise floor
+  snap_floor_window = 0.500, -- seconds of the quietest gap used to measure it
+
   -- Per-session toggles (see SPEC.md §4). Defaults cut and name every take
   -- identically, leaving the user to audition and delete.
   use_alts_track   = false,
@@ -878,6 +887,86 @@ function vo.CharacterTrackName(character, base)
     return vo.SanitizeName(character) .. "_" .. base
   end
   return base
+end
+
+--------------------------------
+-- Pure layer: silence detection
+--------------------------------
+
+-- Every function here takes its amplitude readings through an injected
+-- `probe(t0, t1) -> dBFS or nil`. Nothing in this section touches REAPER, so
+-- the placement rules are unit-testable against a synthetic amplitude curve;
+-- the real probe is vo.MakeTakeProbe in the coupled layer.
+
+-- The stretches between consecutive words -- where a boundary is allowed to go.
+-- Words that touch or overlap yield nothing: there is no gap to search.
+function vo.InterWordGaps(words)
+  local out = {}
+  for i = 2, #(words or {}) do
+    local from, to = words[i - 1].t1 or 0, words[i].t0 or 0
+    if to > from then out[#out + 1] = { from = from, to = to } end
+  end
+  return out
+end
+
+-- The room's noise floor, measured rather than assumed: a fixed -60 dBFS is
+-- wrong on a noisy room and wrong in the other direction on a clean one.
+-- One window is sampled from the middle of each gap long enough to hold it,
+-- and the quietest reading plus the offset is the floor.
+--
+-- Returns nil when nothing could be measured, which the caller must read as
+-- "snapping is unavailable" rather than as a floor of zero -- a floor of zero
+-- dBFS would call every sample silent and snap every boundary to its limit.
+function vo.MeasureNoiseFloor(gaps, probe, cfg)
+  if not probe then return nil end
+  local window = vo.Opt(cfg, "snap_floor_window")
+  local quietest = nil
+  for _, g in ipairs(gaps or {}) do
+    if (g.to - g.from) >= window then
+      local mid = (g.from + g.to) / 2
+      local db  = probe(mid - window / 2, mid + window / 2)
+      if db and (not quietest or db < quietest) then quietest = db end
+    end
+  end
+  if not quietest then return nil end
+  return quietest + vo.Opt(cfg, "snap_floor_offset")
+end
+
+-- Place one boundary between a word edge and a hard limit.
+--
+--   from      -- the word's own edge, in the same time base as `probe`
+--   limit     -- how far the boundary may travel: the neighbouring word's edge,
+--                or the pad, whichever is nearer. NEVER exceeded.
+--   direction -- -1 searching backwards (a span start), +1 forwards (a stop)
+--   floor_db  -- from vo.MeasureNoiseFloor
+--   probe     -- amplitude reader, or nil
+--
+-- Steps outward from the word in `snap_min_silence` windows and stops at the
+-- far edge of the first window lying entirely below the floor, so the clip
+-- keeps that much silence as head or tail. Falls back to `limit` when there is
+-- no probe, no floor, no room, or no silence -- reported as "pad" so the run
+-- summary can say why an edge sits where it does.
+--
+-- Returns: boundary time, "silence" or "pad".
+function vo.SnapBoundary(from, limit, direction, floor_db, probe, cfg)
+  local min_sil = vo.Opt(cfg, "snap_min_silence")
+  if not probe or not floor_db or min_sil <= 0 then return limit, "pad" end
+
+  local reach = math.abs(limit - from)
+  if reach < min_sil then return limit, "pad" end
+
+  local travelled = 0
+  while travelled + min_sil <= reach + 1e-9 do
+    local near = from + direction * travelled
+    local a    = (direction < 0) and (near - min_sil) or near
+    local db   = probe(a, a + min_sil)
+    if db and db <= floor_db then
+      return (direction < 0) and a or (a + min_sil), "silence"
+    end
+    travelled = travelled + min_sil
+  end
+
+  return limit, "pad"
 end
 
 --------------------------------

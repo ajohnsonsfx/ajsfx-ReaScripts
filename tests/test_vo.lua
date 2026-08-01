@@ -750,6 +750,116 @@ end)
 --------------------------------
 -- ApplyPadding
 --------------------------------
+print("\nInterWordGaps:")
+
+test("gaps sit between consecutive words", function()
+  local gaps = vo.InterWordGaps({
+    { t0 = 0.0, t1 = 0.5, text = "a" },
+    { t0 = 1.0, t1 = 1.5, text = "b" },
+    { t0 = 3.0, t1 = 3.5, text = "c" },
+  })
+  assert(#gaps == 2, "Expected 2 gaps, got " .. #gaps)
+  assert(math.abs(gaps[1].from - 0.5) < 1e-9, "gap 1 from: " .. gaps[1].from)
+  assert(math.abs(gaps[1].to   - 1.0) < 1e-9, "gap 1 to: " .. gaps[1].to)
+  assert(math.abs(gaps[2].to   - 3.0) < 1e-9, "gap 2 to: " .. gaps[2].to)
+end)
+
+test("overlapping or touching words produce no gap", function()
+  local gaps = vo.InterWordGaps({
+    { t0 = 0.0, t1 = 1.0, text = "a" },
+    { t0 = 1.0, t1 = 2.0, text = "b" },
+    { t0 = 1.5, t1 = 2.5, text = "c" },
+  })
+  assert(#gaps == 0, "Expected no gaps, got " .. #gaps)
+end)
+
+test("fewer than two words means no gaps", function()
+  assert(#vo.InterWordGaps({}) == 0, "empty")
+  assert(#vo.InterWordGaps(nil) == 0, "nil must not raise")
+  assert(#vo.InterWordGaps({ { t0 = 0, t1 = 1, text = "a" } }) == 0, "single")
+end)
+
+--------------------------------
+print("\nMeasureNoiseFloor:")
+
+test("the floor is the quietest measurable gap plus the offset", function()
+  local gaps = { { from = 0, to = 2 }, { from = 5, to = 7 } }
+  local probe = function(t0, _) return t0 < 3 and -50.0 or -70.0 end
+  local floor = vo.MeasureNoiseFloor(gaps, probe, { snap_floor_offset = 6.0 })
+  assert(floor and math.abs(floor - (-64.0)) < 1e-9, "Floor: " .. tostring(floor))
+end)
+
+test("gaps shorter than the window are ignored", function()
+  local floor = vo.MeasureNoiseFloor({ { from = 0, to = 0.01 } },
+                                     function() return -70 end,
+                                     { snap_floor_window = 0.5 })
+  assert(floor == nil, "Expected nil, got " .. tostring(floor))
+end)
+
+test("no probe means no floor", function()
+  assert(vo.MeasureNoiseFloor({ { from = 0, to = 5 } }, nil, {}) == nil, "Expected nil")
+end)
+
+test("a probe that cannot read returns nil rather than a bogus floor", function()
+  local floor = vo.MeasureNoiseFloor({ { from = 0, to = 5 } },
+                                     function() return nil end, {})
+  assert(floor == nil, "Expected nil, got " .. tostring(floor))
+end)
+
+--------------------------------
+print("\nSnapBoundary:")
+
+-- A probe describing one loud region [a, b]; everything else is silent.
+local function loud_between(a, b)
+  return function(t0, t1)
+    if t1 > a and t0 < b then return -10.0 end
+    return -80.0
+  end
+end
+
+test("a start boundary walks back into silence and stops there", function()
+  local t, how = vo.SnapBoundary(1.0, 0.5, -1, -60.0, loud_between(1.0, 2.0),
+                                 { snap_min_silence = 0.05 })
+  assert(how == "silence", "How: " .. tostring(how))
+  assert(math.abs(t - 0.95) < 1e-9, "Boundary: " .. tostring(t))
+end)
+
+test("a stop boundary walks forward into silence and stops there", function()
+  local t, how = vo.SnapBoundary(2.0, 2.5, 1, -60.0, loud_between(1.0, 2.0),
+                                 { snap_min_silence = 0.05 })
+  assert(how == "silence", "How: " .. tostring(how))
+  assert(math.abs(t - 2.05) < 1e-9, "Boundary: " .. tostring(t))
+end)
+
+test("no silence in the window falls back to the limit and says so", function()
+  local t, how = vo.SnapBoundary(2.0, 2.2, 1, -60.0, loud_between(0.0, 10.0),
+                                 { snap_min_silence = 0.05 })
+  assert(how == "pad", "How: " .. tostring(how))
+  assert(math.abs(t - 2.2) < 1e-9, "Boundary: " .. tostring(t))
+end)
+
+test("a window shorter than the minimum silence falls back immediately", function()
+  local t, how = vo.SnapBoundary(2.0, 2.1, 1, -60.0, loud_between(0, 0),
+                                 { snap_min_silence = 0.5 })
+  assert(how == "pad" and math.abs(t - 2.1) < 1e-9, "Got " .. t .. " / " .. how)
+end)
+
+test("no probe, and no floor, each fall back to the limit", function()
+  local a, ha = vo.SnapBoundary(2.0, 2.5, 1, -60.0, nil, {})
+  assert(ha == "pad" and math.abs(a - 2.5) < 1e-9, "no probe: " .. a .. " / " .. ha)
+  local b, hb = vo.SnapBoundary(2.0, 2.5, 1, nil, function() return -80 end, {})
+  assert(hb == "pad" and math.abs(b - 2.5) < 1e-9, "no floor: " .. b .. " / " .. hb)
+end)
+
+test("the result never crosses the limit, in either direction", function()
+  local cfg, quiet = { snap_min_silence = 0.05 }, function() return -80.0 end
+  local a = vo.SnapBoundary(1.0, 0.5, -1, -60.0, quiet, cfg)
+  assert(a >= 0.5 - 1e-9 and a <= 1.0 + 1e-9, "Backward escaped: " .. a)
+  local b = vo.SnapBoundary(1.0, 1.5, 1, -60.0, quiet, cfg)
+  assert(b >= 1.0 - 1e-9 and b <= 1.5 + 1e-9, "Forward escaped: " .. b)
+end)
+
+--------------------------------
 print("\nApplyPadding:")
 
 test("spans are padded by pre_pad and post_pad", function()
