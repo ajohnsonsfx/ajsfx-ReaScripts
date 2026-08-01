@@ -1,7 +1,7 @@
 -- @description ajsfx VO ScriptMatch
 -- @author ajsfx
--- @version 0.8
--- @changelog Transcribe and cut are now two buttons at the bottom right: Transcribe reads the audio and builds the plan without touching the project, and Cut applies it. Once a plan exists the button becomes Re-transcribe and bypasses the transcript cache. The preview table gains a Status column showing matched / review / no match per line once a transcription has run. Changing the CSV, mapping, filters or skip tokens discards a plan built before the change. Layout presets no longer load the moment you pick one from the droplist: choosing a preset only selects it, Load applies it, and Save writes the current layout back over the selected preset after a confirmation. Editing a mapping keeps the preset name so it can be updated without retyping it. The run report is now written next to each recording as <audio>_vo_report.csv instead of once per project, and it is written when you transcribe rather than only when you cut. Reopening the dialog on a recording that already has one restores its result without re-transcribing. The dialog now follows the item selection while it is open, so it no longer refuses to start when nothing is selected. Status, results and errors are reported in the dialog instead of in message boxes that steal focus.
+-- @version 0.11
+-- @changelog VO Overview columns can now be dragged into any order, and each column carries its own presentation. Right-click a column header for vertical alignment (top, middle or bottom), word wrap, and a font size; Line text wraps out of the box, and wrapped text makes rows as tall as they need to be while every other cell in the row sits where its own alignment says. The Item name and Notes cells are now shaded across their whole area, so an editable cell reads as editable at any row height. A new Settings button in the top bar holds: "Restore view settings", which remembers column widths, column order and each column's alignment, wrap and font between sessions and clears what is stored when switched off; the point sizes behind the Small, Medium and Large presets; a control to set the vertical alignment of every column at once; and "Match Transcript to Line text", which keeps those two columns' alignment, word wrap and font size identical so the script and what was actually said can be read against each other.
 -- @about Cut a recorded VO session into one clip per script line and name each
 --        clip with its delivery asset name. Reads a CSV script, transcribes the
 --        selected items locally with whisper.cpp, matches spoken spans against
@@ -12,7 +12,9 @@
 -- @provides
 --   [main] .
 --   [main] ajsfx_VO_Settings.lua
+--   [main] ajsfx_VO_Overview.lua
 --   lib/ajsfx_vo.lua
+--   lib/ajsfx_vo_view.lua
 --   ../lib/ajsfx_core.lua > lib/ajsfx_core.lua
 
 local r = reaper

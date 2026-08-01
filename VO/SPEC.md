@@ -168,13 +168,19 @@ Prefixes are configurable. All names pass through a filesystem-safe sanitizer.
 ```
 VO/
   SPEC.md                     this document
-  ajsfx_VO_ScriptMatch.lua    main action
+  SPEC-overview.md            the project-wide tracking window
+  ajsfx_VO_ScriptMatch.lua    main action — transcribe, match, cut
+  ajsfx_VO_Overview.lua       project-wide dialogue tracking; reads sidecars, cuts nothing
   ajsfx_VO_Settings.lua       ImGui settings, backend readiness, optional model fetch
   lib/ajsfx_vo.lua            all logic — pure layer + REAPER-coupled layer
 tests/
   test_vo.lua                 unit tests
   fixtures/vo_sample_script.csv
 ```
+
+The three actions divide by verb, not by feature: Settings configures the
+backend, ScriptMatch *does something to* audio, and Overview *reports on* it.
+Overview never transcribes or cuts — see [SPEC-overview.md](SPEC-overview.md) §1.
 
 `@provides` mirrors the established PVX pattern so the shared core ships alongside:
 

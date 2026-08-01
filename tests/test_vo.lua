@@ -2838,5 +2838,805 @@ test("no items, or items with no track, count as zero", function()
   assert(vo.DistinctTrackCount({ { track = nil } }) == 0, "Expected 0 when no track is resolved")
 end)
 
+--------------------------------
+print("\nTrackerPath / OverviewKey:")
+
+test("the tracker sits beside the project, one per project", function()
+  assert(vo.TrackerPath("D:\\Session\\Ep01.rpp") == "D:\\Session\\Ep01_vo_tracker.csv",
+    "Got " .. tostring(vo.TrackerPath("D:\\Session\\Ep01.rpp")))
+  assert(vo.TrackerPath("/mix/Ep01.RPP") == "/mix/Ep01_vo_tracker.csv")
+end)
+
+test("only the final extension is stripped, dots in directories are safe", function()
+  assert(vo.TrackerPath("D:\\v1.2\\Ep01.rpp") == "D:\\v1.2\\Ep01_vo_tracker.csv",
+    "Got " .. tostring(vo.TrackerPath("D:\\v1.2\\Ep01.rpp")))
+end)
+
+test("an empty or missing project path yields no tracker path", function()
+  assert(vo.TrackerPath(nil) == nil, "nil in, nil out")
+  assert(vo.TrackerPath("") == nil, "empty in, nil out")
+end)
+
+test("an audio row keys on basename and milliseconds", function()
+  assert(vo.OverviewKey("D:\\Session\\RIVA.wav", 1.23, "a") == "RIVA.wav|1230",
+    "Got " .. vo.OverviewKey("D:\\Session\\RIVA.wav", 1.23, "a"))
+  assert(vo.OverviewKey("/mix/RIVA.wav", 1.23, "a") == "RIVA.wav|1230",
+    "The same recording under a different path keys the same")
+end)
+
+test("a script-only row keys on its filename", function()
+  assert(vo.OverviewKey(nil, nil, "vo_guard_bark_01") == "|vo_guard_bark_01")
+end)
+
+test("keys round to the millisecond the sidecar actually stores", function()
+  assert(vo.OverviewKey("a.wav", 1.2304, "x") == "a.wav|1230")
+  assert(vo.OverviewKey("a.wav", 1.2306, "x") == "a.wav|1231")
+end)
+
+--------------------------------
+print("\nSerializeTracker / ParseTracker:")
+
+local function round_trip(entries)
+  local parsed, err = vo.ParseTracker(vo.SerializeTracker(entries))
+  assert(parsed, "Round trip failed: " .. tostring(err))
+  return parsed
+end
+
+test("a full entry survives the round trip", function()
+  local out = round_trip({
+    { key = "RIVA.wav|1230", source = "D:\\S\\RIVA.wav", source_start = 1.23,
+      asset = "vo_guard_halt_01", status = "verified",
+      name_override = "vo_guard_halt_01_alt", notes = "great read", primary = true },
+  })
+  assert(#out == 1, "Expected 1 entry, got " .. #out)
+  local e = out[1]
+  assert(e.key == "RIVA.wav|1230", "key")
+  assert(e.source == "D:\\S\\RIVA.wav", "source")
+  assert(math.abs(e.source_start - 1.23) < 1e-6, "source_start")
+  assert(e.asset == "vo_guard_halt_01", "asset")
+  assert(e.status == "verified", "status")
+  assert(e.name_override == "vo_guard_halt_01_alt", "name_override")
+  assert(e.notes == "great read", "notes")
+  assert(e.primary == true, "primary")
+end)
+
+test("notes survive commas, quotes and newlines", function()
+  local nasty = 'take 2, "the good one"\nwatch the plosive'
+  local out = round_trip({
+    { key = "a.wav|0", source = "a.wav", source_start = 0, notes = nasty },
+  })
+  assert(out[1].notes == nasty, "Got " .. tostring(out[1].notes))
+end)
+
+test("rows carrying no user work are not written at all", function()
+  local text = vo.SerializeTracker({
+    { key = "a.wav|0", source = "a.wav", source_start = 0, asset = "x" },
+    { key = "a.wav|1", source = "a.wav", source_start = 1, asset = "y",
+      status = "verified" },
+  })
+  local out = vo.ParseTracker(text)
+  assert(#out == 1, "Expected only the verified row, got " .. #out)
+  assert(out[1].key == "a.wav|1", "Wrong row survived")
+end)
+
+test("clearing a row's marks removes it from the file", function()
+  local out = vo.ParseTracker(vo.SerializeTracker({
+    { key = "a.wav|0", source = "a.wav", source_start = 0, asset = "x",
+      status = nil, notes = "", name_override = "", primary = false },
+  }))
+  assert(#out == 0, "A cleared row must vanish, got " .. #out)
+end)
+
+test("an empty tracker serializes and parses back to nothing", function()
+  local out = vo.ParseTracker(vo.SerializeTracker({}))
+  assert(out and #out == 0, "Expected an empty entry list")
+end)
+
+test("garbage never raises, it reports", function()
+  for _, bad in ipairs({ "", "not a csv at all", "a,b,c\n1,2,3", "\n\n\n" }) do
+    local parsed, reason = vo.ParseTracker(bad)
+    assert(parsed == nil, "Garbage must not parse: " .. bad)
+    assert(type(reason) == "string" and reason ~= "", "A reason is required")
+  end
+  assert(vo.ParseTracker(nil) == nil, "nil must not raise")
+  assert(vo.ParseTracker(42) == nil, "a non-string must not raise")
+end)
+
+test("a future tracker version is refused, not misread", function()
+  local text = vo.SerializeTracker({}):gsub("^(ajsfx VO Overview),1", "%1,99")
+  local parsed, reason = vo.ParseTracker(text)
+  assert(parsed == nil, "A version 99 tracker must not parse")
+  assert(reason:match("version"), "The reason should name the version, got " .. reason)
+end)
+
+test("a tracker with a header but no rows is valid and empty", function()
+  local out = vo.ParseTracker('ajsfx VO Overview,1\n\nKey,Source,Source start,Filename,Status,Name override,Notes,Primary\n')
+  assert(out and #out == 0, "Expected a valid empty tracker")
+end)
+
+test("an unrecognised status is dropped rather than shown as an unknown badge", function()
+  local text = 'ajsfx VO Overview,1\n\n'
+            .. 'Key,Source,Source start,Filename,Status,Name override,Notes,Primary\n'
+            .. 'a.wav|0,a.wav,0.000,x,bogus,,note,\n'
+  local out = vo.ParseTracker(text)
+  assert(#out == 1, "The row should still load")
+  assert(out[1].status == nil, "A bogus status must be dropped, got " .. tostring(out[1].status))
+  assert(out[1].notes == "note", "The rest of the row must survive")
+end)
+
+test("status is read case-insensitively", function()
+  local text = 'ajsfx VO Overview,1\n\n'
+            .. 'Key,Source,Source start,Filename,Status,Name override,Notes,Primary\n'
+            .. 'a.wav|0,a.wav,0.000,x,VERIFIED,,,YES\n'
+  local out = vo.ParseTracker(text)
+  assert(out[1].status == "verified", "Got " .. tostring(out[1].status))
+  assert(out[1].primary == true, "Primary should read case-insensitively")
+end)
+
+--------------------------------
+print("\nBuildOverview:")
+
+local function line(asset, text, speaker, row)
+  return { asset = asset, text = text, speaker = speaker, row = row }
+end
+
+local function span(start, stop, kind, asset, transcript, score)
+  return { start = start, stop = stop, kind = kind, asset = asset,
+           transcript = transcript, score = score }
+end
+
+local function by_asset(rows, asset)
+  local out = {}
+  for _, row in ipairs(rows) do
+    if row.asset == asset then out[#out + 1] = row end
+  end
+  return out
+end
+
+test("a script with no audio at all is entirely missing", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", "Guard", 1), line("b", "Bravo", "Hero", 2) },
+  })
+  assert(#rows == 2, "Expected 2 rows, got " .. #rows)
+  for _, row in ipairs(rows) do
+    assert(row.status == "missing", "Expected missing, got " .. row.status)
+    assert(row.source_path == nil, "A missing row has no audio")
+    assert(row.take_count == 0, "A missing row has no takes")
+  end
+  assert(rows[1].line_text == "Alpha" and rows[1].character == "Guard",
+    "Script text and character carry through to missing rows")
+end)
+
+test("rows follow script order, not audio order", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2) },
+    sidecars = { { path = "s.wav", spans = {
+      span(10, 11, "match", "b", "bravo", 0.9),
+      span(1, 2, "match", "a", "alpha", 0.9),
+    } } },
+  })
+  assert(rows[1].asset == "a" and rows[2].asset == "b",
+    "Expected script order a,b; got " .. rows[1].asset .. "," .. rows[2].asset)
+end)
+
+test("audio matching no script line becomes an orphan row, listed last", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    sidecars = { { path = "s.wav", spans = {
+      span(1, 2, "unmatched", nil, "take two", nil),
+      span(5, 6, "match", "a", "alpha", 0.95),
+    } } },
+  })
+  assert(#rows == 2, "Expected 2 rows, got " .. #rows)
+  assert(rows[1].status == "recorded" and rows[1].asset == "a", "Script row comes first")
+  assert(rows[2].status == "orphan", "Expected an orphan, got " .. rows[2].status)
+  assert(rows[2].transcript == "take two", "The orphan keeps its transcript")
+end)
+
+test("audio for a line the filters excluded is an orphan, never dropped", function()
+  -- 'b' is not in `lines` (filtered out by character), but its audio exists.
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    sidecars = { { path = "s.wav", spans = { span(1, 2, "match", "b", "bravo", 0.9) } } },
+  })
+  assert(#rows == 2, "Expected the missing line plus the orphan, got " .. #rows)
+  local orphan = rows[2]
+  assert(orphan.status == "orphan", "Got " .. orphan.status)
+  assert(orphan.asset == "b", "The orphan keeps the asset it claimed")
+end)
+
+test("a review span reads as review, not recorded", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    sidecars = { { path = "s.wav", spans = { span(1, 2, "review", "a", "alfa", 0.61) } } },
+  })
+  assert(rows[1].status == "review", "Got " .. rows[1].status)
+  assert(math.abs(rows[1].score - 0.61) < 1e-6, "The score carries through")
+end)
+
+test("multiple takes become sibling rows, numbered chronologically", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    sidecars = { { path = "s.wav", spans = {
+      span(30, 31, "match", "a", "alpha three", 0.9),
+      span(10, 11, "match", "a", "alpha one", 0.9),
+      span(20, 21, "match", "a", "alpha two", 0.9),
+    } } },
+  })
+  assert(#rows == 3, "Expected 3 take rows, got " .. #rows)
+  for i, row in ipairs(rows) do
+    assert(row.take_index == i, "Take " .. i .. " misnumbered as " .. tostring(row.take_index))
+    assert(row.take_count == 3, "Every take knows the group size")
+  end
+  assert(rows[1].transcript == "alpha one", "Takes are ordered by time, not file order")
+end)
+
+test("the last take is the select by default", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    sidecars = { { path = "s.wav", spans = {
+      span(10, 11, "match", "a", "one", 0.9),
+      span(20, 21, "match", "a", "two", 0.9),
+    } } },
+  })
+  assert(rows[2].is_primary == true, "The last take should be the select")
+  assert(rows[1].is_primary == false, "Only one take is the select")
+end)
+
+test("primary_take = first moves the select to the first take", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    cfg = { primary_take = "first" },
+    sidecars = { { path = "s.wav", spans = {
+      span(10, 11, "match", "a", "one", 0.9),
+      span(20, 21, "match", "a", "two", 0.9),
+    } } },
+  })
+  assert(rows[1].is_primary == true, "The first take should be the select")
+  assert(rows[2].is_primary == false, "Only one take is the select")
+end)
+
+test("an explicit select in the tracker overrides the first/last rule", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    sidecars = { { path = "s.wav", spans = {
+      span(10, 11, "match", "a", "one", 0.9),
+      span(20, 21, "match", "a", "two", 0.9),
+      span(30, 31, "match", "a", "three", 0.9),
+    } } },
+    tracker = { { key = "s.wav|20000", source = "s.wav", source_start = 20,
+                  asset = "a", primary = true } },
+  })
+  assert(rows[2].is_primary == true, "The user's chosen take is the select")
+  assert(rows[3].is_primary == false, "The last take yields to the user's choice")
+end)
+
+test("two sidecars fold into one list, takes numbered across both", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    sidecars = {
+      { path = "B_session2.wav", spans = { span(5, 6, "match", "a", "second day", 0.9) } },
+      { path = "A_session1.wav", spans = { span(9, 9.5, "match", "a", "first day", 0.9) } },
+    },
+  })
+  assert(#rows == 2, "Expected both sessions' takes, got " .. #rows)
+  assert(rows[1].source_path == "A_session1.wav",
+    "Sources order stably by path, not by argument order; got " .. rows[1].source_path)
+  assert(rows[1].take_index == 1 and rows[2].take_index == 2,
+    "Takes number continuously across sources")
+  assert(rows[2].is_primary == true, "The select is the last take across all sources")
+end)
+
+test("one source's missing line and another's audio coexist in one list", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2),
+              line("c", "Charlie", nil, 3) },
+    sidecars = {
+      { path = "s1.wav", spans = { span(1, 2, "match", "a", "alpha", 0.9) } },
+      { path = "s2.wav", spans = { span(1, 2, "match", "c", "charlie", 0.9) } },
+    },
+  })
+  assert(#rows == 3, "Expected 3 rows, got " .. #rows)
+  assert(rows[1].status == "recorded" and rows[1].source_path == "s1.wav", "a from s1")
+  assert(rows[2].status == "missing", "b is still missing")
+  assert(rows[3].status == "recorded" and rows[3].source_path == "s2.wav", "c from s2")
+end)
+
+--------------------------------
+print("\nBuildOverview: tracker overlay and rematch:")
+
+local function verified_at(start)
+  return { { key = vo.OverviewKey("s.wav", start, "a"), source = "s.wav",
+             source_start = start, asset = "a", status = "verified",
+             notes = "checked" } }
+end
+
+test("an exact key match carries the verified flag and notes", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    sidecars = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
+    tracker = verified_at(10),
+  })
+  assert(rows[1].user_status == "verified", "Got " .. tostring(rows[1].user_status))
+  assert(rows[1].notes == "checked", "Notes carry through")
+end)
+
+test("a boundary nudged 40ms by re-transcription keeps its checkmark", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    sidecars = { { path = "s.wav", spans = { span(10.04, 11, "match", "a", "alpha", 0.9) } } },
+    tracker = verified_at(10),
+  })
+  assert(rows[1].user_status == "verified",
+    "A 40ms shift must not lose the mark; got " .. tostring(rows[1].user_status))
+end)
+
+test("a span two seconds away is different audio and does not inherit the mark", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    sidecars = { { path = "s.wav", spans = { span(12, 13, "match", "a", "alpha", 0.9) } } },
+    tracker = verified_at(10),
+  })
+  assert(rows[1].user_status == nil,
+    "A 2s shift must not inherit the mark; got " .. tostring(rows[1].user_status))
+end)
+
+test("the rematch never crosses to a different script line", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2) },
+    -- 'b' sits 100ms from where 'a' was verified, but it is a different line.
+    sidecars = { { path = "s.wav", spans = { span(10.1, 11, "match", "b", "bravo", 0.9) } } },
+    tracker = verified_at(10),
+  })
+  local b = by_asset(rows, "b")[1]
+  assert(b.user_status == nil,
+    "A different asset must not inherit the mark; got " .. tostring(b.user_status))
+end)
+
+test("the nearest candidate wins when several are in tolerance", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    sidecars = { { path = "s.wav", spans = {
+      span(10.0, 10.5, "match", "a", "near", 0.9),
+      span(10.4, 10.9, "match", "a", "far",  0.9),
+    } } },
+    tracker = { { key = "s.wav|9999", source = "s.wav", source_start = 10.05,
+                  asset = "a", notes = "mine" } },
+  })
+  assert(rows[1].notes == "mine", "The nearer span should adopt the entry")
+  assert(rows[2].notes == nil, "The farther span should not also claim it")
+end)
+
+test("a project moved to another drive still finds its marks", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    sidecars = { { path = "E:\\Moved\\s.wav",
+                   spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
+    tracker = { { key = "s.wav|10000", source = "D:\\Old\\s.wav", source_start = 10,
+                  asset = "a", status = "verified" } },
+  })
+  assert(rows[1].user_status == "verified",
+    "The basename fallback should find it; got " .. tostring(rows[1].user_status))
+end)
+
+test("two recordings sharing a filename do not share a checkmark", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    sidecars = {
+      { path = "D:\\A\\take.wav", spans = { span(10, 11, "match", "a", "one", 0.9) } },
+      { path = "D:\\B\\take.wav", spans = { span(10, 11, "match", "a", "two", 0.9) } },
+    },
+    tracker = { { key = "take.wav|10000", source = "D:\\B\\take.wav",
+                  source_start = 10, asset = "a", status = "verified" } },
+  })
+  local marked, unmarked = 0, 0
+  for _, row in ipairs(rows) do
+    if row.user_status == "verified" then marked = marked + 1 else unmarked = unmarked + 1 end
+  end
+  assert(marked == 1 and unmarked == 1,
+    "Exactly one row may be verified; got " .. marked .. " marked")
+  for _, row in ipairs(rows) do
+    if row.user_status == "verified" then
+      assert(row.source_path == "D:\\B\\take.wav",
+        "The full path must win over the basename; got " .. row.source_path)
+    end
+  end
+end)
+
+test("a missing script line can still carry notes", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    tracker = { { key = "|a", asset = "a", notes = "reschedule with actor" } },
+  })
+  assert(rows[1].status == "missing", "Still missing")
+  assert(rows[1].notes == "reschedule with actor", "Notes on a missing line survive")
+end)
+
+test("a name override is carried but never overwrites the matched filename", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    sidecars = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
+    tracker = { { key = "s.wav|10000", source = "s.wav", source_start = 10,
+                  asset = "a", name_override = "vo_alpha_final" } },
+  })
+  assert(rows[1].asset == "a", "The script's filename is untouched")
+  assert(rows[1].name_override == "vo_alpha_final", "The override rides alongside")
+end)
+
+--------------------------------
+print("\nTrackerEntriesFromRows / SummarizeOverview:")
+
+test("a full overview round-trips through the tracker unchanged", function()
+  local built = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2) },
+    sidecars = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
+    tracker = { { key = "s.wav|10000", source = "s.wav", source_start = 10,
+                  asset = "a", status = "verified", notes = "good" } },
+  })
+  local text   = vo.SerializeTracker(vo.TrackerEntriesFromRows(built))
+  local parsed = vo.ParseTracker(text)
+  local again  = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2) },
+    sidecars = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
+    tracker = parsed,
+  })
+  assert(again[1].user_status == "verified", "The mark survives a save/load cycle")
+  assert(again[1].notes == "good", "So do the notes")
+end)
+
+test("marks survive a re-transcription that shifts every boundary slightly", function()
+  local lines = { line("a", "Alpha", nil, 1) }
+  local first = vo.BuildOverview({
+    lines = lines,
+    sidecars = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
+  })
+  first[1].user_status = "verified"
+  first[1].notes = "keeper"
+  local saved = vo.ParseTracker(vo.SerializeTracker(vo.TrackerEntriesFromRows(first)))
+
+  -- Re-transcribed: the same take, boundaries moved by 30ms.
+  local second = vo.BuildOverview({
+    lines = lines,
+    sidecars = { { path = "s.wav", spans = { span(10.03, 11.02, "match", "a", "alpha", 0.91) } } },
+    tracker = saved,
+  })
+  assert(second[1].user_status == "verified",
+    "This is the whole point of the design; got " .. tostring(second[1].user_status))
+  assert(second[1].notes == "keeper", "Notes survive too")
+end)
+
+test("the summary counts lines delivered, not takes recorded", function()
+  local n = vo.SummarizeOverview(vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2),
+              line("c", "Charlie", nil, 3) },
+    sidecars = { { path = "s.wav", spans = {
+      span(1, 2, "match",  "a", "one",   0.9),
+      span(3, 4, "match",  "a", "two",   0.9),
+      span(5, 6, "review", "b", "bravo", 0.6),
+      span(7, 8, "unmatched", nil, "slate", nil),
+    } } },
+  }))
+  assert(n.lines == 3, "Three script lines, got " .. n.lines)
+  assert(n.delivered == 2, "Two lines have audio, got " .. n.delivered)
+  assert(n.recorded == 2, "Two matched take rows, got " .. n.recorded)
+  assert(n.review == 1, "One review row, got " .. n.review)
+  assert(n.missing == 1, "One missing line, got " .. n.missing)
+  assert(n.orphan == 1, "One orphan, got " .. n.orphan)
+end)
+
+test("the summary counts the user's marks", function()
+  local n = vo.SummarizeOverview({
+    { status = "recorded", asset = "a", user_status = "verified" },
+    { status = "recorded", asset = "b", user_status = "flagged" },
+    { status = "recorded", asset = "c" },
+  })
+  assert(n.verified == 1 and n.flagged == 1, "Marks counted independently of status")
+  assert(n.total == 3, "Total counts every row")
+end)
+
+test("summarizing nothing is zero, not an error", function()
+  local n = vo.SummarizeOverview(nil)
+  assert(n.total == 0 and n.lines == 0 and n.delivered == 0, "All zero")
+end)
+
+--------------------------------
+-- ClusterItems
+--------------------------------
+print("\nClusterItems:")
+
+-- Tracks are opaque to the pure layer, so plain tables stand in for them.
+local TRACK_A, TRACK_B = { "A" }, { "B" }
+
+local function geo(track, pos, length, opts)
+  opts = opts or {}
+  return { item = opts.item or (tostring(pos) .. "@" .. tostring(track[1])),
+           index = opts.index or 0, track = track,
+           pos = pos, length = length, locked = opts.locked, group = opts.group }
+end
+
+test("items that do not touch stay separate", function()
+  local c = vo.ClusterItems({ geo(TRACK_A, 0, 1), geo(TRACK_A, 5, 1) })
+  assert(#c == 2, "Expected 2 clusters, got " .. #c)
+  assert(c[1].pos == 0 and c[1].stop == 1, "First cluster spans its item")
+end)
+
+test("an overlap on one track welds into a single cluster", function()
+  local c = vo.ClusterItems({ geo(TRACK_A, 0, 2), geo(TRACK_A, 1.5, 2) })
+  assert(#c == 1, "Expected 1 cluster, got " .. #c)
+  assert(#c[1].members == 2, "Both items are members")
+  assert(c[1].pos == 0 and math.abs(c[1].stop - 3.5) < 1e-9,
+    "Cluster spans from the first start to the last end")
+end)
+
+test("the same overlap across two tracks does not cluster", function()
+  -- Two characters talking over each other is not an edit; welding them would
+  -- chain a multi-character session into one immovable blob.
+  local c = vo.ClusterItems({ geo(TRACK_A, 0, 2), geo(TRACK_B, 1.5, 2) })
+  assert(#c == 2, "Expected 2 clusters, got " .. #c)
+end)
+
+test("exactly abutting items do not cluster", function()
+  local c = vo.ClusterItems({ geo(TRACK_A, 0, 2), geo(TRACK_A, 2, 2) })
+  assert(#c == 2, "A trimmed butt-join is not a crossfade, got " .. #c)
+end)
+
+test("a sub-millisecond gap error still does not cluster", function()
+  local c = vo.ClusterItems({ geo(TRACK_A, 0, 2), geo(TRACK_A, 2 - 0.0002, 2) })
+  assert(#c == 2, "Float noise below the epsilon is not an overlap, got " .. #c)
+end)
+
+test("a chain of overlaps is one cluster even when the ends do not overlap", function()
+  local c = vo.ClusterItems({
+    geo(TRACK_A, 0, 2), geo(TRACK_A, 1.5, 2), geo(TRACK_A, 3, 2),
+  })
+  assert(#c == 1, "Expected 1 chained cluster, got " .. #c)
+  assert(#c[1].members == 3, "All three travel together")
+end)
+
+test("a locked member locks the whole cluster", function()
+  local c = vo.ClusterItems({
+    geo(TRACK_A, 0, 2), geo(TRACK_A, 1.5, 2, { locked = true }),
+  })
+  assert(c[1].locked == true, "Half a crossfade must never move on its own")
+end)
+
+test("clusters come back in timeline order regardless of input order", function()
+  local c = vo.ClusterItems({ geo(TRACK_B, 9, 1), geo(TRACK_A, 3, 1) })
+  assert(c[1].pos == 3 and c[2].pos == 9, "Sorted by position")
+end)
+
+test("clustering nothing is empty, not an error", function()
+  assert(#vo.ClusterItems(nil) == 0, "nil is an empty project")
+end)
+
+test("a shared item group welds across tracks", function()
+  -- A group is the user saying "these belong together" out loud. Stranding one
+  -- half on its old track is the same damage as breaking a crossfade.
+  local c = vo.ClusterItems({
+    geo(TRACK_A, 0, 1, { group = 7 }), geo(TRACK_B, 40, 1, { group = 7 }),
+  })
+  assert(#c == 1, "Expected 1 cluster, got " .. #c)
+  assert(#c[1].members == 2, "Both travel together")
+  assert(c[1].pos == 0 and c[1].stop == 41, "The cluster spans both members")
+end)
+
+test("group id 0 is ungrouped and never welds", function()
+  local c = vo.ClusterItems({
+    geo(TRACK_A, 0, 1, { group = 0 }), geo(TRACK_B, 40, 1, { group = 0 }),
+  })
+  assert(#c == 2, "Zero is 'no group', not a group, got " .. #c)
+end)
+
+test("different groups stay apart", function()
+  local c = vo.ClusterItems({
+    geo(TRACK_A, 0, 1, { group = 1 }), geo(TRACK_B, 40, 1, { group = 2 }),
+  })
+  assert(#c == 2, "Expected 2 clusters, got " .. #c)
+end)
+
+test("a group and an overlap sharing a member form one cluster", function()
+  -- The crossfaded partner on track A has no group of its own, but it is welded
+  -- to one that does, so the whole chain has to move as a unit.
+  local c = vo.ClusterItems({
+    geo(TRACK_A, 0, 2),
+    geo(TRACK_A, 1.5, 2, { group = 3 }),
+    geo(TRACK_B, 90, 1, { group = 3 }),
+  })
+  assert(#c == 1, "Expected 1 chained cluster, got " .. #c)
+  assert(#c[1].members == 3, "All three travel together")
+end)
+
+test("cluster members stay in timeline order", function()
+  -- Callers read the head of the edit off members[1]; this is contract, not luck.
+  local c = vo.ClusterItems({
+    geo(TRACK_B, 90, 1, { group = 3 }), geo(TRACK_A, 5, 1, { group = 3 }),
+  })
+  assert(c[1].members[1].pos == 5, "Earliest member first")
+  assert(c[1].track == TRACK_A, "The cluster reports its head's track")
+end)
+
+--------------------------------
+-- FolderDepthForChild
+--------------------------------
+print("\nFolderDepthForChild:")
+
+test("nesting a child under a plain track opens and closes a folder", function()
+  local parent, child = vo.FolderDepthForChild(0)
+  assert(parent == 1 and child == -1, "Got " .. parent .. ", " .. child)
+end)
+
+test("nesting under the last child of a folder closes both levels", function()
+  local parent, child = vo.FolderDepthForChild(-1)
+  assert(parent == 1 and child == -2, "Got " .. parent .. ", " .. child)
+end)
+
+test("nesting under an existing folder makes the child its first child", function()
+  local parent, child = vo.FolderDepthForChild(1)
+  assert(parent == 1 and child == 0, "The parent stays a folder; got "
+    .. parent .. ", " .. child)
+end)
+
+test("nesting under a track that closes two levels closes three", function()
+  local parent, child = vo.FolderDepthForChild(-2)
+  assert(parent == 1 and child == -3, "Got " .. parent .. ", " .. child)
+end)
+
+test("a missing depth is read as a plain track", function()
+  local parent, child = vo.FolderDepthForChild(nil)
+  assert(parent == 1 and child == -1, "nil is depth 0")
+end)
+
+--------------------------------
+-- PlanTimelineLayout
+--------------------------------
+print("\nPlanTimelineLayout:")
+
+local function cl(pos, length, key)
+  return { members = { {} }, pos = pos, stop = pos + length,
+           track = TRACK_A, track_order = 1, key = key or {} }
+end
+
+local function positions(moves)
+  local out = {}
+  for i, m in ipairs(moves) do out[i] = m.pos end
+  return out
+end
+
+test("script order follows the CSV rows, not the timeline", function()
+  local moves = vo.PlanTimelineLayout({
+    clusters = { cl(0, 1, { script_row = 3 }), cl(10, 1, { script_row = 1 }) },
+    order = "script", gap = 2, start = 0,
+  })
+  assert(moves[1].cluster.key.script_row == 1, "Row 1 lays down first")
+  assert(moves[1].pos == 0, "The run begins at start")
+  assert(moves[2].pos == 3, "1s item + 2s gap")
+end)
+
+test("a long item pushes the next one clear of its whole length", function()
+  -- The whole reason sorting does not need to cut: an item holding five lines
+  -- is placed by its first line and the next item clears all of it.
+  local moves = vo.PlanTimelineLayout({
+    clusters = { cl(0, 30, { script_row = 1 }), cl(100, 1, { script_row = 2 }) },
+    order = "script", gap = 2, start = 0,
+  })
+  assert(moves[2].pos == 32, "Expected 32, got " .. moves[2].pos)
+end)
+
+test("script order appends orphans after the run", function()
+  local moves, n = vo.PlanTimelineLayout({
+    clusters = {
+      cl(0, 1, { orphan = true }),
+      cl(10, 1, { script_row = 2 }),
+      cl(20, 1, { script_row = 1 }),
+    },
+    order = "script", gap = 1, start = 0,
+  })
+  assert(n.orphans == 1, "One orphan counted")
+  assert(moves[3].cluster.key.orphan == true, "The orphan lands last")
+  assert(moves[3].pos == 4, "After both sorted items, got " .. moves[3].pos)
+end)
+
+test("the run starts at the earliest affected item when no start is given", function()
+  local moves = vo.PlanTimelineLayout({
+    clusters = { cl(50, 1, { script_row = 2 }), cl(20, 1, { script_row = 1 }) },
+    order = "script", gap = 1,
+  })
+  assert(moves[1].pos == 20, "Expected 20, got " .. moves[1].pos)
+  assert(moves[1].delta == 0, "The anchor item does not move")
+end)
+
+test("record order puts the older recording first and gaps between them", function()
+  local moves, n = vo.PlanTimelineLayout({
+    clusters = {
+      cl(0,  1, { source_path = "new.wav", source_start = 0 }),
+      cl(10, 1, { source_path = "old.wav", source_start = 5 }),
+      cl(20, 1, { source_path = "old.wav", source_start = 1 }),
+    },
+    order = "record", spacing = "fixed", gap = 2, source_gap = 60, start = 0,
+    source_age = { ["old.wav"] = 100, ["new.wav"] = 200 },
+  })
+  assert(n.groups == 2, "Two recordings, got " .. n.groups)
+  assert(moves[1].cluster.key.source_start == 1, "Oldest file, earliest take first")
+  assert(moves[2].pos == 3, "2s gap inside a recording")
+  assert(moves[3].cluster.key.source_path == "new.wav", "Newer file second")
+  assert(moves[3].pos == 64, "60s between recordings, got " .. moves[3].pos)
+end)
+
+test("record order falls back to the path when ages are unknown", function()
+  local moves = vo.PlanTimelineLayout({
+    clusters = {
+      cl(0, 1, { source_path = "b.wav", source_start = 0 }),
+      cl(5, 1, { source_path = "a.wav", source_start = 0 }),
+    },
+    order = "record", gap = 1, source_gap = 10, start = 0, source_age = {},
+  })
+  assert(moves[1].cluster.key.source_path == "a.wav", "Deterministic without ages")
+end)
+
+test("a file with a known age sorts before one with none", function()
+  local moves = vo.PlanTimelineLayout({
+    clusters = {
+      cl(0, 1, { source_path = "a.wav", source_start = 0 }),
+      cl(5, 1, { source_path = "b.wav", source_start = 0 }),
+    },
+    order = "record", gap = 1, source_gap = 10, start = 0,
+    source_age = { ["b.wav"] = 1 },
+  })
+  assert(moves[1].cluster.key.source_path == "b.wav", "Known age wins")
+end)
+
+test("original spacing replays the recording's own gaps", function()
+  local moves, n = vo.PlanTimelineLayout({
+    clusters = {
+      cl(0,  1, { source_path = "s.wav", source_start = 10 }),
+      cl(50, 1, { source_path = "s.wav", source_start = 42 }),
+    },
+    order = "record", spacing = "original", gap = 2, start = 5,
+    source_age = { ["s.wav"] = 1 },
+  })
+  assert(moves[1].pos == 5, "The group begins at start")
+  assert(moves[2].pos == 37, "32s apart, exactly as recorded; got " .. moves[2].pos)
+  assert(n.clamped == 0, "Nothing had to slide")
+end)
+
+test("original spacing slides a retimed item forward instead of stacking it", function()
+  local moves, n = vo.PlanTimelineLayout({
+    clusters = {
+      cl(0,  20, { source_path = "s.wav", source_start = 0 }),
+      cl(50,  1, { source_path = "s.wav", source_start = 5 }),
+    },
+    order = "record", spacing = "original", gap = 2, start = 0,
+    source_age = { ["s.wav"] = 1 },
+  })
+  assert(moves[2].pos == 20, "Clamped to the previous end, got " .. moves[2].pos)
+  assert(n.clamped == 1, "And reported, got " .. n.clamped)
+end)
+
+test("original spacing is refused for script order", function()
+  -- There is no original layout for an order the recording never had.
+  local moves = vo.PlanTimelineLayout({
+    clusters = { cl(0, 1, { script_row = 1, source_start = 0 }),
+                 cl(9, 1, { script_row = 2, source_start = 100 }) },
+    order = "script", spacing = "original", gap = 2, start = 0,
+  })
+  assert(moves[2].pos == 3, "Fixed gap applied anyway, got " .. moves[2].pos)
+end)
+
+test("the summary counts what will move", function()
+  local c = vo.ClusterItems({ geo(TRACK_A, 0, 2), geo(TRACK_A, 1.5, 2),
+                              geo(TRACK_A, 10, 1) })
+  for i, cluster in ipairs(c) do cluster.key = { script_row = i } end
+  local _, n = vo.PlanTimelineLayout({ clusters = c, order = "script",
+                                       gap = 1, start = 0 })
+  assert(n.clusters == 2, "Two clusters, got " .. n.clusters)
+  assert(n.items == 3, "Three items, got " .. n.items)
+  assert(math.abs(n.span - 5.5) < 1e-9, "3.5s + 1s gap + 1s, got " .. n.span)
+end)
+
+test("planning nothing is empty, not an error", function()
+  local moves, n = vo.PlanTimelineLayout({ clusters = {} })
+  assert(#moves == 0 and n.clusters == 0, "Nothing to lay out")
+end)
+
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

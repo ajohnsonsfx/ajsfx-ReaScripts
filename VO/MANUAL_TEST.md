@@ -439,9 +439,176 @@ This is the item verified as part of Task 6's review fix — confirm it directly
 
 ---
 
+## VO Overview
+
+Needs a project with **two** recordings that already have sidecars (finish the
+section above first), a script CSV covering both, and at least one script line
+that was never recorded.
+
+### Reading the session
+
+1. Open **ajsfx VO Overview**. One table lists both recordings' spans plus every
+   script line, regardless of what is selected in the arrange view.
+2. A line the script has but neither recording matched shows **Missing**.
+3. Audio that matched no script line shows **Orphan**, listed after everything else.
+4. The summary line counts *lines*, not takes: five takes of one line still reads
+   as one line delivered.
+5. Set the status filter to **Missing**. Only missing lines remain; the summary
+   does not change.
+6. Type part of a line's text into the search box. Rows filter as you type.
+
+### Navigating
+
+7. Click a row from the first recording. The edit cursor moves to it and the item
+   is selected. Click one from the second recording — same, on the other item.
+8. Click a Missing row. Nothing moves, the row is dimmed, and hovering explains why.
+9. A line with several takes shows sibling rows numbered `1/3`, `2/3`, `3/3`, with
+   the last carrying the Sel radio. Click Sel on take 1 — it moves, and take 3
+   clears.
+
+### Marking work
+
+10. Tick **OK** on a few rows. Select a row and press `Space` — it toggles.
+    Click into Notes, type a space — the row does *not* toggle.
+11. Type a note containing a comma and a quote. Close the window, reopen it: the
+    note is intact.
+12. Open `<project>_vo_tracker.csv` in Excel. It is legible, and holds only the
+    rows you actually marked.
+
+### Renaming
+
+13. Edit a Filename cell and press Enter. The take name changes in the arrange
+    view and an amber `*` appears on the row.
+14. `Ctrl+Z` once. The take name reverts — one edit is one undo step.
+15. Type a name of only illegal characters (`///`). An inline error appears and
+    nothing is renamed.
+
+### The acceptance test
+
+16. **Re-transcribe one of the two recordings in ScriptMatch.** Return to
+    Overview and press **Refresh**. Every verified mark, note and rename on that
+    recording is still there, and the other recording is untouched.
+17. **Cut** in ScriptMatch, then Refresh Overview. Row → item navigation still
+    lands correctly on the now-split items.
+18. Move the project and its audio to another folder, reopen, Refresh. The marks
+    are still found by basename.
+
+### Degrading safely
+
+19. Corrupt the tracker (delete its first line) and reopen. The window opens, an
+    inline error names the file, and **nothing is saved** until it is fixed —
+    confirm the file on disk is not overwritten.
+20. Corrupt one sidecar. The window opens, names that file inline, and the other
+    recording's rows still load.
+21. Open Overview in an unsaved project. It warns that marks cannot be saved and
+    otherwise works.
+
+---
+
+## Overview: selection and Sort on timeline
+
+Use a project with **two** recordings, a matched script CSV, and audio already
+cut into one item per line.
+
+### Selection
+
+22. Click a row, then Ctrl-click two others. All three stay lit, and the three
+    matching items are selected in the arrange view. Shift-click a fourth row —
+    the whole range from the last-clicked row fills in.
+23. With several rows selected, change the status filter so some of them are
+    hidden. The hidden ones leave the selection; the count beside the **Sort**
+    button drops to match.
+24. Select a fifty-row range. The edit cursor moves once, to the row you clicked
+    — not once per row.
+
+### Sorting
+
+25. Select nothing. Set **Record order · Fixed gap · 2.00 s between items ·
+    60.00 s between recordings** and press **Sort**. Confirm: a new track named
+    `<source> sorted 1` appears **nested as a child under** the track the audio
+    came from, all the sorted items are on it, items sit 2 s apart end-to-start,
+    the two recordings are 60 s apart with the older file first, and a single
+    Ctrl+Z puts the tracks *and* the positions back together.
+26. Look at the tracks **below** the new folder. Their indent level did not
+    change — nesting the child must not re-indent the rest of the project.
+27. Sort again without undoing. A second set named `sorted 2` appears; the
+    `sorted 1` tracks are still sitting there untouched.
+28. **Crossfade two adjacent takes**, then Sort. The crossfade is still intact,
+    the pair moved together as one unit, and both landed on the same new track.
+29. Trim a word out of the middle of a take and crossfade the join; Sort. The
+    repair survives.
+30. **Group two items that sit on different tracks** (select both, `G`), then
+    Sort. Both moved by the same amount, they kept their spacing relative to
+    each other, and each landed on the child of *its own* source track — not
+    collapsed together onto one.
+31. Switch to **Script order**. The spacing droplist greys out, and hovering it
+    explains why. Sort — items now follow the CSV row order, and any orphan
+    (audio matching no script line) lands after the last sorted item.
+32. Back to **Record order · Original spacing**. Sort. The gaps from the original
+    recording return. If anything had to slide forward to avoid an overlap, the
+    status line says how many.
+33. Select six rows from the middle of one recording and Sort. Only those items
+    move; everything else stays where it was, on its original track.
+34. **Lock** one item and Sort. Its cluster is skipped and the status line
+    reports how many were left alone — in the normal colour, not red: the sort
+    still succeeded.
+35. Close and reopen the window. The order, spacing and both gap values are as
+    you left them.
+36. *(Windows without js_ReaScriptAPI only)* Sort by record order across two
+    recordings. The status line says file dates were unavailable and that the
+    ordering fell back to filename.
+37. Filter to one character, click one of its lines, then Shift-click a line of
+    the same character further down with **another character's lines in
+    between**. Only the rows between the two clicks are selected. Nothing
+    belonging to the other character lights up beyond that range — including
+    lines with no audio yet, which used to select as a block.
+38. Type a new name into **Item name** and press Enter. The item in the arrange
+    view shows the new name immediately, without clicking anything else. The
+    **CSV filename** beside it still shows the script's original name, greyed
+    and not editable. Hover it to see both names.
+39. Rename the same item in REAPER itself (F2 on the item). The Item name column
+    catches up within a second or two, without a Refresh.
+
+---
+
 ## Recording results
 
 Note anything that differs from the expectations above directly in
 [SPEC.md §10](SPEC.md#10-explicitly-unverified) — that section exists precisely to
 be converted from "unverified" into "verified, on this date" as these checks are
 completed.
+
+## Overview — view settings (2026-08-01)
+
+1. Drag a column header sideways. The column moves and its cells move with it.
+   Close and reopen the script: the order is kept.
+2. Settings → untick "Restore view settings". Close and reopen: columns are back
+   at their declared widths and order, and every header menu reads Middle /
+   wrap off / Medium — except Line text, which is wrap on.
+3. Re-tick it, set Character to Large, reopen: Large is kept.
+4. Right-click any header. The menu shows Vertical align, Word wrap and Font
+   size — NOT ImGui's column-visibility list.
+5. Turn Word wrap on for Line text. A long line grows its row. The OK checkbox
+   stays vertically centred; set the OK column to Top and it moves to the top.
+6. Click the empty right-hand end of a tall row: the row still selects, and the
+   edit cursor moves.
+7. Drag the Line text column narrower. Rows grow taller within a frame, without
+   flicker.
+8. Settings → set Large to 24. The columns using Large grow on the next frame;
+   the toolbar does not move.
+9. Settings → type 999 into Small. It clamps to 48 with no error message.
+10. Confirm no red "This ReaImGui build did not accept the font sizes" message
+    appears. If it does, the 0.9.3 shim is not adapting the 0.10 font rework and
+    `PushCellFont` has correctly fallen back to the default font.
+
+## Overview — align-all and the text mirror (2026-08-01)
+
+1. Settings → "Align every column: Middle". Every header menu now reads Middle,
+   and every cell in a tall row is vertically centred.
+2. Set one column back to Top by hand. Only that column moves; the rest stay.
+3. Settings → tick "Match Transcript to Line text". Transcript immediately takes
+   Line text's alignment, word wrap and font size.
+4. Right-click the Transcript header, set Font size → Large. Line text follows.
+5. Right-click Line text, turn Word wrap off. Transcript follows.
+6. Untick the mirror, change one column: the other no longer follows.
+7. Re-tick it, close and reopen the script: the two are still in step.
