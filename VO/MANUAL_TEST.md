@@ -600,3 +600,15 @@ completed.
 10. Confirm no red "This ReaImGui build did not accept the font sizes" message
     appears. If it does, the 0.9.3 shim is not adapting the 0.10 font rework and
     `PushCellFont` has correctly fallen back to the default font.
+
+## Overview — align-all and the text mirror (2026-08-01)
+
+1. Settings → "Align every column: Middle". Every header menu now reads Middle,
+   and every cell in a tall row is vertically centred.
+2. Set one column back to Top by hand. Only that column moves; the rest stay.
+3. Settings → tick "Match Transcript to Line text". Transcript immediately takes
+   Line text's alignment, word wrap and font size.
+4. Right-click the Transcript header, set Font size → Large. Line text follows.
+5. Right-click Line text, turn Word wrap off. Transcript follows.
+6. Untick the mirror, change one column: the other no longer follows.
+7. Re-tick it, close and reopen the script: the two are still in step.

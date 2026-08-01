@@ -140,6 +140,17 @@ function view.SaveRestore(on)
   Set("view_restore", on and "1" or "0")
 end
 
+-- Line text and Transcript pinned to one another. Off by default: it is a
+-- reading aid for people who compare the two, not something to spring on
+-- someone who has set the columns up differently on purpose.
+function view.LoadMirror()
+  return Get("view_mirror_text") == "1"
+end
+
+function view.SaveMirror(on)
+  Set("view_mirror_text", on and "1" or "0")
+end
+
 function view.LoadFontSizes()
   local out = {}
   for _, k in ipairs(view.FONT_KEYS) do

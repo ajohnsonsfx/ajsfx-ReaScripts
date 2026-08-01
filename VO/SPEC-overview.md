@@ -348,6 +348,17 @@ by ImGui itself, into `REAPER/ReaImGui/<hash>.ini`. Everything else lives in
 - `view_font_small` / `view_font_medium` / `view_font_large` — the point sizes
   behind the three presets. Medium is 13, the size the table has always drawn at.
 - `view_col_<key>_align` / `_wrap` / `_font` — per column.
+- `view_mirror_text` — pins Line text and Transcript to one another. The two
+  columns exist to be read against each other, so their alignment, wrap and font
+  are kept identical; changing either changes both, and Line text is copied to
+  Transcript when the setting is switched on. Enforced on write AND on load, so
+  a hand-edited store cannot open with the box ticked and the columns
+  disagreeing.
+
+Column WIDTH is deliberately absent from the mirror, and cannot be added:
+ReaImGui exposes no `TableSetColumnWidth` or `TableGetColumnWidth`, widths live
+entirely in ImGui's own saved table state, and `TableSetupColumn`'s initial
+width is ignored once a layout exists.
 
 Per-column keys use the column's `key` field, never its index, so dragging
 columns into a new order cannot scramble which setting belongs to which column,
