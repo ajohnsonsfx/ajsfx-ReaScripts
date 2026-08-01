@@ -334,3 +334,39 @@ Packaging: Overview ships inside the **existing** ScriptMatch package as a third
 `[main]` entry. It must not declare its own `@provides` for `lib/ajsfx_vo.lua` —
 only one package may provide a given file, and the loser is dropped from
 `index.xml` silently.
+
+## Presentation settings
+
+How the table LOOKS belongs to the user, not to the session, so none of it
+touches the project or the tracker. Column widths and column order are persisted
+by ImGui itself, into `REAPER/ReaImGui/<hash>.ini`. Everything else lives in
+`ExtState` under section `ajsfx_vo` with a `view_` prefix:
+
+- `view_restore` — whether any of it is remembered at all. Turning it off clears
+  the stored per-column keys rather than merely ignoring them, so "off" means
+  one thing rather than hiding a layer that reappears when it is turned back on.
+- `view_font_small` / `view_font_medium` / `view_font_large` — the point sizes
+  behind the three presets. Medium is 13, the size the table has always drawn at.
+- `view_col_<key>_align` / `_wrap` / `_font` — per column.
+
+Per-column keys use the column's `key` field, never its index, so dragging
+columns into a new order cannot scramble which setting belongs to which column,
+and inserting a column in a later version does not shift every stored preference
+by one.
+
+The defaults, the validation and the alignment arithmetic live in
+`VO/lib/ajsfx_vo_view.lua` rather than in the script, because the script calls
+`im.CreateContext` at load time and so cannot be required by a test. That module
+is pure but for `ExtState`, and is covered by `tests/test_vo_view.lua`.
+
+Row heights are measured from the PREVIOUS frame's column widths: ImGui has no
+`TableGetColumnWidth`, and a cell's usable width is only knowable from inside
+that cell, which is a frame too late to size the row it belongs to. Dragging a
+column edge therefore leaves heights one frame stale; they settle on the next
+frame. Heights are cached against a generation counter bumped by a rebuild, a
+width change or a settings edit, so a table nobody is touching costs one
+comparison per row per frame — this table emits every row every frame, with no
+ListClipper.
+
+The full design is in
+`docs/superpowers/specs/2026-08-01-vo-overview-view-settings-design.md`.

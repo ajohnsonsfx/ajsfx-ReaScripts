@@ -577,3 +577,26 @@ Note anything that differs from the expectations above directly in
 [SPEC.md §10](SPEC.md#10-explicitly-unverified) — that section exists precisely to
 be converted from "unverified" into "verified, on this date" as these checks are
 completed.
+
+## Overview — view settings (2026-08-01)
+
+1. Drag a column header sideways. The column moves and its cells move with it.
+   Close and reopen the script: the order is kept.
+2. Settings → untick "Restore view settings". Close and reopen: columns are back
+   at their declared widths and order, and every header menu reads Middle /
+   wrap off / Medium — except Line text, which is wrap on.
+3. Re-tick it, set Character to Large, reopen: Large is kept.
+4. Right-click any header. The menu shows Vertical align, Word wrap and Font
+   size — NOT ImGui's column-visibility list.
+5. Turn Word wrap on for Line text. A long line grows its row. The OK checkbox
+   stays vertically centred; set the OK column to Top and it moves to the top.
+6. Click the empty right-hand end of a tall row: the row still selects, and the
+   edit cursor moves.
+7. Drag the Line text column narrower. Rows grow taller within a frame, without
+   flicker.
+8. Settings → set Large to 24. The columns using Large grow on the next frame;
+   the toolbar does not move.
+9. Settings → type 999 into Small. It clamps to 48 with no error message.
+10. Confirm no red "This ReaImGui build did not accept the font sizes" message
+    appears. If it does, the 0.9.3 shim is not adapting the 0.10 font rework and
+    `PushCellFont` has correctly fallen back to the default font.

@@ -1,7 +1,7 @@
 -- @description ajsfx VO ScriptMatch
 -- @author ajsfx
--- @version 0.10
--- @changelog VO Overview gains multi-row selection and a "Sort on timeline" tool. Rows select like a spreadsheet — click to replace, Ctrl/Cmd-click to toggle, Shift-click for a range — and the selection drives the item selection in the arrange view. Sort on timeline re-lays the affected audio in script order or in record order (oldest recording first, then position within that recording), either with a fixed gap after every item or replaying the recording's own spacing, with a configurable gap between one recording and the next. It moves whole media items and never cuts. Each run lays its audio out on a new child track nested under the track it came from, so a sort can never land on top of audio it was not asked to touch and each character keeps its own track. Items that overlap on the same track, and items sharing an item group across tracks, are moved together as one unit, so crossfaded edits, word repairs and grouped takes survive intact; locked clusters are skipped and reported. The whole sort — new tracks, track moves and positions — is a single undo step. The Filename column is now two: an editable "Item name" that renames the take (and so feeds REAPER's render patterns) and updates the arrange view immediately, and a read-only "CSV filename" that keeps the script's original name on screen so a rename never loses it.
+-- @version 0.11
+-- @changelog VO Overview columns can now be dragged into any order, and each column carries its own presentation. Right-click a column header for vertical alignment (top, middle or bottom), word wrap, and a font size; Line text wraps out of the box, and wrapped text makes rows as tall as they need to be while every other cell in the row sits where its own alignment says. A new Settings button in the top bar holds two controls: "Restore view settings", which remembers column widths, column order and each column's alignment, wrap and font between sessions, and the point sizes behind the Small, Medium and Large presets. Turning restore off clears what is already stored, so it means one thing rather than hiding a layer of preferences that reappears when it is turned back on.
 -- @about Cut a recorded VO session into one clip per script line and name each
 --        clip with its delivery asset name. Reads a CSV script, transcribes the
 --        selected items locally with whisper.cpp, matches spoken spans against
@@ -14,6 +14,7 @@
 --   [main] ajsfx_VO_Settings.lua
 --   [main] ajsfx_VO_Overview.lua
 --   lib/ajsfx_vo.lua
+--   lib/ajsfx_vo_view.lua
 --   ../lib/ajsfx_core.lua > lib/ajsfx_core.lua
 
 local r = reaper
