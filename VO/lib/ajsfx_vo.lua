@@ -973,26 +973,16 @@ function vo.SelectSpans(candidates, cfg, backbone, pinned)
   local min_tokens = vo.Opt(cfg, "backbone_min_tokens")
 
   -- Pinned lines are placed by hand; the matcher has nothing to add about them.
-  -- Only a HARD pin claims the line. A lock says "leave this take where it is",
-  -- which must not delete the line's other takes -- locking take 2 of 3 has to
-  -- leave takes 1 and 3 exactly where they were.
-  local by_hand = {}
-  for _, p in ipairs(pinned or {}) do
-    if p.line_idx and not p.lock then by_hand[p.line_idx] = true end
-  end
-
   local ordered = {}
-  for _, c in ipairs(candidates) do
-    if not by_hand[c.line_idx] then
-      ordered[#ordered + 1] = c
-      -- Not `backbone and ... or nil`: false is a verdict here, and that idiom
-      -- would quietly turn "out of order" into "no evidence".
-      if backbone and (c.i1 - c.i0 + 1) < min_tokens then
-        c.in_sequence = vo.OrderConsistency(c, backbone)
-      end
-      c.effective = (c.in_sequence == false)
-        and math.max(0.0, c.score - weight) or c.score
+  for i, c in ipairs(candidates) do
+    ordered[i] = c
+    -- Not `backbone and ... or nil`: false is a verdict here, and that idiom
+    -- would quietly turn "out of order" into "no evidence".
+    if backbone and (c.i1 - c.i0 + 1) < min_tokens then
+      c.in_sequence = vo.OrderConsistency(c, backbone)
     end
+    c.effective = (c.in_sequence == false)
+      and math.max(0.0, c.score - weight) or c.score
   end
 
   -- Selection is greedy, so the ORDER candidates are considered in is what
@@ -1150,10 +1140,12 @@ end
 -- the matcher can produce, so pinned spans are seeded into the selection before
 -- the greedy pass and everything overlapping them loses.
 --
--- A pinned line's OTHER automatic placements in the same recording are dropped
--- too. You pin a line because the matcher put it somewhere wrong, and leaving
--- the wrong placement standing as a second take would not have fixed anything.
--- To keep two takes, pin both.
+-- A pin speaks for its own TAKE and says nothing about the line's others. It
+-- once dropped them, on the reasoning that you pin a line when the matcher put
+-- it somewhere wrong -- but the same gesture is used to confirm one take of
+-- three, and there the suppression silently deleted two real ones. The two
+-- mistakes are not equally bad: an extra take is visible in the Take column
+-- and can be dealt with, a deleted one is not there to notice.
 --
 -- The pin's own times are kept, not the matched words' -- the range is the part
 -- the person chose. The token range is only what tells the rest of the pass
@@ -1195,7 +1187,6 @@ function vo.PinnedSpans(word_tokens, pins, lines)
         effective = 1.0,
         kind      = "match",
         pinned    = true,
-        lock      = pin.lock or nil,
         line_idx  = line_idx,
         asset     = pin.asset,
         character = lines[line_idx].speaker,
@@ -2364,7 +2355,6 @@ function vo.SerializeProjectFile(entries, meta)
         "Pin", p.asset, p.source,
         string.format("%.3f", p.start or 0),
         string.format("%.3f", p.stop or 0),
-        p.lock and "lock" or "",
       })
     end
   end
@@ -2431,10 +2421,8 @@ function vo.ParseProjectFile(text)
       local from, to = tonumber(rows[i][4] or ""), tonumber(rows[i][5] or "")
       -- A pin with no range is not a weaker pin, it is a corrupt one.
       if asset ~= "" and source ~= "" and from and to and to > from then
-        parsed.pins[#parsed.pins + 1] = {
-          asset = asset, source = source, start = from, stop = to,
-          lock  = fold(rows[i][6] or "") == "lock" or nil,
-        }
+        parsed.pins[#parsed.pins + 1] =
+          { asset = asset, source = source, start = from, stop = to }
       end
     end
     i = i + 1
@@ -2643,7 +2631,6 @@ function vo.BuildOverview(input)
       -- with it, since a 100% score in review is otherwise baffling.
       in_sequence   = s.in_sequence,
       pinned        = s.pinned or nil,
-      pin_lock      = s.lock or nil,
       source_path   = rec.source_path,
       source_start  = s.start,
       source_stop   = s.stop,
