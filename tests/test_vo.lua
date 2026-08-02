@@ -1434,6 +1434,79 @@ test("a missing binary falls back to the bare command name", function()
   assert(argv[1] == "whisper-cli", "argv[1]: " .. tostring(argv[1]))
 end)
 
+test("prior-text conditioning is disabled so the decoder cannot loop", function()
+  local argv = vo.BuildWhisperArgv(WHISPER_CFG, "in.wav", "out")
+  assert(argv_value(argv, "-mc") == "0", "-mc: " .. tostring(argv_value(argv, "-mc")))
+end)
+
+--------------------------------
+-- DetectRepetitionLoop
+--------------------------------
+print("\nDetectRepetitionLoop:")
+
+local function loop_words(list)
+  local out = {}
+  for i, w in ipairs(list) do
+    out[i] = { t0 = i * 1.0, t1 = i * 1.0 + 0.5, text = w }
+  end
+  return out
+end
+
+local function repeated(phrase, times, before, after)
+  local list = {}
+  for _, w in ipairs(before or {}) do list[#list + 1] = w end
+  for _ = 1, times do
+    for _, w in ipairs(phrase) do list[#list + 1] = w end
+  end
+  for _, w in ipairs(after or {}) do list[#list + 1] = w end
+  return loop_words(list)
+end
+
+test("clean speech reports no loop", function()
+  local words = loop_words({ "the", "quick", "brown", "fox", "jumps", "over",
+                             "the", "lazy", "dog", "and", "then", "sleeps" })
+  assert(vo.DetectRepetitionLoop(words) == nil, "clean speech flagged as a loop")
+end)
+
+test("ordinary repetition in a read is not a loop", function()
+  -- "no, no, no, no" and a repeated two-word beat both stay under threshold.
+  assert(vo.DetectRepetitionLoop(repeated({ "no" }, 5)) == nil, "5 repeats flagged")
+  assert(vo.DetectRepetitionLoop(repeated({ "get", "out" }, 3)) == nil, "3 cycles flagged")
+end)
+
+test("a repeated phrase past both thresholds is reported", function()
+  local phrase = { "Riddle", "that", "punish", "you", "for", "answering." }
+  local found = vo.DetectRepetitionLoop(repeated(phrase, 40, { "and", "so" }))
+  assert(found, "loop not detected")
+  assert(found.cycles == 40, "cycles: " .. tostring(found.cycles))
+  assert(found.words == 240, "words: " .. tostring(found.words))
+  assert(found.phrase == "Riddle that punish you for answering.",
+    "phrase: " .. tostring(found.phrase))
+end)
+
+test("the reported span is where the loop starts and ends, not the whole file", function()
+  local found = vo.DetectRepetitionLoop(repeated({ "a", "b" }, 10, { "x", "y", "z" }))
+  -- three leading words, so the loop's first word is index 4 (t0 = 4.0) and its
+  -- last is index 23 (t1 = 23.5).
+  assert(math.abs(found.from - 4.0) < 1e-9, "from: " .. tostring(found.from))
+  assert(math.abs(found.to - 23.5) < 1e-9, "to: " .. tostring(found.to))
+end)
+
+test("the longest run wins when a file contains more than one", function()
+  local list = {}
+  for _, w in ipairs(repeated({ "short" }, 14)) do list[#list + 1] = w.text end
+  list[#list + 1] = "break"
+  for _, w in ipairs(repeated({ "long", "one" }, 30)) do list[#list + 1] = w.text end
+  local found = vo.DetectRepetitionLoop(loop_words(list))
+  assert(found.phrase == "long one", "phrase: " .. tostring(found.phrase))
+  assert(found.words == 60, "words: " .. tostring(found.words))
+end)
+
+test("an empty or nil transcript is handled without throwing", function()
+  assert(vo.DetectRepetitionLoop(nil) == nil, "nil flagged")
+  assert(vo.DetectRepetitionLoop({}) == nil, "empty flagged")
+end)
+
 --------------------------------
 -- CSV output helpers
 --------------------------------
@@ -2179,6 +2252,14 @@ test("FormatBytes scales into human units", function()
   assert(vo.FormatBytes(512) == "512 B", vo.FormatBytes(512))
   assert(vo.FormatBytes(1536) == "1.5 KB", vo.FormatBytes(1536))
   assert(vo.FormatBytes(677887125) == "646.5 MB", vo.FormatBytes(677887125))
+end)
+
+test("FormatTime reads as a transport position", function()
+  assert(vo.FormatTime(0) == "0:00", vo.FormatTime(0))
+  assert(vo.FormatTime(9.4) == "0:09", vo.FormatTime(9.4))
+  assert(vo.FormatTime(1385.2) == "23:05", vo.FormatTime(1385.2))
+  assert(vo.FormatTime(3725) == "1:02:05", vo.FormatTime(3725))
+  assert(vo.FormatTime(nil) == "0:00", vo.FormatTime(nil))
 end)
 
 --------------------------------

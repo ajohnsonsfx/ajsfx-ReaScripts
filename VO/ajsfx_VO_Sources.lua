@@ -114,6 +114,9 @@ local function BuildRows()
       model      = parsed and parsed.model or "",
       items      = counts[path] or 0,
       reason     = why,
+      -- A looped transcript parses and matches like any other, so the only
+      -- place the user can ever learn about it is here.
+      loop       = parsed and vo.DetectRepetitionLoop(parsed.words) or nil,
     }
   end
   table.sort(rows, function(a, b) return a.name:lower() < b.name:lower() end)
@@ -442,6 +445,17 @@ local function DrawTableBody(visible)
     if row.status == "error" and im.IsItemHovered(ctx) then
       im.SetTooltip(ctx, row.reason or "Could not parse the transcript.")
     end
+    if row.loop then
+      im.SameLine(ctx)
+      im.TextColored(ctx, STATUS_STYLE.error.colour, "\226\154\160")
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, string.format(
+          "The transcriber looped from %s to %s, repeating\n\"%s\" %d times.\n\n"
+          .. "Everything in that stretch is invented. Re-transcribe.",
+          vo.FormatTime(row.loop.from), vo.FormatTime(row.loop.to),
+          row.loop.phrase, row.loop.cycles))
+      end
+    end
 
     -- Words ---------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 2)
@@ -622,6 +636,18 @@ local function DrawTranscriptDetail(row)
   if row.status == "stale" then
     im.TextColored(ctx, STATUS_STYLE.stale.colour,
       "Stale \226\128\148 the source audio has changed since this transcript was made.")
+  end
+  if row.loop then
+    im.TextColored(ctx, STATUS_STYLE.error.colour, string.format(
+      "The transcriber looped between %s and %s.",
+      vo.FormatTime(row.loop.from), vo.FormatTime(row.loop.to)))
+    im.TextWrapped(ctx, string.format(
+      "It repeated \"%s\" %d times instead of transcribing. Whatever was said "
+      .. "in those %s is not in this transcript, so no line from that stretch "
+      .. "can match. Re-transcribe.",
+      row.loop.phrase, row.loop.cycles,
+      vo.FormatTime(row.loop.to - row.loop.from)))
+    im.Spacing(ctx)
   end
 
   im.Text(ctx, "Source: " .. (t.source or ""))

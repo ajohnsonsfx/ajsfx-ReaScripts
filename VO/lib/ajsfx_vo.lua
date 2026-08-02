@@ -495,6 +495,67 @@ function vo.ParseWhisperCSV(text)
   return words
 end
 
+-- Longest stretch of `words` that is one short phrase repeated back to back.
+--
+-- This is the signature of a whisper decoder that has fallen into a repetition
+-- loop: it keeps emitting the same phrase, with confident timestamps, until the
+-- audio runs out. Nothing downstream can distinguish that from real speech, so
+-- it has to be caught here and shown to the user -- a transcript that ends in a
+-- loop is not merely inaccurate, it is missing however many minutes the loop
+-- covered. `-mc 0` in vo.BuildWhisperArgv makes it far less likely; this is the
+-- check that it worked.
+--
+-- Thresholds are set so ordinary repetition in a read ("no, no, no") cannot
+-- trip it: a run needs at least 4 cycles AND 12 repeated words.
+-- Returns: nil, or { from, to, phrase, cycles, words } (times in source seconds)
+vo.LOOP_MAX_PHRASE  = 12
+vo.LOOP_MIN_CYCLES  = 4
+vo.LOOP_MIN_WORDS   = 12
+
+function vo.DetectRepetitionLoop(words)
+  local n = #(words or {})
+  local best
+  local i = 1
+  while i <= n do
+    local run_end = i
+    local best_k, best_cycles = nil, 0
+    for k = 1, vo.LOOP_MAX_PHRASE do
+      if i + 2 * k - 1 > n then break end
+      local cycles = 1
+      while true do
+        local a, b = i + (cycles - 1) * k, i + cycles * k
+        if b + k - 1 > n then break end
+        local same = true
+        for j = 0, k - 1 do
+          if words[a + j].text ~= words[b + j].text then same = false break end
+        end
+        if not same then break end
+        cycles = cycles + 1
+      end
+      if cycles * k > best_cycles * (best_k or 1) then
+        best_k, best_cycles = k, cycles
+      end
+    end
+    local span = best_k and best_cycles * best_k or 0
+    if best_k and best_cycles >= vo.LOOP_MIN_CYCLES and span >= vo.LOOP_MIN_WORDS then
+      if not best or span > best.words then
+        local phrase = {}
+        for j = 0, best_k - 1 do phrase[#phrase + 1] = words[i + j].text end
+        best = {
+          from   = words[i].t0,
+          to     = words[i + span - 1].t1,
+          phrase = table.concat(phrase, " "),
+          cycles = best_cycles,
+          words  = span,
+        }
+      end
+      run_end = i + span - 1
+    end
+    i = run_end + 1
+  end
+  return best
+end
+
 --------------------------------
 -- Pure layer: configuration
 --------------------------------
@@ -1255,6 +1316,13 @@ function vo.BuildWhisperArgv(cfg, audio, out_prefix)
   add("-ml", "1")  -- one word per segment; also enables token timestamps
   add("-sow")      -- split on word rather than mid-token
   add("-np")       -- no progress prints: we read the CSV, not stdout
+  -- No prior-text conditioning. whisper.cpp feeds each window the text it just
+  -- decoded, and on a long read that feedback can lock the decoder into
+  -- repeating one phrase for the rest of the file -- confidently, with
+  -- plausible timestamps, so nothing downstream can tell it from real speech.
+  -- The context is only worth anything for cross-sentence language modelling,
+  -- and matching is against a KNOWN script, so we give up nothing to remove it.
+  add("-mc", "0")
 
   if cfg.whisper_threads then add("-t", tostring(cfg.whisper_threads)) end
   if cfg.whisper_language and cfg.whisper_language ~= "" then
@@ -1317,6 +1385,15 @@ function vo.FormatBytes(n)
   while v >= 1024 and i < #units do v = v / 1024; i = i + 1 end
   if i == 1 then return string.format("%d %s", v, units[i]) end
   return string.format("%.1f %s", v, units[i])
+end
+
+-- Seconds as m:ss, so a time the UI reports can be typed into REAPER's
+-- transport and found. Hours only appear once there are hours.
+function vo.FormatTime(seconds)
+  local s = math.max(0, math.floor((seconds or 0) + 0.5))
+  local h, m = math.floor(s / 3600), math.floor(s / 60) % 60
+  if h > 0 then return string.format("%d:%02d:%02d", h, m, s % 60) end
+  return string.format("%d:%02d", m, s % 60)
 end
 
 --------------------------------
