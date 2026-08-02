@@ -732,6 +732,109 @@ test("a long line read out of order keeps its confidence", function()
 end)
 
 --------------------------------
+-- Selection order and the residual pass
+--------------------------------
+print("\nSelection order:")
+
+-- The real failure this came from: the recogniser fused "book man" into
+-- "bookman" and dropped the closing "guards", and the script also has a line
+-- that is only "You." -- one of the words in the middle of it.
+local function bookman_lines()
+  return vo.BuildScriptLines(
+    { { "vo_book", "GRUMBAR", 'Old book man say "If you guard door, read what door guards."' },
+      { "vo_you",  "GRUMBAR", "You." } },
+    { asset = 1, speaker = 2, text = 3 }, {})
+end
+
+local function said(text)
+  local words, t = {}, 0.0
+  for w in text:gmatch("%S+") do
+    words[#words + 1] = { t0 = t, t1 = t + 0.4, text = w }
+    t = t + 0.5
+  end
+  return words
+end
+
+test("a window is scored as it is finally kept, not as it was proposed", function()
+  -- Trimming may only stop somewhere at least as good as the BEST it has seen.
+  -- Comparing against the proposed score alone walked through the best window
+  -- and out the far side to a merely equal one, losing "old bookman" and a
+  -- quarter of the score with it.
+  local lines = bookman_lines()
+  local toks  = vo.BuildWordTokens(
+    said("wrong old bookman say if you guard door read what door old"), {})
+  local hits  = vo.FindLineCandidates(lines, 1, toks, {})
+  assert(hits[1].text:find("^old bookman say"),
+    "the window lost its opening words: [" .. hits[1].text .. "]")
+  assert(hits[1].score >= 0.74,
+    string.format("scored %.3f, expected the 0.75 the kept window is worth", hits[1].score))
+end)
+
+test("a one-word line cannot cut a twelve-word line in half", function()
+  local lines = bookman_lines()
+  local got = vo.BuildMatch({ { path = "s.wav",
+    words = said("old bookman say if you guard door read what door") } }, lines, {})
+  local found
+  for _, s in ipairs(got[1].spans) do
+    if s.asset == "vo_book" then found = s end
+  end
+  assert(found, "the long line was lost entirely")
+  assert(found.i0 == 1, "the long line was cut at the front: i0 = " .. found.i0)
+  assert(found.transcript:find("guard door read what door"),
+    "the long line was cut at the back: " .. found.transcript)
+end)
+
+test("confident placements are laid down before uncertain ones", function()
+  -- Equal-ish scores, opposite confidence: the one that classifies as a match
+  -- must take the audio, not merely the one that scored a hair higher.
+  local sure   = cand(1, 6, 0.90, 0.50, "SURE")
+  local unsure = cand(4, 9, 0.92, 0.01, "UNSURE")   -- thin margin, so review
+  local spans  = vo.SelectSpans({ unsure, sure }, {})
+  assert(#spans == 1, "Expected 1 span, got " .. #spans)
+  assert(spans[1].asset == "SURE", "an uncertain placement blocked a confident one")
+end)
+
+test("a line that lost every window gets a second look at what is left", function()
+  -- "seal it" is spoken twice. The first is taken by the longer line that
+  -- contains it; on one pass the second occurrence goes to nobody, because the
+  -- greedy sweep had already placed the line elsewhere.
+  local lines = vo.BuildScriptLines(
+    { { "vo_long", "R", "seal it nobody goes below" },
+      { "vo_short", "R", "seal it" } },
+    { asset = 1, speaker = 2, text = 3 }, {})
+  local got = vo.BuildMatch({ { path = "s.wav",
+    words = said("seal it nobody goes below and later seal it") } }, lines, {})
+  local by_asset = {}
+  for _, s in ipairs(got[1].spans) do
+    if s.asset then by_asset[s.asset] = s end
+  end
+  assert(by_asset.vo_long, "the long line was lost")
+  assert(by_asset.vo_short, "the short line never got its second look")
+  assert(by_asset.vo_short.i0 > by_asset.vo_long.i1,
+    "the second look landed on audio that was already taken")
+end)
+
+test("the residual pass cannot disturb anything the first pass decided", function()
+  local lines = bookman_lines()
+  local words = said("old bookman say if you guard door read what door")
+  local one = vo.BuildMatch({ { path = "s.wav", words = words } }, lines, {})[1].spans
+  local kept = {}
+  for _, s in ipairs(one) do
+    if s.asset then kept[#kept + 1] = s.asset .. "@" .. s.i0 .. "-" .. s.i1 end
+  end
+  -- Running it again over the same input must be idempotent: the residual pass
+  -- only ever looks at token runs nothing claimed.
+  local two = vo.BuildMatch({ { path = "s.wav", words = words } }, lines, {})[1].spans
+  local again = {}
+  for _, s in ipairs(two) do
+    if s.asset then again[#again + 1] = s.asset .. "@" .. s.i0 .. "-" .. s.i1 end
+  end
+  assert(table.concat(kept, ",") == table.concat(again, ","),
+    "matching is not deterministic: " .. table.concat(kept, ",") ..
+    " vs " .. table.concat(again, ","))
+end)
+
+--------------------------------
 -- PinnedSpans
 --------------------------------
 print("\nPinnedSpans:")
@@ -1728,6 +1831,12 @@ end)
 test("prior-text conditioning is disabled so the decoder cannot loop", function()
   local argv = vo.BuildWhisperArgv(WHISPER_CFG, "in.wav", "out")
   assert(argv_value(argv, "-mc") == "0", "-mc: " .. tostring(argv_value(argv, "-mc")))
+end)
+
+test("speech is only discarded when it is almost certainly not speech", function()
+  local argv = vo.BuildWhisperArgv(WHISPER_CFG, "in.wav", "out")
+  assert(tonumber(argv_value(argv, "-nth")) >= 0.9,
+    "-nth: " .. tostring(argv_value(argv, "-nth")))
 end)
 
 --------------------------------

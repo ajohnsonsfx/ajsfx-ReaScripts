@@ -776,16 +776,34 @@ function vo.FindCandidates(word_tokens, lines, index, cfg)
           end
 
           if best_score and best_score >= floor_ then
-            -- Shrink to the tightest window that still achieves the best score.
-            -- The start is derived from the anchor's offset within the line, so
-            -- a word the recognizer dropped *before* the anchor pushes it one
-            -- token early — onto the tail of the previous line. That phantom
-            -- token overlaps the previous span and would cost this line its
-            -- match during selection. A shorter window scoring the same is
+            -- Shrink to the tightest window that scores at least as well. The
+            -- start is derived from the anchor's offset within the line, so a
+            -- word the recognizer dropped or fused *before* the anchor pushes
+            -- it a token early — onto the tail of the previous line. That
+            -- phantom token overlaps the previous span and would cost this line
+            -- its match during selection. A shorter window scoring the same is
             -- strictly better: it excludes audio that isn't part of the line.
+            --
+            -- The bar RISES as the window improves. Comparing against the
+            -- original score alone let shrinking walk straight through the best
+            -- window and out the far side, back down to a merely equal one --
+            -- which is how "Old book man say if you guard door, read what door
+            -- guards" lost its "old book man" and half its score, the
+            -- recognizer having fused "book man" into one word.
             local i0, i1 = start, best_stop
-            while i1 > i0 and score_window(i0 + 1, i1) >= best_score do i0 = i0 + 1 end
-            while i1 > i0 and score_window(i0, i1 - 1) >= best_score do i1 = i1 - 1 end
+            local bar = best_score
+            while i1 > i0 do
+              local s = score_window(i0 + 1, i1)
+              if s < bar then break end
+              i0, bar = i0 + 1, math.max(bar, s)
+            end
+            while i1 > i0 do
+              local s = score_window(i0, i1 - 1)
+              if s < bar then break end
+              i1, bar = i1 - 1, math.max(bar, s)
+            end
+            -- The window that is actually kept is the one that gets scored.
+            best_score = score_window(i0, i1)
 
             candidates[#candidates + 1] = {
               i0       = i0,
@@ -971,9 +989,40 @@ function vo.SelectSpans(candidates, cfg, backbone, pinned)
     end
   end
 
+  -- Selection is greedy, so the ORDER candidates are considered in is what
+  -- decides which of two overlapping placements survives -- and raw score is a
+  -- bad answer to that. A one-word line scores a perfect 1.0 against any
+  -- occurrence of its word, including one in the middle of a twelve-word line
+  -- that scores 0.75 because the recogniser fused two words. Ranked on score
+  -- alone the single word wins and cuts the long line in half, and demoting it
+  -- to review is not enough: a review-grade placement it should never have had
+  -- still blocks the real one.
+  --
+  -- So candidates are considered in tiers of how much they are worth believing,
+  -- and only ranked by score within a tier.
+  local function tier(c)
+    if c.backbone then return 1 end             -- long, confident, unambiguous
+    if c.in_sequence == false then return 5 end -- contradicts the read: last
+    -- A line too short to identify itself takes what is left once the lines
+    -- that CAN identify themselves have taken theirs. Where a short line's
+    -- window sits inside a long one's, only one of them can be right, and the
+    -- long one is not the one that could have happened by accident. Nothing is
+    -- lost by waiting: vo.ResidualPass comes back for whatever went unplaced.
+    if (c.i1 - c.i0 + 1) < min_tokens then return 4 end
+    return c.kind_pre == "match" and 2 or 3     -- confident before uncertain
+  end
+
+  for _, c in ipairs(ordered) do
+    c.kind_pre = vo.Classify(c.effective, c.margin or 1.0, cfg)
+    -- Contradicting the read costs a short line its confidence however well it
+    -- scored: a perfect match for a one-word line is perfect wherever that word
+    -- happens to fall.
+    if c.kind_pre == "match" and c.in_sequence == false then c.kind_pre = "review" end
+    c.tier = tier(c)
+  end
+
   table.sort(ordered, function(a, b)
-    local ba, bb = a.backbone or false, b.backbone or false
-    if ba ~= bb then return ba end
+    if a.tier ~= b.tier then return a.tier < b.tier end
     if a.effective ~= b.effective then return a.effective > b.effective end
     local ma, mb = a.margin or 1.0, b.margin or 1.0
     if ma ~= mb then return ma > mb end
@@ -989,12 +1038,7 @@ function vo.SelectSpans(candidates, cfg, backbone, pinned)
   for _, p in ipairs(pinned or {}) do chosen[#chosen + 1] = p end
 
   for _, c in ipairs(ordered) do
-    local kind = vo.Classify(c.effective, c.margin or 1.0, cfg)
-    -- Contradicting the read costs a short line its confidence however well it
-    -- scored: a perfect match for a one-word line is perfect wherever that word
-    -- happens to fall.
-    if kind == "match" and c.in_sequence == false then kind = "review" end
-    if kind then
+    if c.kind_pre then
       local overlaps = false
       for _, s in ipairs(chosen) do
         if c.i0 <= s.i1 and s.i0 <= c.i1 then
@@ -1005,7 +1049,8 @@ function vo.SelectSpans(candidates, cfg, backbone, pinned)
       if not overlaps then
         local span = {}
         for k, v in pairs(c) do span[k] = v end
-        span.kind = kind
+        span.kind = c.kind_pre
+        span.kind_pre, span.tier = nil, nil
         chosen[#chosen + 1] = span
       end
     end
@@ -1013,6 +1058,83 @@ function vo.SelectSpans(candidates, cfg, backbone, pinned)
 
   table.sort(chosen, function(a, b) return a.i0 < b.i0 end)
   return chosen
+end
+
+-- A second look, at what is left over.
+--
+-- Selection is greedy and one-shot, so a line can end up with nothing not
+-- because it scored badly anywhere but because every window it wanted was taken
+-- by a line that got there first. That is an artefact of the order candidates
+-- were considered in, not a fact about the recording, and the evidence for it
+-- is still sitting there: unclaimed audio, and lines with no placement at all.
+--
+-- So match again with only those two -- the lines nobody placed, against the
+-- audio nobody claimed. There is no competition from the first pass to lose
+-- this time, and nothing already decided can be disturbed, because a candidate
+-- is only considered if it falls entirely in unclaimed territory.
+--
+-- Repeats until a pass adds nothing, since placing one line frees no audio but
+-- can reveal that two lines were fighting over the same stretch and only one
+-- needed it. Bounded, because a bug here would otherwise be an infinite loop.
+vo.RESIDUAL_PASSES = 3
+
+function vo.ResidualPass(word_tokens, lines, spans, cfg, index)
+  local added = {}
+  local current = spans
+
+  for _ = 1, vo.RESIDUAL_PASSES do
+    local covered, placed = {}, {}
+    for _, s in ipairs(current) do
+      if s.i0 and s.i1 then
+        for k = s.i0, s.i1 do covered[k] = true end
+      end
+      if s.line_idx then placed[s.line_idx] = true end
+    end
+
+    -- Postings for the unplaced lines only, so no window is proposed that we
+    -- would only throw away.
+    local postings, any = {}, false
+    for token, list in pairs(index.postings) do
+      local mine = {}
+      for _, p in ipairs(list) do
+        if not placed[p.line] then mine[#mine + 1] = p end
+      end
+      if #mine > 0 then
+        postings[token] = mine
+        any = true
+      end
+    end
+    if not any then break end
+
+    local restricted = {
+      n = index.n, idf = index.idf, tokens = index.tokens,
+      anchors = index.anchors, postings = postings,
+    }
+
+    local fresh = {}
+    for _, c in ipairs(vo.FindCandidates(word_tokens, lines, restricted, cfg)) do
+      local clear = true
+      for k = c.i0, c.i1 do
+        if covered[k] then clear = false break end
+      end
+      if clear then fresh[#fresh + 1] = c end
+    end
+    if #fresh == 0 then break end
+
+    local won = vo.SelectSpans(fresh, cfg, nil, nil)
+    if #won == 0 then break end
+    for _, s in ipairs(won) do
+      s.residual = true
+      added[#added + 1] = s
+    end
+
+    local merged = {}
+    for _, s in ipairs(current) do merged[#merged + 1] = s end
+    for _, s in ipairs(won)     do merged[#merged + 1] = s end
+    current = merged
+  end
+
+  return added
 end
 
 -- Spans a person placed by hand.
@@ -1637,6 +1759,13 @@ function vo.BuildWhisperArgv(cfg, audio, out_prefix)
   -- The context is only worth anything for cross-sentence language modelling,
   -- and matching is against a KNOWN script, so we give up nothing to remove it.
   add("-mc", "0")
+  -- Discard a window as non-speech only when it is almost certainly not speech.
+  -- The default 0.60 threw away 29 seconds of a real read -- four script lines,
+  -- at full level, gone with no error anywhere. The trade is not symmetric
+  -- here: this is a recording where every second is MEANT to be speech, so an
+  -- invented word in a silence costs an unmatched span nobody reads, while a
+  -- dropped line costs a line.
+  add("-nth", "0.9")
 
   if cfg.whisper_threads then add("-t", tostring(cfg.whisper_threads)) end
   if cfg.whisper_language and cfg.whisper_language ~= "" then
@@ -1823,6 +1952,13 @@ function vo.BuildMatch(transcripts, lines, cfg, pins)
     -- Per source file, because that is the unit a read is performed in.
     local backbone   = vo.BuildBackbone(candidates, cfg)
     local spans      = vo.SelectSpans(candidates, cfg, backbone, pinned)
+
+    -- Give the lines that got nothing a look at the audio nobody claimed.
+    for _, s in ipairs(vo.ResidualPass(tokens, lines, spans, cfg, index)) do
+      spans[#spans + 1] = s
+    end
+    table.sort(spans, function(a, b) return a.i0 < b.i0 end)
+
     local gaps       = vo.FindGaps(tokens, spans)
 
     local plan = {}
