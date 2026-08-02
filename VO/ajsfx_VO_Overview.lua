@@ -68,6 +68,12 @@ local KEY_LSUPER     = Api('Key_LeftSuper')
 local HEADER_ROW_FLAGS = Api('TableRowFlags_Headers')
 local KEY_RSUPER     = Api('Key_RightSuper')
 
+-- Header-click sorting. Absent on an older binding, in which case the table
+-- simply stays in script order and the headers do nothing when clicked.
+local SORT_SPECS  = Api('TableGetColumnSortSpecs')
+local NEED_SORT   = Api('TableNeedSort')
+local SORT_DESC   = Api('SortDirection_Descending')
+
 -- Transcripts and the project file are read off disk, and matching is linear
 -- in the project's whole word count, so the rebuild cannot sit on the
 -- per-frame path. A project-state counter decides WHETHER to rebuild; this
@@ -83,27 +89,88 @@ local STATUS_STYLE = {
   orphan   = { label = "Orphan",   colour = 0x9999AAFF },
 }
 
+-- Defined here rather than beside the other UI helpers because the column
+-- accessors below need it.
+local function FormatTime(t)
+  if not t then return "" end
+  local m = math.floor(t / 60)
+  return string.format("%d:%06.3f", m, t - m * 60)
+end
+
+local SORT_RANK = { missing = 1, review = 2, orphan = 3, recorded = 4 }
+
+local function StatusLabel(row)
+  if row.user_status == "flagged" then return "Flagged" end
+  local s = STATUS_STYLE[row.status]
+  return s and s.label or (row.status or "")
+end
+
+local function ItemName(row)
+  return row.take_name or row.name_override or row.asset or ""
+end
+
+-- Sorting and filtering are one mechanism across every column, driven by two
+-- optional accessors rather than a switch statement per feature.
+--   text  what a column's filter box matches against, and what an alphabetical
+--         sort compares. A column without it is neither sorted nor filtered:
+--         there is nothing there a user could have meant.
+--   num   overrides text for columns that are really numbers, so Time sorts
+--         9:59 before 10:00 and # sorts 2 before 10.
+-- Either may return nil or "" for a row that has no value; such rows sort last
+-- in BOTH directions, because reversing a sort should not fill the top of the
+-- table with blanks.
 local COLUMNS = {
-  { key = "verify",     label = "OK",         width =  28 },
-  { key = "status",     label = "Status",     width =  74 },
-  { key = "select",     label = "Select",     width =  60 },
-  { key = "character",  label = "Character",  width =  90 },
+  { key = "order",      label = "#",          width =  36, nofilter = true,
+    num  = function(row) return row.order end,
+    text = function(row) return tostring(row.order or "") end,
+    tip = "Position in the script CSV. Sort by this column to put the\n" ..
+          "table back into script order." },
+  { key = "verify",     label = "OK",         width =  28,
+    text = function(row) return row.user_status == "verified" and "yes" or "no" end },
+  { key = "status",     label = "Status",     width =  74,
+    num  = function(row) return SORT_RANK[row.status] or 9 end,
+    text = StatusLabel },
+  { key = "select",     label = "Select",     width =  60,
+    text = function(row)
+      if row.status == "missing" or row.status == "orphan" then return "" end
+      return row.user_select and "yes" or "no"
+    end },
+  { key = "character",  label = "Character",  width =  90,
+    text = function(row) return row.character or "" end },
   -- Two names, deliberately. "Item name" is what the user is changing and what
   -- REAPER's render patterns read; "CSV filename" is the script's own name for
   -- the line, kept visible and read-only so a rename never loses the original.
   { key = "item_name",  label = "Item name",  width = 190,
+    text = ItemName,
     tip = "The take's name in REAPER. Editable, and what the stock render\n" ..
           "patterns read. Nothing here renames a file on disk." },
   { key = "asset",      label = "CSV filename", width = 160,
+    text = function(row) return row.asset or "" end,
     tip = "The filename from the script CSV. Not editable.\n" ..
           "Right-click a cell to copy it or to put it back on the item." },
-  { key = "take",       label = "Take",       width =  44 },
-  { key = "line_text",  label = "Line text",  width = 240 },
-  { key = "transcript", label = "Transcript", width = 240 },
-  { key = "source",     label = "Source",     width = 120 },
-  { key = "time",       label = "Time",       width =  76 },
-  { key = "notes",      label = "Notes",      width = 200 },
+  { key = "take",       label = "Take",       width =  44,
+    num  = function(row) return row.take_index end,
+    text = function(row)
+      if not row.take_index then return "" end
+      return string.format("%d/%d", row.take_index, row.take_count or 1)
+    end },
+  { key = "line_text",  label = "Line text",  width = 240,
+    text = function(row) return row.line_text or "" end },
+  { key = "transcript", label = "Transcript", width = 240,
+    text = function(row) return row.transcript or "" end },
+  { key = "source",     label = "Source",     width = 120,
+    text = function(row)
+      return row.source_path and vo.Basename(row.source_path) or ""
+    end },
+  { key = "time",       label = "Time",       width =  76,
+    num  = function(row) return row.proj_time end,
+    text = function(row) return FormatTime(row.proj_time) end },
+  { key = "notes",      label = "Notes",      width = 200,
+    text = function(row) return row.notes or "" end },
 }
+
+local COLUMN_BY_KEY = {}
+for _, c in ipairs(COLUMNS) do COLUMN_BY_KEY[c.key] = c end
 
 -- Every column key, in declaration order. Used to load, save and clear the
 -- per-column settings without anything having to restate the list.
@@ -112,14 +179,6 @@ local function ColumnKeys()
   for i, c in ipairs(COLUMNS) do keys[i] = c.key end
   return keys
 end
-
-local SORTS = {
-  { key = "script",    label = "Script order" },
-  { key = "status",    label = "Status" },
-  { key = "filename",  label = "Filename" },
-  { key = "character", label = "Character" },
-  { key = "timeline",  label = "Timeline position" },
-}
 
 local LAYOUT_ORDERS = {
   { key = "script", label = "Script order" },
@@ -180,7 +239,14 @@ local state = {
   layout_gap     = 2.0,
   layout_src_gap = 60.0,
 
-  sort          = "script",
+  -- nil means script order. ImGui owns the header clicks and the arrow; these
+  -- two fields are all we keep of the spec it hands back.
+  sort_col      = nil,        -- a COLUMNS key
+  sort_desc     = false,
+
+  filter_row    = false,      -- the per-column filter boxes under the header
+  col_filters   = {},         -- column key -> needle
+
   status_filter = "all",
   character     = nil,
   search        = "",
@@ -667,35 +733,51 @@ local function Matches(row)
               .. (row.transcript or "") .. " " .. (row.notes or "")):lower()
     if not hay:find(needle, 1, true) then return false end
   end
+
+  -- Column filters AND with each other and with everything above: each box
+  -- narrows what the ones before it left.
+  for key, needle in pairs(state.col_filters) do
+    if needle ~= "" then
+      local col = COLUMN_BY_KEY[key]
+      if col and col.text
+         and not col.text(row):lower():find(needle:lower(), 1, true) then
+        return false
+      end
+    end
+  end
   return true
 end
 
-local SORT_RANK = { missing = 1, review = 2, orphan = 3, recorded = 4 }
+local function AnyColumnFilter()
+  for _, needle in pairs(state.col_filters) do
+    if needle ~= "" then return true end
+  end
+  return false
+end
+
+-- nil and "" both mean "this row has no value in this column".
+local function Absent(v) return v == nil or v == "" end
 
 local function ApplyFilters()
   local out = {}
   for i, row in ipairs(state.overview) do
-    if Matches(row) then
-      row.order = i     -- script order is the stable tiebreak for every sort
-      out[#out + 1] = row
-    end
+    row.order = i     -- script position: the # column, and every sort's tiebreak
+    if Matches(row) then out[#out + 1] = row end
   end
 
-  local mode = state.sort
-  if mode ~= "script" then
+  local col = state.sort_col and COLUMN_BY_KEY[state.sort_col]
+  if col then
+    local desc = state.sort_desc
+    local key = col.num or function(row) return col.text(row):lower() end
     table.sort(out, function(a, b)
-      local ka, kb
-      if mode == "status" then
-        ka, kb = SORT_RANK[a.status] or 9, SORT_RANK[b.status] or 9
-      elseif mode == "filename" then
-        ka, kb = (a.asset or ""):lower(), (b.asset or ""):lower()
-      elseif mode == "character" then
-        ka, kb = (a.character or ""):lower(), (b.character or ""):lower()
-      else -- timeline; rows with no audio sort last rather than at time zero
-        ka = a.proj_time or math.huge
-        kb = b.proj_time or math.huge
+      local ka, kb = key(a), key(b)
+      local ma, mb = Absent(ka), Absent(kb)
+      -- Valueless rows sink to the bottom in both directions.
+      if ma ~= mb then return mb end
+      if not ma and ka ~= kb then
+        if desc then return kb < ka end
+        return ka < kb
       end
-      if ka ~= kb then return ka < kb end
       return a.order < b.order
     end)
   end
@@ -1007,7 +1089,21 @@ end
 -- Drawing
 -- -----------------------------------------------------------------------
 
-local ctx = im.CreateContext('VO Overview')
+-- Keyboard nav off. With it on ImGui claims the keyboard whenever this window
+-- has focus and activates whatever the nav cursor sits on when Space is
+-- pressed -- so Space ticked a checkbox instead of starting the transport, in
+-- the one window you sit in while listening. Text fields are unaffected: they
+-- capture the keyboard while they are being edited, and only then.
+local function NewContext()
+  local c = im.CreateContext('VO Overview')
+  local var, flag = Api('ConfigVar_Flags'), Api('ConfigFlags_NavEnableKeyboard')
+  if var and flag then
+    im.SetConfigVar(c, var, im.GetConfigVar(c, var) & ~flag)
+  end
+  return c
+end
+
+local ctx = NewContext()
 
 -- -----------------------------------------------------------------------
 -- Fonts
@@ -1094,12 +1190,6 @@ local function PopCellFont(pushed)
   if not pushed then return end
   im.PopFont(ctx)
   font_depth = font_depth - 1
-end
-
-local function FormatTime(t)
-  if not t then return "" end
-  local m = math.floor(t / 60)
-  return string.format("%d:%06.3f", m, t - m * 60)
 end
 
 local function Combo(label, width, options, current, on_pick)
@@ -1204,7 +1294,18 @@ local function DrawFilters()
         function(k) state.character = (k ~= "__all__") and k or nil end)
   im.SameLine(ctx)
 
-  Combo("##sort", 150, SORTS, state.sort, function(k) state.sort = k end)
+  local filtering = AnyColumnFilter()
+  if im.Button(ctx, filtering and "Filters *" or "Filters") then
+    state.filter_row = not state.filter_row
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Show a filter box under each column header.\n" ..
+                       "Click a header to sort by that column.")
+  end
+  if filtering then
+    im.SameLine(ctx)
+    if im.Button(ctx, "Clear filters") then state.col_filters = {} end
+  end
   im.SameLine(ctx)
 
   im.SetNextItemWidth(ctx, 200)
@@ -1563,11 +1664,49 @@ local function DrawHeaderMenu(c)
   im.EndPopup(ctx)
 end
 
+-- ImGui owns the header click, the arrow and the spec; all we do is read which
+-- column it settled on. The read has to happen inside the table, which is the
+-- only place the spec exists, so the re-sort lands on the NEXT frame — one
+-- frame of lag, and in exchange the list is never mutated mid-draw.
+local function ReadSortSpec()
+  if not (SORT_SPECS and NEED_SORT) then return end
+  if not NEED_SORT(ctx) then return end
+  local ok, index, _, dir = SORT_SPECS(ctx, 0)
+  local c = ok and COLUMNS[(index or 0) + 1] or nil
+  -- Tristate: the third click clears the spec, which puts the table back into
+  -- script order rather than leaving it wherever the last sort left it.
+  state.sort_col  = c and c.key or nil
+  state.sort_desc = (dir == SORT_DESC)
+end
+
+local function DrawFilterRow()
+  im.TableNextRow(ctx)
+  for i, c in ipairs(COLUMNS) do
+    im.TableSetColumnIndex(ctx, i - 1)
+    if c.text and not c.nofilter then
+      im.PushID(ctx, "flt_" .. c.key)
+      im.SetNextItemWidth(ctx, -1)
+      local changed, text = im.InputTextWithHint(ctx, "##f", "filter",
+                                                 state.col_filters[c.key] or "")
+      if changed then state.col_filters[c.key] = text end
+      im.PopID(ctx)
+    end
+  end
+end
+
 local function DrawTableBody()
   for _, c in ipairs(COLUMNS) do
-    im.TableSetupColumn(ctx, c.label, im.TableColumnFlags_WidthFixed, c.width)
+    local flags = im.TableColumnFlags_WidthFixed
+    -- A column with no accessor has nothing to sort on, so ImGui must not
+    -- offer its header as a sort target.
+    if not (c.text or c.num) then
+      local nosort = Api('TableColumnFlags_NoSort')
+      if nosort then flags = flags | nosort end
+    end
+    im.TableSetupColumn(ctx, c.label, flags, c.width)
   end
-  im.TableSetupScrollFreeze(ctx, 0, 1)
+  -- Both the header and the filter boxes stay put while the rows scroll.
+  im.TableSetupScrollFreeze(ctx, 0, state.filter_row and 2 or 1)
   -- Headers drawn by hand rather than with TableHeadersRow, which draws them
   -- all in one call and leaves nothing to hang a per-column tooltip on. The
   -- explanation of a column belongs on its header, read once, not under the
@@ -1586,6 +1725,9 @@ local function DrawTableBody()
   else
     im.TableHeadersRow(ctx)
   end
+  ReadSortSpec()
+
+  if state.filter_row then DrawFilterRow() end
 
   if #state.visible == 0 then
     im.TableNextRow(ctx)
@@ -1608,15 +1750,21 @@ local function DrawTableBody()
     im.PushID(ctx, i)
     id_depth = id_depth + 1
 
-    -- Verified ------------------------------------------------------------
+    -- # ---------------------------------------------------------------------
+    -- Script position, not row position: it stays with the line through every
+    -- sort and filter, so it is also how a user gets back to where they were.
     im.TableSetColumnIndex(ctx, 0)
+    CellText(row, "order", 0, row_h, tostring(row.order or ""), "disabled")
+
+    -- Verified ------------------------------------------------------------
+    im.TableSetColumnIndex(ctx, 1)
     CellWidget("verify", row_h)
     local checked = row.user_status == "verified"
     local hit, now = im.Checkbox(ctx, "##ok", checked)
     if hit then pending_action = function() SetStatus(row, now and "verified" or nil) end end
 
     -- Status --------------------------------------------------------------
-    im.TableSetColumnIndex(ctx, 1)
+    im.TableSetColumnIndex(ctx, 2)
     -- Drawn first in the row and spanning it, so a click anywhere that is not a
     -- widget navigates. AllowOverlap lets the inputs drawn afterwards win.
     -- Given the row's full height so a click anywhere in a TALL row still
@@ -1650,7 +1798,7 @@ local function DrawTableBody()
     PopCellFont(sf)
 
     -- Select --------------------------------------------------------------
-    im.TableSetColumnIndex(ctx, 2)
+    im.TableSetColumnIndex(ctx, 3)
     if row.status ~= "missing" and row.status ~= "orphan" and (row.take_count or 0) > 0 then
       CellWidget("select", row_h)
       local hit, now = im.Checkbox(ctx, "##sel", row.user_select == true)
@@ -1662,18 +1810,18 @@ local function DrawTableBody()
       end
     end
 
-    im.TableSetColumnIndex(ctx, 3)
-    CellText(row, "character", 3, row_h, row.character, "plain")
+    im.TableSetColumnIndex(ctx, 4)
+    CellText(row, "character", 4, row_h, row.character, "plain")
 
     -- Filename ------------------------------------------------------------
-    im.TableSetColumnIndex(ctx, 4)
+    im.TableSetColumnIndex(ctx, 5)
     -- The live take name where there is a take, so a rename made anywhere else
     -- in REAPER shows up here too. The project file's override is the fallback, so a
     -- name chosen for a line whose audio is not loaded is not lost.
     local shown = row.take_name or row.name_override or row.asset or ""
     if row.status == "missing" then
       -- Nothing to rename: there is no take at all.
-      CellText(row, "item_name", 4, row_h, shown, "disabled")
+      CellText(row, "item_name", 5, row_h, shown, "disabled")
       TooltipEvenWhenDisabled("This line has no take yet, so there is no item to name.")
     else
       PushFilledField("item_name", row_h)
@@ -1693,9 +1841,9 @@ local function DrawTableBody()
     -- CSV filename ---------------------------------------------------------
     -- Read-only on purpose: this is the script's own name for the line, and the
     -- reason a rename can never leave the user wondering what it used to be.
-    im.TableSetColumnIndex(ctx, 5)
+    im.TableSetColumnIndex(ctx, 6)
     local csv_name = row.asset or ""
-    CellText(row, "asset", 5, row_h, csv_name, "disabled")
+    CellText(row, "asset", 6, row_h, csv_name, "disabled")
     -- No per-cell tooltip: the explanation belongs on the header, where it is
     -- read once, not under the cursor on every row. An explicit popup ID is
     -- what lets a plain Text item own a context menu.
@@ -1711,29 +1859,29 @@ local function DrawTableBody()
       im.EndPopup(ctx)
     end
 
-    im.TableSetColumnIndex(ctx, 6)
+    im.TableSetColumnIndex(ctx, 7)
     if (row.take_count or 0) > 1 then
-      CellText(row, "take", 6, row_h,
+      CellText(row, "take", 7, row_h,
                string.format("%d/%d", row.take_index or 0, row.take_count), "plain")
     elseif row.take_index then
-      CellText(row, "take", 6, row_h, "1/1", "disabled")
+      CellText(row, "take", 7, row_h, "1/1", "disabled")
     end
 
-    im.TableSetColumnIndex(ctx, 7)
-    CellText(row, "line_text", 7, row_h, row.line_text, "plain")
-
     im.TableSetColumnIndex(ctx, 8)
+    CellText(row, "line_text", 8, row_h, row.line_text, "plain")
+
+    im.TableSetColumnIndex(ctx, 9)
     if row.score and row.status == "review" then
-      CellText(row, "transcript", 8, row_h, row.transcript, 0xDDAA33FF)
+      CellText(row, "transcript", 9, row_h, row.transcript, 0xDDAA33FF)
       if im.IsItemHovered(ctx) then
         im.SetTooltip(ctx, string.format("Match confidence %.0f%%.", row.score * 100))
       end
     else
-      CellText(row, "transcript", 8, row_h, row.transcript, "disabled")
+      CellText(row, "transcript", 9, row_h, row.transcript, "disabled")
     end
 
-    im.TableSetColumnIndex(ctx, 9)
-    CellText(row, "source", 9, row_h,
+    im.TableSetColumnIndex(ctx, 10)
+    CellText(row, "source", 10, row_h,
              row.source_path and vo.Basename(row.source_path) or "", "disabled")
     if row.source_path and im.IsItemHovered(ctx) and im.IsMouseDoubleClicked(ctx, 0) then
       local captured = row.source_path
@@ -1747,11 +1895,11 @@ local function DrawTableBody()
       end
     end
 
-    im.TableSetColumnIndex(ctx, 10)
-    CellText(row, "time", 10, row_h, FormatTime(row.proj_time), "disabled")
+    im.TableSetColumnIndex(ctx, 11)
+    CellText(row, "time", 11, row_h, FormatTime(row.proj_time), "disabled")
 
     -- Notes ---------------------------------------------------------------
-    im.TableSetColumnIndex(ctx, 11)
+    im.TableSetColumnIndex(ctx, 12)
     PushFilledField("notes", row_h)
     local nchanged, notes = im.InputText(ctx, "##notes", row.notes or "")
     PopFilledField()
@@ -1770,6 +1918,13 @@ local function DrawTable(height)
   local flags = im.TableFlags_Borders | im.TableFlags_Resizable
               | im.TableFlags_Reorderable
               | im.TableFlags_ScrollY | im.TableFlags_RowBg
+  -- Tristate so a third click on a header clears the sort and returns the
+  -- table to script order, which is the order the session was written in.
+  if SORT_SPECS and NEED_SORT then
+    flags = flags | im.TableFlags_Sortable
+    local tristate = Api('TableFlags_SortTristate')
+    if tristate then flags = flags | tristate end
+  end
   -- With restore off ImGui neither reads nor writes this table's widths and
   -- order, so it opens at the widths COLUMNS declares. ImGui keys table
   -- settings by (table id, column count) anyway, so adding a column in a later
@@ -1924,7 +2079,7 @@ Reload()
 
 local function loop()
   if not (ctx and im.ValidatePtr(ctx, 'ImGui_Context*')) then
-    ctx = im.CreateContext('VO Overview')
+    ctx = NewContext()
     -- A recreated context has no fonts attached at all.
     fonts, fonts_dirty = {}, true
   end
@@ -2034,18 +2189,9 @@ local function loop()
                      state.message)
     end
 
-    -- Space toggles the selected row, but only when no text field has focus --
-    -- otherwise typing a space in Notes would fire it.
-    if state.focus_key and not im.IsAnyItemActive(ctx)
-       and im.IsWindowFocused(ctx, im.FocusedFlags_RootAndChildWindows)
-       and im.IsKeyPressed(ctx, im.Key_Space) then
-      for _, row in ipairs(state.visible) do
-        if row.uid == state.focus_key then
-          SetStatus(row, row.user_status == "verified" and nil or "verified")
-          break
-        end
-      end
-    end
+    -- Space is REAPER's. It used to tick the selected row's OK box here, which
+    -- meant the transport would not start while this window had focus -- and
+    -- this is a window you sit in WHILE listening. Ticking OK is a click.
 
     im.End(ctx)
 
