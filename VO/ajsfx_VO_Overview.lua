@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.12
--- @changelog The VO tools are now three windows instead of one. "ajsfx VO Sources" lists every recorded file in the project and whether it has been transcribed; double-click a file to read its transcript, hear where each word sits, and re-transcribe just that file. "ajsfx VO Overview" is now the front door: it derives the match from the stored transcripts every time, so swapping the script CSV re-matches instantly with no re-transcription, and a new Select column records which take you are delivering. "ajsfx VO Cut" does the cutting, and it now places clip edges by looking for silence in the gap between the words either side, so an edge can never contain a syllable of the neighbouring line; the old fixed 150/250 ms pads become the furthest an edge may travel and the noise floor is measured from the recording rather than assumed. Transcription is now stored per wav file as word-level timings in "<audio>_vo_transcript.csv", so copying a recording and its sidecar to another project carries the transcription with it. Your selects, verified marks, notes and renames live in "<project>_vo.csv" beside the project. Transcription no longer conditions each window on the text it just decoded, which on a long read could lock the transcriber into repeating one phrase for the rest of the file; if an existing transcript contains such a loop, "ajsfx VO Sources" now flags it and says where it starts. Every column in Overview now sorts on a header click and filters from a box under the header, there is a new "#" column carrying each line's position in the script, and spacebar is REAPER's again -- it starts the transport instead of ticking the selected row. Matching now weighs where a line falls in the read: a line too short to identify itself -- one that is just "You." matches every "you" in the recording -- is sent to review when it contradicts the order the rest of the read was in, rather than being named on the strength of one word. Right-click a row (or a selection of rows) for "Find candidates": every place in the transcripts that line could sit, with what was said either side of it, what already occupies that spot, and a click to select it on the timeline and put the play cursor there. It is a search only -- it changes nothing. NOTE: this replaces "ajsfx VO ScriptMatch", which has been removed — reinstall from ReaPack, and re-transcribe your recordings, as the old report files are not read.
+-- @changelog The VO tools are now three windows instead of one. "ajsfx VO Sources" lists every recorded file in the project and whether it has been transcribed; double-click a file to read its transcript, hear where each word sits, and re-transcribe just that file. "ajsfx VO Overview" is now the front door: it derives the match from the stored transcripts every time, so swapping the script CSV re-matches instantly with no re-transcription, and a new Select column records which take you are delivering. "ajsfx VO Cut" does the cutting, and it now places clip edges by looking for silence in the gap between the words either side, so an edge can never contain a syllable of the neighbouring line; the old fixed 150/250 ms pads become the furthest an edge may travel and the noise floor is measured from the recording rather than assumed. Transcription is now stored per wav file as word-level timings in "<audio>_vo_transcript.csv", so copying a recording and its sidecar to another project carries the transcription with it. Your selects, verified marks, notes and renames live in "<project>_vo.csv" beside the project. Transcription no longer conditions each window on the text it just decoded, which on a long read could lock the transcriber into repeating one phrase for the rest of the file; if an existing transcript contains such a loop, "ajsfx VO Sources" now flags it and says where it starts. Every column in Overview now sorts on a header click and filters from a box under the header, there is a new "#" column carrying each line's position in the script, and spacebar is REAPER's again -- it starts the transport instead of ticking the selected row. Matching now weighs where a line falls in the read: a line too short to identify itself -- one that is just "You." matches every "you" in the recording -- is sent to review when it contradicts the order the rest of the read was in, rather than being named on the strength of one word. Right-click a row (or a selection of rows) for "Find candidates": every place in the transcripts that line could sit, with what was said either side of it, what already occupies that spot, and a click to select it on the timeline and put the play cursor there. It is a search only -- it changes nothing. When you find a placement yourself, you can pin it: either press Pin beside a result in Find candidates, or make a time selection in REAPER over the audio and right-click the row for "Pin to time selection". A pinned line is placed by hand and the matcher works around it -- it shows as Pinned, it is stored in "<project>_vo.csv" against the recording rather than the timeline so it survives the item being moved, ajsfx VO Cut cuts what you pinned, and "Clear pin" hands the line back to the matcher. NOTE: this replaces "ajsfx VO ScriptMatch", which has been removed — reinstall from ReaPack, and re-transcribe your recordings, as the old report files are not read.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -250,6 +250,11 @@ local state = {
   candidates      = {},       -- Find candidates results, one group per row asked about
   candidates_open = false,
 
+  -- Placements made by hand: { asset, source, start, stop }. Unlike everything
+  -- else in the project file these are an INPUT to matching, not a note about
+  -- its output, so changing one has to re-run the match.
+  pins            = {},
+
   status_filter = "all",
   character     = nil,
   search        = "",
@@ -353,7 +358,7 @@ end
 
 local function LoadProjectFile()
   state.entries, state.project_error, state.parse_failed = {}, "", false
-  state.script_csv, state.mapping = "", {}
+  state.script_csv, state.mapping, state.pins = "", {}, {}
 
   local proj = ProjectPath()
   state.project_path = (proj ~= "") and vo.ProjectFilePath(proj) or nil
@@ -367,6 +372,7 @@ local function LoadProjectFile()
     state.entries    = parsed.entries
     state.script_csv = parsed.script_csv
     state.mapping     = parsed.mapping
+    state.pins        = parsed.pins or {}
   else
     -- The file is NOT overwritten on a parse failure: writing would destroy
     -- whatever the user still has in there. Saving stays off until they fix or
@@ -396,7 +402,7 @@ local function SaveProjectFile()
 
   local ok = WriteFile(path, vo.SerializeProjectFile(
     vo.ProjectEntriesFromRows(state.overview),
-    { script_csv = state.script_csv, mapping = state.mapping }))
+    { script_csv = state.script_csv, mapping = state.mapping, pins = state.pins }))
   if not ok then
     state.message, state.message_kind = "Cannot write " .. tostring(path), "error"
     return false
@@ -453,6 +459,12 @@ local function MatchKey(paths, script_csv, mapping, cfg)
     local tpath = vo.TranscriptPath(p)
     parts[#parts + 1] = p .. ":" .. tostring(tpath and vo.FileSize(tpath) or 0)
   end
+  -- Pins steer matching, so adding or clearing one has to invalidate the cache
+  -- exactly the way a script change does.
+  for _, pin in ipairs(state.pins or {}) do
+    parts[#parts + 1] = string.format("pin:%s@%s:%.3f-%.3f",
+      pin.asset or "", pin.source or "", pin.start or 0, pin.stop or 0)
+  end
   return table.concat(parts, "|")
 end
 
@@ -467,8 +479,19 @@ local function LoadMatches(cfg)
     if parsed then transcripts[#transcripts + 1] = { path = path, words = parsed.words } end
   end
 
-  state.matches   = vo.BuildMatch(transcripts, state.lines or {}, cfg)
+  state.matches   = vo.BuildMatch(transcripts, state.lines or {}, cfg, state.pins)
   state.match_key = key
+
+  -- A pin that resolves to nothing must say so. Silently doing nothing is the
+  -- one behaviour that would make hand-placement untrustworthy.
+  local broken = {}
+  for _, entry in ipairs(state.matches) do
+    for _, u in ipairs(entry.unresolved or {}) do
+      broken[#broken + 1] = string.format("%s in %s (%s)",
+        u.pin.asset, vo.Basename(u.pin.source), u.why)
+    end
+  end
+  state.broken_pins = broken
   return state.matches
 end
 
@@ -772,6 +795,79 @@ local function RunCandidateSearch(rows)
       "Searched the first %d lines; %d more were not searched. Select fewer.",
       CANDIDATE_ROW_LIMIT, dropped), "error"
   end
+end
+
+-- -----------------------------------------------------------------------
+-- Pins: placements made by hand
+--
+-- Everything else in the project file records a decision ABOUT the match --
+-- verified, a note, a rename. A pin is different: it is an INPUT to matching,
+-- a person saying "this stretch of this recording is this line", which the
+-- matcher then has to work around. Two ways in: pick a placement in Find
+-- candidates, or make a time selection in REAPER over the audio you found by
+-- ear and pin the row to it.
+-- -----------------------------------------------------------------------
+
+local function PinFor(asset)
+  for i, p in ipairs(state.pins) do
+    if p.asset == asset then return p, i end
+  end
+  return nil
+end
+
+local function SetPin(asset, source, from, to)
+  if not asset or asset == "" then
+    state.message, state.message_kind =
+      "This row has no script filename, so there is nothing to pin.", "error"
+    return
+  end
+  local _, at = PinFor(asset)
+  local pin = { asset = asset, source = source, start = from, stop = to }
+  if at then state.pins[at] = pin else state.pins[#state.pins + 1] = pin end
+
+  -- Pins are an input to matching, so the memoised match has to be thrown away
+  -- rather than waited out.
+  state.match_key = nil
+  state.dirty     = true
+  Reload()
+  state.message, state.message_kind = string.format(
+    "Pinned %s to %s \226\128\147 %s in %s.",
+    asset, FormatTime(from), FormatTime(to), vo.Basename(source)), "ok"
+end
+
+local function ClearPin(asset)
+  local _, at = PinFor(asset)
+  if not at then return end
+  table.remove(state.pins, at)
+  state.match_key = nil
+  state.dirty     = true
+  Reload()
+  state.message, state.message_kind =
+    "Cleared the pin on " .. asset .. "; it is matched automatically again.", "ok"
+end
+
+-- REAPER's time selection, converted back to a position in the recording. The
+-- selection is in project time and a pin has to survive the item being moved,
+-- trimmed or copied into another session, so it is stored against the SOURCE.
+local function TimeSelectionAsSource()
+  local from, to = r.GetSet_LoopTimeRange(false, false, 0, 0, false)
+  if not from or to <= from then
+    return nil, "Make a time selection over the audio first."
+  end
+  for _, info in ipairs(state.items or {}) do
+    if info.path and not info.skip then
+      local i0 = info.pos
+      local i1 = info.pos + info.length
+      -- Any overlap counts, and the pin is clipped to the item: dragging the
+      -- selection a little wide is normal and should not be an error.
+      if from < i1 and i0 < to then
+        local a = vo.ProjectTimeToSource(math.max(from, i0), info)
+        local b = vo.ProjectTimeToSource(math.min(to, i1), info)
+        if b > a then return { source = info.path, start = a, stop = b } end
+      end
+    end
+  end
+  return nil, "The time selection does not overlap any recording in this project."
 end
 
 -- Put the candidate on screen and under the play cursor. A time selection
@@ -1932,6 +2028,35 @@ local function DrawTableBody()
         im.SetTooltip(ctx, "Every place in the transcripts this line could sit,\n" ..
                            "with what is around it. Looks only -- changes nothing.")
       end
+
+      im.Separator(ctx)
+
+      -- Pinning is one line at a time on purpose: a time selection is one
+      -- stretch of audio, and it cannot be several lines at once.
+      local can_pin = (#targets == 1) and row.asset and row.asset ~= ""
+      if im.MenuItem(ctx, "Pin to time selection", nil, nil, can_pin) then
+        pending_action = function()
+          local at, why = TimeSelectionAsSource()
+          if at then
+            SetPin(row.asset, at.source, at.start, at.stop)
+          else
+            state.message, state.message_kind = why, "error"
+          end
+        end
+      end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, #targets > 1
+          and "Select one row to pin: a time selection is one stretch of audio."
+          or  "Say that THIS stretch of audio is this line, whatever the\n" ..
+              "matcher thinks. Select the audio in REAPER first.")
+      end
+
+      local pinned = row.asset and PinFor(row.asset)
+      if im.MenuItem(ctx, "Clear pin", nil, nil, pinned ~= nil) then
+        local captured = row.asset
+        pending_action = function() ClearPin(captured) end
+      end
+
       im.EndPopup(ctx)
     end
     im.SameLine(ctx)
@@ -1941,6 +2066,11 @@ local function DrawTableBody()
     AlignCell("status", row_h, im.GetTextLineHeight(ctx))
     if row.user_status == "flagged" then
       im.TextColored(ctx, 0xDD6666FF, "Flagged")
+    elseif row.pinned then
+      -- Replaces the status word rather than sitting beside it: a pinned row's
+      -- status is not a matcher verdict any more, and showing "Recorded" would
+      -- suggest it was.
+      im.TextColored(ctx, 0x88AAFFFF, "Pinned")
     elseif style then
       im.TextColored(ctx, style.colour, style.label)
     end
@@ -2188,6 +2318,16 @@ local function DrawCandidatesWindow()
         end
 
         im.SameLine(ctx)
+        if im.SmallButton(ctx, "Pin") then
+          local asset, src, from, to = group.asset, hit.source_path, hit.start, hit.stop
+          pending_action = function() SetPin(asset, src, from, to) end
+        end
+        if im.IsItemHovered(ctx) then
+          im.SetTooltip(ctx, "Make this the placement for " .. group.asset ..
+                             ",\nwhatever the matcher would have chosen.")
+        end
+
+        im.SameLine(ctx)
         -- The line's own words in normal text between its surroundings in grey:
         -- the point of looking is what is either side of it.
         if hit.before ~= "" then
@@ -2409,6 +2549,12 @@ local function loop()
     if not state.project_path then
       im.TextColored(ctx, 0xDDAA33FF,
         "Save the project to keep verified marks, notes and renames.")
+    end
+    if state.broken_pins and #state.broken_pins > 0 then
+      im.TextColored(ctx, 0xDD6666FF, string.format(
+        "%d hand-placed pin%s no longer resolves: %s",
+        #state.broken_pins, #state.broken_pins == 1 and "" or "s",
+        table.concat(state.broken_pins, "; ")))
     end
     if state.project_error ~= "" then
       im.TextColored(ctx, 0xDD6666FF, state.project_error .. "\nNothing will be saved until this is fixed.")

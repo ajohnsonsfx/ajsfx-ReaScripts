@@ -947,20 +947,28 @@ end
 -- Nothing is ever dropped for reading out of order; the worst that happens is
 -- review, which is a person looking at it.
 -- Returns: chronologically ordered spans, each with a `kind`.
-function vo.SelectSpans(candidates, cfg, backbone)
+function vo.SelectSpans(candidates, cfg, backbone, pinned)
   local weight     = vo.Opt(cfg, "order_weight")
   local min_tokens = vo.Opt(cfg, "backbone_min_tokens")
 
+  -- Pinned lines are placed by hand; the matcher has nothing to add about them.
+  local by_hand = {}
+  for _, p in ipairs(pinned or {}) do
+    if p.line_idx then by_hand[p.line_idx] = true end
+  end
+
   local ordered = {}
-  for i, c in ipairs(candidates) do
-    ordered[i] = c
-    -- Not `backbone and ... or nil`: false is a verdict here, and that idiom
-    -- would quietly turn "out of order" into "no evidence".
-    if backbone and (c.i1 - c.i0 + 1) < min_tokens then
-      c.in_sequence = vo.OrderConsistency(c, backbone)
+  for _, c in ipairs(candidates) do
+    if not by_hand[c.line_idx] then
+      ordered[#ordered + 1] = c
+      -- Not `backbone and ... or nil`: false is a verdict here, and that idiom
+      -- would quietly turn "out of order" into "no evidence".
+      if backbone and (c.i1 - c.i0 + 1) < min_tokens then
+        c.in_sequence = vo.OrderConsistency(c, backbone)
+      end
+      c.effective = (c.in_sequence == false)
+        and math.max(0.0, c.score - weight) or c.score
     end
-    c.effective = (c.in_sequence == false)
-      and math.max(0.0, c.score - weight) or c.score
   end
 
   table.sort(ordered, function(a, b)
@@ -976,7 +984,10 @@ function vo.SelectSpans(candidates, cfg, backbone)
     return a.i0 < b.i0
   end)
 
+  -- Seeded, not merged in and re-sorted: a pin is not competing for its place.
   local chosen = {}
+  for _, p in ipairs(pinned or {}) do chosen[#chosen + 1] = p end
+
   for _, c in ipairs(ordered) do
     local kind = vo.Classify(c.effective, c.margin or 1.0, cfg)
     -- Contradicting the read costs a short line its confidence however well it
@@ -1002,6 +1013,69 @@ function vo.SelectSpans(candidates, cfg, backbone)
 
   table.sort(chosen, function(a, b) return a.i0 < b.i0 end)
   return chosen
+end
+
+-- Spans a person placed by hand.
+--
+-- A pin is not a guess with a score. It is somebody who listened to the audio
+-- and said "this stretch IS this line", which is better evidence than anything
+-- the matcher can produce, so pinned spans are seeded into the selection before
+-- the greedy pass and everything overlapping them loses.
+--
+-- A pinned line's OTHER automatic placements in the same recording are dropped
+-- too. You pin a line because the matcher put it somewhere wrong, and leaving
+-- the wrong placement standing as a second take would not have fixed anything.
+-- To keep two takes, pin both.
+--
+-- The pin's own times are kept, not the matched words' -- the range is the part
+-- the person chose. The token range is only what tells the rest of the pass
+-- which words are now spoken for.
+-- Returns: spans, unresolved (pins that name no word in this transcript)
+function vo.PinnedSpans(word_tokens, pins, lines)
+  local by_asset = {}
+  for i, line in ipairs(lines or {}) do
+    if line.asset and by_asset[line.asset] == nil then by_asset[line.asset] = i end
+  end
+
+  local spans, unresolved = {}, {}
+  for _, pin in ipairs(pins or {}) do
+    local line_idx = by_asset[pin.asset]
+    local i0, i1
+    for k, t in ipairs(word_tokens or {}) do
+      -- A word counts as pinned when its midpoint is inside the range, so a
+      -- word clipped by the edge of the selection goes one way or the other
+      -- rather than both.
+      local mid = (t.t0 + t.t1) / 2
+      if mid >= pin.start and mid <= pin.stop then
+        i0 = i0 or k
+        i1 = k
+      end
+    end
+
+    if not line_idx then
+      unresolved[#unresolved + 1] = { pin = pin, why = "no script line named " .. pin.asset }
+    elseif not i0 then
+      unresolved[#unresolved + 1] = { pin = pin, why = "no transcribed word in that range" }
+    else
+      spans[#spans + 1] = {
+        i0        = i0,
+        i1        = i1,
+        start     = pin.start,
+        stop      = pin.stop,
+        score     = 1.0,
+        margin    = 1.0,
+        effective = 1.0,
+        kind      = "match",
+        pinned    = true,
+        line_idx  = line_idx,
+        asset     = pin.asset,
+        character = lines[line_idx].speaker,
+      }
+    end
+  end
+
+  table.sort(spans, function(a, b) return a.i0 < b.i0 end)
+  return spans, unresolved
 end
 
 -- Every distinct place one script line could sit in one transcript, best first.
@@ -1724,16 +1798,31 @@ end
 -- source at once (vo.BuildOverview). Both belong to the caller, and keeping
 -- this function free of them is what lets Overview re-run it on every script
 -- change without touching audio.
-function vo.BuildMatch(transcripts, lines, cfg)
+-- `pins` is a flat list of { asset, source, start, stop } placed by hand; each
+-- one applies to the transcript whose path it names. Pins that cannot be
+-- resolved come back on the entry as `unresolved` rather than being dropped: a
+-- pin that silently does nothing is worse than no pin at all.
+function vo.BuildMatch(transcripts, lines, cfg, pins)
   local index = vo.BuildIndex(lines, cfg)
   local out = {}
 
+  local pins_by_source = {}
+  for _, p in ipairs(pins or {}) do
+    local list = pins_by_source[p.source]
+    if not list then
+      list = {}
+      pins_by_source[p.source] = list
+    end
+    list[#list + 1] = p
+  end
+
   for _, t in ipairs(transcripts or {}) do
     local tokens     = vo.BuildWordTokens(t.words, cfg)
+    local pinned, unresolved = vo.PinnedSpans(tokens, pins_by_source[t.path], lines)
     local candidates = vo.FindCandidates(tokens, lines, index, cfg)
     -- Per source file, because that is the unit a read is performed in.
     local backbone   = vo.BuildBackbone(candidates, cfg)
-    local spans      = vo.SelectSpans(candidates, cfg, backbone)
+    local spans      = vo.SelectSpans(candidates, cfg, backbone, pinned)
     local gaps       = vo.FindGaps(tokens, spans)
 
     local plan = {}
@@ -1753,7 +1842,7 @@ function vo.BuildMatch(transcripts, lines, cfg)
       end
     end
 
-    out[#out + 1] = { path = t.path, spans = plan }
+    out[#out + 1] = { path = t.path, spans = plan, unresolved = unresolved }
   end
 
   return out
@@ -2120,9 +2209,27 @@ function vo.SerializeProjectFile(entries, meta)
     vo.FormatCSVRow({ vo.PROJECT_MARKER, tostring(vo.PROJECT_VERSION) }),
     vo.FormatCSVRow({ "Script CSV", meta.script_csv or "" }),
     vo.FormatCSVRow({ "Mapping",    encode_mapping(meta.mapping) }),
+  }
+
+  -- Pins live in the preamble rather than the entry table because they are keyed
+  -- by the SCRIPT LINE, while every entry row is keyed by a stretch of audio.
+  -- Keeping them out of that table is also what lets them be added without
+  -- changing the entry columns, and so without invalidating existing files.
+  for _, p in ipairs(meta.pins or {}) do
+    if p.asset and p.asset ~= "" and p.source and p.source ~= "" then
+      out[#out + 1] = vo.FormatCSVRow({
+        "Pin", p.asset, p.source,
+        string.format("%.3f", p.start or 0),
+        string.format("%.3f", p.stop or 0),
+      })
+    end
+  end
+
+  local rest = {
     "",
     vo.FormatCSVRow(vo.PROJECT_HEADER),
   }
+  for _, line in ipairs(rest) do out[#out + 1] = line end
 
   for _, e in ipairs(entries or {}) do
     -- Only rows carrying actual user work are written. Without this the file
@@ -2166,7 +2273,8 @@ function vo.ParseProjectFile(text)
     return nil, "Unsupported project file version: " .. tostring(rows[1][2])
   end
 
-  local parsed = { version = version, script_csv = "", mapping = {}, entries = {} }
+  local parsed = { version = version, script_csv = "", mapping = {},
+                   entries = {}, pins = {} }
 
   local i, header_at = 2, nil
   while rows[i] do
@@ -2174,6 +2282,14 @@ function vo.ParseProjectFile(text)
     if key == vo.PROJECT_HEADER[1] then header_at = i; break end
     if     key == "Script CSV" then parsed.script_csv = rows[i][2] or ""
     elseif key == "Mapping"    then parsed.mapping    = decode_mapping(rows[i][2])
+    elseif key == "Pin" then
+      local asset, source = rows[i][2] or "", rows[i][3] or ""
+      local from, to = tonumber(rows[i][4] or ""), tonumber(rows[i][5] or "")
+      -- A pin with no range is not a weaker pin, it is a corrupt one.
+      if asset ~= "" and source ~= "" and from and to and to > from then
+        parsed.pins[#parsed.pins + 1] =
+          { asset = asset, source = source, start = from, stop = to }
+      end
     end
     i = i + 1
   end
@@ -2380,6 +2496,7 @@ function vo.BuildOverview(input)
       -- nil when order had nothing to say about it. The table explains a review
       -- with it, since a 100% score in review is otherwise baffling.
       in_sequence   = s.in_sequence,
+      pinned        = s.pinned or nil,
       source_path   = rec.source_path,
       source_start  = s.start,
       source_stop   = s.stop,

@@ -732,6 +732,120 @@ test("a long line read out of order keeps its confidence", function()
 end)
 
 --------------------------------
+-- PinnedSpans
+--------------------------------
+print("\nPinnedSpans:")
+
+local function pin_lines()
+  return vo.BuildScriptLines(
+    { { "vo_you", "RIVA", "You." },
+      { "vo_seal", "RIVA", "seal it nobody goes below" } },
+    { asset = 1, speaker = 2, text = 3 }, {})
+end
+
+local function pin_tokens()
+  local words, t = {}, 0.0
+  for w in ("seal it nobody goes below you watch you left"):gmatch("%S+") do
+    words[#words + 1] = { t0 = t, t1 = t + 0.4, text = w }
+    t = t + 0.5
+  end
+  return vo.BuildWordTokens(words, {})
+end
+
+test("a pin becomes a match at exactly the range that was chosen", function()
+  local spans = vo.PinnedSpans(pin_tokens(),
+    { { asset = "vo_you", source = "s.wav", start = 4.0, stop = 4.45 } }, pin_lines())
+  assert(#spans == 1, "Expected 1 pinned span, got " .. #spans)
+  assert(spans[1].kind == "match", "kind: " .. spans[1].kind)
+  assert(spans[1].pinned == true, "the span is not marked pinned")
+  assert(spans[1].asset == "vo_you", "asset: " .. tostring(spans[1].asset))
+  -- The person's range, not the matched word's.
+  assert(spans[1].start == 4.0 and spans[1].stop == 4.45,
+    string.format("range: %.2f-%.2f", spans[1].start, spans[1].stop))
+  assert(spans[1].i0 == 9 and spans[1].i1 == 9,
+    string.format("tokens: %d-%d", spans[1].i0, spans[1].i1))
+end)
+
+test("a word half inside the range goes one way, not both", function()
+  -- Token 2 ("it") runs 0.50-0.90; a range ending at 0.60 clips it, and its
+  -- midpoint of 0.70 is outside, so it stays out.
+  local spans = vo.PinnedSpans(pin_tokens(),
+    { { asset = "vo_seal", source = "s.wav", start = 0.0, stop = 0.60 } }, pin_lines())
+  assert(spans[1].i1 == 1, "i1: " .. spans[1].i1)
+end)
+
+test("a pin naming no word, or no script line, is reported not dropped", function()
+  local lines = pin_lines()
+  local _, u1 = vo.PinnedSpans(pin_tokens(),
+    { { asset = "vo_you", source = "s.wav", start = 90.0, stop = 91.0 } }, lines)
+  assert(#u1 == 1 and u1[1].why:find("no transcribed word"), "silent on an empty range")
+
+  local _, u2 = vo.PinnedSpans(pin_tokens(),
+    { { asset = "vo_gone", source = "s.wav", start = 0.0, stop = 1.0 } }, lines)
+  assert(#u2 == 1 and u2[1].why:find("no script line"), "silent on a missing line")
+end)
+
+test("a pin beats the matcher and takes the audio with it", function()
+  local lines = pin_lines()
+  local words, t = {}, 0.0
+  for w in ("seal it nobody goes below"):gmatch("%S+") do
+    words[#words + 1] = { t0 = t, t1 = t + 0.4, text = w }
+    t = t + 0.5
+  end
+  -- vo_you pinned over the whole of vo_seal's audio: an absurd pin, chosen
+  -- because it proves the pin wins rather than merely coexists.
+  local got = vo.BuildMatch({ { path = "s.wav", words = words } }, lines, {},
+    { { asset = "vo_you", source = "s.wav", start = 0.0, stop = 2.4 } })
+  local kinds = {}
+  for _, s in ipairs(got[1].spans) do
+    if s.asset then kinds[s.asset] = s.kind end
+  end
+  assert(kinds.vo_you == "match", "the pin did not win: " .. tostring(kinds.vo_you))
+  assert(kinds.vo_seal == nil, "the matcher's placement survived under the pin")
+end)
+
+test("pinning a line drops its other automatic placements in that recording", function()
+  local lines = pin_lines()
+  local words, t = {}, 0.0
+  for w in ("you seal it nobody goes below you"):gmatch("%S+") do
+    words[#words + 1] = { t0 = t, t1 = t + 0.4, text = w }
+    t = t + 0.5
+  end
+  local got = vo.BuildMatch({ { path = "s.wav", words = words } }, lines, {},
+    { { asset = "vo_you", source = "s.wav", start = 3.0, stop = 3.45 } })
+  local you = 0
+  for _, s in ipairs(got[1].spans) do
+    if s.asset == "vo_you" then you = you + 1 end
+  end
+  assert(you == 1, "expected only the pinned placement, got " .. you)
+end)
+
+test("pins round-trip through the project file", function()
+  local pins = {
+    { asset = "vo_you",  source = "D:/s/A.wav", start = 12.5,  stop = 13.25 },
+    { asset = "vo_seal", source = "D:/s/B.wav", start = 100.0, stop = 104.5 },
+  }
+  local text   = vo.SerializeProjectFile({}, { script_csv = "s.csv", pins = pins })
+  local parsed = assert(vo.ParseProjectFile(text))
+  assert(#parsed.pins == 2, "Expected 2 pins, got " .. #parsed.pins)
+  assert(parsed.pins[1].asset == "vo_you", "asset lost")
+  assert(parsed.pins[1].source == "D:/s/A.wav", "source lost")
+  assert(math.abs(parsed.pins[1].start - 12.5) < 1e-6, "start lost")
+  assert(math.abs(parsed.pins[2].stop - 104.5) < 1e-6, "stop lost")
+  assert(parsed.script_csv == "s.csv", "the preamble was disturbed")
+end)
+
+test("a project file with no pins still reads, and a corrupt pin is dropped", function()
+  local text = vo.SerializeProjectFile({}, { script_csv = "s.csv" })
+  local parsed = assert(vo.ParseProjectFile(text))
+  assert(#parsed.pins == 0, "phantom pins")
+
+  local bad = text:gsub("Script CSV", "Pin,vo_x,,0,0\nScript CSV", 1)
+  local reparsed = assert(vo.ParseProjectFile(bad))
+  assert(#reparsed.pins == 0, "a pin with no source or range was kept")
+end)
+
+--------------------------------
 -- FindLineCandidates
 --------------------------------
 print("\nFindLineCandidates:")

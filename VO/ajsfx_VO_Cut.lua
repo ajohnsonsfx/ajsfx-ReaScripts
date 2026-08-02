@@ -65,6 +65,7 @@ local state = {
   stale_sources = {},          -- source paths whose audio changed since transcription
 
   entries       = {},          -- vo.ParseProjectFile entries
+  pins          = {},          -- hand-placed spans; an input to BuildMatch
   project_path  = nil,
   script_csv    = "",
   overview      = {},          -- vo.BuildOverview result
@@ -116,7 +117,7 @@ end
 
 local function LoadProjectFile()
   state.entries = {}
-  state.script_csv, state.mapping = "", {}
+  state.script_csv, state.mapping, state.pins = "", {}, {}
 
   local proj = ProjectPath()
   state.project_path = (proj ~= "") and vo.ProjectFilePath(proj) or nil
@@ -130,6 +131,10 @@ local function LoadProjectFile()
     state.entries    = parsed.entries
     state.script_csv = parsed.script_csv
     state.mapping    = parsed.mapping
+    -- Read here too, and not only in Overview: a pin is an INPUT to matching,
+    -- so cutting without it would cut a different placement than the one the
+    -- user pinned and is looking at.
+    state.pins       = parsed.pins or {}
   else
     state.gate_message = "Cannot read " .. vo.Basename(state.project_path) ..
                           ": " .. tostring(reason)
@@ -169,7 +174,7 @@ local function CollectMatches(cfg)
 
   state.words_by_path = words_by_path
   state.stale_sources = stale
-  return vo.BuildMatch(transcripts, state.lines or {}, cfg)
+  return vo.BuildMatch(transcripts, state.lines or {}, cfg, state.pins)
 end
 
 -- Re-derive items/matches/overview and re-check the gate. Cheap enough for a
