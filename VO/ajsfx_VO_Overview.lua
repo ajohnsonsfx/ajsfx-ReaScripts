@@ -146,6 +146,7 @@ local state = {
   header        = nil,
   rows          = nil,        -- raw script CSV rows
   mapping       = {},
+  mapping_open  = false,      -- the Columns… panel; opens itself when nothing is mapped
   header_error  = "",
   lines         = {},         -- vo.BuildScriptLines(state.rows, ...)
 
@@ -257,8 +258,15 @@ end
 -- skip list (vo.DEFAULT_SKIP_VALUES) is what vo.BuildScriptLines falls back to
 -- when none is supplied.
 local function ApplyMappingDefaults()
-  if state.mapping and next(state.mapping) then return end
-  state.mapping = state.header and vo.AutoDetectMapping(state.header) or {}
+  if not (state.mapping and next(state.mapping)) then
+    state.mapping = state.header and vo.AutoDetectMapping(state.header) or {}
+  end
+  -- Auto-detection knows the usual header names and no more. When it comes up
+  -- short there is nothing to match against, so the panel that fixes it opens
+  -- itself rather than waiting to be found.
+  if state.header and not (state.mapping.asset and state.mapping.text) then
+    state.mapping_open = true
+  end
 end
 
 -- The script lines this project expects, after skip tokens and the character
@@ -1108,6 +1116,69 @@ local function Combo(label, width, options, current, on_pick)
   end
 end
 
+-- Which column of the script is which. Nothing matches until Filename and Line
+-- Text are known, so this is the one panel a new project cannot skip -- the
+-- auto-detection covers the usual header names and no more.
+--
+-- Roles are the library's: `asset` is the delivered filename, `text` the line,
+-- `speaker` the character. Only speaker is optional.
+local MAP_ROLES = {
+  { role = "asset",   label = "Filename",  optional = false,
+    hint = "The name the delivered clip must take." },
+  { role = "text",    label = "Line text", optional = false,
+    hint = "What the actor says. This is what the transcript is matched against." },
+  { role = "speaker", label = "Character", optional = true,
+    hint = "Optional. Splits the delivery onto per-character tracks." },
+}
+
+local function DrawMapping()
+  im.Separator(ctx)
+  im.Text(ctx, "Script columns")
+  im.SameLine(ctx)
+  if im.Button(ctx, "Auto-detect") then
+    state.mapping = vo.AutoDetectMapping(state.header) or {}
+    state.dirty   = true
+    Reload()
+  end
+  im.SameLine(ctx)
+  if im.Button(ctx, "Close##mapping") then state.mapping_open = false end
+
+  for _, spec in ipairs(MAP_ROLES) do
+    local mapped  = state.mapping[spec.role]
+    local preview = mapped or (spec.optional and "(none)" or "Column…")
+
+    im.SetNextItemWidth(ctx, 220)
+    if im.BeginCombo(ctx, spec.label .. "##map_" .. spec.role, preview) then
+      -- A change of mapping changes what every row means, so it re-derives the
+      -- match rather than editing rows in place. The match cache keys on the
+      -- mapping, so Reload is enough -- see MatchKey. Called directly, not
+      -- deferred: this panel draws above the table, not inside it.
+      if spec.optional and im.Selectable(ctx, "(none)", mapped == nil) and mapped ~= nil then
+        state.mapping[spec.role] = nil
+        state.dirty = true
+        Reload()
+      end
+      for _, h in ipairs(state.header or {}) do
+        if im.Selectable(ctx, h, h == mapped) and h ~= mapped then
+          state.mapping[spec.role] = h
+          state.dirty = true
+          Reload()
+        end
+      end
+      im.EndCombo(ctx)
+    end
+    im.SameLine(ctx)
+    im.TextDisabled(ctx, spec.hint)
+  end
+
+  local n = #ScriptLines()
+  if state.mapping.asset and state.mapping.text then
+    im.TextDisabled(ctx, string.format("%d script line%s read from %s.",
+      n, n == 1 and "" or "s", vo.Basename(state.script_csv)))
+  end
+  im.Separator(ctx)
+end
+
 local function DrawFilters()
   Combo("##status", 130, STATUS_FILTERS, state.status_filter,
         function(k) state.status_filter = k end)
@@ -1897,6 +1968,14 @@ local function loop()
     im.SameLine(ctx)
     if im.Button(ctx, "Settings") then state.settings_open = true end
     im.SameLine(ctx)
+    if state.header then
+      if im.Button(ctx, "Columns…") then state.mapping_open = not state.mapping_open end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Which column of the script holds the filename, the line and the character.")
+      end
+      im.SameLine(ctx)
+    end
+    im.SameLine(ctx)
     -- The other two windows of the set. Overview is where a session is read, so
     -- it is also where the user reaches for the window that makes the words and
     -- the window that makes the clips.
@@ -1910,14 +1989,16 @@ local function loop()
       if not ok then state.message, state.message_kind = tostring(why), "error" end
     end
 
+    if state.mapping_open and state.header then DrawMapping() end
+
     if state.header_error ~= "" then
       im.TextColored(ctx, 0xDD6666FF, state.header_error)
     elseif state.header and not (state.mapping.asset and state.mapping.text) then
       im.TextColored(ctx, 0xDDAA33FF,
-        "This script's Filename and Line Text columns are not mapped, and could not\n" ..
-        "be guessed automatically. Rename the CSV's headers to something recognisable\n" ..
-        "(e.g. \"Filename\" and \"Line Text\"), or edit the Mapping row of " ..
-        vo.Basename(state.project_path or "the project's _vo.csv") .. " directly.")
+        "This script's Filename and Line Text columns are not mapped, so there is\n" ..
+        "nothing to match against. Press Columns… and pick them.")
+      im.SameLine(ctx)
+      if im.Button(ctx, "Columns…##warn") then state.mapping_open = true end
     end
 
     im.Separator(ctx)
