@@ -1,16 +1,16 @@
--- @description ajsfx VO Settings
--- @author ajsfx
--- @version 0.4
--- @changelog Note that the unmatched prefix now labels report rows only, since unmatched audio stays on the source track
 -- @noindex
--- @about Settings panel for ajsfx VO ScriptMatch. Configure the speech backend,
---        matching thresholds, destination tracks, and the substitution table.
---        Script CSV column mapping and character filtering live in
---        ajsfx VO ScriptMatch itself. See VO/SPEC.md for the design.
+-- Provided by the ajsfx VO package; see ajsfx_VO_Overview.lua's @provides.
 --
---        Not its own ReaPack package: it is shipped as a second [main] action by
---        ajsfx_VO_ScriptMatch.lua. Only one package may provide lib/ajsfx_vo.lua,
---        and two packages claiming it made reapack-index drop this one silently.
+-- ajsfx VO Settings — the speech backend, the matching thresholds, the clip
+-- boundaries, the destination tracks and the substitution table.
+--
+-- Script CSV column mapping and character filtering are not here: they belong
+-- to a script, not to the user, so they live in ajsfx VO Overview and are saved
+-- in the project file. See VO/SPEC.md for the design.
+--
+-- Not its own ReaPack package: it ships as one of the [main] actions of
+-- ajsfx_VO_Overview.lua. Only one package may provide lib/ajsfx_vo.lua, and two
+-- packages claiming it made reapack-index drop one of them silently.
 
 local r = reaper
 
@@ -97,10 +97,8 @@ end
 
 local function Apply()
   cfg.substitutions = vo.ParseSubstitutionText(subs_text)
-  -- Skip tokens now live in the ScriptMatch layout (per-CSV, saved with the
-  -- preset); this global cfg.skip_values round-trip is retained only for
-  -- backward-compat with configs saved before that move — no UI edits it and
-  -- no behavior depends on it here.
+  -- Skip tokens live with the script's own layout, not here; this round-trip
+  -- exists only so a config saved before that move is not silently emptied.
   cfg.skip_values = {}
   for v in skip_text:gmatch("[^\n]+") do
     local trimmed = v:match("^%s*(.-)%s*$")

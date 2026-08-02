@@ -1,9 +1,9 @@
 -- @description ajsfx VO Shared Library
 -- @author ajsfx
--- @version 0.4
--- @changelog Guard ApplyPlan against degenerate zero-length spans (a boundary split no-op was moving a whole item's tail, orphaning later spans); simplify CSV columns to Character/Filename/Line Text with Filename as the line identity
+-- @version 0.5
+-- @changelog Word-level transcript sidecars, a project file for the user's own marks, live matching, and silence-snapped clip boundaries
 -- @noindex
--- @about Shared logic for ajsfx VO ScriptMatch.
+-- @about Shared logic for the ajsfx VO windows.
 --        Split into a pure layer (parsing, normalization, matching, naming —
 --        unit-testable with no REAPER and no audio) and a REAPER-coupled layer.
 --        See VO/SPEC.md for the design.
@@ -42,7 +42,7 @@ end
 -- Shallow copy: a new table with the same top-level key/value pairs. Nested
 -- tables (e.g. cfg.column_mapping) remain shared with the original -- callers
 -- that need to isolate a config snapshot from later top-level field writes
--- (see run_cfg in ajsfx_VO_ScriptMatch.lua) only need the top level copied.
+-- (see run_cfg in ajsfx_VO_Cut.lua) only need the top level copied.
 function vo.ShallowCopy(t)
   local out = {}
   for k, v in pairs(t) do out[k] = v end
@@ -2147,7 +2147,7 @@ end
 -- Laying the session out along the timeline moves ITEMS, never spans. An item
 -- holding five lines is one thing you can drag, so it is positioned by its
 -- first recognised line and everything after it is placed clear of its whole
--- length. Cutting stays ScriptMatch's job -- see SPEC-overview.md section 1.
+-- length. Cutting stays the Cut window's job -- see SPEC-overview.md section 1.
 
 -- How much two items must overlap before they are treated as one welded unit.
 -- REAPER trims adjacent takes to abut exactly, and float error can make the
@@ -2167,7 +2167,7 @@ end
 --
 -- 1. OVERLAP, same track only. A crossfade is nothing but an overlap: move one
 --    side of it and the fade is gone. Cross-track overlaps do NOT weld --
---    ScriptMatch pulls selects onto per-character tracks, where two characters
+--    Cut pulls selects onto per-character tracks, where two characters
 --    overlapping in time is the normal case and means nothing about editing;
 --    welding those would chain a multi-character session into one immovable blob.
 --
@@ -2899,7 +2899,7 @@ function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error
     end
   end
 
-  local ctx        = im.CreateContext('VO ScriptMatch')
+  local ctx        = im.CreateContext('VO Transcribe')
   local start_time = r.time_precise()
   local cancelled  = false
   local spinner    = { "|", "/", "-", "\\" }
@@ -2927,7 +2927,7 @@ function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error
 
     spin = (spin % #spinner) + 1
     if not (ctx and im.ValidatePtr(ctx, 'ImGui_Context*')) then
-      ctx = im.CreateContext('VO ScriptMatch')
+      ctx = im.CreateContext('VO Transcribe')
     end
 
     im.SetNextWindowSize(ctx, 460, 150, im.Cond_FirstUseEver)
@@ -3387,7 +3387,7 @@ end
 --
 -- Shared by the selection-scoped and project-scoped collectors below so the
 -- skip rules cannot drift apart: an item the Overview shows as usable but
--- ScriptMatch refuses to transcribe (or vice versa) is a bug report waiting to
+-- Sources refuses to transcribe (or vice versa) is a bug report waiting to
 -- happen, and the only defence is one copy of the rules.
 local function inspect_item(item)
   local take = r.GetActiveTake(item)
@@ -3434,7 +3434,7 @@ function vo.CollectSourceSpans()
 end
 
 -- Inspect EVERY item in the project. The Overview is a whole-session picture, so
--- unlike ScriptMatch it cannot key off the selection: the point is to see the
+-- unlike the cutting path it cannot key off the selection: the point is to see
 -- lines you are not currently looking at.
 function vo.CollectProjectSpans()
   local items = {}
@@ -3599,7 +3599,7 @@ end
 --
 -- Sorting lays audio out somewhere new every time rather than shuffling it in
 -- place, so a run can never drop an item on top of audio it was not asked to
--- touch. One child PER SOURCE, not one for the lot: ScriptMatch pulls selects
+-- touch. One child PER SOURCE, not one for the lot: Cut pulls selects
 -- onto per-character tracks, and collapsing ALEX and JORDAN onto a single track
 -- would throw away the separation that step exists to create.
 --

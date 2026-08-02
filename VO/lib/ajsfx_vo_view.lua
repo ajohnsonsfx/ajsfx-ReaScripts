@@ -6,8 +6,8 @@
 -- at — is a property of the user, not of the session, so it lives in ExtState
 -- and is shared by every project.
 --
--- Deliberately NOT part of vo.CONFIG_SCHEMA: that schema drives the ScriptMatch
--- Settings dialog and describes matching. Nothing in this file affects a match.
+-- Deliberately NOT part of vo.CONFIG_SCHEMA: that schema drives the Settings
+-- window and describes matching. Nothing in this file affects a match.
 
 local r = reaper
 

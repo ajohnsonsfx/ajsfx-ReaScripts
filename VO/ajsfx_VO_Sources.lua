@@ -230,7 +230,7 @@ end
 -- -----------------------------------------------------------------------
 
 -- Fields vo.IsBackendReady actually reads. Only these are refreshed from disk
--- on the throttle, mirroring ajsfx_VO_ScriptMatch.lua's RefreshBackendError.
+-- on the throttle.
 local BACKEND_CFG_KEYS = { "whisper_bin", "whisper_model", "whisper_threads",
                             "whisper_language", "scratch_dir", "timeout_s" }
 
@@ -472,7 +472,7 @@ local function DrawTable(height, visible)
   end
   im.TableSetupScrollFreeze(ctx, 0, 1)
 
-  -- Run inside pcall for the reason ScriptMatch and Overview both do: an
+  -- Run inside pcall for the reason Overview does too: an
   -- error escaping between BeginTable and EndTable leaves ImGui's ID stack
   -- corrupted for every later frame.
   local ok, err = pcall(DrawTableBody, visible)
@@ -756,7 +756,7 @@ local function loop()
 
   -- MaybeRescan is throttled internally too; keep drawing while a batch runs
   -- so the per-file progress line and row highlight update every frame, the
-  -- same way ScriptMatch keeps its own window alive during a run.
+  -- same way every window here stays alive through a long run.
   MaybeRescan()
   -- After the rescan, so a file that has only just appeared in the project can
   -- still be focused on the frame it arrives.

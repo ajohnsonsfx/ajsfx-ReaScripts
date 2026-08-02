@@ -1,5 +1,21 @@
--- @noindex
--- Provided by the ajsfx VO ScriptMatch package; see that script's @provides.
+-- @description ajsfx VO Overview
+-- @author ajsfx
+-- @version 0.12
+-- @changelog The VO tools are now three windows instead of one. "ajsfx VO Sources" lists every recorded file in the project and whether it has been transcribed; double-click a file to read its transcript, hear where each word sits, and re-transcribe just that file. "ajsfx VO Overview" is now the front door: it derives the match from the stored transcripts every time, so swapping the script CSV re-matches instantly with no re-transcription, and a new Select column records which take you are delivering. "ajsfx VO Cut" does the cutting, and it now places clip edges by looking for silence in the gap between the words either side, so an edge can never contain a syllable of the neighbouring line; the old fixed 150/250 ms pads become the furthest an edge may travel and the noise floor is measured from the recording rather than assumed. Transcription is now stored per wav file as word-level timings in "<audio>_vo_transcript.csv", so copying a recording and its sidecar to another project carries the transcription with it. Your selects, verified marks, notes and renames live in "<project>_vo.csv" beside the project. NOTE: this replaces "ajsfx VO ScriptMatch", which has been removed — reinstall from ReaPack, and re-transcribe your recordings, as the old report files are not read.
+-- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
+--        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
+--        every script line and every take in "ajsfx VO Overview", tick the
+--        takes you are delivering, and cut them in "ajsfx VO Cut". Runs fully
+--        locally with whisper.cpp; configure the backend in "ajsfx VO
+--        Settings". See VO/SPEC.md.
+-- @provides
+--   [main] .
+--   [main] ajsfx_VO_Sources.lua
+--   [main] ajsfx_VO_Cut.lua
+--   [main] ajsfx_VO_Settings.lua
+--   lib/ajsfx_vo.lua
+--   lib/ajsfx_vo_view.lua
+--   ../lib/ajsfx_core.lua > lib/ajsfx_core.lua
 --
 -- ajsfx VO Overview — a project-wide picture of the dialogue in a session.
 --
@@ -696,8 +712,8 @@ end
 -- -----------------------------------------------------------------------
 -- Laying out the timeline
 --
--- This moves ITEMS, never spans, and never cuts: cutting is ScriptMatch's job
--- (SPEC-overview.md section 1). An item holding several lines is positioned by
+-- This moves ITEMS, never spans, and never cuts: cutting is the Cut window's
+-- job (SPEC-overview.md section 1). An item holding several lines is positioned by
 -- its first recognised line, and the next item is placed clear of the whole of
 -- it. Overlapping items on one track travel together so crossfades survive.
 -- -----------------------------------------------------------------------
@@ -1511,8 +1527,7 @@ local function DrawTableBody()
 
   -- Every row is emitted; ImGui's own table clipping keeps off-screen rows out
   -- of the draw list. ListClipper is deliberately NOT used: ReaImGui rejects it
-  -- here as excessive creation of short-lived resources, which is why
-  -- ScriptMatch dropped it from its preview table too.
+  -- here as excessive creation of short-lived resources.
   for i, row in ipairs(state.visible) do
     -- No min_row_height: ImGui already sizes the row from its tallest cell,
     -- and row_h is the measurement of that from last frame.
@@ -1695,7 +1710,7 @@ local function DrawTable(height)
   if not im.BeginTable(ctx, "vo_overview", #COLUMNS, flags, 0, height) then
     return
   end
-  -- The body runs inside pcall for the same reason ScriptMatch's does: an error
+  -- The body runs inside pcall for the reason every table here does: an error
   -- escaping between BeginTable and EndTable leaves ImGui's stack corrupted for
   -- every later frame. Nothing here pushes a combo or a disabled scope, but the
   -- per-row PushID has to be unwound by hand — EndTable raises on an unbalanced
