@@ -259,7 +259,7 @@ test("ApplyPadding keeps both clips clear of the neighbouring word", function()
     { start = BURSTS[1][1], stop = BURSTS[1][2], kind = "match" },
     { start = BURSTS[2][1], stop = BURSTS[2][2], kind = "match" },
   }
-  vo.ApplyPadding(spans, cfg, { start = 0, stop = TOTAL_S }, probe, floor)
+  vo.ApplyPadding(spans, cfg, { start = 0, stop = TOTAL_S }, probe, floor, words)
 
   if spans[1].stop > spans[2].start + 1e-9 then
     error(string.format("clips overlap: %.3f > %.3f", spans[1].stop, spans[2].start))
@@ -272,6 +272,20 @@ test("ApplyPadding keeps both clips clear of the neighbouring word", function()
   -- Neither edge may contain a sample of the other burst.
   if spans[1].stop >= BURSTS[2][1] then error("clip 1 reaches into word 2") end
   if spans[2].start <= BURSTS[1][2] then error("clip 2 reaches back into word 1") end
+end)
+
+test("an edge stops at a word the cut did not select", function()
+  -- The second burst stands in for a false start nobody ticked: it is in the
+  -- word list but not in the span list, and the edge must still respect it.
+  local floor = vo.MeasureNoiseFloor(vo.InterWordGaps(words), probe, cfg)
+  local greedy = vo.ShallowCopy(cfg)
+  greedy.pre_pad, greedy.post_pad = 1.0, 1.0   -- enough rope to reach it
+  local spans = { { start = BURSTS[1][1], stop = BURSTS[1][2], kind = "match" } }
+  vo.ApplyPadding(spans, greedy, { start = 0, stop = TOTAL_S }, probe, floor, words)
+  if spans[1].stop > BURSTS[2][1] + 1e-9 then
+    error(string.format("edge reached %.3f, into the unselected word at %.3f",
+                        spans[1].stop, BURSTS[2][1]))
+  end
 end)
 
 test("with snapping off both pads apply as fixed amounts", function()
