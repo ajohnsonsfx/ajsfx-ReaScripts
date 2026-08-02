@@ -567,6 +567,9 @@ vo.DEFAULTS = {
   anchor_count     = 3,     -- rarest tokens per line used to propose candidates
   window_slack     = 0.30,  -- window lengths tried around the script line length
 
+  -- Which take "Select takes" marks when a line was read more than once.
+  auto_select_take = "last",  -- "last" | "first"
+
   -- Sequence. A session is read roughly in script order, and that is the only
   -- evidence there is for placing a line too short to identify itself.
   order_weight         = 0.15,  -- score moved by reading in, or out of, order
@@ -970,9 +973,12 @@ function vo.SelectSpans(candidates, cfg, backbone, pinned)
   local min_tokens = vo.Opt(cfg, "backbone_min_tokens")
 
   -- Pinned lines are placed by hand; the matcher has nothing to add about them.
+  -- Only a HARD pin claims the line. A lock says "leave this take where it is",
+  -- which must not delete the line's other takes -- locking take 2 of 3 has to
+  -- leave takes 1 and 3 exactly where they were.
   local by_hand = {}
   for _, p in ipairs(pinned or {}) do
-    if p.line_idx then by_hand[p.line_idx] = true end
+    if p.line_idx and not p.lock then by_hand[p.line_idx] = true end
   end
 
   local ordered = {}
@@ -1189,6 +1195,7 @@ function vo.PinnedSpans(word_tokens, pins, lines)
         effective = 1.0,
         kind      = "match",
         pinned    = true,
+        lock      = pin.lock or nil,
         line_idx  = line_idx,
         asset     = pin.asset,
         character = lines[line_idx].speaker,
@@ -2357,6 +2364,7 @@ function vo.SerializeProjectFile(entries, meta)
         "Pin", p.asset, p.source,
         string.format("%.3f", p.start or 0),
         string.format("%.3f", p.stop or 0),
+        p.lock and "lock" or "",
       })
     end
   end
@@ -2423,8 +2431,10 @@ function vo.ParseProjectFile(text)
       local from, to = tonumber(rows[i][4] or ""), tonumber(rows[i][5] or "")
       -- A pin with no range is not a weaker pin, it is a corrupt one.
       if asset ~= "" and source ~= "" and from and to and to > from then
-        parsed.pins[#parsed.pins + 1] =
-          { asset = asset, source = source, start = from, stop = to }
+        parsed.pins[#parsed.pins + 1] = {
+          asset = asset, source = source, start = from, stop = to,
+          lock  = fold(rows[i][6] or "") == "lock" or nil,
+        }
       end
     end
     i = i + 1
@@ -2633,6 +2643,7 @@ function vo.BuildOverview(input)
       -- with it, since a 100% score in review is otherwise baffling.
       in_sequence   = s.in_sequence,
       pinned        = s.pinned or nil,
+      pin_lock      = s.lock or nil,
       source_path   = rec.source_path,
       source_start  = s.start,
       source_stop   = s.stop,
@@ -3117,6 +3128,7 @@ vo.CONFIG_SCHEMA = {
   { key = "review_floor",       kind = "number", default = vo.DEFAULTS.review_floor },
   { key = "margin_threshold",   kind = "number", default = vo.DEFAULTS.margin_threshold },
   { key = "anchor_count",       kind = "number", default = vo.DEFAULTS.anchor_count },
+  { key = "auto_select_take",    kind = "string", default = vo.DEFAULTS.auto_select_take },
   { key = "order_weight",        kind = "number", default = vo.DEFAULTS.order_weight },
   { key = "backbone_min_tokens", kind = "number", default = vo.DEFAULTS.backbone_min_tokens },
   { key = "pre_pad",            kind = "number", default = vo.DEFAULTS.pre_pad },

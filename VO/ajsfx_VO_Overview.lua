@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.12
--- @changelog The VO tools are now three windows instead of one. "ajsfx VO Sources" lists every recorded file in the project and whether it has been transcribed; double-click a file to read its transcript, hear where each word sits, and re-transcribe just that file. "ajsfx VO Overview" is now the front door: it derives the match from the stored transcripts every time, so swapping the script CSV re-matches instantly with no re-transcription, and a new Select column records which take you are delivering. "ajsfx VO Cut" does the cutting, and it now places clip edges by looking for silence in the gap between the words either side, so an edge can never contain a syllable of the neighbouring line; the old fixed 150/250 ms pads become the furthest an edge may travel and the noise floor is measured from the recording rather than assumed. Transcription is now stored per wav file as word-level timings in "<audio>_vo_transcript.csv", so copying a recording and its sidecar to another project carries the transcription with it. Your selects, verified marks, notes and renames live in "<project>_vo.csv" beside the project. Transcription no longer conditions each window on the text it just decoded, which on a long read could lock the transcriber into repeating one phrase for the rest of the file; if an existing transcript contains such a loop, "ajsfx VO Sources" now flags it and says where it starts. Every column in Overview now sorts on a header click and filters from a box under the header, there is a new "#" column carrying each line's position in the script, and spacebar is REAPER's again -- it starts the transport instead of ticking the selected row. Matching now weighs where a line falls in the read: a line too short to identify itself -- one that is just "You." matches every "you" in the recording -- is sent to review when it contradicts the order the rest of the read was in, rather than being named on the strength of one word. Right-click a row (or a selection of rows) for "Find candidates": every place in the transcripts that line could sit, with what was said either side of it, what already occupies that spot, and a click to select it on the timeline and put the play cursor there. It is a search only -- it changes nothing. When you find a placement yourself, you can pin it: either press Pin beside a result in Find candidates, or make a time selection in REAPER over the audio and right-click the row for "Pin to time selection". A pinned line is placed by hand and the matcher works around it -- it shows as Pinned, it is stored in "<project>_vo.csv" against the recording rather than the timeline so it survives the item being moved, ajsfx VO Cut cuts what you pinned, and "Clear pin" hands the line back to the matcher. Matching is substantially more accurate: a window is now scored as it is finally kept rather than as it was proposed (a line could lose its opening words and a quarter of its score when the recogniser fused two words together), placements are considered longest and most confident first so a one-word line can no longer cut a twelve-word line in half, and a second pass gives any line that lost every window a look at the audio nothing claimed. Transcription no longer discards a stretch as non-speech unless it is almost certainly not speech -- the default threshold threw away 29 seconds of a real read, four script lines, at full level and with no error anywhere. NOTE: this replaces "ajsfx VO ScriptMatch", which has been removed — reinstall from ReaPack, and re-transcribe your recordings, as the old report files are not read.
+-- @changelog The VO tools are now three windows instead of one. "ajsfx VO Sources" lists every recorded file in the project and whether it has been transcribed; double-click a file to read its transcript, hear where each word sits, and re-transcribe just that file. "ajsfx VO Overview" is now the front door: it derives the match from the stored transcripts every time, so swapping the script CSV re-matches instantly with no re-transcription, and a new Select column records which take you are delivering. "ajsfx VO Cut" does the cutting, and it now places clip edges by looking for silence in the gap between the words either side, so an edge can never contain a syllable of the neighbouring line; the old fixed 150/250 ms pads become the furthest an edge may travel and the noise floor is measured from the recording rather than assumed. Transcription is now stored per wav file as word-level timings in "<audio>_vo_transcript.csv", so copying a recording and its sidecar to another project carries the transcription with it. Your selects, verified marks, notes and renames live in "<project>_vo.csv" beside the project. Transcription no longer conditions each window on the text it just decoded, which on a long read could lock the transcriber into repeating one phrase for the rest of the file; if an existing transcript contains such a loop, "ajsfx VO Sources" now flags it and says where it starts. Every column in Overview now sorts on a header click and filters from a box under the header, there is a new "#" column carrying each line's position in the script, and spacebar is REAPER's again -- it starts the transport instead of ticking the selected row. Matching now weighs where a line falls in the read: a line too short to identify itself -- one that is just "You." matches every "you" in the recording -- is sent to review when it contradicts the order the rest of the read was in, rather than being named on the strength of one word. Right-click a row (or a selection of rows) for "Find candidates": every place in the transcripts that line could sit, with what was said either side of it, what already occupies that spot, and a click to select it on the timeline and put the play cursor there. It is a search only -- it changes nothing. When you find a placement yourself, you can pin it: either press Pin beside a result in Find candidates, or make a time selection in REAPER over the audio and right-click the row for "Pin to time selection". A pinned line is placed by hand and the matcher works around it -- it shows as Pinned, it is stored in "<project>_vo.csv" against the recording rather than the timeline so it survives the item being moved, ajsfx VO Cut cuts what you pinned, and "Clear pin" hands the line back to the matcher. Matching is substantially more accurate: a window is now scored as it is finally kept rather than as it was proposed (a line could lose its opening words and a quarter of its score when the recogniser fused two words together), placements are considered longest and most confident first so a one-word line can no longer cut a twelve-word line in half, and a second pass gives any line that lost every window a look at the audio nothing claimed. Transcription no longer discards a stretch as non-speech unless it is almost certainly not speech -- the default threshold threw away 29 seconds of a real read, four script lines, at full level and with no error anywhere. The OK column is now Lock: ticking it freezes the line where it is, and a new Rematch button identifies everything again from scratch while leaving locked lines alone -- so you can work through a session settling lines, re-transcribe or edit the script, and keep what you already settled. "Select takes" marks one take of every line as the select, last or first, and skips locked lines. NOTE: this replaces "ajsfx VO ScriptMatch", which has been removed — reinstall from ReaPack, and re-transcribe your recordings, as the old report files are not read.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -125,8 +125,9 @@ local COLUMNS = {
     text = function(row) return tostring(row.order or "") end,
     tip = "Position in the script CSV. Sort by this column to put the\n" ..
           "table back into script order." },
-  { key = "verify",     label = "OK",         width =  28,
-    text = function(row) return row.user_status == "verified" and "yes" or "no" end },
+  { key = "verify",     label = "Lock",       width =  40,
+    text = function(row) return row.user_status == "verified" and "yes" or "no" end,
+    tip = "A locked line keeps the placement it has.\nRematching leaves it alone." },
   { key = "status",     label = "Status",     width =  74,
     num  = function(row) return SORT_RANK[row.status] or 9 end,
     text = StatusLabel },
@@ -179,6 +180,11 @@ local function ColumnKeys()
   for i, c in ipairs(COLUMNS) do keys[i] = c.key end
   return keys
 end
+
+local TAKE_PICKS = {
+  { key = "last",  label = "Last" },
+  { key = "first", label = "First" },
+}
 
 local LAYOUT_ORDERS = {
   { key = "script", label = "Script order" },
@@ -243,6 +249,8 @@ local state = {
   -- two fields are all we keep of the spec it hands back.
   sort_col      = nil,        -- a COLUMNS key
   sort_desc     = false,
+
+  auto_select_take = "last",  -- which take "Select takes" marks; from the config
 
   filter_row    = false,      -- the per-column filter boxes under the header
   col_filters   = {},         -- column key -> needle
@@ -503,6 +511,9 @@ local function Rebuild()
   state.items = vo.CollectProjectSpans()
   state.lines = ScriptLines()
   local cfg   = vo.LoadConfig()
+  -- Read here rather than once at startup, so the choice follows the config
+  -- like every other setting and survives a Settings change made mid-session.
+  state.auto_select_take = cfg.auto_select_take or "last"
 
   state.overview = vo.BuildOverview({
     lines   = state.lines,
@@ -808,9 +819,11 @@ end
 -- ear and pin the row to it.
 -- -----------------------------------------------------------------------
 
+-- The HARD pin for a line, if it has one. Locks are excluded: there is at most
+-- one hand-placement per line, but any number of its takes may be locked.
 local function PinFor(asset)
   for i, p in ipairs(state.pins) do
-    if p.asset == asset then return p, i end
+    if p.asset == asset and not p.lock then return p, i end
   end
   return nil
 end
@@ -833,6 +846,45 @@ local function SetPin(asset, source, from, to)
   state.message, state.message_kind = string.format(
     "Pinned %s to %s \226\128\147 %s in %s.",
     asset, FormatTime(from), FormatTime(to), vo.Basename(source)), "ok"
+end
+
+-- Locking a line freezes the placement it has now, so a rematch leaves it
+-- alone. It is written as a pin like any other hand placement -- the same
+-- record, the same file, the same effect on matching -- but flagged `lock`, so
+-- it guarantees THIS take without claiming the line: locking take 2 of 3 must
+-- leave takes 1 and 3 exactly where they were.
+--
+-- No Reload here, deliberately. The pin says the line is where the match
+-- already put it, so re-running would change nothing on screen, and a
+-- second-long rematch on every tick of a checkbox would make the column
+-- unusable for the fifty rows in a row you actually tick it on.
+-- A lock belongs to one TAKE, so it is found by where it is, not just by which
+-- line it belongs to: two takes of a line can be locked independently.
+local function LockAt(row)
+  for i, p in ipairs(state.pins) do
+    if p.lock and p.asset == row.asset and p.source == row.source_path
+       and math.abs((p.start or 0) - (row.source_start or 0)) < 1e-6 then
+      return p, i
+    end
+  end
+  return nil
+end
+
+local function SetLock(row, on)
+  SetStatus(row, on and "verified" or nil)
+
+  local _, at = LockAt(row)
+  if not on then
+    -- Only the lock is removed. A hand-placed pin is a separate decision, and
+    -- unticking the lock is not a request to throw it away.
+    if at then table.remove(state.pins, at) end
+  elseif row.asset and row.asset ~= "" and row.source_path
+         and row.source_start and row.source_stop then
+    local pin = { asset = row.asset, source = row.source_path,
+                  start = row.source_start, stop = row.source_stop, lock = true }
+    if at then state.pins[at] = pin else state.pins[#state.pins + 1] = pin end
+  end
+  state.dirty = true
 end
 
 local function ClearPin(asset)
@@ -1160,6 +1212,57 @@ local function SetRestore(on)
       view.SaveColumn(key, ColumnView(key))
     end
   end
+end
+
+-- Throw the memoised match away and identify everything again. The ordinary
+-- rebuild is memoised on the script, the transcripts and the settings, which is
+-- exactly right for a window that redraws thirty times a second and exactly
+-- wrong for a button whose whole job is to say "do it again".
+local function Rematch()
+  state.match_key = nil
+  Reload()
+  local locked = 0
+  for _, p in ipairs(state.pins) do if p.lock then locked = locked + 1 end end
+  state.message, state.message_kind = string.format(
+    "Identified %d line%s again%s.", #state.overview, #state.overview == 1 and "" or "s",
+    locked > 0 and string.format(", leaving %d locked line%s alone",
+                                 locked, locked == 1 and "" or "s") or ""), "ok"
+end
+
+-- Mark one take of every line as the select. Which one is the user's standing
+-- choice, not a guess: a session read in takes usually settles on the last, but
+-- an actor who leads with their best does the opposite.
+local function AutoSelectTakes(rows)
+  -- A locked line has been settled by hand; a bulk action does not get to
+  -- overrule that.
+  local locked_line = {}
+  for _, row in ipairs(state.overview) do
+    if row.user_status == "verified" and row.asset then locked_line[row.asset] = true end
+  end
+
+  local want = (state.auto_select_take == "first") and 1 or nil
+  local best, changed = {}, 0
+  for _, row in ipairs(rows) do
+    if row.asset and row.status ~= "missing" and row.status ~= "orphan"
+       and (row.take_index or 0) > 0 and not locked_line[row.asset] then
+      local pick = want or (row.take_count or 1)
+      if row.take_index == pick then best[row.asset] = row end
+    end
+  end
+  for _, row in pairs(best) do
+    if not row.user_select then
+      SetSelect(row, true)
+      changed = changed + 1
+    end
+  end
+
+  local n = 0
+  for _ in pairs(best) do n = n + 1 end
+  state.message, state.message_kind = string.format(
+    "%s take marked as the select on %d line%s (%d changed)%s.",
+    state.auto_select_take == "first" and "First" or "Last",
+    n, n == 1 and "" or "s", changed,
+    next(locked_line) and ", locked lines skipped" or ""), "ok"
 end
 
 -- The rows the tool acts on: the selection if there is one, otherwise every row
@@ -1541,10 +1644,31 @@ local function DrawFilters()
   if changed then state.search = text end
 
   im.SameLine(ctx)
-  if im.Button(ctx, "Refresh") then Reload() end
+  -- Called directly, not deferred: the toolbar draws above the table, so
+  -- nothing here runs inside it, and `pending_action` is not in scope yet.
+  if im.Button(ctx, "Rematch") then Rematch() end
   if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Re-read every transcript and re-match against the script.\n" ..
-                       "Do this after transcribing in ajsfx VO Sources.")
+    local locked = 0
+    for _, p in ipairs(state.pins) do if p.lock then locked = locked + 1 end end
+    im.SetTooltip(ctx, string.format(
+      "Re-read every transcript and identify the lines again from scratch.\n" ..
+      "Locked lines keep the placement they have (%d locked).\n\n" ..
+      "Do this after transcribing in ajsfx VO Sources, or after editing\n" ..
+      "the script.", locked))
+  end
+
+  im.SameLine(ctx)
+  if im.Button(ctx, "Select takes") then AutoSelectTakes(AffectedRows()) end
+  im.SameLine(ctx)
+  Combo("##autoselect", 70, TAKE_PICKS, state.auto_select_take, function(k)
+    state.auto_select_take = k
+    local cfg = vo.LoadConfig()
+    cfg.auto_select_take = k
+    vo.SaveConfig(cfg)
+  end)
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Which take to mark as the select on a line that was\n" ..
+                       "read more than once. Locked lines are left alone.")
   end
 end
 
@@ -1989,7 +2113,12 @@ local function DrawTableBody()
     CellWidget("verify", row_h)
     local checked = row.user_status == "verified"
     local hit, now = im.Checkbox(ctx, "##ok", checked)
-    if hit then pending_action = function() SetStatus(row, now and "verified" or nil) end end
+    if hit then pending_action = function() SetLock(row, now) end end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, checked
+        and "Locked here. Rematching will not move it."
+        or  "Lock this line where it is, so rematching leaves it alone.")
+    end
 
     -- Status --------------------------------------------------------------
     im.TableSetColumnIndex(ctx, 2)
@@ -2066,7 +2195,7 @@ local function DrawTableBody()
     AlignCell("status", row_h, im.GetTextLineHeight(ctx))
     if row.user_status == "flagged" then
       im.TextColored(ctx, 0xDD6666FF, "Flagged")
-    elseif row.pinned then
+    elseif row.pinned and not row.pin_lock then
       -- Replaces the status word rather than sitting beside it: a pinned row's
       -- status is not a matcher verdict any more, and showing "Recorded" would
       -- suggest it was.

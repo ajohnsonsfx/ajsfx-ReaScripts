@@ -923,6 +923,35 @@ test("pinning a line drops its other automatic placements in that recording", fu
   assert(you == 1, "expected only the pinned placement, got " .. you)
 end)
 
+test("a lock holds its own take without claiming the line", function()
+  -- Locking take 2 of a line must leave takes 1 and 3 where they were. A hard
+  -- pin claims the line; a lock only guarantees the take it is on.
+  local lines = pin_lines()
+  local words, t = {}, 0.0
+  for w in ("you seal it nobody goes below you"):gmatch("%S+") do
+    words[#words + 1] = { t0 = t, t1 = t + 0.4, text = w }
+    t = t + 0.5
+  end
+  local locked = vo.BuildMatch({ { path = "s.wav", words = words } }, lines, {},
+    { { asset = "vo_you", source = "s.wav", start = 3.0, stop = 3.45, lock = true } })
+  local you = 0
+  for _, s in ipairs(locked[1].spans) do
+    if s.asset == "vo_you" then you = you + 1 end
+  end
+  assert(you >= 2, "the lock swallowed the line's other takes: " .. you)
+end)
+
+test("a lock survives the project file, and is not mistaken for a hard pin", function()
+  local text = vo.SerializeProjectFile({}, { pins = {
+    { asset = "vo_a", source = "A.wav", start = 1.0, stop = 2.0, lock = true },
+    { asset = "vo_b", source = "A.wav", start = 3.0, stop = 4.0 },
+  } })
+  local parsed = assert(vo.ParseProjectFile(text))
+  assert(#parsed.pins == 2, "Expected 2, got " .. #parsed.pins)
+  assert(parsed.pins[1].lock == true, "the lock flag was lost")
+  assert(not parsed.pins[2].lock, "a hard pin came back as a lock")
+end)
+
 test("pins round-trip through the project file", function()
   local pins = {
     { asset = "vo_you",  source = "D:/s/A.wav", start = 12.5,  stop = 13.25 },
