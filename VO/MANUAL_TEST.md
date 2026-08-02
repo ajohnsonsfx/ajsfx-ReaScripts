@@ -1,9 +1,12 @@
-# VO ScriptMatch — Manual Test Procedure
+# VO Manual Test Procedure
 
 Everything in `VO/lib/ajsfx_vo.lua`'s pure layer is covered by `tests/test_vo.lua`
-(run `./run_tests.sh` for the current count — all passing). This document covers what those
-tests **cannot** reach: REAPER itself, real audio, and the actual whisper-cli
-binary. Nothing below has been executed yet — see [SPEC.md §10](SPEC.md#10-explicitly-unverified).
+and `tests/test_vo_view.lua` (run `./run_tests.sh` for the current count — all
+passing). This document covers what those tests **cannot** reach: REAPER
+itself, real audio, and the actual whisper-cli binary, across the three
+windows — **ajsfx VO Sources**, **ajsfx VO Overview** and **ajsfx VO Cut** —
+plus **ajsfx VO Settings**. Nothing below has been executed yet — see
+[SPEC.md §10](SPEC.md#10-explicitly-unverified).
 
 Work through it in order. Later sections assume earlier ones passed.
 
@@ -86,168 +89,244 @@ On **one track**, in **one pass**, record yourself reading — deliberately mess
 9. Do **not** read NPC_004. It is `TO RECORD`.
 
 Leave ~1s of silence between takes. Speak normally; do not over-enunciate.
+Ideally record a **second** session (even a short one re-reading NPC_001 and
+NPC_002) on a second track: several later sections need two recordings.
 
 ---
 
-## 3. First run — defaults
+## 3. ajsfx VO Sources — transcribing
 
-Run **ajsfx VO ScriptMatch** with nothing selected, then select the recorded item.
+Open **ajsfx VO Sources** with a project holding two recorded, untranscribed
+wavs.
 
-- [ ] With nothing selected, the dialog shows `Select the recorded session item(s)
-      on a track.` and **Transcribe** is disabled — no popup, no separate step to
-      reopen the script.
-- [ ] Select the recorded item. The table becomes active immediately, without
-      reopening the script.
-- [ ] Browse to the sample CSV. Leave the filters blank and all three toggles at
-      their defaults (Alts off, suffix off, last take is primary).
-- [ ] Press **Transcribe**. The dialog stays open and shows an inline progress
-      line while it runs; both **Transcribe** and **Cut and name** are disabled
-      for the duration.
-- [ ] **The project does not change while it runs — Transcribe only reads the
-      audio and builds a plan.**
-- [ ] When it finishes, **Transcribe** relabels to **Re-transcribe** and the
-      table populates with the plan's results.
-- [ ] Press **Cut and name** to apply the plan to the project.
+1. Confirm two rows, both reading `No`, with the correct **Items** count for
+   each.
+2. Select one, press **Transcribe**. Confirm progress appears, then
+   `<audio>_vo_transcript.csv` exists beside the wav and the row flips to
+   `Yes` with a non-zero **Words** count.
+3. Select the transcribed row alone; confirm the button reads
+   **Re-transcribe**.
+4. Select both rows; confirm the button reads **Transcribe** (one of the two
+   still needs it).
+5. Re-record over the transcribed wav so its size changes; confirm the row
+   reads `Stale`.
+6. Double-click a transcribed row; confirm the detail panel opens with the
+   preamble and readable prose broken into paragraphs.
+7. Hover a word in the focused paragraph; confirm the source-time tooltip.
+8. Click a word; confirm the edit cursor lands on that word in the arrange
+   view and the view scrolls to it.
+9. Press **Re-transcribe this file**; confirm whisper actually re-runs (it
+   must not hit the scratch cache) and the panel refreshes.
+10. Double-click the same row again; confirm the panel closes.
+11. Hand-corrupt a transcript file (delete its first line) and reopen the
+    window; confirm the row reads `Error`, the detail panel names the reason,
+    and no window failed to open.
 
-### Expected result
+### Batch behaviour
 
-| Track | Contains |
-|---|---|
-| Selects | `vo_guard_halt_01` ×2, `vo_guard_gate_01`, `vo_guard_bark_01`, `vo_hero_captain_01`, `vo_hero_aside_01` |
-| Alts | *(not created — the toggle is off)* |
-| Review | `UNMATCHED_take_one`, `UNMATCHED_sorry_again`, plus anything low-confidence |
+Use a project with 50+ one-line-per-file wavs for these.
 
-- [ ] Both takes of NPC_001 are present and **named identically**.
-- [ ] The slate and the chatter are on **Review**, not Selects.
-- [ ] Nothing is named for NPC_004.
-- [ ] Non-speech silence remains on the original track.
-- [ ] A `*_vo_report.csv` sits next to the recorded audio source file — written
-      when **Transcribe** ran, not only after Cut.
-
-### Check the report
-
-- [ ] One row per clip, with score, margin, take_index and destination.
-- [ ] Its trailing **SCRIPT LINES WITH NO MATCH** section lists **NPC_004** and
-      nothing that actually got cut.
-- [ ] Opening it in a spreadsheet does not mangle the dialogue text.
-
-### Check undo
-
-- [ ] **A single Ctrl+Z** returns the project to exactly its pre-run state:
-      one item, one track, no new tracks, no regions.
-
-This is the most important check on the page. If undo takes more than one press,
-something is escaping `core.Transaction`.
+12. Press **Select untranscribed**, then **Transcribe**. Confirm the progress
+    line counts `n of N` and names the current file, and that transcript
+    files appear beside the audio *as the run proceeds*, not all at the end.
+13. Cancel a run partway through. Confirm the files already done keep their
+    transcripts and their rows read `Yes`, and re-running transcribes only
+    the remainder.
+14. Put an unreadable or zero-byte wav in the middle of the selection. Confirm
+    the run completes, that file is listed by name with its reason, and every
+    other file still transcribed.
 
 ---
 
-## 4. The eight toggle combinations
+## 4. ajsfx VO Overview — matching and judgement
 
-Undo between each. Only NPC_001 has two takes, so it is the only line that moves.
+Needs a project with **two** transcribed wavs (finish §3 first) and the sample
+script CSV.
 
-| # | Alts | Suffix | Primary | Expected for NPC_001 |
-|---|---|---|---|---|
-| 1 | off | off | last | Both on Selects, both `vo_guard_halt_01` |
-| 2 | off | off | first | Both on Selects, both `vo_guard_halt_01` |
-| 3 | off | on | last | Selects: `vo_guard_halt_01_tk01` (1st read) + `vo_guard_halt_01` (2nd) |
-| 4 | off | on | first | Selects: `vo_guard_halt_01` (1st) + `vo_guard_halt_01_tk02` (2nd) |
-| 5 | on | off | last | Alts: 1st read · Selects: 2nd read, both bare |
-| 6 | on | off | first | Selects: 1st read · Alts: 2nd read, both bare |
-| 7 | on | on | last | Alts: `..._tk01` (1st) · Selects: `vo_guard_halt_01` (2nd) |
-| 8 | on | on | first | Selects: `vo_guard_halt_01` (1st) · Alts: `..._tk02` (2nd) |
+1. Open **ajsfx VO Overview**. Choose the sample script CSV. Confirm statuses
+   populate immediately, with no whisper run.
+2. Load a **different** script CSV, then load the sample CSV back. Confirm
+   statuses re-derive immediately both times — still no whisper run, no
+   staleness warning.
+3. A line the script has but no recording matched shows **Missing**.
+4. Audio that matched no script line shows **Orphan**, listed after
+   everything else.
+5. Tick **Select** on a take, close and reopen Overview. Confirm the tick
+   survives and `<project>_vo.csv` contains the row.
+6. Add a note to a **Missing** line (one with no audio). Confirm it saves and
+   returns, with an empty Source cell.
+7. Hand-corrupt `<project>_vo.csv` (delete its first line); confirm Overview
+   opens, says it cannot read the file, and refuses to save.
 
-- [ ] All eight match. Single-take lines stay on Selects with bare names in every
-      combination.
+### Opening the sibling windows
 
-These same eight cases are asserted headlessly in `tests/test_vo.lua`; this
-confirms the REAPER-side routing agrees with the plan the tests verify.
+8. From Overview press **Sources…**; confirm the Sources window opens.
+9. Press it again with Sources already open; confirm nothing breaks and no
+   duplicate action is registered (check the Actions list contains one
+   `ajsfx_VO_Sources` entry).
+10. Double-click a Source cell in Overview; confirm Sources opens with that
+    row selected, scrolled into view, and its detail panel open.
+11. With Sources already open, double-click a *different* Source cell in
+    Overview; confirm the open window switches rows.
+12. Press **Cut…**; confirm the Cut window opens.
 
----
+### Navigating and marking work
 
-## 5. Filters
+13. Click a row from the first recording. The edit cursor moves to it and the
+    item is selected. Click one from the second recording — same, on the
+    other item.
+14. Click a Missing row. Nothing moves, the row is dimmed, and hovering
+    explains why.
+15. A line with several takes shows sibling rows. Tick **Select** on one —
+    the others of the same asset clear automatically.
+16. Tick **OK** on a few rows. Select a row and press `Space` — it toggles.
+    Click into Notes, type a space — the row does *not* toggle.
+17. Type a note containing a comma and a quote. Close the window, reopen it:
+    the note is intact.
+18. Open `<project>_vo.csv` in Excel. It is legible, and holds only the rows
+    you actually marked.
 
-Filtering is now the **Character multi-select** in ScriptMatch (see §13.5 for the
-full walkthrough); there is no free-text Speaker/Type filter any more.
+### Renaming
 
-- [ ] Uncheck every character except `Guard` → only the three Guard lines are cut.
-      The Hero reads land on Review as unmatched, because they are no longer in the
-      filtered script.
-- [ ] Uncheck **all** characters → "No characters selected", and **nothing is
-      changed**.
+19. Edit an Item name cell and press Enter. The take name changes in the
+    arrange view and the project file records the override.
+20. `Ctrl+Z` once. The take name reverts — one edit is one undo step.
+21. Type a name of only illegal characters (`///`). An inline error appears
+    and nothing is renamed.
+22. Rename the same item in REAPER itself (F2 on the item). The Item name
+    column catches up within a second or two, without pressing Refresh.
 
----
+### The acceptance test
 
-## 6. Regions and delivery
+23. **Re-transcribe one of the two recordings in Sources.** Return to Overview
+    and press **Refresh**. Every verified mark, note and rename on that
+    recording is still there, and the other recording is untouched.
+24. **Cut** in Cut (§5), then Refresh Overview. Row → item navigation still
+    lands correctly on the now-split items.
+25. Move the project and its audio to another folder, reopen, Refresh. The
+    marks are still found by basename.
 
-Enable **Create regions over Selects clips** in Settings, then run again.
+### Degrading safely
 
-- [ ] A named region sits over each Selects clip.
-- [ ] Region names match the take names.
-- [ ] View → Region Render Matrix, tick the track, render.
-- [ ] Files come out named per region.
-- [ ] **Unverified expectation:** two identically-named regions (the two NPC_001
-      takes with suffixing off) produce `-01` / `-02` suffixed files. Record what
-      actually happens — SPEC.md §10 flags this as a guess.
-
----
-
-## 7. Failure handling
-
-Each of these must show a clear inline message (no popup) and change **nothing**:
-
-- [ ] Open the script with no items selected → `Select the recorded session
-      item(s) on a track.`, **Transcribe** disabled.
-- [ ] Point Settings at a nonexistent whisper-cli → message names the missing path
-      and points at Settings.
-- [ ] Point Settings at a nonexistent model → same.
-- [ ] Point the run dialog at a CSV missing the Filename column → the message
-      lists the headers actually found.
-- [ ] Point it at a file that is not a CSV at all.
-- [ ] Press **Cancel** mid-transcription → inline status reads "Cancelled.
-      Nothing in the project was changed.", and the project is untouched.
-- [ ] Select a **MIDI** item alongside the audio → it is skipped and named
-      inline; the audio still processes.
-- [ ] Set an item's playrate to 0.5 → skipped with the playrate named. (The
-      time-mapping math handles playrate and is unit-tested; v1 refuses it until
-      this test confirms REAPER agrees.)
-
----
-
-## 8. The cache
-
-- [ ] Transcribe once, then reopen the dialog on the same item(s) → the sidecar
-      restores the result instantly, with no whisper run and no progress line.
-- [ ] Change **Accept threshold** in Settings and reopen → still instant. This
-      is the point of the cache: threshold tuning must be cheap.
-- [ ] Tick **Always re-transcribe** and press Transcribe → it transcribes again
-      even though a fresh sidecar exists.
-- [ ] Change the model and press Transcribe → it transcribes again without being
-      asked to.
-- [ ] With multiple items selected and only some sidecars stale, press
-      **Transcribe** → only the stale/missing sources cost whisper time; sources
-      with a fresh sidecar are skipped.
+26. Corrupt the project file (delete its first line) and reopen. The window
+    opens, an inline error names the file, and **nothing is saved** until it
+    is fixed — confirm the file on disk is not overwritten.
+27. Corrupt one transcript sidecar. The Sources row for it reads `Error`;
+    Overview still loads the other recording's rows normally.
+28. Open Overview in an unsaved project. It warns that marks cannot be saved
+    and otherwise works.
 
 ---
 
-## 9. Scale check
+## 5. ajsfx VO Overview — selection and Sort on timeline
 
-Once the above passes, try a real session: a full script and 10+ minutes of audio.
+Use a project with **two** recordings, a matched script CSV, and audio already
+cut into one item per line (finish §6 first for the cut items, or use any
+project with existing per-line items).
 
-- [ ] Transcription completes within the timeout (raise it in Settings if not).
-- [ ] **The whole item is cut, end to end** — clips appear all the way to the last
-      line, not just the first stretch. (Regression guard: a zero-length span used to
-      make `ApplyPlan` sweep the entire remaining tail onto one track and orphan
-      everything after it, so a 24-min take only produced clips for its first ~9 min.
-      A degenerate span is now skipped and listed under **Problems** in the summary.)
-- [ ] Matching itself is not perceptibly slow after transcription finishes.
-- [ ] Spot-check ten clips against the report — do the boundaries sound right, or
-      are words clipped at the head?
-- [ ] If heads are clipped, raise **Pre-roll**; the padding logic clamps to the
-      midpoint between neighbours, so raising it is safe.
+### Selection
+
+29. Click a row, then Ctrl-click two others. All three stay lit, and the
+    three matching items are selected in the arrange view. Shift-click a
+    fourth row — the whole range from the last-clicked row fills in.
+30. With several rows selected, change the status filter so some of them are
+    hidden. The hidden ones leave the selection; the count beside the **Sort**
+    button drops to match.
+31. Select a fifty-row range. The edit cursor moves once, to the row you
+    clicked — not once per row.
+32. Filter to one character, click one of its lines, then Shift-click a line
+    of the same character further down with **another character's lines in
+    between**. Only the rows between the two clicks are selected.
+
+### Sorting
+
+33. Select nothing. Set **Record order · Fixed gap · 2.00 s between items ·
+    60.00 s between recordings** and press **Sort**. Confirm: a new track
+    named `<source> sorted 1` appears **nested as a child under** the track
+    the audio came from, all the sorted items are on it, items sit 2 s apart
+    end-to-start, the two recordings are 60 s apart with the older file
+    first, and a single Ctrl+Z puts the tracks *and* the positions back
+    together.
+34. Look at the tracks **below** the new folder. Their indent level did not
+    change — nesting the child must not re-indent the rest of the project.
+35. Sort again without undoing. A second set named `sorted 2` appears; the
+    `sorted 1` tracks are still sitting there untouched.
+36. **Crossfade two adjacent takes**, then Sort. The crossfade is still
+    intact, the pair moved together as one unit, and both landed on the same
+    new track.
+37. **Group two items that sit on different tracks** (select both, `G`), then
+    Sort. Both moved by the same amount, they kept their spacing relative to
+    each other, and each landed on the child of *its own* source track — not
+    collapsed together onto one.
+38. Switch to **Script order**. The spacing droplist greys out, and hovering
+    it explains why. Sort — items now follow the CSV row order, and any
+    orphan (audio matching no script line) lands after the last sorted item.
+39. Back to **Record order · Original spacing**. Sort. The gaps from the
+    original recording return. If anything had to slide forward to avoid an
+    overlap, the status line says how many.
+40. Select six rows from the middle of one recording and Sort. Only those
+    items move; everything else stays where it was, on its original track.
+41. **Lock** one item and Sort. Its cluster is skipped and the status line
+    reports how many were left alone — in the normal colour, not red: the
+    sort still succeeded.
+42. Close and reopen the window. The order, spacing and both gap values are
+    as you left them.
+43. *(Windows without js_ReaScriptAPI only)* Sort by record order across two
+    recordings. The status line says file dates were unavailable and that the
+    ordering fell back to filename.
 
 ---
 
-## 10. Backend & model download (Settings)
+## 6. ajsfx VO Cut — cutting
+
+Needs a project with transcribed audio, a matched script CSV loaded in
+Overview, and at least one line ticked **Select**.
+
+1. Select takes in Overview, open Cut, press **Cut**. Confirm clips land
+   named and routed, and one Ctrl+Z undoes the whole run.
+2. Confirm clip edges sit in silence — zoom in on three boundaries and check
+   none contains a syllable of the neighbouring line.
+3. Turn `snap_boundaries` off in Settings (§7); re-run Cut; confirm the fixed
+   150/250 ms pads return instead of silence-searching.
+4. Re-record over a wav referenced by a loaded transcript so it changes size;
+   confirm Cut is disabled and names the stale file.
+5. Deselect every take in Overview; confirm Cut shows the inline "Nothing is
+   selected" message rather than running.
+6. Leave a multi-take line with no select; confirm it is listed as needing a
+   decision and is not cut.
+7. Have two sources both select the same Filename; confirm two
+   `Selects — <name>` tracks appear and the collision is reported inline.
+8. Turn on **Use alts track**; cut a line with two takes, one selected.
+   Confirm the non-selected take lands on Alts.
+9. Turn on **Suffix alt names**; confirm the non-selected take from the
+   previous step is now named with a `_tk0N` suffix while the selected take
+   keeps the bare name.
+
+### Regions
+
+10. Enable **Create regions over Selects clips** in Settings, then Cut again.
+    Confirm a named region sits over each Selects clip and the names match
+    the take names.
+
+---
+
+## 7. ajsfx VO Settings — snapping controls
+
+1. Open **ajsfx VO Settings**. Confirm a **Boundaries** section is present
+   with: Snap clip edges to silence, Maximum head room, Maximum tail, Minimum
+   silence, Noise floor headroom, Floor measurement window.
+2. With **Snap clip edges to silence** off, confirm the other five controls
+   grey out.
+3. Change each value, close and reopen Settings, confirm each persisted.
+4. Confirm Cut's behaviour changes accordingly (§6.2–6.3): raising Maximum
+   head room widens how far a start boundary may search; lowering Minimum
+   silence makes a boundary easier to place inside a short gap.
+5. Hover a padding control's tooltip; confirm it explains the value is now a
+   *maximum* reach, not a fixed amount.
+
+---
+
+## 8. Backend & model download (Settings)
 
 Open **ajsfx VO Settings → Speech backend → Download backend & models**.
 
@@ -269,14 +348,14 @@ Open **ajsfx VO Settings → Speech backend → Download backend & models**.
 - [ ] No `EndDisabled()` / ImGui stack error appears in the console when clicking
       any Get / Use downloaded / Repair button.
 
-## 11. GPU device check
+### GPU device check
 
 - [ ] Press **Check device**. Expected: `Device: CUDA — <your GPU>`.
 - [ ] If it reads `CPU only` despite the CUDA build, your NVIDIA driver or GPU
-      may be too old for the 12.4 runtime — note it in SPEC §9 and try the
+      may be too old for the 12.4 runtime — note it in SPEC §10 and try the
       CUDA 11.8 build.
 
-## 12. Download failure handling
+### Download failure handling
 
 - [ ] Press **Cancel** mid-download → "Download cancelled. Nothing was changed",
       and no partial file remains in `whisper-bin/` or `whisper-models/`.
@@ -290,293 +369,34 @@ Open **ajsfx VO Settings → Speech backend → Download backend & models**.
 
 ---
 
-## 13. CSV layout, presets & character routing (ScriptMatch)
+## 9. Two scenarios no single window's tests cover
 
-Covers the CSV column-mapping/preset/filter rework described in
-[SPEC-csv-layout-filtering.md](SPEC-csv-layout-filtering.md). The pure logic
-(`DistinctCharacters`, `AutoDetectMapping`, serialize/deserialize, `CharacterTrackName`,
-the `BuildScriptLines` include-set) is unit-tested in `tests/test_vo.lua`; this section is
-the REAPER-side, dialog-and-routing half.
+### Portability: a wav travels without its project
 
-Use `tests/fixtures/vo_sample_script.csv` (§2) for a Character-bearing CSV, and make (or
-reuse) a copy with the `Character` column removed/renamed for the no-character-column cases.
+1. In a **different, fresh** project, copy a recording that already has a
+   `<audio>_vo_transcript.csv` sidecar (from an earlier section) into the new
+   project's media, plus the sidecar file itself, and add the wav to a track.
+2. Load the same script CSV in Overview.
+3. Confirm the matching lines show up immediately, with zero marks (no
+   Select, no Status, no notes — this is a fresh project file) and **no
+   whisper run** — the transcript travelled with the wav, the judgements did
+   not, exactly as `VO/SPEC.md` §4 describes.
 
-There are exactly **three** role dropdowns now — **Character** (optional), **Filename**
-(required), **Line Text** (required). There is no LineID or Type field: the **Filename**
-is the line's identity (repeated takes of the same line share it).
+### Read-only audio directory
 
-### 13.1 Header-driven dropdowns
-
-- [ ] Browse to the sample CSV. Each role combo (**Character**, **Filename**,
-      **Line Text**) lists the CSV's actual header column names, not hand-typed text.
-- [ ] On first load with no remembered layout, the roles are **auto-detected** correctly
-      from the sample header (Character → `Character`, Filename → `Filename`,
-      Line Text → `Line Text`, all pre-selected).
-- [ ] Only **Character** offers a `(none)` entry (it is optional); **Filename** and
-      **Line Text** are required and have no `(none)`.
-- [ ] Pick `(none)` for **Character** → the **Character filter** section disappears, and
-      the dropdown editing marks the Preset combo `(unsaved)`.
-
-### 13.2 Missing required role disables the run
-
-- [ ] Load a CSV whose header lacks a Filename column (rename it in a scratch copy).
-      Auto-detect leaves **Filename** unmapped.
-- [ ] **Transcribe and cut** is disabled (greyed) and the message reads
-      `Map the required column: Filename`.
-- [ ] Map any column to it → the button enables and the message clears.
-
-### 13.3 Layout presets — Save / Save As / Load / Delete
-
-- [ ] With the sample CSV mapped, press **Save**. Since no preset is selected yet, a
-      REAPER text-input dialog asks for a name — enter `TestGame` and confirm.
-- [ ] The **Preset** dropdown now shows `TestGame` selected (not `(unsaved)`).
-- [ ] Change the **Character** mapping to `(none)` → the dropdown reverts to `(unsaved)`
-      (layout is dirty).
-- [ ] Press **Save** again (layout dirty, name still `TestGame` conceptually unset) →
-      prompts for a name; **Save As...** always prompts, pre-filled with the current name.
-      Save As under the same name `TestGame` → confirmation dialog
-      **"A layout preset named 'TestGame' already exists. Overwrite it?"** appears; confirm.
-- [ ] Restart the dialog (close and reopen ScriptMatch, or switch the CSV path away and
-      back). Select `TestGame` from the **Preset** dropdown → the saved mapping
-      (Character = none) is restored.
-- [ ] Press **Delete** with `TestGame` selected → confirmation prompt, then the dropdown
-      falls back to `(unsaved)` and the mapping stays as it was (not cleared).
-- [ ] With no preset selected (`(unsaved)`), **Delete** is disabled (greyed).
-
-### 13.4 Per-`.rpp` restore, including a column that vanished
-
-- [ ] With a layout mapped (no saved preset — `(unsaved)`), close ScriptMatch, save the
-      `.rpp`, close and reopen the project, and reopen ScriptMatch. The **CSV path** and
-      the **mapping** are restored automatically (the inline per-project layout, §5.3).
-- [ ] Now point the CSV path at a copy of the sample with the `Character` column removed
-      entirely. The dialog reloads the header: **Character** falls back to `(none)` (its
-      remembered column no longer exists), while **Filename** and **Line Text**
-      — still present in the new header — keep their prior mappings.
-- [ ] Repeat with a named preset selected instead of inline: save `.rpp`, reopen, confirm
-      the preset name is still selected and its mapping (re-intersected against whatever
-      header is currently loaded) is applied.
-
-### 13.5 Character multi-select narrows the run
-
-- [ ] With Character mapped to the `Character` column on the sample CSV, the
-      **Character filter** section lists `Guard` and `Hero`, both checked.
-- [ ] Uncheck **Hero**, run. Only the Guard lines (NPC_001/002/003) are cut; the Hero
-      reads land on Review as unmatched (same as the free-text filter's old behavior,
-      §5).
-- [ ] Uncheck **both** Guard and Hero → **Transcribe and cut** proceeds only as far as
-      showing **"No characters selected."** in the message area; nothing runs.
-
-### 13.6 Default (nothing excluded) still processes blank-character rows
-
-This is the item verified as part of Task 6's review fix — confirm it directly:
-
-- [ ] Add one row to a scratch copy of the sample CSV with a **blank Character cell**
-      (blank Character, some Filename/Line Text, and record that line in the session
-      audio too).
-- [ ] Map Character to the `Character` column. Leave **every character checked** (the
-      default — nothing excluded).
-- [ ] Run. The blank-Character row is **still processed**: it is matched/cut like any
-      other line, and it lands on a **plain** track (`Selects`/`Alts`/`Review`, not a
-      `<Character>_...` track), because a row with no character never gets a per-character
-      destination.
-- [ ] Now uncheck any one real character (e.g. Hero) and run again. The blank-Character
-      row is **dropped** this time — once the filter is actually active (something
-      excluded), a row with no character key fails the include-set test. This confirms the
-      filter is inert until the user excludes at least one character, and only then treats
-      a blank cell as "not in the include-set."
-
-### 13.7 Per-character track routing
-
-- [ ] With Character mapped and both Guard and Hero checked, run the full sample. Confirm
-      tracks named exactly `Guard_Selects` and `Hero_Selects` are created (not a shared
-      `Selects`), each holding only that character's matched clips.
-- [ ] If a low-confidence Guard line lands on Review, confirm the track is
-      `Guard_Review`, not plain `Review`.
-- [ ] A character with **no clips routed to Alts** this run → no `<Character>_Alts` track
-      is created at all (tracks are created lazily, only when actually populated).
-
-### 13.8 No character column → plain tracks
-
-- [ ] Load a CSV with no Character-like column at all (or map Character to `(none)`).
-      The **Character filter** section is hidden entirely.
-- [ ] Run. All matched clips land on the plain `Selects`/`Alts`/`Review` tracks (today's
-      pre-feature behavior) — no per-character tracks appear anywhere.
-
-### 13.9 Unmatched slate → plain Review
-
-- [ ] Even with Character mapped and routing active, an unmatched span (the slate /
-      chatter, which never had a script line and therefore never had a character) still
-      lands on plain `Review`, not `<something>_Review`. Confirm this in both the §13.6
-      and §13.7 runs above — no `UNMATCHED_...` clip ever appears on a per-character track.
-
-### Known minor (not a bug to chase)
-
-- A **comma** typed into a preset name via **Save**/**Save As...** is truncated by
-  REAPER's `GetUserInputs` (it treats commas as its own field separator). Use a preset
-  name without commas; `ValidatePresetName` does not special-case this because the
-  dialog itself never delivers the comma to Lua.
+4. Make the directory holding a recorded wav **read-only** at the filesystem
+   level.
+5. In Sources, select that file and press Transcribe (or Re-transcribe).
+6. Confirm whisper still runs (it only reads the audio) but writing
+   `<audio>_vo_transcript.csv` fails.
+7. Confirm the failure appears as an **inline warning** naming the file and
+   the reason, not a message box, and that the Sources window stays open and
+   usable — other files in the same batch that are writable still succeed
+   (§3, batch behaviour).
+8. Restore write access and re-transcribe the file; confirm the sidecar is
+   now written and the row reads `Yes`.
 
 ---
-
-## Per-source sidecar
-
-1. Open the script with nothing selected. No message box appears; the dialog shows
-   `Select the recorded session item(s) on a track.` and Transcribe is disabled.
-2. Select an item. The table becomes active without reopening the script.
-3. Transcribe. `<audio>_vo_report.csv` appears beside the audio file, and the Status
-   column populates.
-4. Close and reopen with the same item selected. Statuses return with no whisper run.
-5. Select a different recording that has its own sidecar. The table switches to it.
-6. Select both recordings at once. Both sidecars load and the statuses union.
-7. Drag the item along the timeline, then reopen. Spans still align with the audio.
-8. Re-record over the .wav so its size changes. An amber line names the file and
-   Cut is disabled; Re-transcribe clears it.
-9. Load a different script CSV. The mismatch line appears and Cut stays enabled.
-10. Press Re-transcribe. Whisper actually re-runs and the sidecar is rewritten.
-11. Cut. The summary appears inline; no message box takes focus.
-12. Make the audio directory read-only and transcribe. An inline warning names the
-    path and the session remains usable.
-
----
-
-## VO Overview
-
-Needs a project with **two** recordings that already have sidecars (finish the
-section above first), a script CSV covering both, and at least one script line
-that was never recorded.
-
-### Reading the session
-
-1. Open **ajsfx VO Overview**. One table lists both recordings' spans plus every
-   script line, regardless of what is selected in the arrange view.
-2. A line the script has but neither recording matched shows **Missing**.
-3. Audio that matched no script line shows **Orphan**, listed after everything else.
-4. The summary line counts *lines*, not takes: five takes of one line still reads
-   as one line delivered.
-5. Set the status filter to **Missing**. Only missing lines remain; the summary
-   does not change.
-6. Type part of a line's text into the search box. Rows filter as you type.
-
-### Navigating
-
-7. Click a row from the first recording. The edit cursor moves to it and the item
-   is selected. Click one from the second recording — same, on the other item.
-8. Click a Missing row. Nothing moves, the row is dimmed, and hovering explains why.
-9. A line with several takes shows sibling rows numbered `1/3`, `2/3`, `3/3`, with
-   the last carrying the Sel radio. Click Sel on take 1 — it moves, and take 3
-   clears.
-
-### Marking work
-
-10. Tick **OK** on a few rows. Select a row and press `Space` — it toggles.
-    Click into Notes, type a space — the row does *not* toggle.
-11. Type a note containing a comma and a quote. Close the window, reopen it: the
-    note is intact.
-12. Open `<project>_vo_tracker.csv` in Excel. It is legible, and holds only the
-    rows you actually marked.
-
-### Renaming
-
-13. Edit a Filename cell and press Enter. The take name changes in the arrange
-    view and an amber `*` appears on the row.
-14. `Ctrl+Z` once. The take name reverts — one edit is one undo step.
-15. Type a name of only illegal characters (`///`). An inline error appears and
-    nothing is renamed.
-
-### The acceptance test
-
-16. **Re-transcribe one of the two recordings in ScriptMatch.** Return to
-    Overview and press **Refresh**. Every verified mark, note and rename on that
-    recording is still there, and the other recording is untouched.
-17. **Cut** in ScriptMatch, then Refresh Overview. Row → item navigation still
-    lands correctly on the now-split items.
-18. Move the project and its audio to another folder, reopen, Refresh. The marks
-    are still found by basename.
-
-### Degrading safely
-
-19. Corrupt the tracker (delete its first line) and reopen. The window opens, an
-    inline error names the file, and **nothing is saved** until it is fixed —
-    confirm the file on disk is not overwritten.
-20. Corrupt one sidecar. The window opens, names that file inline, and the other
-    recording's rows still load.
-21. Open Overview in an unsaved project. It warns that marks cannot be saved and
-    otherwise works.
-
----
-
-## Overview: selection and Sort on timeline
-
-Use a project with **two** recordings, a matched script CSV, and audio already
-cut into one item per line.
-
-### Selection
-
-22. Click a row, then Ctrl-click two others. All three stay lit, and the three
-    matching items are selected in the arrange view. Shift-click a fourth row —
-    the whole range from the last-clicked row fills in.
-23. With several rows selected, change the status filter so some of them are
-    hidden. The hidden ones leave the selection; the count beside the **Sort**
-    button drops to match.
-24. Select a fifty-row range. The edit cursor moves once, to the row you clicked
-    — not once per row.
-
-### Sorting
-
-25. Select nothing. Set **Record order · Fixed gap · 2.00 s between items ·
-    60.00 s between recordings** and press **Sort**. Confirm: a new track named
-    `<source> sorted 1` appears **nested as a child under** the track the audio
-    came from, all the sorted items are on it, items sit 2 s apart end-to-start,
-    the two recordings are 60 s apart with the older file first, and a single
-    Ctrl+Z puts the tracks *and* the positions back together.
-26. Look at the tracks **below** the new folder. Their indent level did not
-    change — nesting the child must not re-indent the rest of the project.
-27. Sort again without undoing. A second set named `sorted 2` appears; the
-    `sorted 1` tracks are still sitting there untouched.
-28. **Crossfade two adjacent takes**, then Sort. The crossfade is still intact,
-    the pair moved together as one unit, and both landed on the same new track.
-29. Trim a word out of the middle of a take and crossfade the join; Sort. The
-    repair survives.
-30. **Group two items that sit on different tracks** (select both, `G`), then
-    Sort. Both moved by the same amount, they kept their spacing relative to
-    each other, and each landed on the child of *its own* source track — not
-    collapsed together onto one.
-31. Switch to **Script order**. The spacing droplist greys out, and hovering it
-    explains why. Sort — items now follow the CSV row order, and any orphan
-    (audio matching no script line) lands after the last sorted item.
-32. Back to **Record order · Original spacing**. Sort. The gaps from the original
-    recording return. If anything had to slide forward to avoid an overlap, the
-    status line says how many.
-33. Select six rows from the middle of one recording and Sort. Only those items
-    move; everything else stays where it was, on its original track.
-34. **Lock** one item and Sort. Its cluster is skipped and the status line
-    reports how many were left alone — in the normal colour, not red: the sort
-    still succeeded.
-35. Close and reopen the window. The order, spacing and both gap values are as
-    you left them.
-36. *(Windows without js_ReaScriptAPI only)* Sort by record order across two
-    recordings. The status line says file dates were unavailable and that the
-    ordering fell back to filename.
-37. Filter to one character, click one of its lines, then Shift-click a line of
-    the same character further down with **another character's lines in
-    between**. Only the rows between the two clicks are selected. Nothing
-    belonging to the other character lights up beyond that range — including
-    lines with no audio yet, which used to select as a block.
-38. Type a new name into **Item name** and press Enter. The item in the arrange
-    view shows the new name immediately, without clicking anything else. The
-    **CSV filename** beside it still shows the script's original name, greyed
-    and not editable. Hover it to see both names.
-39. Rename the same item in REAPER itself (F2 on the item). The Item name column
-    catches up within a second or two, without a Refresh.
-
----
-
-## Recording results
-
-Note anything that differs from the expectations above directly in
-[SPEC.md §10](SPEC.md#10-explicitly-unverified) — that section exists precisely to
-be converted from "unverified" into "verified, on this date" as these checks are
-completed.
 
 ## Overview — view settings (2026-08-01)
 
@@ -612,3 +432,12 @@ completed.
 5. Right-click Line text, turn Word wrap off. Transcript follows.
 6. Untick the mirror, change one column: the other no longer follows.
 7. Re-tick it, close and reopen the script: the two are still in step.
+
+---
+
+## Recording results
+
+Note anything that differs from the expectations above directly in
+[SPEC.md §10](SPEC.md#10-explicitly-unverified) — that section exists precisely to
+be converted from "unverified" into "verified, on this date" as these checks are
+completed.
