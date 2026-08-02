@@ -983,7 +983,27 @@ end
 --   each span then carries `snapped` = "silence" or "pad". With either absent
 --   this behaves exactly as it always did, which is why the fixed-pad tests
 --   still describe the truth.
-function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db)
+-- The last word to END at or before `t`, and the first to START at or after it.
+-- Words the caller passes are in the SAME time base as the spans.
+local function word_end_before(words, t)
+  local best
+  for _, w in ipairs(words or {}) do
+    local e = w.t1 or w.stop
+    if e and e <= t + 1e-9 and (not best or e > best) then best = e end
+  end
+  return best
+end
+
+local function word_start_after(words, t)
+  local best
+  for _, w in ipairs(words or {}) do
+    local s = w.t0 or w.start
+    if s and s >= t - 1e-9 and (not best or s < best) then best = s end
+  end
+  return best
+end
+
+function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
   local pre  = vo.Opt(cfg, "pre_pad")
   local post = vo.Opt(cfg, "post_pad")
   local snap = vo.Opt(cfg, "snap_boundaries") and probe and floor_db
@@ -992,15 +1012,23 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db)
 
   for i, s in ipairs(spans) do
     if snap then
-      -- The search window is bounded by the NEIGHBOURING WORD, not by the
-      -- neighbour's already-padded edge: raw boundaries are the only ones that
-      -- describe where audio actually is. This bound is what makes it
-      -- structurally impossible for a clip to contain a syllable of the next
-      -- line, whatever the amplitude does inside the window.
+      -- The search window is bounded by the neighbouring WORD -- every word the
+      -- transcript holds, not just the ones this cut selected. Bounding by the
+      -- neighbouring SPAN alone is not enough: a false start or an aside sitting
+      -- between two selected takes is audio that belongs to neither, and an edge
+      -- allowed to travel its full pad into it can swallow a syllable of it.
+      -- With the word bound in place that is structurally impossible, whatever
+      -- the amplitude does inside the window. Raw boundaries throughout: a
+      -- neighbour's already-padded edge describes a decision, not where audio is.
       local start_limit = s.raw_start - pre
       if spans[i - 1] then start_limit = math.max(start_limit, spans[i - 1].raw_stop) end
+      local wb = word_end_before(words, s.raw_start)
+      if wb then start_limit = math.max(start_limit, wb) end
+
       local stop_limit = s.raw_stop + post
       if spans[i + 1] then stop_limit = math.min(stop_limit, spans[i + 1].raw_start) end
+      local wa = word_start_after(words, s.raw_stop)
+      if wa then stop_limit = math.min(stop_limit, wa) end
 
       local a, how_a = vo.SnapBoundary(s.raw_start, start_limit, -1, floor_db, probe, cfg)
       local b, how_b = vo.SnapBoundary(s.raw_stop,  stop_limit,   1, floor_db, probe, cfg)

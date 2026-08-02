@@ -239,12 +239,20 @@ local function Reload()
   state.last_rescan = r.time_precise()
 end
 
+-- How long a gate verdict may stand without being re-checked against disk.
+local GATE_RECHECK = 2.0
+
 local function MaybeRescan()
+  local age   = r.time_precise() - state.last_rescan
   local count = r.GetProjectStateChangeCount(0)
-  if count == state.scanned_at then return end
-  if state.scanned_at ~= -1 and (r.time_precise() - state.last_rescan) < RELOAD_THROTTLE then
-    return
-  end
+
+  -- The staleness gate reads FILES, and re-transcribing in Sources rewrites a
+  -- transcript without touching anything REAPER counts. Watching the project
+  -- state alone, a green gate would stay green for as long as the window sat
+  -- open -- and Cut would apply the old word timings to re-recorded audio. So
+  -- the clock forces the re-check the counter never will.
+  if count == state.scanned_at and age < GATE_RECHECK then return end
+  if state.scanned_at ~= -1 and age < RELOAD_THROTTLE then return end
   Reload()
 end
 
@@ -321,6 +329,14 @@ local function DoCut()
     end
   end
 
+  -- Name BEFORE converting anything. vo.AssignNames sorts each asset's takes by
+  -- `start` to number them, and the conversion below only moves candidates into
+  -- project time -- naming after it would sort a group holding both bases
+  -- against each other and could hand _tk01 to the wrong take. Source time is
+  -- the one base every span is guaranteed to share. Padding does not affect a
+  -- name, so nothing is lost by doing this first.
+  vo.AssignNames(all_spans, cfg)
+
   -- Convert: resolve each candidate against the live item that plays it and
   -- move it into project time. A span no current item covers any more (the
   -- item was trimmed since transcription) is dropped and counted rather than
@@ -365,17 +381,24 @@ local function DoCut()
         if w.t1 >= covered.from and w.t0 <= covered.to then words[#words + 1] = w end
       end
 
-      local gaps = {}
-      for _, gp in ipairs(vo.InterWordGaps(words)) do
-        gaps[#gaps + 1] = {
-          from = vo.SourceTimeToProject(gp.from, g.info),
-          to   = vo.SourceTimeToProject(gp.to,   g.info),
+      -- Everything below works in PROJECT time, because that is what the probe
+      -- and the spans speak. Convert the words once, here, rather than at each
+      -- of the two places that consume them.
+      local proj_words = {}
+      for _, w in ipairs(words) do
+        proj_words[#proj_words + 1] = {
+          t0   = vo.SourceTimeToProject(w.t0, g.info),
+          t1   = vo.SourceTimeToProject(w.t1, g.info),
+          text = w.text,
         }
       end
-      local floor = vo.MeasureNoiseFloor(gaps, probe, cfg)
+
+      local floor = vo.MeasureNoiseFloor(vo.InterWordGaps(proj_words), probe, cfg)
+      -- proj_words again, as the boundary bound: an edge may not travel into a
+      -- word this cut did not select, not just one it did.
       vo.ApplyPadding(g.spans, cfg,
         { start = g.info.pos, stop = g.info.pos + g.info.length },
-        probe, floor)
+        probe, floor, proj_words)
     end)
     destroy()   -- ALWAYS, including on the error path: the accessor holds the file open
     if not ok then error(err) end
@@ -384,10 +407,6 @@ local function DoCut()
       if s.snapped == "pad" then pad_fallbacks = pad_fallbacks + 1 end
     end
   end
-
-  -- Name: the union of every source's spans, so two takes of one line
-  -- recorded in two sessions number as takes 1 and 2 rather than 1 and 1.
-  vo.AssignNames(all_spans, cfg)
 
   -- Collide: a delivered name held by spans from more than one source path
   -- gets per-source destination tracks instead of overwriting one source's

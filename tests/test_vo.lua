@@ -989,6 +989,51 @@ test("a boundary never crosses into the neighbouring take's audio", function()
   assert(spans[1].stop <= spans[2].start + 1e-9, "spans overlap after snapping")
 end)
 
+-- The span list only holds what this cut selected. A false start or an aside
+-- between two selected takes is audio that belongs to neither, and the words
+-- are the only record that it is there at all.
+test("a boundary stops at a word no span selected", function()
+  local spans = { pad_span(2.0, 3.0) }
+  local words = {
+    { t0 = 2.0, t1 = 3.0, text = "chosen" },
+    { t0 = 3.2, t1 = 3.6, text = "aside" },   -- not in the span list
+  }
+  vo.ApplyPadding(spans, { pre_pad = 1.0, post_pad = 1.0, snap_min_silence = 0.02 },
+                  nil, function() return -80 end, -60, words)
+  assert(spans[1].stop <= 3.2 + 1e-9,
+    "the edge travelled into an unselected word: " .. spans[1].stop)
+end)
+
+test("a word behind the span bounds the start the same way", function()
+  local spans = { pad_span(2.0, 3.0) }
+  local words = {
+    { t0 = 1.2, t1 = 1.7, text = "before" },
+    { t0 = 2.0, t1 = 3.0, text = "chosen" },
+  }
+  vo.ApplyPadding(spans, { pre_pad = 1.0, post_pad = 1.0, snap_min_silence = 0.02 },
+                  nil, function() return -80 end, -60, words)
+  assert(spans[1].start >= 1.7 - 1e-9,
+    "the edge travelled back over an unselected word: " .. spans[1].start)
+end)
+
+test("the span's own words do not bound its edges", function()
+  -- A word list always contains the span's own words; if those bounded it, no
+  -- edge could ever move at all.
+  local spans = { pad_span(2.0, 3.0) }
+  local words = { { t0 = 2.0, t1 = 3.0, text = "chosen" } }
+  vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.02 },
+                  nil, function() return -80 end, -60, words)
+  assert(spans[1].start < 2.0, "start did not move: " .. spans[1].start)
+  assert(spans[1].stop  > 3.0, "stop did not move: " .. spans[1].stop)
+end)
+
+test("without words the pad is still the only limit", function()
+  local spans = { pad_span(2.0, 3.0) }
+  vo.ApplyPadding(spans, { pre_pad = 0.4, post_pad = 0.4, snap_min_silence = 0.02 },
+                  nil, function() return -80 end, -60)
+  assert(near(spans[1].start, 1.98), "start: " .. spans[1].start)
+end)
+
 test("no silence found is reported as pad, not silence", function()
   local spans = { pad_span(2.0, 3.0) }
   vo.ApplyPadding(spans, { pre_pad = 0.2, post_pad = 0.2, snap_min_silence = 0.05 },
