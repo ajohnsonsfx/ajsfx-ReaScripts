@@ -638,6 +638,106 @@ test("candidates below the review floor are discarded", function()
   assert(#spans == 0, "Expected 0 spans, got " .. #spans)
 end)
 
+test("a long match beats a short one of equal score and margin", function()
+  -- Without this a one-word line scoring a perfect 1.0 outranks the twelve-word
+  -- line whose audio it sits inside, and takes the audio with it.
+  local spans = vo.SelectSpans({ cand(4, 4, 1.0, 1.0, "WORD"),
+                                 cand(1, 9, 1.0, 1.0, "LINE") }, {})
+  assert(#spans == 1, "Expected 1 span, got " .. #spans)
+  assert(spans[1].asset == "LINE", "Wrong winner: " .. spans[1].asset)
+end)
+
+--------------------------------
+-- Read order: BuildBackbone, OrderConsistency
+--------------------------------
+print("\nRead order:")
+
+local function ocand(i0, i1, line_idx, score, margin)
+  local c = cand(i0, i1, score or 1.0, margin or 1.0, "L" .. line_idx)
+  c.line_idx = line_idx
+  return c
+end
+
+test("only long, confident, unambiguous matches define the order", function()
+  local short_ = ocand(1, 2, 1, 1.0)          -- 2 tokens: too short to trust
+  local unsure = ocand(10, 20, 2, 0.60)       -- below the accept threshold
+  local thin   = ocand(30, 40, 3, 1.0, 0.01)  -- a rival line scored almost as well
+  local good   = ocand(50, 60, 4, 1.0)
+  local bone = vo.BuildBackbone({ short_, unsure, thin, good }, {})
+  assert(#bone == 1, "Expected 1 backbone entry, got " .. #bone)
+  assert(bone[1] == good, "the wrong candidate was trusted")
+  assert(good.backbone == true, "the backbone entry was not marked")
+end)
+
+test("a line read out of sequence does not get to define the sequence", function()
+  -- Four trustworthy matches, one of which is a pickup of line 90 dropped in
+  -- the middle. The longest run that reads in order is the other three.
+  local a, pickup, b, c = ocand(1, 10, 1), ocand(20, 30, 90), ocand(40, 50, 2), ocand(60, 70, 3)
+  local bone = vo.BuildBackbone({ a, pickup, b, c }, {})
+  assert(#bone == 3, "Expected 3 backbone entries, got " .. #bone)
+  assert(bone[1] == a and bone[2] == b and bone[3] == c, "wrong run kept")
+  assert(pickup.backbone ~= true, "the out-of-order pickup was trusted")
+end)
+
+test("two takes of one line are in order, not out of it", function()
+  local a, take1, take2 = ocand(1, 10, 1), ocand(20, 30, 2), ocand(40, 50, 2)
+  local bone = vo.BuildBackbone({ a, take1, take2 }, {})
+  assert(#bone == 3, "a retake broke the run: " .. #bone)
+end)
+
+test("a candidate between its neighbours reads in sequence", function()
+  local bone = { ocand(1, 10, 10), ocand(40, 50, 20) }
+  assert(vo.OrderConsistency(ocand(20, 21, 15), bone) == true, "in-sequence rejected")
+  assert(vo.OrderConsistency(ocand(20, 21, 10), bone) == true, "a retake was rejected")
+  assert(vo.OrderConsistency(ocand(20, 21, 5),  bone) == false, "too early accepted")
+  assert(vo.OrderConsistency(ocand(20, 21, 90), bone) == false, "too late accepted")
+end)
+
+test("with no backbone near it, order says nothing either way", function()
+  assert(vo.OrderConsistency(ocand(1, 2, 5), {}) == nil, "an empty backbone judged")
+  local self_ = ocand(1, 10, 3)
+  assert(vo.OrderConsistency(self_, { self_ }) == nil, "a candidate judged against itself")
+end)
+
+test("a perfect match in the wrong place is flagged, never asserted", function()
+  -- The reported failure: a script line that is only "You." scores 1.0 against
+  -- every "you" in the read. The one in the wrong place must not be named.
+  local bone   = { ocand(1, 10, 10), ocand(40, 50, 20) }
+  local stray  = ocand(20, 20, 3, 1.0)   -- line 3, spoken between lines 10 and 20
+  local proper = ocand(25, 25, 15, 1.0)
+  local spans  = vo.SelectSpans({ bone[1], bone[2], stray, proper }, {}, bone)
+  local kinds = {}
+  for _, s in ipairs(spans) do kinds[s.asset] = s.kind end
+  assert(kinds.L3 == "review", "the stray match was not flagged: " .. tostring(kinds.L3))
+  assert(kinds.L15 == "match", "the properly placed match was demoted: " .. tostring(kinds.L15))
+end)
+
+test("reading in order is never enough on its own to assert a weak match", function()
+  -- Position is not evidence about the words. A 0.67 line stays in review.
+  local bone  = { ocand(1, 10, 10), ocand(40, 50, 20) }
+  local weak  = ocand(20, 26, 15, 0.67)
+  local spans = vo.SelectSpans({ weak }, {}, bone)
+  assert(#spans == 1 and spans[1].kind == "review",
+    "a weak match was promoted by its position: " .. tostring(spans[1] and spans[1].kind))
+end)
+
+test("a long line read out of order keeps its confidence", function()
+  -- Pickups, ADR and per-character passes are all recorded out of script order.
+  -- A line long enough to identify itself is not made wrong by where it fell.
+  local bone   = { ocand(1, 10, 10), ocand(40, 50, 20) }
+  local pickup = ocand(20, 27, 3, 1.0)   -- 8 tokens, line 3, spoken far too late
+  local spans  = vo.SelectSpans({ pickup }, {}, bone)
+  assert(spans[1].kind == "match", "a long pickup was demoted: " .. spans[1].kind)
+  assert(spans[1].in_sequence == nil, "order was judged on a line that can identify itself")
+end)
+
+test("without a backbone nothing is judged on order at all", function()
+  local stray = ocand(20, 20, 3, 1.0)
+  local spans = vo.SelectSpans({ stray }, {}, nil)
+  assert(spans[1].kind == "match", "order was applied with no backbone")
+  assert(spans[1].in_sequence == nil, "in_sequence set with no backbone")
+end)
+
 test("spans are returned in chronological order", function()
   local spans = vo.SelectSpans({ cand(5, 7, 0.9), cand(1, 3, 0.95) }, {})
   assert(spans[1].i0 == 1 and spans[2].i0 == 5, "Not chronological")

@@ -566,6 +566,12 @@ vo.DEFAULTS = {
   margin_threshold = 0.05,  -- lead over the runner-up line needed to be confident
   anchor_count     = 3,     -- rarest tokens per line used to propose candidates
   window_slack     = 0.30,  -- window lengths tried around the script line length
+
+  -- Sequence. A session is read roughly in script order, and that is the only
+  -- evidence there is for placing a line too short to identify itself.
+  order_weight         = 0.15,  -- score moved by reading in, or out of, order
+  backbone_min_tokens  = 4,     -- shortest line trusted to establish the order
+
   pre_pad          = 0.150, -- seconds of head room before the first aligned word
   post_pad         = 0.250, -- seconds of tail after the last aligned word
 
@@ -830,23 +836,153 @@ function vo.FindCandidates(word_tokens, lines, index, cfg)
   return candidates
 end
 
--- Greedy interval scheduling over scored candidates: best score first, ties
--- broken by the wider margin, skipping anything overlapping an accepted span.
+-- The spine of the read: the matches that cannot be coincidences, in the order
+-- they were spoken.
+--
+-- Scoring each line on its own is blind to sequence, and that is fatal for short
+-- lines. A script line that is just "You." scores a perfect 1.0 against every
+-- one of the hundreds of times the actor says "you" in the middle of some other
+-- line -- and, being perfect, it wins the greedy selection and blocks the line
+-- that word really belonged to. Nothing in the line itself can resolve that.
+-- Where it sits in the read can: a session is performed roughly in script order,
+-- so the "You." that belongs to script line 42 is the one between the matches
+-- for 41 and 43.
+--
+-- Only long, confident, unambiguous matches are trusted to define that order --
+-- they are the ones no accident can produce. The result is then reduced to its
+-- longest non-decreasing run of line indices, because a line genuinely read out
+-- of sequence is a real thing but must not be allowed to define the sequence:
+-- every line after it would be judged against it.
+-- Returns: candidates in stream order, each also marked `.backbone = true`.
+function vo.BuildBackbone(candidates, cfg)
+  local min_tokens = vo.Opt(cfg, "backbone_min_tokens")
+  local accept     = vo.Opt(cfg, "accept_threshold")
+  local margin     = vo.Opt(cfg, "margin_threshold")
+
+  local pool = {}
+  for _, c in ipairs(candidates or {}) do
+    if (c.i1 - c.i0 + 1) >= min_tokens
+       and c.score >= accept and (c.margin or 1.0) >= margin then
+      pool[#pool + 1] = c
+    end
+  end
+  table.sort(pool, function(a, b)
+    if a.score ~= b.score then return a.score > b.score end
+    local la, lb = a.i1 - a.i0, b.i1 - b.i0
+    if la ~= lb then return la > lb end
+    return a.i0 < b.i0
+  end)
+
+  local kept = {}
+  for _, c in ipairs(pool) do
+    local clash = false
+    for _, s in ipairs(kept) do
+      if c.i0 <= s.i1 and s.i0 <= c.i1 then clash = true break end
+    end
+    if not clash then kept[#kept + 1] = c end
+  end
+  table.sort(kept, function(a, b) return a.i0 < b.i0 end)
+
+  -- Longest non-decreasing subsequence of line indices. Non-DEcreasing rather
+  -- than increasing: a retake repeats a line index, and two takes of one line
+  -- are in order, not out of it.
+  local n = #kept
+  local len, prev, best_i, best_len = {}, {}, nil, 0
+  for i = 1, n do
+    len[i] = 1
+    for j = 1, i - 1 do
+      if kept[j].line_idx <= kept[i].line_idx and len[j] + 1 > len[i] then
+        len[i], prev[i] = len[j] + 1, j
+      end
+    end
+    if len[i] > best_len then best_len, best_i = len[i], i end
+  end
+
+  local seq, k = {}, best_i
+  while k do
+    table.insert(seq, 1, kept[k])
+    k = prev[k]
+  end
+  for _, c in ipairs(seq) do c.backbone = true end
+  return seq
+end
+
+-- Whether a candidate sits where the read says it should.
+-- true  the line index fits between the backbone matches either side of it
+-- false it contradicts one of them
+-- nil   there is no backbone evidence near it, so order says nothing
+function vo.OrderConsistency(c, backbone)
+  local before, after
+  for _, b in ipairs(backbone or {}) do
+    if b ~= c then
+      if b.i1 < c.i0 then before = b
+      elseif b.i0 > c.i1 and not after then after = b end
+    end
+  end
+  if not (before or after) then return nil end
+  -- Strict: equality is a retake of the same line, which is in order.
+  if before and c.line_idx < before.line_idx then return false end
+  if after  and c.line_idx > after.line_idx  then return false end
+  return true
+end
+
+-- Greedy interval scheduling over scored candidates: the backbone first, then
+-- best score, ties broken by the wider margin and then by length, skipping
+-- anything overlapping an accepted span.
+--
+-- Order evidence is applied narrowly and in one direction only.
+--
+-- One direction: it can cost a candidate `order_weight` and its confidence, but
+-- never add either. Sitting in the right place says nothing about whether the
+-- words were right, and a weak text match promoted to confident by its position
+-- is exactly the silent mis-name the review pass exists to prevent.
+--
+-- Narrowly: only against candidates too short to identify themselves. A line of
+-- five distinct words matched perfectly is not made wrong by being read out of
+-- order -- sessions are recorded out of order all the time, and pickups, ADR and
+-- per-character passes must all still match. A line of one or two words is the
+-- opposite case: it matches everywhere that word occurs, so its position in the
+-- read is the ONLY thing that can say which occurrence is the right one.
+--
+-- Nothing is ever dropped for reading out of order; the worst that happens is
+-- review, which is a person looking at it.
 -- Returns: chronologically ordered spans, each with a `kind`.
-function vo.SelectSpans(candidates, cfg)
+function vo.SelectSpans(candidates, cfg, backbone)
+  local weight     = vo.Opt(cfg, "order_weight")
+  local min_tokens = vo.Opt(cfg, "backbone_min_tokens")
+
   local ordered = {}
-  for i, c in ipairs(candidates) do ordered[i] = c end
+  for i, c in ipairs(candidates) do
+    ordered[i] = c
+    -- Not `backbone and ... or nil`: false is a verdict here, and that idiom
+    -- would quietly turn "out of order" into "no evidence".
+    if backbone and (c.i1 - c.i0 + 1) < min_tokens then
+      c.in_sequence = vo.OrderConsistency(c, backbone)
+    end
+    c.effective = (c.in_sequence == false)
+      and math.max(0.0, c.score - weight) or c.score
+  end
 
   table.sort(ordered, function(a, b)
-    if a.score ~= b.score then return a.score > b.score end
+    local ba, bb = a.backbone or false, b.backbone or false
+    if ba ~= bb then return ba end
+    if a.effective ~= b.effective then return a.effective > b.effective end
     local ma, mb = a.margin or 1.0, b.margin or 1.0
     if ma ~= mb then return ma > mb end
+    -- A twelve-word match and a one-word match scoring the same are not equal
+    -- evidence: only one of them could be an accident.
+    local la, lb = a.i1 - a.i0, b.i1 - b.i0
+    if la ~= lb then return la > lb end
     return a.i0 < b.i0
   end)
 
   local chosen = {}
   for _, c in ipairs(ordered) do
-    local kind = vo.Classify(c.score, c.margin or 1.0, cfg)
+    local kind = vo.Classify(c.effective, c.margin or 1.0, cfg)
+    -- Contradicting the read costs a short line its confidence however well it
+    -- scored: a perfect match for a one-word line is perfect wherever that word
+    -- happens to fall.
+    if kind == "match" and c.in_sequence == false then kind = "review" end
     if kind then
       local overlaps = false
       for _, s in ipairs(chosen) do
@@ -1491,7 +1627,9 @@ function vo.BuildMatch(transcripts, lines, cfg)
   for _, t in ipairs(transcripts or {}) do
     local tokens     = vo.BuildWordTokens(t.words, cfg)
     local candidates = vo.FindCandidates(tokens, lines, index, cfg)
-    local spans      = vo.SelectSpans(candidates, cfg)
+    -- Per source file, because that is the unit a read is performed in.
+    local backbone   = vo.BuildBackbone(candidates, cfg)
+    local spans      = vo.SelectSpans(candidates, cfg, backbone)
     local gaps       = vo.FindGaps(tokens, spans)
 
     local plan = {}
@@ -2134,6 +2272,10 @@ function vo.BuildOverview(input)
       line_text     = line and line.text or nil,
       transcript    = s.transcript,
       score         = s.score,
+      -- false when this match contradicts the order the rest of the read was in;
+      -- nil when order had nothing to say about it. The table explains a review
+      -- with it, since a 100% score in review is otherwise baffling.
+      in_sequence   = s.in_sequence,
       source_path   = rec.source_path,
       source_start  = s.start,
       source_stop   = s.stop,
@@ -2618,6 +2760,8 @@ vo.CONFIG_SCHEMA = {
   { key = "review_floor",       kind = "number", default = vo.DEFAULTS.review_floor },
   { key = "margin_threshold",   kind = "number", default = vo.DEFAULTS.margin_threshold },
   { key = "anchor_count",       kind = "number", default = vo.DEFAULTS.anchor_count },
+  { key = "order_weight",        kind = "number", default = vo.DEFAULTS.order_weight },
+  { key = "backbone_min_tokens", kind = "number", default = vo.DEFAULTS.backbone_min_tokens },
   { key = "pre_pad",            kind = "number", default = vo.DEFAULTS.pre_pad },
   { key = "post_pad",           kind = "number", default = vo.DEFAULTS.post_pad },
 

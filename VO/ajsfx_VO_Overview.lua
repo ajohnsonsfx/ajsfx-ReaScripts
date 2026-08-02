@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.12
--- @changelog The VO tools are now three windows instead of one. "ajsfx VO Sources" lists every recorded file in the project and whether it has been transcribed; double-click a file to read its transcript, hear where each word sits, and re-transcribe just that file. "ajsfx VO Overview" is now the front door: it derives the match from the stored transcripts every time, so swapping the script CSV re-matches instantly with no re-transcription, and a new Select column records which take you are delivering. "ajsfx VO Cut" does the cutting, and it now places clip edges by looking for silence in the gap between the words either side, so an edge can never contain a syllable of the neighbouring line; the old fixed 150/250 ms pads become the furthest an edge may travel and the noise floor is measured from the recording rather than assumed. Transcription is now stored per wav file as word-level timings in "<audio>_vo_transcript.csv", so copying a recording and its sidecar to another project carries the transcription with it. Your selects, verified marks, notes and renames live in "<project>_vo.csv" beside the project. Transcription no longer conditions each window on the text it just decoded, which on a long read could lock the transcriber into repeating one phrase for the rest of the file; if an existing transcript contains such a loop, "ajsfx VO Sources" now flags it and says where it starts. NOTE: this replaces "ajsfx VO ScriptMatch", which has been removed — reinstall from ReaPack, and re-transcribe your recordings, as the old report files are not read.
+-- @changelog The VO tools are now three windows instead of one. "ajsfx VO Sources" lists every recorded file in the project and whether it has been transcribed; double-click a file to read its transcript, hear where each word sits, and re-transcribe just that file. "ajsfx VO Overview" is now the front door: it derives the match from the stored transcripts every time, so swapping the script CSV re-matches instantly with no re-transcription, and a new Select column records which take you are delivering. "ajsfx VO Cut" does the cutting, and it now places clip edges by looking for silence in the gap between the words either side, so an edge can never contain a syllable of the neighbouring line; the old fixed 150/250 ms pads become the furthest an edge may travel and the noise floor is measured from the recording rather than assumed. Transcription is now stored per wav file as word-level timings in "<audio>_vo_transcript.csv", so copying a recording and its sidecar to another project carries the transcription with it. Your selects, verified marks, notes and renames live in "<project>_vo.csv" beside the project. Transcription no longer conditions each window on the text it just decoded, which on a long read could lock the transcriber into repeating one phrase for the rest of the file; if an existing transcript contains such a loop, "ajsfx VO Sources" now flags it and says where it starts. Every column in Overview now sorts on a header click and filters from a box under the header, there is a new "#" column carrying each line's position in the script, and spacebar is REAPER's again -- it starts the transport instead of ticking the selected row. Matching now weighs where a line falls in the read: a line too short to identify itself -- one that is just "You." matches every "you" in the recording -- is sent to review when it contradicts the order the rest of the read was in, rather than being named on the strength of one word. NOTE: this replaces "ajsfx VO ScriptMatch", which has been removed — reinstall from ReaPack, and re-transcribe your recordings, as the old report files are not read.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -1874,7 +1874,14 @@ local function DrawTableBody()
     if row.score and row.status == "review" then
       CellText(row, "transcript", 9, row_h, row.transcript, 0xDDAA33FF)
       if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, string.format("Match confidence %.0f%%.", row.score * 100))
+        local why = string.format("Match confidence %.0f%%.", row.score * 100)
+        if row.in_sequence == false then
+          why = why .. "\n\nBut it does not sit where the rest of the read says\n" ..
+                       "this line should be. A line this short matches wherever\n" ..
+                       "its words happen to fall, so its position is the only\n" ..
+                       "evidence there is."
+        end
+        im.SetTooltip(ctx, why)
       end
     else
       CellText(row, "transcript", 9, row_h, row.transcript, "disabled")

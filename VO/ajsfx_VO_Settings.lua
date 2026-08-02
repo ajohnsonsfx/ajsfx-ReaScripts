@@ -332,6 +332,25 @@ local function DrawMatching()
   im.TextDisabled(ctx, "Score is textual agreement with the script — never a\n" ..
                        "judgement of the performance. Margin is the lead over the\n" ..
                        "next-best script line, which catches near-duplicate lines.")
+
+  im.Spacing(ctx)
+  im.Separator(ctx)
+  im.Text(ctx, "Read order")
+  changed, cfg.backbone_min_tokens = im.InputInt(ctx, "Short line is under",
+                                                 cfg.backbone_min_tokens)
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Lines with fewer words than this cannot identify themselves —\n" ..
+                       "a line that is just \"You.\" matches every \"you\" in the read.\n" ..
+                       "Only these are judged on where they fall.")
+  end
+  changed, cfg.order_weight = im.InputDouble(ctx, "Out-of-order penalty",
+                                             cfg.order_weight, 0.01, 0.05, "%.2f")
+  im.Spacing(ctx)
+  im.TextDisabled(ctx, "A session is read roughly in script order, so a short line's\n" ..
+                       "position says which of its many possible matches is the real\n" ..
+                       "one. A short line that contradicts the order is sent to review,\n" ..
+                       "never dropped and never silently named. Longer lines are left\n" ..
+                       "alone: pickups and per-character passes are normal.")
 end
 
 local PAD_TOOLTIP =
