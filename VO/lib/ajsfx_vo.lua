@@ -918,15 +918,25 @@ end
 -- dBFS would call every sample silent and snap every boundary to its limit.
 function vo.MeasureNoiseFloor(gaps, probe, cfg)
   if not probe then return nil end
-  local window = vo.Opt(cfg, "snap_floor_window")
+  local window  = vo.Opt(cfg, "snap_floor_window")
+  local minimum = vo.Opt(cfg, "snap_min_silence")
   local quietest = nil
+
   for _, g in ipairs(gaps or {}) do
-    if (g.to - g.from) >= window then
+    local span = g.to - g.from
+    -- Measure over as much of the gap as there is, up to the configured window
+    -- -- NOT only over gaps long enough to fill it. Requiring a full window
+    -- meant a recording whose pauses all fell just short of it yielded no floor
+    -- at all, and snapping silently degraded to fixed pads for the whole file.
+    -- Ordinary speech has most of its gaps well under half a second.
+    if span >= minimum then
+      local w   = math.min(window, span)
       local mid = (g.from + g.to) / 2
-      local db  = probe(mid - window / 2, mid + window / 2)
+      local db  = probe(mid - w / 2, mid + w / 2)
       if db and (not quietest or db < quietest) then quietest = db end
     end
   end
+
   if not quietest then return nil end
   return quietest + vo.Opt(cfg, "snap_floor_offset")
 end

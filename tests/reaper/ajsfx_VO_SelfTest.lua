@@ -278,6 +278,10 @@ test("an edge stops at a word the cut did not select", function()
   -- The second burst stands in for a false start nobody ticked: it is in the
   -- word list but not in the span list, and the edge must still respect it.
   local floor = vo.MeasureNoiseFloor(vo.InterWordGaps(words), probe, cfg)
+  -- The word bound belongs to the snapping path; with no floor there is nothing
+  -- to assert here, and a cascade from the floor test would read as a second,
+  -- separate failure.
+  if not floor then error("no floor measured — see the MeasureNoiseFloor failure") end
   local greedy = vo.ShallowCopy(cfg)
   greedy.pre_pad, greedy.post_pad = 1.0, 1.0   -- enough rope to reach it
   local spans = { { start = BURSTS[1][1], stop = BURSTS[1][2], kind = "match" } }
@@ -325,14 +329,27 @@ test("a fresh transcript reads as current", function()
 end)
 
 test("rewriting the audio at the same length reads as stale", function()
-  -- The case a size check alone cannot catch. Same bytes on disk, different
-  -- audio: only the fingerprint sees it.
-  local f = io.open(wav_path, "r+b")
+  -- The case a size check alone cannot catch: same byte count, different audio.
+  -- Done on a COPY, because the fixture itself is open in the project and
+  -- Windows will not hand out a write handle to a file REAPER is playing.
+  local copy = scratch .. "/ajsfx_vo_selftest_copy.wav"
+  local src = assert(io.open(wav_path, "rb"))
+  local bytes = src:read("a"); src:close()
+  local dst = assert(io.open(copy, "wb")); dst:write(bytes); dst:close()
+
+  local ok, why = vo.WriteTranscript(copy, words, vo.TranscriptMeta(copy))
+  if not ok then error("write failed: " .. tostring(why)) end
+  if vo.TranscriptState(copy) ~= "yes" then error("the copy did not start current") end
+
+  local f, err = io.open(copy, "r+b")
+  if not f then error("cannot reopen the copy: " .. tostring(err)) end
   f:seek("set", 44)                       -- past the header, into the samples
   f:write(string.rep("\0", 2048))
   f:close()
 
-  local state = vo.TranscriptState(wav_path)
+  local state = vo.TranscriptState(copy)
+  os.remove(vo.TranscriptPath(copy))
+  os.remove(copy)
   if state ~= "stale" then error("expected stale, got " .. tostring(state)) end
 end)
 

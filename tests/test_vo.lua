@@ -789,11 +789,35 @@ test("the floor is the quietest measurable gap plus the offset", function()
   assert(floor and math.abs(floor - (-64.0)) < 1e-9, "Floor: " .. tostring(floor))
 end)
 
-test("gaps shorter than the window are ignored", function()
+test("a gap shorter than snap_min_silence is ignored", function()
   local floor = vo.MeasureNoiseFloor({ { from = 0, to = 0.01 } },
                                      function() return -70 end,
-                                     { snap_floor_window = 0.5 })
+                                     { snap_floor_window = 0.5, snap_min_silence = 0.06 })
   assert(floor == nil, "Expected nil, got " .. tostring(floor))
+end)
+
+-- Ordinary speech has most of its pauses well under half a second. Requiring a
+-- gap long enough to fill the whole window meant a file whose pauses all fell
+-- just short of it measured no floor at all, and snapping quietly turned itself
+-- off for that file. A REAPER run caught this; the mock never could.
+test("a gap shorter than the window is still measured, over what there is", function()
+  local seen = {}
+  local probe = function(t0, t1) seen[#seen + 1] = t1 - t0; return -70 end
+  local floor = vo.MeasureNoiseFloor({ { from = 1.0, to = 1.2 } }, probe,
+                                     { snap_floor_window = 0.5, snap_min_silence = 0.06,
+                                       snap_floor_offset = 6.0 })
+  assert(floor and math.abs(floor - (-64.0)) < 1e-9, "Floor: " .. tostring(floor))
+  assert(#seen == 1 and math.abs(seen[1] - 0.2) < 1e-9,
+    "should measure the gap's own width: " .. tostring(seen[1]))
+end)
+
+test("a gap longer than the window is measured over the window only", function()
+  local seen = {}
+  local probe = function(t0, t1) seen[#seen + 1] = t1 - t0; return -70 end
+  vo.MeasureNoiseFloor({ { from = 0, to = 4 } }, probe,
+                       { snap_floor_window = 0.5, snap_min_silence = 0.06 })
+  assert(#seen == 1 and math.abs(seen[1] - 0.5) < 1e-9,
+    "should cap at the window: " .. tostring(seen[1]))
 end)
 
 test("no probe means no floor", function()
