@@ -1004,6 +1004,110 @@ function vo.SelectSpans(candidates, cfg, backbone)
   return chosen
 end
 
+-- Every distinct place one script line could sit in one transcript, best first.
+--
+-- Deliberately NOT the matcher. The matcher has to choose one placement and
+-- live with it; this shows the ones it passed over -- including the ones it
+-- scored too low to consider at all -- so a person can go and listen to them.
+-- It decides nothing, changes nothing and is stored nowhere.
+--
+-- More of the line's words propose windows than the matcher uses: the matcher
+-- can afford to miss a placement because another of its anchors will find it,
+-- and a search cannot. Not ALL of them, though -- the commonest words of a long
+-- line would propose a near-identical window at every "the" in the recording.
+--
+-- The whole `lines` set is needed, not just the one being searched for: which of
+-- a line's words are rare enough to anchor on is a fact about the script, and a
+-- line indexed by itself has no rare words at all.
+--
+-- `opts.words`, when given, is the raw word list the tokens were built from, so
+-- the text shown back is what was actually said rather than the normalised form
+-- matching works on.
+-- Returns: { { i0, i1, start, stop, score, text, before, after }, ... }
+function vo.FindLineCandidates(lines, line_idx, word_tokens, cfg, opts)
+  opts = opts or {}
+  local line = lines and lines[line_idx]
+  if not line or not word_tokens or #word_tokens == 0 then return {} end
+
+  local sub = {}
+  for k, v in pairs(cfg or {}) do sub[k] = v end
+  sub.anchor_count = math.max(vo.Opt(cfg, "anchor_count") or 3, 8)
+  -- Below the review floor on purpose. A placement the matcher was right to
+  -- reject is still the answer to "where did this line go?".
+  sub.review_floor = opts.floor or 0.25
+
+  local full = vo.BuildIndex(lines, sub)
+  -- Every other line's postings are dropped rather than filtered afterwards:
+  -- they would propose windows only to have them thrown away.
+  local index = {
+    n = full.n, idf = full.idf, tokens = full.tokens, anchors = full.anchors,
+    postings = {},
+  }
+  for token, list in pairs(full.postings) do
+    local mine = {}
+    for _, p in ipairs(list) do
+      if p.line == line_idx then mine[#mine + 1] = p end
+    end
+    if #mine > 0 then index.postings[token] = mine end
+  end
+
+  local found = vo.FindCandidates(word_tokens, lines, index, sub)
+
+  table.sort(found, function(a, b)
+    if a.score ~= b.score then return a.score > b.score end
+    return a.i0 < b.i0
+  end)
+
+  -- Places, not scoring variants: several anchors of one line propose windows a
+  -- token or two apart, and listing them all would bury the distinct placements.
+  local kept = {}
+  for _, c in ipairs(found) do
+    local clash = false
+    for _, k in ipairs(kept) do
+      if c.i0 <= k.i1 and k.i0 <= c.i1 then clash = true break end
+    end
+    if not clash then
+      kept[#kept + 1] = c
+      if #kept >= (opts.limit or 12) then break end
+    end
+  end
+
+  local raw   = opts.words
+  local ctx_n = opts.context or 6
+  -- Read back over the RAW words the token range covers, not over the tokens.
+  -- Normalising drops words -- and one word can expand into several tokens --
+  -- so reading the tokens back gives text with holes in it, which is no use to
+  -- someone trying to recognise a moment in a recording.
+  local function say(a, b)
+    a, b = math.max(1, a), math.min(#word_tokens, b)
+    if a > b then return "" end
+    local out = {}
+    if raw and word_tokens[a].word and word_tokens[b].word then
+      for k = word_tokens[a].word, word_tokens[b].word do
+        if raw[k] then out[#out + 1] = raw[k].text end
+      end
+    else
+      for k = a, b do out[#out + 1] = word_tokens[k].text end
+    end
+    return table.concat(out, " ")
+  end
+
+  local out = {}
+  for _, c in ipairs(kept) do
+    out[#out + 1] = {
+      i0     = c.i0,
+      i1     = c.i1,
+      start  = c.start,
+      stop   = c.stop,
+      score  = c.score,
+      text   = say(c.i0, c.i1),
+      before = say(c.i0 - ctx_n, c.i0 - 1),
+      after  = say(c.i1 + 1, c.i1 + ctx_n),
+    }
+  end
+  return out
+end
+
 -- Any run of tokens no span consumed becomes an unmatched span.
 -- Slates, false starts and chatter land here without being modelled explicitly.
 function vo.FindGaps(word_tokens, spans)

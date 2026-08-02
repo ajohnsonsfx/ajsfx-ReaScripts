@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.12
--- @changelog The VO tools are now three windows instead of one. "ajsfx VO Sources" lists every recorded file in the project and whether it has been transcribed; double-click a file to read its transcript, hear where each word sits, and re-transcribe just that file. "ajsfx VO Overview" is now the front door: it derives the match from the stored transcripts every time, so swapping the script CSV re-matches instantly with no re-transcription, and a new Select column records which take you are delivering. "ajsfx VO Cut" does the cutting, and it now places clip edges by looking for silence in the gap between the words either side, so an edge can never contain a syllable of the neighbouring line; the old fixed 150/250 ms pads become the furthest an edge may travel and the noise floor is measured from the recording rather than assumed. Transcription is now stored per wav file as word-level timings in "<audio>_vo_transcript.csv", so copying a recording and its sidecar to another project carries the transcription with it. Your selects, verified marks, notes and renames live in "<project>_vo.csv" beside the project. Transcription no longer conditions each window on the text it just decoded, which on a long read could lock the transcriber into repeating one phrase for the rest of the file; if an existing transcript contains such a loop, "ajsfx VO Sources" now flags it and says where it starts. Every column in Overview now sorts on a header click and filters from a box under the header, there is a new "#" column carrying each line's position in the script, and spacebar is REAPER's again -- it starts the transport instead of ticking the selected row. Matching now weighs where a line falls in the read: a line too short to identify itself -- one that is just "You." matches every "you" in the recording -- is sent to review when it contradicts the order the rest of the read was in, rather than being named on the strength of one word. NOTE: this replaces "ajsfx VO ScriptMatch", which has been removed — reinstall from ReaPack, and re-transcribe your recordings, as the old report files are not read.
+-- @changelog The VO tools are now three windows instead of one. "ajsfx VO Sources" lists every recorded file in the project and whether it has been transcribed; double-click a file to read its transcript, hear where each word sits, and re-transcribe just that file. "ajsfx VO Overview" is now the front door: it derives the match from the stored transcripts every time, so swapping the script CSV re-matches instantly with no re-transcription, and a new Select column records which take you are delivering. "ajsfx VO Cut" does the cutting, and it now places clip edges by looking for silence in the gap between the words either side, so an edge can never contain a syllable of the neighbouring line; the old fixed 150/250 ms pads become the furthest an edge may travel and the noise floor is measured from the recording rather than assumed. Transcription is now stored per wav file as word-level timings in "<audio>_vo_transcript.csv", so copying a recording and its sidecar to another project carries the transcription with it. Your selects, verified marks, notes and renames live in "<project>_vo.csv" beside the project. Transcription no longer conditions each window on the text it just decoded, which on a long read could lock the transcriber into repeating one phrase for the rest of the file; if an existing transcript contains such a loop, "ajsfx VO Sources" now flags it and says where it starts. Every column in Overview now sorts on a header click and filters from a box under the header, there is a new "#" column carrying each line's position in the script, and spacebar is REAPER's again -- it starts the transport instead of ticking the selected row. Matching now weighs where a line falls in the read: a line too short to identify itself -- one that is just "You." matches every "you" in the recording -- is sent to review when it contradicts the order the rest of the read was in, rather than being named on the strength of one word. Right-click a row (or a selection of rows) for "Find candidates": every place in the transcripts that line could sit, with what was said either side of it, what already occupies that spot, and a click to select it on the timeline and put the play cursor there. It is a search only -- it changes nothing. NOTE: this replaces "ajsfx VO ScriptMatch", which has been removed — reinstall from ReaPack, and re-transcribe your recordings, as the old report files are not read.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -246,6 +246,9 @@ local state = {
 
   filter_row    = false,      -- the per-column filter boxes under the header
   col_filters   = {},         -- column key -> needle
+
+  candidates      = {},       -- Find candidates results, one group per row asked about
+  candidates_open = false,
 
   status_filter = "all",
   character     = nil,
@@ -657,6 +660,135 @@ local function SelectedRows()
     if state.selection[row.uid] then out[#out + 1] = row end
   end
   return out
+end
+
+-- -----------------------------------------------------------------------
+-- Find candidates
+--
+-- A search, not a decision. Given a script line, it shows every place in the
+-- session's transcripts that line could sit -- including places the matcher
+-- scored too low to consider -- with what was said either side and what
+-- already occupies each one. Nothing here changes the match or is written to
+-- the project file: the answer to "where did this line go?" is something you
+-- confirm by listening, and the tool's job is to take you there.
+-- -----------------------------------------------------------------------
+
+local CANDIDATE_LIMIT = 12
+
+-- One search runs a matching pass per line per source file, so a fifty-row
+-- selection would lock the window up for a long time. Anything past this is
+-- dropped, and said so rather than silently trimmed.
+local CANDIDATE_ROW_LIMIT = 12
+
+-- Where the row's line sits in state.lines. Orphans have no index -- they are
+-- audio with no line -- and there is nothing to search for.
+local function LineIndexForRow(row)
+  if not row.script_row then return nil end
+  for i, line in ipairs(state.lines or {}) do
+    if line.row == row.script_row then return i end
+  end
+  return nil
+end
+
+-- What the current match has put in this stretch of this source, if anything.
+local function OccupantAt(source_path, from, to)
+  for _, row in ipairs(state.overview) do
+    if row.source_path == source_path and row.source_start and row.source_stop
+       and from < row.source_stop and row.source_start < to then
+      return row
+    end
+  end
+  return nil
+end
+
+local function RunCandidateSearch(rows)
+  local cfg = vo.LoadConfig()
+
+  -- Read the transcripts fresh. This is a once-per-click action, so there is
+  -- nothing to gain from caching them and a stale result would be worse than
+  -- useless in a window whose whole purpose is to tell you where audio is.
+  local sources = {}
+  for _, path in ipairs(vo.ProjectSourcePaths(state.items)) do
+    local parsed = vo.ReadTranscript(path)
+    if parsed then
+      sources[#sources + 1] = {
+        path   = path,
+        words  = parsed.words,
+        tokens = vo.BuildWordTokens(parsed.words, cfg),
+      }
+    end
+  end
+
+  local groups = {}
+  local dropped = 0
+  for n, row in ipairs(rows) do
+    if n > CANDIDATE_ROW_LIMIT then
+      dropped = #rows - CANDIDATE_ROW_LIMIT
+      break
+    end
+    local line_idx = LineIndexForRow(row)
+    local group = {
+      asset     = row.asset or "(no filename)",
+      line_text = row.line_text or "",
+      hits      = {},
+      why       = nil,
+    }
+    if not line_idx then
+      group.why = "This row has no script line to search for."
+    elseif #sources == 0 then
+      group.why = "No transcripts. Transcribe the recordings in ajsfx VO Sources first."
+    else
+      for _, src in ipairs(sources) do
+        local hits = vo.FindLineCandidates(state.lines, line_idx, src.tokens, cfg,
+          { words = src.words, limit = CANDIDATE_LIMIT })
+        for _, h in ipairs(hits) do
+          local item, proj_from, info = vo.ResolveSourceTime(src.path, h.start, state.items)
+          local _, proj_to = vo.ResolveSourceTime(src.path, h.stop, state.items)
+          h.source_path = src.path
+          h.item        = item
+          h.proj_from   = proj_from
+          h.proj_to     = proj_to or (proj_from and info
+                            and vo.SourceTimeToProject(h.stop, info)) or nil
+          h.occupant    = OccupantAt(src.path, h.start, h.stop)
+          group.hits[#group.hits + 1] = h
+        end
+      end
+      table.sort(group.hits, function(a, b)
+        if a.score ~= b.score then return a.score > b.score end
+        return (a.proj_from or math.huge) < (b.proj_from or math.huge)
+      end)
+      while #group.hits > CANDIDATE_LIMIT do table.remove(group.hits) end
+      if #group.hits == 0 then
+        group.why = "Nothing in any transcript resembles this line."
+      end
+    end
+    groups[#groups + 1] = group
+  end
+
+  state.candidates      = groups
+  state.candidates_open = true
+  if dropped > 0 then
+    state.message, state.message_kind = string.format(
+      "Searched the first %d lines; %d more were not searched. Select fewer.",
+      CANDIDATE_ROW_LIMIT, dropped), "error"
+  end
+end
+
+-- Put the candidate on screen and under the play cursor. A time selection
+-- rather than just a cursor move, so the stretch itself is visible against
+-- what surrounds it -- which is the whole point of looking.
+local function ShowCandidate(hit)
+  if not hit.proj_from then
+    state.message, state.message_kind =
+      "That stretch of the recording is not in this project's timeline.", "error"
+    return
+  end
+  local to = hit.proj_to or (hit.proj_from + 0.5)
+  r.Main_OnCommand(40289, 0)                       -- unselect all items
+  if hit.item then r.SetMediaItemSelected(hit.item, true) end
+  r.GetSet_LoopTimeRange(true, false, hit.proj_from, to, false)
+  r.SetEditCurPos(hit.proj_from, true, true)       -- move and seek playback
+  r.UpdateArrange()
 end
 
 -- Push the row selection out to the project. The edit cursor follows the FOCUS
@@ -1785,6 +1917,23 @@ local function DrawTableBody()
         and "This line has no audio in the project yet."
         or  "The audio for this row is not in this project.")
     end
+    -- Right-click acts on the whole selection when this row is part of it, and
+    -- on this row alone when it is not -- so right-clicking somewhere else
+    -- never silently operates on rows you had selected earlier.
+    if im.BeginPopupContextItem(ctx, "##row_menu") then
+      local targets = state.selection[row.uid] and SelectedRows() or { row }
+      local label = (#targets > 1)
+        and string.format("Find candidates for %d lines", #targets)
+        or  "Find candidates"
+      if im.MenuItem(ctx, label) then
+        pending_action = function() RunCandidateSearch(targets) end
+      end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Every place in the transcripts this line could sit,\n" ..
+                           "with what is around it. Looks only -- changes nothing.")
+      end
+      im.EndPopup(ctx)
+    end
     im.SameLine(ctx)
     -- SameLine returns the caret to the TOP of the tall selectable, so the
     -- status word needs its own offset.
@@ -2001,6 +2150,79 @@ end
 -- table change under it.
 -- -----------------------------------------------------------------------
 
+local function DrawCandidatesWindow()
+  if not state.candidates_open then return end
+
+  im.SetNextWindowSize(ctx, 720, 480, im.Cond_FirstUseEver)
+  local visible, open = im.Begin(ctx, 'VO Find candidates', true)
+  state.candidates_open = open
+
+  if visible then
+    im.TextDisabled(ctx, "Where each line could sit. Click a placement to select it\n" ..
+                         "on the timeline and put the play cursor on it. Nothing here\n" ..
+                         "changes the match.")
+    im.Separator(ctx)
+
+    for gi, group in ipairs(state.candidates) do
+      im.PushID(ctx, gi)
+      im.Text(ctx, group.asset)
+      if group.line_text ~= "" then
+        im.SameLine(ctx)
+        im.TextDisabled(ctx, "\226\128\148 " .. group.line_text)
+      end
+
+      if group.why then
+        im.TextDisabled(ctx, group.why)
+      end
+
+      for hi, hit in ipairs(group.hits) do
+        im.PushID(ctx, hi)
+
+        local when = hit.proj_from and FormatTime(hit.proj_from) or "not in project"
+        if im.SmallButton(ctx, string.format("%3.0f%%  %s", hit.score * 100, when)) then
+          local captured = hit
+          pending_action = function() ShowCandidate(captured) end
+        end
+        if im.IsItemHovered(ctx) then
+          im.SetTooltip(ctx, vo.Basename(hit.source_path or ""))
+        end
+
+        im.SameLine(ctx)
+        -- The line's own words in normal text between its surroundings in grey:
+        -- the point of looking is what is either side of it.
+        if hit.before ~= "" then
+          im.TextDisabled(ctx, "\226\128\166 " .. hit.before)
+          im.SameLine(ctx)
+        end
+        im.Text(ctx, hit.text)
+        if hit.after ~= "" then
+          im.SameLine(ctx)
+          im.TextDisabled(ctx, hit.after .. " \226\128\166")
+        end
+
+        -- The user's own question: is this spot already spoken for?
+        local occ = hit.occupant
+        if occ and occ.asset and occ.asset ~= group.asset then
+          im.TextColored(ctx, 0xDDAA33FF, "        already matched to " .. occ.asset)
+        elseif occ and occ.asset == group.asset then
+          im.TextColored(ctx, 0x66BB66FF, "        this is the current match")
+        else
+          im.TextDisabled(ctx, "        unmatched")
+        end
+
+        im.PopID(ctx)
+      end
+
+      im.Separator(ctx)
+      im.PopID(ctx)
+    end
+
+    -- End is called only when Begin returned visible, matching the main
+    -- window's loop. That is ReaImGui's contract.
+    im.End(ctx)
+  end
+end
+
 local function DrawSettingsWindow()
   if not state.settings_open then return end
 
@@ -2202,8 +2424,9 @@ local function loop()
 
     im.End(ctx)
 
-    -- Drawn after the main window's End so it is a sibling, not a child.
+    -- Drawn after the main window's End so they are siblings, not children.
     DrawSettingsWindow()
+    DrawCandidatesWindow()
 
     -- Run after End so ImGui's frame is closed before anything mutates state
     -- or the project. One action per frame is enough: they are all user clicks.

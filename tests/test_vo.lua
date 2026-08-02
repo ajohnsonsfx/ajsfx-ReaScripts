@@ -731,6 +731,83 @@ test("a long line read out of order keeps its confidence", function()
   assert(spans[1].in_sequence == nil, "order was judged on a line that can identify itself")
 end)
 
+--------------------------------
+-- FindLineCandidates
+--------------------------------
+print("\nFindLineCandidates:")
+
+local function tokens_from(text)
+  local words, t = {}, 0.0
+  for w in text:gmatch("%S+") do
+    words[#words + 1] = { t0 = t, t1 = t + 0.2, text = w }
+    t = t + 0.25
+  end
+  return vo.BuildWordTokens(words, {}), words
+end
+
+-- The searched line plus two decoys, so idf is a real fact about a script
+-- rather than a degenerate one about a single line.
+local function script_lines(text)
+  return vo.BuildScriptLines(
+    { { "vo_x_01", "RIVA", text },
+      { "vo_y_01", "RIVA", "alpha bravo charlie delta" },
+      { "vo_z_01", "RIVA", "echo foxtrot golf hotel" } },
+    { asset = 1, speaker = 2, text = 3 }, {})
+end
+
+test("a one-word line is found at every place that word occurs", function()
+  local toks = tokens_from("you should go now and you will see why you left")
+  local hits = vo.FindLineCandidates(script_lines("You."), 1, toks, {})
+  assert(#hits == 3, "Expected 3 placements, got " .. #hits)
+  for _, h in ipairs(hits) do
+    assert(h.score == 1.0, "a perfect word match scored " .. h.score)
+  end
+end)
+
+test("placements come back best first and never overlap each other", function()
+  local toks = tokens_from("seal it nobody goes below and then seal it again")
+  local hits = vo.FindLineCandidates(script_lines("seal it nobody goes below"), 1, toks, {})
+  assert(hits[1].score == 1.0, "the exact placement did not come first")
+  for i = 2, #hits do
+    assert(hits[i].score <= hits[i - 1].score, "placements out of order")
+    assert(hits[i].i0 > hits[i - 1].i1, "placements overlap")
+  end
+end)
+
+test("placements the matcher would reject are still offered", function()
+  -- Two of five words survive: far below review_floor, and exactly what someone
+  -- asking "where did this line go?" needs to see.
+  local toks = tokens_from("we come")
+  local hits = vo.FindLineCandidates(script_lines("we should not have come"), 1, toks, {})
+  assert(#hits >= 1, "a weak placement was hidden")
+  assert(hits[1].score < vo.DEFAULTS.review_floor,
+    "this fixture no longer tests a sub-floor placement: " .. hits[1].score)
+end)
+
+test("each placement carries the words either side of it", function()
+  local toks = tokens_from("alpha bravo charlie seal it delta echo foxtrot")
+  local hits = vo.FindLineCandidates(script_lines("seal it"), 1, toks, {}, { context = 2 })
+  assert(hits[1].text == "seal it", "text: " .. hits[1].text)
+  assert(hits[1].before == "bravo charlie", "before: " .. hits[1].before)
+  assert(hits[1].after == "delta echo", "after: " .. hits[1].after)
+end)
+
+test("the text shown back is what was said, not the normalised form", function()
+  local toks, raw = tokens_from("Open the gate, Captain!")
+  local hits = vo.FindLineCandidates(script_lines("open the gate"), 1, toks, {},
+                                     { words = raw, context = 1 })
+  assert(hits[1].text == "Open the gate,", "text: " .. hits[1].text)
+  assert(hits[1].after == "Captain!", "after: " .. hits[1].after)
+end)
+
+test("the limit is honoured and an empty transcript is not an error", function()
+  local toks = tokens_from("you you you you you you you you")
+  assert(#vo.FindLineCandidates(script_lines("You."), 1, toks, {}, { limit = 3 }) == 3,
+    "limit ignored")
+  assert(#vo.FindLineCandidates(script_lines("You."), 1, {}, {}) == 0, "empty transcript threw")
+  assert(#vo.FindLineCandidates(script_lines("You."), 9, tokens_from("you"), {}) == 0, "an out-of-range line index threw")
+end)
+
 test("without a backbone nothing is judged on order at all", function()
   local stray = ocand(20, 20, 3, 1.0)
   local spans = vo.SelectSpans({ stray }, {}, nil)
