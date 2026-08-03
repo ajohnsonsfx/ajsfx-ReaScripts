@@ -87,7 +87,18 @@ stretch of audio, so it cannot live in an entry. The key is:
 vo.AppendKey(script_label, asset, nth)
 ```
 
-where `nth` is the 1-based occurrence index of that `asset` **within that script**. Row
+Appends are held as an **array of records**, not as a map keyed by the joined string:
+
+```
+appends = { { script = "Chapter2", asset = "line_042", nth = 1, text = "_ch2" }, … }
+```
+
+The array is what the project file round-trips and what the windows hold; `vo.AppendMap`
+folds it into a `key → text` lookup for resolution, and `vo.SetAppend` is the one mutator.
+Splitting a joined key back into three parts would be ambiguous the moment a filename
+contained the separator, so the parts are never joined for storage.
+
+`nth` is the 1-based occurrence index of that `asset` **within that script**. Row
 numbers were rejected: inserting a line at the top of a CSV would orphan every Append below
 it. The occurrence index survives insertions, deletions and edits elsewhere in the script;
 it breaks only if two lines sharing one filename are reordered relative to each other within
@@ -104,7 +115,9 @@ a single script, which is accepted.
 | `vo.ScriptLabel(path)` | `D:/game/Chapter2_Script.csv` → `Chapter2_Script`. Basename, extension stripped, `vo.SanitizeName` applied. Returns `""` for an empty path. |
 | `vo.AppendKey(script_label, asset, nth)` | The stable per-line key, `label \| asset \| nth`. Components are already sanitized or CSV-quoted at the storage layer. |
 | `vo.MergeScriptLines(scripts)` | Takes `{ { label=, lines={…}, enabled= }, … }`, returns one flat ordered list: script order, then row order within each script. Disabled scripts contribute nothing. Each line gains `script` and an `append_key`. **No filename is modified.** |
-| `vo.ResolveNames(lines, appends)` | Attaches `deliver = asset .. (appends[append_key] or "")` to every line. An all-whitespace Append counts as empty. |
+| `vo.AppendMap(append_rows)` | Folds the append array into `{ [AppendKey(…)] = text }`. |
+| `vo.SetAppend(append_rows, script, asset, nth, text)` | The one mutator: adds, updates, or (on empty text) removes a record. Returns the array. |
+| `vo.ResolveNames(lines, appends)` | Attaches `deliver = asset .. (appends[append_key] or "")` to every line, where `appends` is the map from `AppendMap`. An all-whitespace Append counts as empty. |
 | `vo.DuplicateNames(rows)` | Row-level clash detection for the highlight (§4.3). |
 | `vo.LoadScripts(entries, read_fn)` | Shared loader (§5.1). Pure given `read_fn`. |
 
@@ -264,9 +277,14 @@ duplicate note, which said the same thing about a narrower case.
 
 ### 6.5 A new Script column
 
-Overview gains a **Script** column carrying each line's script label — sortable, filterable,
-**hidden by default** through the existing per-column visibility settings. Without it there is
-no way to tell which CSV a line came from once several are loaded.
+Overview gains a **Script** column carrying each line's script label, immediately right of
+Character — sortable and filterable like every other column. Without it there is no way to
+tell which CSV a line came from once several are loaded.
+
+It is **always visible**, not hidden by default: this table deliberately does not support
+per-column visibility (`DrawHeaderMenu` replaces ImGui's built-in column menu precisely
+because visibility is unsupported), and adding that machinery is not worth it here. A user
+who does not want the column drags it narrow, and the width persists like any other.
 
 ---
 
