@@ -173,6 +173,12 @@ local COLUMNS = {
 local COLUMN_BY_KEY = {}
 for _, c in ipairs(COLUMNS) do COLUMN_BY_KEY[c.key] = c end
 
+-- Column index by key, 0-based for ImGui. DrawTableBody addresses cells through
+-- this rather than by literal number, so inserting a column is one edit to
+-- COLUMNS instead of a renumbering of every call site below.
+local CI = {}
+for i, c in ipairs(COLUMNS) do CI[c.key] = i - 1 end
+
 -- Every column key, in declaration order. Used to load, save and clear the
 -- per-column settings without anything having to restate the list.
 local function ColumnKeys()
@@ -2192,11 +2198,11 @@ local function DrawTableBody()
     -- # ---------------------------------------------------------------------
     -- Script position, not row position: it stays with the line through every
     -- sort and filter, so it is also how a user gets back to where they were.
-    im.TableSetColumnIndex(ctx, 0)
-    CellText(row, "order", 0, row_h, tostring(row.order or ""), "disabled")
+    im.TableSetColumnIndex(ctx, CI.order)
+    CellText(row, "order", CI.order, row_h, tostring(row.order or ""), "disabled")
 
     -- Verified ------------------------------------------------------------
-    im.TableSetColumnIndex(ctx, 1)
+    im.TableSetColumnIndex(ctx, CI.verify)
     CellWidget("verify", row_h)
     local checked = row.user_status == "verified"
     local hit, now = im.Checkbox(ctx, "##ok", checked)
@@ -2208,7 +2214,7 @@ local function DrawTableBody()
     end
 
     -- Status --------------------------------------------------------------
-    im.TableSetColumnIndex(ctx, 2)
+    im.TableSetColumnIndex(ctx, CI.status)
     -- Drawn first in the row and spanning it, so a click anywhere that is not a
     -- widget navigates. AllowOverlap lets the inputs drawn afterwards win.
     -- Given the row's full height so a click anywhere in a TALL row still
@@ -2283,7 +2289,7 @@ local function DrawTableBody()
     PopCellFont(sf)
 
     -- Select --------------------------------------------------------------
-    im.TableSetColumnIndex(ctx, 3)
+    im.TableSetColumnIndex(ctx, CI.select)
     if row.status ~= "missing" and row.status ~= "orphan" and (row.take_count or 0) > 0 then
       CellWidget("select", row_h)
       local hit, now = im.Checkbox(ctx, "##sel", row.user_select == true)
@@ -2295,18 +2301,18 @@ local function DrawTableBody()
       end
     end
 
-    im.TableSetColumnIndex(ctx, 4)
-    CellText(row, "character", 4, row_h, row.character, "plain")
+    im.TableSetColumnIndex(ctx, CI.character)
+    CellText(row, "character", CI.character, row_h, row.character, "plain")
 
     -- Filename ------------------------------------------------------------
-    im.TableSetColumnIndex(ctx, 5)
+    im.TableSetColumnIndex(ctx, CI.item_name)
     -- The live take name where there is a take, so a rename made anywhere else
     -- in REAPER shows up here too. The project file's override is the fallback, so a
     -- name chosen for a line whose audio is not loaded is not lost.
     local shown = row.take_name or row.name_override or row.asset or ""
     if row.status == "missing" then
       -- Nothing to rename: there is no take at all.
-      CellText(row, "item_name", 5, row_h, shown, "disabled")
+      CellText(row, "item_name", CI.item_name, row_h, shown, "disabled")
       TooltipEvenWhenDisabled("This line has no take yet, so there is no item to name.")
     else
       PushFilledField("item_name", row_h)
@@ -2326,9 +2332,9 @@ local function DrawTableBody()
     -- CSV filename ---------------------------------------------------------
     -- Read-only on purpose: this is the script's own name for the line, and the
     -- reason a rename can never leave the user wondering what it used to be.
-    im.TableSetColumnIndex(ctx, 6)
+    im.TableSetColumnIndex(ctx, CI.asset)
     local csv_name = row.asset or ""
-    CellText(row, "asset", 6, row_h, csv_name, "disabled")
+    CellText(row, "asset", CI.asset, row_h, csv_name, "disabled")
     -- No per-cell tooltip: the explanation belongs on the header, where it is
     -- read once, not under the cursor on every row. An explicit popup ID is
     -- what lets a plain Text item own a context menu.
@@ -2344,20 +2350,20 @@ local function DrawTableBody()
       im.EndPopup(ctx)
     end
 
-    im.TableSetColumnIndex(ctx, 7)
+    im.TableSetColumnIndex(ctx, CI.take)
     if (row.take_count or 0) > 1 then
-      CellText(row, "take", 7, row_h,
+      CellText(row, "take", CI.take, row_h,
                string.format("%d/%d", row.take_index or 0, row.take_count), "plain")
     elseif row.take_index then
-      CellText(row, "take", 7, row_h, "1/1", "disabled")
+      CellText(row, "take", CI.take, row_h, "1/1", "disabled")
     end
 
-    im.TableSetColumnIndex(ctx, 8)
-    CellText(row, "line_text", 8, row_h, row.line_text, "plain")
+    im.TableSetColumnIndex(ctx, CI.line_text)
+    CellText(row, "line_text", CI.line_text, row_h, row.line_text, "plain")
 
-    im.TableSetColumnIndex(ctx, 9)
+    im.TableSetColumnIndex(ctx, CI.transcript)
     if row.score and row.status == "review" then
-      CellText(row, "transcript", 9, row_h, row.transcript, 0xDDAA33FF)
+      CellText(row, "transcript", CI.transcript, row_h, row.transcript, 0xDDAA33FF)
       if im.IsItemHovered(ctx) then
         local why = string.format("Match confidence %.0f%%.", row.score * 100)
         if row.in_sequence == false then
@@ -2369,11 +2375,11 @@ local function DrawTableBody()
         im.SetTooltip(ctx, why)
       end
     else
-      CellText(row, "transcript", 9, row_h, row.transcript, "disabled")
+      CellText(row, "transcript", CI.transcript, row_h, row.transcript, "disabled")
     end
 
-    im.TableSetColumnIndex(ctx, 10)
-    CellText(row, "source", 10, row_h,
+    im.TableSetColumnIndex(ctx, CI.source)
+    CellText(row, "source", CI.source, row_h,
              row.source_path and vo.Basename(row.source_path) or "", "disabled")
     if row.source_path and im.IsItemHovered(ctx) and im.IsMouseDoubleClicked(ctx, 0) then
       local captured = row.source_path
@@ -2387,11 +2393,11 @@ local function DrawTableBody()
       end
     end
 
-    im.TableSetColumnIndex(ctx, 11)
-    CellText(row, "time", 11, row_h, FormatTime(row.proj_time), "disabled")
+    im.TableSetColumnIndex(ctx, CI.time)
+    CellText(row, "time", CI.time, row_h, FormatTime(row.proj_time), "disabled")
 
     -- Notes ---------------------------------------------------------------
-    im.TableSetColumnIndex(ctx, 12)
+    im.TableSetColumnIndex(ctx, CI.notes)
     PushFilledField("notes", row_h)
     local nchanged, notes = im.InputText(ctx, "##notes", row.notes or "")
     PopFilledField()
