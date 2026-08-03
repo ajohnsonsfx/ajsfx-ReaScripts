@@ -192,6 +192,43 @@ test("missing optional speaker column leaves speaker nil and filter inert", func
 end)
 
 --------------------------------
+-- DuplicateAssets
+--------------------------------
+print("\nDuplicateAssets:")
+
+test("a script whose filenames are all unique reports nothing", function()
+  local lines = { { asset = "a", text = "Alpha", row = 1 },
+                  { asset = "b", text = "Bravo", row = 2 } }
+  assert(#vo.DuplicateAssets(lines) == 0, "Expected no duplicates")
+end)
+
+test("two lines under one filename are reported with their script rows", function()
+  local lines = { { asset = "a",   text = "Alpha", row = 1 },
+                  { asset = "dup", text = "Jump right in!", row = 39 },
+                  { asset = "dup", text = "The nightmares...", row = 42 } }
+  local d = vo.DuplicateAssets(lines)
+  assert(#d == 1, "Expected 1 duplicate, got " .. #d)
+  assert(d[1].asset == "dup", "asset: " .. tostring(d[1].asset))
+  assert(d[1].rows[1] == 39 and d[1].rows[2] == 42,
+    "rows: " .. table.concat(d[1].rows, ","))
+  assert(d[1].texts[1] == "Jump right in!", "The text is there to tell them apart")
+end)
+
+test("three lines under one filename report as one group of three", function()
+  local lines = { { asset = "x", text = "1", row = 1 },
+                  { asset = "x", text = "2", row = 2 },
+                  { asset = "x", text = "3", row = 3 } }
+  local d = vo.DuplicateAssets(lines)
+  assert(#d == 1 and #d[1].rows == 3, "Expected one group of three")
+end)
+
+test("lines with no filename are not duplicates of each other", function()
+  local lines = { { asset = "", text = "1", row = 1 },
+                  { asset = "", text = "2", row = 2 } }
+  assert(#vo.DuplicateAssets(lines) == 0, "Empty filenames are not a collision")
+end)
+
+--------------------------------
 -- Normalize
 --------------------------------
 print("\nNormalize:")
@@ -371,6 +408,35 @@ test("both empty cost zero", function()
   assert(vo.Levenshtein({}, {}) == 0, "Expected 0")
 end)
 
+test("two tokens fused into one cost nothing", function()
+  -- The script writes "some day", the recognizer hears "someday". Same words.
+  assert(vo.Levenshtein({ "some", "day", "it" }, { "someday", "it" }) == 0, "Expected 0")
+  assert(vo.Levenshtein({ "book", "man" }, { "bookman" }) == 0, "Expected 0")
+end)
+
+test("one token split into two costs nothing", function()
+  assert(vo.Levenshtein({ "someday", "it" }, { "some", "day", "it" }) == 0, "Expected 0")
+end)
+
+test("a fusion inside a longer line still costs nothing", function()
+  assert(vo.Levenshtein(
+    { "some", "day", "it", "will", "be", "you" },
+    { "someday", "it", "will", "be", "you" }) == 0, "Expected 0")
+end)
+
+test("two fusions in one line still cost nothing", function()
+  -- "Someday, it'll be you" -- both "some day" and "it will" come back fused.
+  assert(vo.Levenshtein(
+    { "some", "day", "it", "will", "be", "you" },
+    { "someday", "itwill", "be", "you" }) == 0, "Expected 0")
+end)
+
+test("a fusion that is not an exact join still costs", function()
+  -- Free only when the concatenation matches exactly; otherwise it is a
+  -- different word and must be charged as one.
+  assert(vo.Levenshtein({ "some", "day" }, { "someone" }) == 2, "Expected 2")
+end)
+
 --------------------------------
 -- BuildWordTokens
 --------------------------------
@@ -515,6 +581,24 @@ test("a verbatim reading of one line scores 1.0", function()
   assert(#cands >= 1, "Expected at least 1 candidate")
   assert(near(cands[1].score, 1.0), "score: " .. tostring(cands[1].score))
   assert(cands[1].i0 == 1 and cands[1].i1 == 4, "span: " .. cands[1].i0 .. ".." .. cands[1].i1)
+end)
+
+test("a line the recognizer fused keeps its first word", function()
+  -- Regression: "Some day it will be you" against a read heard as "Someday, it
+  -- will be you". Plain edit distance scored the full window and the window
+  -- missing "someday" identically at 0.67, and trimming then dropped the word
+  -- off the front of the take -- the line was delivered without "Someday".
+  local lines = script_lines({ { "L1", "Some day it will be you.", "a" } })
+  local idx   = vo.BuildIndex(lines, {})
+  local toks  = vo.BuildWordTokens(
+    whisper_words("takes every ounce of strength someday it will be you"), {})
+  local cands = vo.FindCandidates(toks, lines, idx, {})
+  assert(#cands >= 1, "Expected a candidate")
+  local c = cands[1]
+  assert(near(c.score, 1.0), "score: " .. tostring(c.score))
+  assert(toks[c.i0].text == "someday",
+    "window starts at: " .. tostring(toks[c.i0].text))
+  assert(toks[c.i1].text == "you", "window ends at: " .. tostring(toks[c.i1].text))
 end)
 
 test("finds lines recorded out of script order", function()
@@ -3530,6 +3614,39 @@ test("rows follow script order, not audio order", function()
   })
   assert(rows[1].asset == "a" and rows[2].asset == "b",
     "Expected script order a,b; got " .. rows[1].asset .. "," .. rows[2].asset)
+end)
+
+test("two script lines sharing a filename keep their own takes apart", function()
+  -- Regression: grouping by filename showed each line the other's takes -- five
+  -- takes of "Jump right in!" three of which were audibly a different line.
+  local a = span(1, 2, "match", "dup", "jump right in", 0.9)
+  local b = span(10, 11, "match", "dup", "the nightmares have been getting stronger", 0.9)
+  a.line_idx, b.line_idx = 1, 2
+  local rows = vo.BuildOverview({
+    lines = { line("dup", "Jump right in!", nil, 1),
+              line("dup", "The nightmares have been getting stronger...", nil, 2) },
+    matches = { { path = "s.wav", spans = { a, b } } },
+  })
+  assert(#rows == 2, "Expected 2 rows, got " .. #rows)
+  for _, row in ipairs(rows) do
+    assert(row.take_count == 1,
+      "Each line has one take of its own, got " .. tostring(row.take_count))
+  end
+  assert(rows[1].transcript == "jump right in", "Row 1 got: " .. tostring(rows[1].transcript))
+  assert(rows[2].transcript:find("nightmares"), "Row 2 got: " .. tostring(rows[2].transcript))
+end)
+
+test("a span with no line index still groups by filename", function()
+  -- The fallback for spans that predate line_idx: one line, two takes.
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = {
+      span(1, 2, "match", "a", "alpha", 0.9),
+      span(5, 6, "match", "a", "alpha", 0.9),
+    } } },
+  })
+  assert(#rows == 2 and rows[1].take_count == 2,
+    "Expected one line with two takes, got " .. #rows .. " rows")
 end)
 
 test("audio matching no script line becomes an orphan row, listed last", function()

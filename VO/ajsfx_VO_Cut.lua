@@ -531,6 +531,26 @@ local function Draw()
     im.Separator(ctx)
     im.Spacing(ctx)
 
+    -- Ahead of the gate, because this one is not about the takes: two script
+    -- rows sharing a filename means whichever cuts second overwrites the first,
+    -- and the delivered folder ends up quietly one line short.
+    local dupes = vo.DuplicateAssets(state.lines or {})
+    if #dupes > 0 then
+      im.TextColored(ctx, 0xDD6666FF, string.format(
+        "%d filename%s used by more than one script line — cutting would deliver " ..
+        "one line over the other. Fix the script.",
+        #dupes, #dupes == 1 and " is" or "s are"))
+      for i, d in ipairs(dupes) do
+        if i > 5 then
+          im.TextDisabled(ctx, string.format("... and %d more", #dupes - 5))
+          break
+        end
+        im.TextDisabled(ctx, string.format("    %s  (rows %s)",
+          d.asset, table.concat(d.rows, ", ")))
+      end
+      im.Spacing(ctx)
+    end
+
     if state.gate_blocked then
       im.TextColored(ctx, 0xDD6666FF, state.gate_message)
     else

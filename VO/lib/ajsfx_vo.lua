@@ -322,6 +322,34 @@ function vo.BuildScriptLines(rows, cols, filters)
   return lines
 end
 
+-- Script lines that two or more rows want delivered under the SAME filename.
+-- The overview can still keep their takes apart -- it groups by script row --
+-- but the delivered files cannot be kept apart, so one line's audio would
+-- overwrite the other's. Nothing downstream can repair that; only the script
+-- can. Returns: array of { asset, rows = { script row numbers }, texts = {…} },
+-- in first-appearance order, or an empty array when every filename is unique.
+function vo.DuplicateAssets(lines)
+  local seen, order = {}, {}
+  for _, l in ipairs(lines or {}) do
+    if l.asset and l.asset ~= "" then
+      local g = seen[l.asset]
+      if not g then
+        g = { asset = l.asset, rows = {}, texts = {} }
+        seen[l.asset] = g
+        order[#order + 1] = g
+      end
+      g.rows[#g.rows + 1] = l.row
+      g.texts[#g.texts + 1] = l.text
+    end
+  end
+
+  local dupes = {}
+  for _, g in ipairs(order) do
+    if #g.rows > 1 then dupes[#dupes + 1] = g end
+  end
+  return dupes
+end
+
 --------------------------------
 -- Pure layer: number expansion
 --------------------------------
@@ -616,28 +644,49 @@ end
 --------------------------------
 
 -- Token-level Levenshtein distance between two token arrays.
--- Two-row DP: O(#a * #b) time, O(#b) space.
+-- Three-row DP: O(#a * #b) time, O(#b) space.
+--
+-- Beyond insert/delete/substitute there are two free moves: two tokens on one
+-- side may FUSE into one token on the other, and one may SPLIT into two, at no
+-- cost, whenever the concatenation matches exactly. Where a word break falls is
+-- a spelling decision, not a difference in what was said -- the script writes
+-- "Some day it will be you" and the recognizer hears "Someday, it'll be you",
+-- and those are the same line read the same way. Plain edit distance charged
+-- that line two errors out of six and left it at 67%, low enough that window
+-- trimming then dropped "Someday" off the front of the take. It also covers the
+-- recognizer's habit of fusing a pair ("book man" -> "bookman").
+--
+-- Free, rather than cheap, because the equality test is exact: the operation
+-- can only fire on a genuine tokenization difference, never on a different word.
 function vo.Levenshtein(a, b)
   local n, m = #a, #b
   if n == 0 then return m end
   if m == 0 then return n end
 
-  local prev, cur = {}, {}
+  -- prev2 = row i-2, prev = row i-1, cur = row i.
+  local prev2, prev, cur = {}, {}, {}
   for j = 0, m do prev[j] = j end
 
   for i = 1, n do
     cur[0] = i
     local ai = a[i]
     for j = 1, m do
-      local sub = prev[j - 1] + ((ai == b[j]) and 0 or 1)
+      local best = prev[j - 1] + ((ai == b[j]) and 0 or 1)
       local del = prev[j] + 1
       local ins = cur[j - 1] + 1
-      local best = sub
       if del < best then best = del end
       if ins < best then best = ins end
+      -- a[i-1]a[i] fused into b[j]
+      if i >= 2 and a[i - 1] .. ai == b[j] and prev2[j - 1] < best then
+        best = prev2[j - 1]
+      end
+      -- a[i] split into b[j-1]b[j]
+      if j >= 2 and ai == b[j - 1] .. b[j] and prev[j - 2] < best then
+        best = prev[j - 2]
+      end
       cur[j] = best
     end
-    prev, cur = cur, prev
+    prev2, prev, cur = prev, cur, prev2
   end
 
   return prev[m]
@@ -2597,18 +2646,32 @@ function vo.BuildOverview(input)
   -- so it cannot be decided one row at a time.
   local resolved = resolve_tracker(index, spans)
 
-  local known_asset = {}
-  for _, l in ipairs(lines) do known_asset[l.asset] = l end
+  -- A line's identity for grouping is its script ROW, not its filename. Those
+  -- are normally the same thing, but a script CAN name two different lines with
+  -- one filename, and grouping by filename then shows each of them the other's
+  -- takes -- eight takes of "Jump right in!" three of which are audibly a
+  -- different line. The span already knows which line it matched, so trust
+  -- that; the filename lookup is the fallback for spans that carry no line
+  -- index (older callers, hand-built tests).
+  local first_row_using = {}
+  for i, l in ipairs(lines) do
+    if l.asset and first_row_using[l.asset] == nil then first_row_using[l.asset] = i end
+  end
+  local function line_row_of(s)
+    local li = s.line_idx
+    if li and lines[li] and lines[li].asset == s.asset then return li end
+    return first_row_using[s.asset]
+  end
 
   -- Group the spans that claim a script line, so takes can be numbered.
   local groups = {}
   for _, rec in ipairs(spans) do
     local s = rec.span
-    local is_take = (s.kind == "match" or s.kind == "review") and s.asset
-                    and known_asset[s.asset]
-    if is_take then
-      groups[s.asset] = groups[s.asset] or {}
-      table.insert(groups[s.asset], rec)
+    local row_idx = (s.kind == "match" or s.kind == "review") and s.asset
+                    and line_row_of(s) or nil
+    if row_idx then
+      groups[row_idx] = groups[row_idx] or {}
+      table.insert(groups[row_idx], rec)
     else
       rec.orphan = true
     end
@@ -2649,8 +2712,8 @@ function vo.BuildOverview(input)
 
   -- Script order first: this is a script-shaped spreadsheet, so a line's takes
   -- sit together under it whether they were recorded in one session or five.
-  for _, line in ipairs(lines) do
-    local g = groups[line.asset]
+  for line_row, line in ipairs(lines) do
+    local g = groups[line_row]
     if g and #g > 0 then
       table.sort(g, function(a, b)
         if a.source_order ~= b.source_order then return a.source_order < b.source_order end
