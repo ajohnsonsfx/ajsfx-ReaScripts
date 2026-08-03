@@ -359,6 +359,73 @@ test("enabled defaults to true when the field is absent", function()
 end)
 
 --------------------------------
+-- AppendMap / SetAppend / ResolveNames
+--------------------------------
+print("\nAppendMap and SetAppend:")
+
+test("records fold into a key-to-text map", function()
+  local m = vo.AppendMap({ { script = "Ch2", asset = "a", nth = 1, text = "_x" } })
+  assert(m[vo.AppendKey("Ch2", "a", 1)] == "_x", "Lookup failed")
+end)
+
+test("setting a new append adds one record", function()
+  local rows = vo.SetAppend({}, "Ch2", "a", 1, "_x")
+  assert(#rows == 1 and rows[1].text == "_x", "Expected one record")
+end)
+
+test("setting an existing append replaces it in place", function()
+  local rows = vo.SetAppend({}, "Ch2", "a", 1, "_x")
+  vo.SetAppend(rows, "Ch2", "a", 1, "_y")
+  assert(#rows == 1, "Expected one record, got " .. #rows)
+  assert(rows[1].text == "_y", "Got " .. tostring(rows[1].text))
+end)
+
+test("setting an append to empty removes the record", function()
+  local rows = vo.SetAppend({}, "Ch2", "a", 1, "_x")
+  vo.SetAppend(rows, "Ch2", "a", 1, "")
+  assert(#rows == 0, "An empty append is not a judgement; it is the absence of one")
+end)
+
+test("whitespace-only counts as empty", function()
+  local rows = vo.SetAppend({}, "Ch2", "a", 1, "   ")
+  assert(#rows == 0, "Whitespace-only must remove the record")
+end)
+
+test("appends for other lines are untouched", function()
+  local rows = vo.SetAppend({}, "Ch2", "a", 1, "_x")
+  vo.SetAppend(rows, "Ch5", "a", 1, "_y")
+  vo.SetAppend(rows, "Ch2", "a", 1, "")
+  assert(#rows == 1 and rows[1].script == "Ch5", "Only the named record may change")
+end)
+
+print("\nResolveNames:")
+
+test("no append leaves the filename alone", function()
+  local lines = { { asset = "a", append_key = vo.AppendKey("Ch2", "a", 1) } }
+  vo.ResolveNames(lines, {})
+  assert(lines[1].deliver == "a", "Got " .. tostring(lines[1].deliver))
+end)
+
+test("an append is concatenated with no separator", function()
+  local lines = { { asset = "line_042", append_key = vo.AppendKey("Ch2", "line_042", 1) } }
+  vo.ResolveNames(lines, vo.AppendMap({
+    { script = "Ch2", asset = "line_042", nth = 1, text = "_ch2" } }))
+  assert(lines[1].deliver == "line_042_ch2", "Got " .. tostring(lines[1].deliver))
+end)
+
+test("a whitespace-only append resolves to the bare filename", function()
+  local lines = { { asset = "a", append_key = vo.AppendKey("Ch2", "a", 1) } }
+  vo.ResolveNames(lines, { [vo.AppendKey("Ch2", "a", 1)] = "   " })
+  assert(lines[1].deliver == "a", "Got " .. tostring(lines[1].deliver))
+end)
+
+test("a line with no append key still resolves", function()
+  local lines = { { asset = "a" } }
+  vo.ResolveNames(lines, {})
+  assert(lines[1].deliver == "a", "A key-less line must not error")
+end)
+
+--------------------------------
 -- Normalize
 --------------------------------
 print("\nNormalize:")

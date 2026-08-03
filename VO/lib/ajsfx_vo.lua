@@ -400,6 +400,57 @@ function vo.MergeScriptLines(scripts)
   return out
 end
 
+-- Appends are held as an ARRAY of records, never as a map keyed by the joined
+-- string: splitting "label|asset|nth" back into three parts would be ambiguous
+-- the moment a filename contained the separator. The array is what the project
+-- file round-trips; the map below is built for lookup and thrown away.
+-- Record: { script = <label>, asset = <filename>, nth = <integer>, text = <string> }
+function vo.AppendMap(append_rows)
+  local m = {}
+  for _, a in ipairs(append_rows or {}) do
+    m[vo.AppendKey(a.script, a.asset, a.nth)] = a.text or ""
+  end
+  return m
+end
+
+-- The one mutator. Setting an append to empty REMOVES its record rather than
+-- storing "": the project file holds judgements, and "no append" is the absence
+-- of one -- the same rule SerializeProjectFile already applies to entry rows.
+function vo.SetAppend(append_rows, script, asset, nth, text)
+  append_rows = append_rows or {}
+  local clean = trim(tostring(text or ""))
+
+  for i, a in ipairs(append_rows) do
+    if a.script == script and a.asset == asset and a.nth == nth then
+      if clean == "" then
+        table.remove(append_rows, i)
+      else
+        a.text = clean
+      end
+      return append_rows
+    end
+  end
+
+  if clean ~= "" then
+    append_rows[#append_rows + 1] =
+      { script = script, asset = asset, nth = nth, text = clean }
+  end
+  return append_rows
+end
+
+-- The delivered name a script line asks for, before any per-take override.
+-- No separator is inserted: a user who wants "line_042_ch2" types "_ch2". That
+-- is the whole point -- nothing here renames anything the user did not spell.
+function vo.ResolveNames(lines, appends)
+  appends = appends or {}
+  for _, l in ipairs(lines or {}) do
+    local extra = l.append_key and appends[l.append_key] or nil
+    extra = extra and trim(extra) or ""
+    l.deliver = (l.asset or "") .. extra
+  end
+  return lines
+end
+
 --------------------------------
 -- Pure layer: number expansion
 --------------------------------
