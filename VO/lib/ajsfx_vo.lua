@@ -491,6 +491,69 @@ function vo.ResolveNames(lines, appends)
   return lines
 end
 
+-- The whole script side of a project, loaded in one call. Both ajsfx VO Overview
+-- and ajsfx VO Cut used to keep their own near-identical copy of this; they now
+-- share it, so a script that loads in one window cannot fail to load in the
+-- other.
+--
+-- `read_fn(path)` returns the file's text or nil. Injected rather than opened
+-- here so the whole thing stays in the pure layer and is testable headlessly.
+--
+-- entries: { { path, mapping, enabled }, ... }
+-- Returns { scripts = { { path, label, mapping, enabled, header, rows, lines,
+--                        error }, ... },
+--           lines   = <merged, in script-then-row order> }
+--
+-- `lines` do NOT carry `deliver`: the caller runs vo.ResolveNames once it has
+-- read the project's appends.
+function vo.LoadScripts(entries, read_fn)
+  local scripts = {}
+
+  for _, e in ipairs(entries or {}) do
+    local sc = {
+      path    = e.path,
+      label   = vo.ScriptLabel(e.path),
+      mapping = e.mapping or {},
+      enabled = e.enabled ~= false,
+      lines   = {},
+    }
+    scripts[#scripts + 1] = sc
+
+    local text = (e.path and e.path ~= "") and read_fn(e.path) or nil
+    if not text then
+      sc.error = "Cannot read the script CSV:\n" .. tostring(e.path)
+    else
+      local rows = vo.ParseCSV(text)
+      if #rows < 1 then
+        sc.error = "The script CSV is empty."
+      else
+        local header = table.remove(rows, 1)
+        local ok, err = vo.ValidateHeaderNames(header)
+        if not ok then
+          sc.error = err
+        else
+          -- Kept even on the errors below, because the header is what the
+          -- column pickers are built from -- a script the user still has to map
+          -- must show them something to pick.
+          sc.header, sc.rows = header, rows
+          if #rows == 0 then
+            sc.error = "The script CSV has no data rows."
+          else
+            local cols = vo.MapColumns(header, sc.mapping)
+            if not cols then
+              sc.error = "This script's Filename and Line text columns are not mapped."
+            else
+              sc.lines = vo.BuildScriptLines(rows, cols)
+            end
+          end
+        end
+      end
+    end
+  end
+
+  return { scripts = scripts, lines = vo.MergeScriptLines(scripts) }
+end
+
 --------------------------------
 -- Pure layer: number expansion
 --------------------------------
@@ -2572,16 +2635,40 @@ function vo.OverviewKey(source_path, source_start, asset)
        .. string.format("%d", math.floor((source_start or 0) * 1000 + 0.5))
 end
 
--- `meta` carries the script this project's judgements are about:
--- { script_csv, mapping }. It moves out of ProjExtState and in here so the
--- project file is the WHOLE of a project's VO state.
+-- `meta` carries the script side of a project's VO state:
+-- { scripts = { { path, mapping, enabled }, ... }, appends = { ... }, pins = { ... } }.
+-- It lives here rather than in ProjExtState so the project file is the WHOLE of
+-- a project's VO state.
 function vo.SerializeProjectFile(entries, meta)
   meta = meta or {}
   local out = {
     vo.FormatCSVRow({ vo.PROJECT_MARKER, tostring(vo.PROJECT_VERSION) }),
-    vo.FormatCSVRow({ "Script CSV", meta.script_csv or "" }),
-    vo.FormatCSVRow({ "Mapping",    encode_mapping(meta.mapping) }),
   }
+
+  -- One row per script, in the order the user added them. This replaces the
+  -- single "Script CSV" + "Mapping" pair; ParseProjectFile still reads that pair
+  -- so a project saved by an older version opens untouched.
+  for _, sc in ipairs(meta.scripts or {}) do
+    if sc.path and sc.path ~= "" then
+      out[#out + 1] = vo.FormatCSVRow({
+        "Script", sc.path, encode_mapping(sc.mapping),
+        sc.enabled ~= false and "yes" or "",
+      })
+    end
+  end
+
+  -- Appends are keyed by script LINE, not by a stretch of audio, so like Pins
+  -- they cannot live in the entry table. An append whose script is no longer in
+  -- the list is still written: removing a script and adding it back must not
+  -- throw the user's naming away.
+  for _, a in ipairs(meta.appends or {}) do
+    if a.text and a.text ~= "" then
+      out[#out + 1] = vo.FormatCSVRow({
+        "Append", a.script or "", a.asset or "",
+        tostring(a.nth or 1), a.text,
+      })
+    end
+  end
 
   -- Pins live in the preamble rather than the entry table because they are keyed
   -- by the SCRIPT LINE, while every entry row is keyed by a stretch of audio.
@@ -2645,15 +2732,35 @@ function vo.ParseProjectFile(text)
     return nil, "Unsupported project file version: " .. tostring(rows[1][2])
   end
 
-  local parsed = { version = version, script_csv = "", mapping = {},
+  local parsed = { version = version, scripts = {}, appends = {},
                    entries = {}, pins = {} }
+  -- The pre-multi-script format, folded in below only if no Script row appears.
+  local legacy_path, legacy_mapping = nil, nil
 
   local i, header_at = 2, nil
   while rows[i] do
     local key = rows[i][1] or ""
     if key == vo.PROJECT_HEADER[1] then header_at = i; break end
-    if     key == "Script CSV" then parsed.script_csv = rows[i][2] or ""
-    elseif key == "Mapping"    then parsed.mapping    = decode_mapping(rows[i][2])
+    if     key == "Script CSV" then legacy_path    = rows[i][2] or ""
+    elseif key == "Mapping"    then legacy_mapping = decode_mapping(rows[i][2])
+    elseif key == "Script" then
+      local path = rows[i][2] or ""
+      if path ~= "" then
+        parsed.scripts[#parsed.scripts + 1] = {
+          path    = path,
+          mapping = decode_mapping(rows[i][3]),
+          -- Anything other than an explicit "" reads as enabled, so a row
+          -- hand-edited in a spreadsheet does not silently switch a script off.
+          enabled = (rows[i][4] or "") ~= "",
+        }
+      end
+    elseif key == "Append" then
+      local script, asset = rows[i][2] or "", rows[i][3] or ""
+      local nth, text = tonumber(rows[i][4] or ""), rows[i][5] or ""
+      if asset ~= "" and nth and text ~= "" then
+        parsed.appends[#parsed.appends + 1] =
+          { script = script, asset = asset, nth = math.floor(nth), text = text }
+      end
     elseif key == "Pin" then
       local asset, source = rows[i][2] or "", rows[i][3] or ""
       local from, to = tonumber(rows[i][4] or ""), tonumber(rows[i][5] or "")
@@ -2664,6 +2771,13 @@ function vo.ParseProjectFile(text)
       end
     end
     i = i + 1
+  end
+
+  -- A project saved before scripts became a list. Folded in only when no Script
+  -- row was found, so an explicit list always wins over a stale legacy row.
+  if #parsed.scripts == 0 and legacy_path and legacy_path ~= "" then
+    parsed.scripts[1] = { path = legacy_path, mapping = legacy_mapping or {},
+                          enabled = true }
   end
 
   if not header_at then

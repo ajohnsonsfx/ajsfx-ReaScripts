@@ -1316,22 +1316,24 @@ test("pins round-trip through the project file", function()
     { asset = "vo_you",  source = "D:/s/A.wav", start = 12.5,  stop = 13.25 },
     { asset = "vo_seal", source = "D:/s/B.wav", start = 100.0, stop = 104.5 },
   }
-  local text   = vo.SerializeProjectFile({}, { script_csv = "s.csv", pins = pins })
+  local scripts = { { path = "s.csv", mapping = {}, enabled = true } }
+  local text   = vo.SerializeProjectFile({}, { scripts = scripts, pins = pins })
   local parsed = assert(vo.ParseProjectFile(text))
   assert(#parsed.pins == 2, "Expected 2 pins, got " .. #parsed.pins)
   assert(parsed.pins[1].asset == "vo_you", "asset lost")
   assert(parsed.pins[1].source == "D:/s/A.wav", "source lost")
   assert(math.abs(parsed.pins[1].start - 12.5) < 1e-6, "start lost")
   assert(math.abs(parsed.pins[2].stop - 104.5) < 1e-6, "stop lost")
-  assert(parsed.script_csv == "s.csv", "the preamble was disturbed")
+  assert(parsed.scripts[1].path == "s.csv", "the preamble was disturbed")
 end)
 
 test("a project file with no pins still reads, and a corrupt pin is dropped", function()
-  local text = vo.SerializeProjectFile({}, { script_csv = "s.csv" })
+  local text = vo.SerializeProjectFile({},
+    { scripts = { { path = "s.csv", mapping = {}, enabled = true } } })
   local parsed = assert(vo.ParseProjectFile(text))
   assert(#parsed.pins == 0, "phantom pins")
 
-  local bad = text:gsub("Script CSV", "Pin,vo_x,,0,0\nScript CSV", 1)
+  local bad = text:gsub("Script,", "Pin,vo_x,,0,0\nScript,", 1)
   local reparsed = assert(vo.ParseProjectFile(bad))
   assert(#reparsed.pins == 0, "a pin with no source or range was kept")
 end)
@@ -3771,8 +3773,8 @@ print("\nSerializeProjectFile / ParseProjectFile:")
 local PF_HEADER = "Key,Filename,Source,Source start,Select,Status,Name override,Notes"
 
 local function pf_meta()
-  return { script_csv = "D:\\S\\script.csv",
-           mapping = { asset = "Filename", text = "Line Text", speaker = "Character" } }
+  return { scripts = { { path = "D:\\S\\script.csv", enabled = true,
+      mapping = { asset = "Filename", text = "Line Text", speaker = "Character" } } } }
 end
 
 local function round_trip(entries, meta)
@@ -3801,15 +3803,163 @@ end)
 
 test("the script path and mapping survive the round trip", function()
   local out = round_trip({})
-  assert(out.script_csv == "D:\\S\\script.csv", "script_csv: " .. tostring(out.script_csv))
-  assert(out.mapping.asset == "Filename", "mapping asset")
-  assert(out.mapping.text == "Line Text", "mapping text")
-  assert(out.mapping.speaker == "Character", "mapping speaker")
+  local sc = out.scripts[1]
+  assert(sc.path == "D:\\S\\script.csv", "path: " .. tostring(sc.path))
+  assert(sc.mapping.asset == "Filename", "mapping asset")
+  assert(sc.mapping.text == "Line Text", "mapping text")
+  assert(sc.mapping.speaker == "Character", "mapping speaker")
 end)
 
 test("a script CSV path containing a comma survives", function()
-  local out = round_trip({}, { script_csv = "D:\\S\\ep1, final.csv", mapping = {} })
-  assert(out.script_csv == "D:\\S\\ep1, final.csv", "Got " .. tostring(out.script_csv))
+  local out = round_trip({}, { scripts = {
+    { path = "D:\\S\\ep1, final.csv", mapping = {}, enabled = true } } })
+  assert(out.scripts[1].path == "D:\\S\\ep1, final.csv",
+    "Got " .. tostring(out.scripts[1].path))
+end)
+
+test("scripts round-trip with their mapping and enabled flag", function()
+  local text = vo.SerializeProjectFile({}, { scripts = {
+    { path = "D:/g/Ch2.csv", mapping = { asset = "File", text = "Line" }, enabled = true },
+    { path = "D:/g/Ch5.csv", mapping = { asset = "Fn" },                  enabled = false },
+  } })
+  local p = assert(vo.ParseProjectFile(text), "Should parse")
+  assert(#p.scripts == 2, "Expected 2 scripts, got " .. #p.scripts)
+  assert(p.scripts[1].path == "D:/g/Ch2.csv", "Got " .. tostring(p.scripts[1].path))
+  assert(p.scripts[1].mapping.asset == "File", "Mapping lost")
+  assert(p.scripts[1].enabled == true, "Enabled lost")
+  assert(p.scripts[2].enabled == false, "Disabled lost")
+end)
+
+test("appends round-trip", function()
+  local text = vo.SerializeProjectFile({}, {
+    scripts = { { path = "D:/g/Ch2.csv", mapping = {}, enabled = true } },
+    appends = { { script = "Ch2", asset = "line_042", nth = 2, text = "_take" } },
+  })
+  local p = assert(vo.ParseProjectFile(text), "Should parse")
+  assert(#p.appends == 1, "Expected 1 append, got " .. #p.appends)
+  assert(p.appends[1].script == "Ch2", "script lost")
+  assert(p.appends[1].asset == "line_042", "asset lost")
+  assert(p.appends[1].nth == 2, "nth lost or not a number: " .. tostring(p.appends[1].nth))
+  assert(p.appends[1].text == "_take", "text lost")
+end)
+
+test("an append naming an absent script survives a rewrite", function()
+  local first = vo.SerializeProjectFile({}, {
+    scripts = {},
+    appends = { { script = "Removed", asset = "a", nth = 1, text = "_x" } },
+  })
+  local p = assert(vo.ParseProjectFile(first), "Should parse")
+  assert(#p.appends == 1, "Removing a script must not lose its appends")
+end)
+
+test("a file from the previous version parses into one enabled script", function()
+  local old = table.concat({
+    vo.FormatCSVRow({ vo.PROJECT_MARKER, "1" }),
+    vo.FormatCSVRow({ "Script CSV", "D:/g/Only.csv" }),
+    vo.FormatCSVRow({ "Mapping", "asset=Filename;text=Line" }),
+    "",
+    vo.FormatCSVRow(vo.PROJECT_HEADER),
+  }, "\n") .. "\n"
+  local p = assert(vo.ParseProjectFile(old), "The old format must still open")
+  assert(#p.scripts == 1, "Expected 1 script, got " .. #p.scripts)
+  assert(p.scripts[1].path == "D:/g/Only.csv", "Path lost")
+  assert(p.scripts[1].mapping.asset == "Filename", "Mapping lost")
+  assert(p.scripts[1].enabled == true, "A migrated script is enabled")
+end)
+
+test("a new-format file ignores a stray old-format row", function()
+  local text = table.concat({
+    vo.FormatCSVRow({ vo.PROJECT_MARKER, "1" }),
+    vo.FormatCSVRow({ "Script CSV", "D:/g/Stale.csv" }),
+    vo.FormatCSVRow({ "Script", "D:/g/Real.csv", "asset=F", "yes" }),
+    "",
+    vo.FormatCSVRow(vo.PROJECT_HEADER),
+  }, "\n") .. "\n"
+  local p = assert(vo.ParseProjectFile(text), "Should parse")
+  assert(#p.scripts == 1 and p.scripts[1].path == "D:/g/Real.csv",
+    "An explicit Script row wins over the legacy fallback")
+end)
+
+test("entries still round-trip alongside the new rows", function()
+  local text = vo.SerializeProjectFile(
+    { { key = "a.wav|1500", source = "D:/a.wav", source_start = 1.5,
+        asset = "line_1", select = true } },
+    { scripts = { { path = "D:/g/Ch2.csv", mapping = {}, enabled = true } } })
+  local p = assert(vo.ParseProjectFile(text), "Should parse")
+  assert(#p.entries == 1 and p.entries[1].select == true, "Entry rows must be unharmed")
+end)
+
+--------------------------------
+-- LoadScripts
+--------------------------------
+print("\nLoadScripts:")
+
+local CSV_A = "Filename,Line\nline_a,Alpha\nline_b,Bravo\n"
+local CSV_B = "Filename,Line\nline_c,Charlie\n"
+
+local function reader(files)
+  return function(path) return files[path] end
+end
+
+test("two readable scripts merge into one line list", function()
+  local got = vo.LoadScripts(
+    { { path = "a.csv", mapping = { asset = "Filename", text = "Line" }, enabled = true },
+      { path = "b.csv", mapping = { asset = "Filename", text = "Line" }, enabled = true } },
+    reader({ ["a.csv"] = CSV_A, ["b.csv"] = CSV_B }))
+  assert(#got.lines == 3, "Expected 3 lines, got " .. #got.lines)
+  assert(got.lines[3].asset == "line_c", "Order is script-then-row")
+end)
+
+test("each script gets a label from its path", function()
+  local got = vo.LoadScripts(
+    { { path = "D:/g/Ch2.csv", mapping = { asset = "Filename", text = "Line" } } },
+    reader({ ["D:/g/Ch2.csv"] = CSV_A }))
+  assert(got.scripts[1].label == "Ch2", "Got " .. tostring(got.scripts[1].label))
+  assert(got.lines[1].script == "Ch2", "Lines carry the label")
+end)
+
+test("an unreadable script errors alone and the rest still load", function()
+  local got = vo.LoadScripts(
+    { { path = "gone.csv", mapping = { asset = "Filename", text = "Line" } },
+      { path = "b.csv",    mapping = { asset = "Filename", text = "Line" } } },
+    reader({ ["b.csv"] = CSV_B }))
+  assert(got.scripts[1].error ~= nil and got.scripts[1].error ~= "",
+    "The missing file must carry a reason")
+  assert(#got.lines == 1 and got.lines[1].asset == "line_c",
+    "The readable script must still contribute")
+end)
+
+test("a script with no mapping errors rather than silently matching nothing", function()
+  local got = vo.LoadScripts({ { path = "a.csv", mapping = {} } },
+                             reader({ ["a.csv"] = CSV_A }))
+  assert(got.scripts[1].error ~= nil and got.scripts[1].error ~= "",
+    "An unmapped script must say so")
+  assert(#got.lines == 0, "It must contribute no lines")
+end)
+
+test("an empty CSV errors", function()
+  local got = vo.LoadScripts(
+    { { path = "e.csv", mapping = { asset = "Filename", text = "Line" } } },
+    reader({ ["e.csv"] = "" }))
+  assert(got.scripts[1].error ~= nil and got.scripts[1].error ~= "", "Expected an error")
+end)
+
+test("a header-only CSV errors but keeps its header for the column pickers", function()
+  local got = vo.LoadScripts(
+    { { path = "h.csv", mapping = { asset = "Filename", text = "Line" } } },
+    reader({ ["h.csv"] = "Filename,Line\n" }))
+  assert(got.scripts[1].error ~= nil and got.scripts[1].error ~= "", "Expected an error")
+  assert(got.scripts[1].header and got.scripts[1].header[1] == "Filename",
+    "The header must survive so the mapping combos can still be used")
+end)
+
+test("a disabled script is loaded but contributes no lines", function()
+  local got = vo.LoadScripts(
+    { { path = "a.csv", mapping = { asset = "Filename", text = "Line" }, enabled = false } },
+    reader({ ["a.csv"] = CSV_A }))
+  assert(got.scripts[1].header ~= nil,
+    "A disabled script is still read, so it can be re-enabled")
+  assert(#got.lines == 0, "It contributes nothing while off")
 end)
 
 test("notes survive commas, quotes and newlines", function()
