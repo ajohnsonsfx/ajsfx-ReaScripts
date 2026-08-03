@@ -207,13 +207,15 @@ local STATUS_FILTERS = {
 }
 
 local state = {
-  script_csv    = "",
-  header        = nil,
-  rows          = nil,        -- raw script CSV rows
-  mapping       = {},
-  mapping_open  = false,      -- the Columns… panel; opens itself when nothing is mapped
-  header_error  = "",
-  lines         = {},         -- vo.BuildScriptLines(state.rows, ...)
+  -- The scripts this project reads, in the order they were added. This is the
+  -- PERSISTED shape: { path, mapping, enabled }. state.loaded below is what
+  -- reading them produced, and is rebuilt whenever this changes.
+  scripts       = {},
+  loaded        = { scripts = {}, lines = {} },
+  scripts_open  = false,      -- the Script panel; opens itself when a script fails
+  appends       = {},         -- vo.SetAppend records, per script line
+  dupe_names    = {},         -- vo.DuplicateNames set, for the red highlight
+  lines         = {},         -- the merged, resolved script lines
 
   items         = {},         -- vo.CollectProjectSpans()
 
@@ -306,58 +308,50 @@ end
 -- The script side
 -- -----------------------------------------------------------------------
 
-local function LoadCSV(path)
-  state.header, state.rows, state.header_error = nil, nil, ""
-  if not path or path == "" then return end
+-- Read every script the project names, merge their lines, and apply the
+-- Appends. state.scripts is the persisted list; state.loaded is what reading it
+-- produced, including per-script errors and headers for the column pickers.
+--
+-- Skip values are not part of the project file (vo.PROJECT_HEADER carries only
+-- the mapping); the default skip list (vo.DEFAULT_SKIP_VALUES) is what
+-- vo.BuildScriptLines falls back to when none is supplied.
+local function LoadScripts()
+  state.loaded = vo.LoadScripts(state.scripts, ReadFile)
+  -- A script whose columns were never mapped gets the header's own suggestion,
+  -- so a freshly added CSV usually just works. Auto-detection knows the usual
+  -- header names and no more; when it comes up short the panel that fixes it
+  -- opens itself rather than waiting to be found.
+  local guessed = false
+  for i, sc in ipairs(state.loaded.scripts) do
+    local persisted = state.scripts[i]
+    if sc.header and not (persisted.mapping and next(persisted.mapping)) then
+      persisted.mapping = vo.AutoDetectMapping(sc.header) or {}
+      guessed = true
+    end
+  end
+  if guessed then state.loaded = vo.LoadScripts(state.scripts, ReadFile) end
 
-  local text = ReadFile(path)
-  if not text then
-    state.header_error = "Cannot read the script CSV:\n" .. path
-    return
+  for _, sc in ipairs(state.loaded.scripts) do
+    if sc.error and sc.error ~= "" then state.scripts_open = true end
   end
 
-  local rows = vo.ParseCSV(text)
-  if #rows < 1 then
-    state.header_error = "The script CSV is empty."
-    return
-  end
-
-  local header = table.remove(rows, 1)
-  local ok, err = vo.ValidateHeaderNames(header)
-  if not ok then
-    state.header_error = err
-    return
-  end
-
-  state.header, state.rows = header, rows
-  if #rows == 0 then state.header_error = "The script CSV has no data rows." end
+  vo.ResolveNames(state.loaded.lines, vo.AppendMap(state.appends))
 end
 
--- The mapping the project file persisted, falling back to whatever the header
--- itself suggests. A project whose columns were never mapped still opens with
--- something sensible rather than an empty table. Skip values are not part of
--- the project file (vo.PROJECT_HEADER carries only the mapping); the default
--- skip list (vo.DEFAULT_SKIP_VALUES) is what vo.BuildScriptLines falls back to
--- when none is supplied.
-local function ApplyMappingDefaults()
-  if not (state.mapping and next(state.mapping)) then
-    state.mapping = state.header and vo.AutoDetectMapping(state.header) or {}
-  end
-  -- Auto-detection knows the usual header names and no more. When it comes up
-  -- short there is nothing to match against, so the panel that fixes it opens
-  -- itself rather than waiting to be found.
-  if state.header and not (state.mapping.asset and state.mapping.text) then
-    state.mapping_open = true
-  end
-end
-
--- The script lines this project expects, after skip tokens and the character
--- filter. Returns an empty list (never nil) so callers need no special case.
+-- The script lines this project expects, after skip tokens and with every
+-- Append applied. Returns an empty list (never nil) so callers need no special
+-- case.
 local function ScriptLines()
-  if not state.header or not state.rows or state.header_error ~= "" then return {} end
-  local cols = vo.MapColumns(state.header, state.mapping)
-  if not cols then return {} end
-  return vo.BuildScriptLines(state.rows, cols)
+  return state.loaded.lines or {}
+end
+
+-- How many scripts could not be read or mapped, for the banner.
+local function BadScriptCount()
+  local n = 0
+  for _, sc in ipairs(state.loaded.scripts or {}) do
+    if sc.error and sc.error ~= "" then n = n + 1 end
+  end
+  return n
 end
 
 -- -----------------------------------------------------------------------
@@ -366,7 +360,7 @@ end
 
 local function LoadProjectFile()
   state.entries, state.project_error, state.parse_failed = {}, "", false
-  state.script_csv, state.mapping, state.pins = "", {}, {}
+  state.scripts, state.appends, state.pins = {}, {}, {}
 
   local proj = ProjectPath()
   state.project_path = (proj ~= "") and vo.ProjectFilePath(proj) or nil
@@ -377,10 +371,10 @@ local function LoadProjectFile()
 
   local parsed, reason = vo.ParseProjectFile(text)
   if parsed then
-    state.entries    = parsed.entries
-    state.script_csv = parsed.script_csv
-    state.mapping     = parsed.mapping
-    state.pins        = parsed.pins or {}
+    state.entries = parsed.entries
+    state.scripts = parsed.scripts or {}
+    state.appends = parsed.appends or {}
+    state.pins    = parsed.pins or {}
   else
     -- The file is NOT overwritten on a parse failure: writing would destroy
     -- whatever the user still has in there. Saving stays off until they fix or
@@ -410,7 +404,7 @@ local function SaveProjectFile()
 
   local ok = WriteFile(path, vo.SerializeProjectFile(
     vo.ProjectEntriesFromRows(state.overview),
-    { script_csv = state.script_csv, mapping = state.mapping, pins = state.pins }))
+    { scripts = state.scripts, appends = state.appends, pins = state.pins }))
   if not ok then
     state.message, state.message_kind = "Cannot write " .. tostring(path), "error"
     return false
@@ -461,8 +455,17 @@ local function CfgKey(cfg)
   return table.concat(parts, ";")
 end
 
-local function MatchKey(paths, script_csv, mapping, cfg)
-  local parts = { script_csv or "", vo.SerializeLayout({ mapping = mapping }), CfgKey(cfg) }
+local function MatchKey(paths, scripts, cfg)
+  local parts = { CfgKey(cfg) }
+  -- Every script, in order: adding one, removing one, remapping a column or
+  -- switching one off all change which audio matches which line. Appends are
+  -- deliberately NOT here -- they change only the delivered name, so a rename
+  -- must not cost a re-match.
+  for _, sc in ipairs(scripts or {}) do
+    parts[#parts + 1] = "script:" .. (sc.path or "") .. ":"
+      .. vo.SerializeLayout({ mapping = sc.mapping })
+      .. ":" .. (sc.enabled ~= false and "1" or "0")
+  end
   for _, p in ipairs(paths) do
     local tpath = vo.TranscriptPath(p)
     parts[#parts + 1] = p .. ":" .. tostring(tpath and vo.FileSize(tpath) or 0)
@@ -478,7 +481,7 @@ end
 
 local function LoadMatches(cfg)
   local paths = vo.ProjectSourcePaths(state.items)
-  local key   = MatchKey(paths, state.script_csv, state.mapping, cfg)
+  local key   = MatchKey(paths, state.scripts, cfg)
   if key == state.match_key then return state.matches end
 
   local transcripts = {}
@@ -509,10 +512,12 @@ end
 
 local function Rebuild()
   state.items = vo.CollectProjectSpans()
+  LoadScripts()
   state.lines = ScriptLines()
-  -- Two script rows sharing one filename is a fault only the script can fix,
-  -- and it is invisible in the table: the rows look ordinary, and the collision
-  -- surfaces at cut time as one line's audio overwriting the other's.
+  -- A delivered name two script lines both claim. The clips cut fine -- two
+  -- items in REAPER may share a name -- but the collision becomes real when
+  -- they are rendered to files, so it is reported, and the table shows it in
+  -- red until the user separates them with an Append.
   state.dupe_assets = vo.DuplicateAssets(state.lines)
   local cfg   = vo.LoadConfig()
   -- Read here rather than once at startup, so the choice follows the config
@@ -526,6 +531,15 @@ local function Rebuild()
     cfg     = cfg,
   })
   state.summary = vo.SummarizeOverview(state.overview)
+
+  -- Row-level, so a per-take name override can clear a clash or create one.
+  state.dupe_names = vo.DuplicateNames(state.overview)
+
+  -- The Append cell needs the text to show, and the row is what the cell has.
+  local appends = vo.AppendMap(state.appends)
+  for _, row in ipairs(state.overview) do
+    row.append = row.append_key and appends[row.append_key] or nil
+  end
 
   -- Resolve each row to a live item once per rebuild rather than per frame:
   -- this walks every project item per row and is far too expensive to redo at
@@ -1558,51 +1572,119 @@ local MAP_ROLES = {
     hint = "Optional. Splits the delivery onto per-character tracks." },
 }
 
-local function DrawMapping()
+-- The Script panel: every CSV this project reads, with its own column mapping
+-- and its own on/off switch. Drawn inline above the table, like the mapping
+-- panel it replaces.
+local function DrawScriptPanel()
   im.Separator(ctx)
-  im.Text(ctx, "Script columns")
+  im.Text(ctx, "Scripts")
   im.SameLine(ctx)
-  if im.Button(ctx, "Auto-detect") then
-    state.mapping = vo.AutoDetectMapping(state.header) or {}
-    state.dirty   = true
-    Reload()
-  end
-  im.SameLine(ctx)
-  if im.Button(ctx, "Close##mapping") then state.mapping_open = false end
-
-  for _, spec in ipairs(MAP_ROLES) do
-    local mapped  = state.mapping[spec.role]
-    local preview = mapped or (spec.optional and "(none)" or "Column…")
-
-    im.SetNextItemWidth(ctx, 220)
-    if im.BeginCombo(ctx, spec.label .. "##map_" .. spec.role, preview) then
-      -- A change of mapping changes what every row means, so it re-derives the
-      -- match rather than editing rows in place. The match cache keys on the
-      -- mapping, so Reload is enough -- see MatchKey. Called directly, not
-      -- deferred: this panel draws above the table, not inside it.
-      if spec.optional and im.Selectable(ctx, "(none)", mapped == nil) and mapped ~= nil then
-        state.mapping[spec.role] = nil
+  if im.Button(ctx, "Add script…") then
+    -- With no script yet, start in the project's own folder rather than
+    -- wherever REAPER defaults to (its resource path).
+    local dir = ProjectPath():match("^(.*[\\/])")
+    local start_at = dir and (dir .. "*.csv") or ""
+    local ok, path = r.GetUserFileNameForRead(start_at, "Add a script CSV", "csv")
+    if ok then
+      local already = false
+      for _, sc in ipairs(state.scripts) do
+        if sc.path == path then already = true; break end
+      end
+      if already then
+        state.message, state.message_kind =
+          vo.Basename(path) .. " is already in the list.", "error"
+      else
+        state.scripts[#state.scripts + 1] =
+          { path = path, mapping = {}, enabled = true }
         state.dirty = true
         Reload()
       end
-      for _, h in ipairs(state.header or {}) do
-        if im.Selectable(ctx, h, h == mapped) and h ~= mapped then
-          state.mapping[spec.role] = h
-          state.dirty = true
-          Reload()
+    end
+  end
+  im.SameLine(ctx)
+  if im.Button(ctx, "Close##scripts") then state.scripts_open = false end
+
+  local remove_at = nil
+  for i, sc in ipairs(state.loaded.scripts or {}) do
+    local persisted = state.scripts[i]
+    im.PushID(ctx, "script_" .. i)
+
+    local changed, on = im.Checkbox(ctx, "##on", persisted.enabled ~= false)
+    if changed then
+      persisted.enabled = on
+      state.dirty = true
+      Reload()
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "A script that is off stays in the list but contributes\n" ..
+                         "no lines and takes no part in matching.")
+    end
+
+    im.SameLine(ctx)
+    im.Text(ctx, vo.Basename(sc.path or ""))
+    if im.IsItemHovered(ctx) then im.SetTooltip(ctx, sc.path or "") end
+
+    if sc.header then
+      for _, spec in ipairs(MAP_ROLES) do
+        im.SameLine(ctx)
+        local mapped  = persisted.mapping[spec.role]
+        local preview = mapped or (spec.optional and "(none)" or "Column…")
+        im.SetNextItemWidth(ctx, 140)
+        if im.BeginCombo(ctx, "##map_" .. spec.role, preview) then
+          -- A change of mapping changes what every row means, so it re-derives
+          -- the match rather than editing rows in place. The match cache keys on
+          -- the mapping, so Reload is enough -- see MatchKey. Called directly,
+          -- not deferred: this panel draws above the table, not inside it.
+          if spec.optional and im.Selectable(ctx, "(none)", mapped == nil)
+             and mapped ~= nil then
+            persisted.mapping[spec.role] = nil
+            state.dirty = true
+            Reload()
+          end
+          for _, h in ipairs(sc.header) do
+            if im.Selectable(ctx, h, h == mapped) and h ~= mapped then
+              persisted.mapping[spec.role] = h
+              state.dirty = true
+              Reload()
+            end
+          end
+          im.EndCombo(ctx)
+        end
+        if im.IsItemHovered(ctx) then
+          im.SetTooltip(ctx, spec.label .. ": " .. spec.hint)
         end
       end
-      im.EndCombo(ctx)
     end
+
     im.SameLine(ctx)
-    im.TextDisabled(ctx, spec.hint)
+    if im.Button(ctx, "Remove") then remove_at = i end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Takes the script out of the list.\n" ..
+                         "Anything typed in its Append column is kept.")
+    end
+
+    if sc.error and sc.error ~= "" then
+      im.TextColored(ctx, 0xDD6666FF, "    " .. sc.error)
+    elseif sc.enabled then
+      im.TextDisabled(ctx, string.format("    %d script line%s.",
+        #sc.lines, #sc.lines == 1 and "" or "s"))
+    end
+
+    im.PopID(ctx)
   end
 
-  local n = #ScriptLines()
-  if state.mapping.asset and state.mapping.text then
-    im.TextDisabled(ctx, string.format("%d script line%s read from %s.",
-      n, n == 1 and "" or "s", vo.Basename(state.script_csv)))
+  if #(state.loaded.scripts or {}) == 0 then
+    im.TextDisabled(ctx, "No scripts yet. Press Add script… to choose one.")
   end
+
+  -- Removed after the loop: mutating the list mid-draw would shift every index
+  -- under the widgets still to be drawn.
+  if remove_at then
+    table.remove(state.scripts, remove_at)
+    state.dirty = true
+    Reload()
+  end
+
   im.Separator(ctx)
 end
 
@@ -2591,8 +2673,6 @@ end
 -- -----------------------------------------------------------------------
 
 LoadProjectFile()
-LoadCSV(state.script_csv)
-ApplyMappingDefaults()
 LoadLayoutSettings()
 LoadViewSettings()
 Reload()
@@ -2620,42 +2700,28 @@ local function loop()
   if visible then
     pending_action = nil
 
-    -- Script CSV ----------------------------------------------------------
+    -- Scripts -------------------------------------------------------------
     im.Text(ctx, "Script:")
     im.SameLine(ctx)
-    if state.script_csv == "" then
+    local n_scripts = #state.scripts
+    if n_scripts == 0 then
       im.TextDisabled(ctx, "none chosen")
     else
-      im.TextDisabled(ctx, vo.Basename(state.script_csv))
-      if im.IsItemHovered(ctx) then im.SetTooltip(ctx, state.script_csv) end
-    end
-    im.SameLine(ctx)
-    if im.Button(ctx, "Choose…") then
-      -- With no script yet, start in the project's own folder rather than
-      -- wherever REAPER defaults to (its resource path).
-      local start_at = state.script_csv
-      if start_at == "" then
-        local dir = ProjectPath():match("^(.*[\\/])")
-        if dir then start_at = dir .. "*.csv" end
-      end
-      local ok, path = r.GetUserFileNameForRead(start_at, "Select the session script", "csv")
-      if ok then
-        state.script_csv = path
-        LoadCSV(path)
-        ApplyMappingDefaults()
-        state.dirty = true    -- the Script CSV field in the project file needs saving
-        Reload()
-      end
-    end
-    im.SameLine(ctx)
-    if im.Button(ctx, "Settings") then state.settings_open = true end
-    im.SameLine(ctx)
-    if state.header then
-      if im.Button(ctx, "Columns…") then state.mapping_open = not state.mapping_open end
+      local label = vo.Basename(state.scripts[1].path or "")
+      if n_scripts > 1 then label = label .. string.format(" +%d more", n_scripts - 1) end
+      im.TextDisabled(ctx, label)
       if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, "Which column of the script holds the filename, the line and the character.")
+        local all = {}
+        for _, sc in ipairs(state.scripts) do all[#all + 1] = sc.path end
+        im.SetTooltip(ctx, table.concat(all, "\n"))
       end
-      im.SameLine(ctx)
+    end
+
+    im.SameLine(ctx)
+    if im.Button(ctx, "Script") then state.scripts_open = not state.scripts_open end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "The script CSVs this project reads, and which column of\n" ..
+                         "each holds the filename, the line and the character.")
     end
     im.SameLine(ctx)
     -- The other two windows of the set. Overview is where a session is read, so
@@ -2670,17 +2736,18 @@ local function loop()
       local ok, why = vo.LaunchSibling("ajsfx_VO_Cut.lua")
       if not ok then state.message, state.message_kind = tostring(why), "error" end
     end
+    im.SameLine(ctx)
+    if im.Button(ctx, "Settings") then state.settings_open = true end
 
-    if state.mapping_open and state.header then DrawMapping() end
+    if state.scripts_open then DrawScriptPanel() end
 
-    if state.header_error ~= "" then
-      im.TextColored(ctx, 0xDD6666FF, state.header_error)
-    elseif state.header and not (state.mapping.asset and state.mapping.text) then
-      im.TextColored(ctx, 0xDDAA33FF,
-        "This script's Filename and Line Text columns are not mapped, so there is\n" ..
-        "nothing to match against. Press Columns… and pick them.")
+    local bad = BadScriptCount()
+    if bad > 0 then
+      im.TextColored(ctx, 0xDDAA33FF, string.format(
+        "%d of %d script%s is not usable, so its lines are missing.",
+        bad, n_scripts, n_scripts == 1 and "" or "s"))
       im.SameLine(ctx)
-      if im.Button(ctx, "Columns…##warn") then state.mapping_open = true end
+      if im.Button(ctx, "Script##warn") then state.scripts_open = true end
     end
 
     im.Separator(ctx)
