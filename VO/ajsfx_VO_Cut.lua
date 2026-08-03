@@ -53,10 +53,9 @@ end
 -- -----------------------------------------------------------------------
 
 local state = {
-  header        = nil,
-  rows          = nil,
-  mapping       = {},
-  header_error  = "",
+  scripts       = {},          -- { path, mapping, enabled }, from the project file
+  appends       = {},          -- per-script-line delivered-name suffixes
+  script_errors = {},          -- one message per script that would not load
   lines         = {},
 
   items         = {},          -- vo.CollectProjectSpans()
@@ -67,7 +66,6 @@ local state = {
   entries       = {},          -- vo.ParseProjectFile entries
   pins          = {},          -- hand-placed spans; an input to BuildMatch
   project_path  = nil,
-  script_csv    = "",
   overview      = {},          -- vo.BuildOverview result
 
   use_alts_track   = false,    -- session-only toggles; vo.CONFIG_SCHEMA deliberately
@@ -88,36 +86,9 @@ local state = {
 -- The script side (loaded once at launch, like ajsfx VO Overview)
 -- -----------------------------------------------------------------------
 
-local function LoadCSV(path)
-  state.header, state.rows, state.header_error = nil, nil, ""
-  if not path or path == "" then return end
-
-  local text = ReadFile(path)
-  if not text then
-    state.header_error = "Cannot read the script CSV:\n" .. path
-    return
-  end
-
-  local rows = vo.ParseCSV(text)
-  if #rows < 1 then
-    state.header_error = "The script CSV is empty."
-    return
-  end
-
-  local header = table.remove(rows, 1)
-  local ok, err = vo.ValidateHeaderNames(header)
-  if not ok then
-    state.header_error = err
-    return
-  end
-
-  state.header, state.rows = header, rows
-  if #rows == 0 then state.header_error = "The script CSV has no data rows." end
-end
-
 local function LoadProjectFile()
   state.entries = {}
-  state.script_csv, state.mapping, state.pins = "", {}, {}
+  state.scripts, state.appends, state.pins = {}, {}, {}
 
   local proj = ProjectPath()
   state.project_path = (proj ~= "") and vo.ProjectFilePath(proj) or nil
@@ -128,29 +99,34 @@ local function LoadProjectFile()
 
   local parsed, reason = vo.ParseProjectFile(text)
   if parsed then
-    state.entries    = parsed.entries
-    state.script_csv = parsed.script_csv
-    state.mapping    = parsed.mapping
+    state.entries = parsed.entries
+    state.scripts = parsed.scripts or {}
+    state.appends = parsed.appends or {}
     -- Read here too, and not only in Overview: a pin is an INPUT to matching,
     -- so cutting without it would cut a different placement than the one the
     -- user pinned and is looking at.
-    state.pins       = parsed.pins or {}
+    state.pins    = parsed.pins or {}
   else
     state.gate_message = "Cannot read " .. vo.Basename(state.project_path) ..
                           ": " .. tostring(reason)
   end
 end
 
-local function ApplyMappingDefaults()
-  if state.mapping and next(state.mapping) then return end
-  state.mapping = state.header and vo.AutoDetectMapping(state.header) or {}
-end
-
+-- Every script the project reads, through the same loader ajsfx VO Overview
+-- uses, so a script that loads there cannot fail to load here. The Appends are
+-- applied on top, which is what makes the cut clips carry the delivered names
+-- the Overview was showing.
 local function ScriptLines()
-  if not state.header or not state.rows or state.header_error ~= "" then return {} end
-  local cols = vo.MapColumns(state.header, state.mapping)
-  if not cols then return {} end
-  return vo.BuildScriptLines(state.rows, cols)
+  local loaded = vo.LoadScripts(state.scripts, ReadFile)
+  vo.ResolveNames(loaded.lines, vo.AppendMap(state.appends))
+  state.script_errors = {}
+  for _, sc in ipairs(loaded.scripts) do
+    if sc.error and sc.error ~= "" then
+      state.script_errors[#state.script_errors + 1] =
+        vo.Basename(sc.path or "") .. ": " .. sc.error
+    end
+  end
+  return loaded.lines
 end
 
 -- -----------------------------------------------------------------------
@@ -550,6 +526,12 @@ local function Draw()
     -- two items in REAPER may share a name quite happily -- nothing is written
     -- and nothing is lost. It is worth saying once because the clash becomes
     -- real later, when the named clips are rendered to files.
+    -- A script that would not load is not a note: its lines are simply absent,
+    -- and cutting without them would quietly deliver a short session.
+    for _, why in ipairs(state.script_errors or {}) do
+      im.TextColored(ctx, 0xDD6666FF, why)
+    end
+
     local dupes = vo.DuplicateAssets(state.lines or {})
     if #dupes > 0 then
       im.TextDisabled(ctx, string.format(
@@ -613,8 +595,6 @@ local function Draw()
 end
 
 LoadProjectFile()
-LoadCSV(state.script_csv)
-ApplyMappingDefaults()
 state.lines = ScriptLines()
 Reload()
 Draw()

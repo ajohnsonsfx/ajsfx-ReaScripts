@@ -106,7 +106,7 @@ local function StatusLabel(row)
 end
 
 local function ItemName(row)
-  return row.take_name or row.name_override or row.asset or ""
+  return row.take_name or row.name_override or row.deliver or row.asset or ""
 end
 
 -- Sorting and filtering are one mechanism across every column, driven by two
@@ -138,6 +138,9 @@ local COLUMNS = {
     end },
   { key = "character",  label = "Character",  width =  90,
     text = function(row) return row.character or "" end },
+  { key = "script",     label = "Script",     width =  90,
+    text = function(row) return row.script or "" end,
+    tip = "Which script CSV this line came from." },
   -- Two names, deliberately. "Item name" is what the user is changing and what
   -- REAPER's render patterns read; "CSV filename" is the script's own name for
   -- the line, kept visible and read-only so a rename never loses the original.
@@ -149,6 +152,11 @@ local COLUMNS = {
     text = function(row) return row.asset or "" end,
     tip = "The filename from the script CSV. Not editable.\n" ..
           "Right-click a cell to copy it or to put it back on the item." },
+  { key = "append",     label = "Append",     width = 110,
+    text = function(row) return row.append or "" end,
+    tip = "Added to the end of the CSV filename to make the delivered name.\n" ..
+          "No separator is inserted -- type the one you want. Use it to tell\n" ..
+          "apart two lines that ask for the same filename." },
   { key = "take",       label = "Take",       width =  44,
     num  = function(row) return row.take_index end,
     text = function(row)
@@ -637,6 +645,18 @@ local function SetNotes(row, notes)
   Mutate(row, function(e) e.notes = (notes ~= "") and notes or nil end)
 end
 
+-- The Append belongs to the SCRIPT LINE, not to the take, so it is written to
+-- state.appends rather than through EntryFor -- and every take of the line picks
+-- it up on the next rebuild. Nothing about the match changes, so this does not
+-- invalidate the match cache; only the delivered name moves.
+local function SetAppend(row, text)
+  if not row.append_key then return end
+  vo.SetAppend(state.appends, row.script or "", row.asset or "",
+               row.append_nth or 1, text)
+  state.dirty = true
+  Rebuild()
+end
+
 -- Exactly one take of a line may be the select, so turning one ON clears the
 -- rest of its group. Without this the project file could hold two selected
 -- rows for one filename and BuildOverview would silently pick whichever the
@@ -686,7 +706,7 @@ end
 -- than set to the asset name: an override equal to the script's name is not a
 -- judgement about anything, and the project file holds only judgements.
 local function ResetName(row)
-  local clean = vo.SanitizeName(row.asset or "")
+  local clean = vo.SanitizeName(row.deliver or row.asset or "")
   if clean == "" then return end
 
   if row.item then
@@ -2304,12 +2324,15 @@ local function DrawTableBody()
     im.TableSetColumnIndex(ctx, CI.character)
     CellText(row, "character", CI.character, row_h, row.character, "plain")
 
+    im.TableSetColumnIndex(ctx, CI.script)
+    CellText(row, "script", CI.script, row_h, row.script, "disabled")
+
     -- Filename ------------------------------------------------------------
     im.TableSetColumnIndex(ctx, CI.item_name)
     -- The live take name where there is a take, so a rename made anywhere else
     -- in REAPER shows up here too. The project file's override is the fallback, so a
     -- name chosen for a line whose audio is not loaded is not lost.
-    local shown = row.take_name or row.name_override or row.asset or ""
+    local shown = row.take_name or row.name_override or row.deliver or row.asset or ""
     if row.status == "missing" then
       -- Nothing to rename: there is no take at all.
       CellText(row, "item_name", CI.item_name, row_h, shown, "disabled")
@@ -2334,13 +2357,26 @@ local function DrawTableBody()
     -- reason a rename can never leave the user wondering what it used to be.
     im.TableSetColumnIndex(ctx, CI.asset)
     local csv_name = row.asset or ""
-    CellText(row, "asset", CI.asset, row_h, csv_name, "disabled")
-    -- No per-cell tooltip: the explanation belongs on the header, where it is
-    -- read once, not under the cursor on every row. An explicit popup ID is
-    -- what lets a plain Text item own a context menu.
+    -- Red until this line's delivered name is its own. The name being compared
+    -- is the RESOLVED one, so the moment an Append (or a rename) separates the
+    -- two lines, both go back to normal.
+    local resolved = (row.name_override ~= nil and row.name_override ~= "")
+                     and row.name_override or row.deliver
+    local clash = row.line_key ~= nil and resolved ~= nil
+                  and state.dupe_names[resolved] == true
+    CellText(row, "asset", CI.asset, row_h, csv_name, clash and 0xDD6666FF or "disabled")
+    if clash and im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Another script line is delivered under this same name.\n" ..
+                         "The clips cut fine, but they will overwrite each other\n" ..
+                         "when rendered to files. Type something in Append to\n" ..
+                         "tell them apart.")
+    end
+    -- No per-cell tooltip otherwise: the explanation belongs on the header,
+    -- where it is read once, not under the cursor on every row. An explicit
+    -- popup ID is what lets a plain Text item own a context menu.
     if csv_name ~= "" and im.BeginPopupContextItem(ctx, "##csv_menu") then
       if im.MenuItem(ctx, "Copy") then Copy(csv_name) end
-      local can_reset = row.status ~= "missing" and shown ~= csv_name
+      local can_reset = row.status ~= "missing" and shown ~= (row.deliver or csv_name)
       if im.MenuItem(ctx, "Reset item name", nil, nil, can_reset) then
         pending_action = function() ResetName(row) end
       end
@@ -2348,6 +2384,31 @@ local function DrawTableBody()
         TooltipEvenWhenDisabled("The item is already named " .. csv_name .. ".")
       end
       im.EndPopup(ctx)
+    end
+
+    -- Append --------------------------------------------------------------
+    im.TableSetColumnIndex(ctx, CI.append)
+    if row.line_key then
+      PushFilledField("append", row_h)
+      -- AFTER PushFilledField, never before: that helper sets this cell's own
+      -- background to the editable-field shade, so a red set first would simply
+      -- be overwritten.
+      --
+      -- A row whose name comes from a hand-typed override is not the Append's
+      -- problem to fix, so there only the filename goes red.
+      if clash and (row.name_override == nil or row.name_override == "") then
+        im.TableSetBgColor(ctx, im.TableBgTarget_CellBg, 0x66222240, -1)
+      end
+      local achanged, atext = im.InputText(ctx, "##append", row.append or "")
+      PopFilledField()
+      if achanged then
+        local captured = atext
+        pending_action = function() SetAppend(row, captured) end
+      end
+      if im.IsItemHovered(ctx) and (row.append or "") == "" then
+        im.SetTooltip(ctx, "Type something here to tell this line apart from\n" ..
+                           "another that asks for the same filename.")
+      end
     end
 
     im.TableSetColumnIndex(ctx, CI.take)
