@@ -228,6 +228,27 @@ test("lines with no filename are not duplicates of each other", function()
   assert(#vo.DuplicateAssets(lines) == 0, "Empty filenames are not a collision")
 end)
 
+test("the resolved name is what collides, not the raw filename", function()
+  local lines = { { asset = "dup", deliver = "dup_a",  text = "A", row = 1 },
+                  { asset = "dup", deliver = "dup_b",  text = "B", row = 2 } }
+  assert(#vo.DuplicateAssets(lines) == 0,
+    "Appends that separate the names must clear the clash")
+end)
+
+test("two scripts delivering one name collide like two rows of one script", function()
+  local lines = { { asset = "dup", deliver = "dup", text = "A", row = 1, script = "Ch2" },
+                  { asset = "dup", deliver = "dup", text = "B", row = 1, script = "Ch5" } }
+  local d = vo.DuplicateAssets(lines)
+  assert(#d == 1 and #d[1].rows == 2, "Expected one group of two")
+  assert(d[1].asset == "dup", "The group is named by the resolved name")
+end)
+
+test("a line with no deliver falls back to its filename", function()
+  local lines = { { asset = "dup", text = "A", row = 1 },
+                  { asset = "dup", text = "B", row = 2 } }
+  assert(#vo.DuplicateAssets(lines) == 1, "The fallback must still detect the clash")
+end)
+
 --------------------------------
 -- ScriptLabel / AppendKey
 --------------------------------
@@ -423,6 +444,67 @@ test("a line with no append key still resolves", function()
   local lines = { { asset = "a" } }
   vo.ResolveNames(lines, {})
   assert(lines[1].deliver == "a", "A key-less line must not error")
+end)
+
+--------------------------------
+-- DuplicateNames
+--------------------------------
+print("\nDuplicateNames:")
+
+test("two lines resolving to one name are flagged", function()
+  local dupes = vo.DuplicateNames({
+    { line_key = "k1", deliver = "dup" },
+    { line_key = "k2", deliver = "dup" },
+  })
+  assert(dupes["dup"] == true, "Expected dup to be flagged")
+end)
+
+test("two takes of ONE line never flag each other", function()
+  local dupes = vo.DuplicateNames({
+    { line_key = "k1", deliver = "dup" },
+    { line_key = "k1", deliver = "dup" },
+  })
+  assert(next(dupes) == nil, "Takes of one line share a name by design")
+end)
+
+test("an override that separates a clash clears it", function()
+  local dupes = vo.DuplicateNames({
+    { line_key = "k1", deliver = "dup", name_override = "dup_a" },
+    { line_key = "k2", deliver = "dup" },
+  })
+  assert(next(dupes) == nil, "The override separated them")
+end)
+
+test("an override that recreates a clash is flagged", function()
+  local dupes = vo.DuplicateNames({
+    { line_key = "k1", deliver = "alpha", name_override = "bravo" },
+    { line_key = "k2", deliver = "bravo" },
+  })
+  assert(dupes["bravo"] == true, "An override can create a clash too")
+end)
+
+test("an empty override is ignored", function()
+  local dupes = vo.DuplicateNames({
+    { line_key = "k1", deliver = "dup", name_override = "" },
+    { line_key = "k2", deliver = "dup" },
+  })
+  assert(dupes["dup"] == true, "An empty override is not a rename")
+end)
+
+test("rows with no line are skipped", function()
+  local dupes = vo.DuplicateNames({
+    { deliver = "orphan" },
+    { deliver = "orphan" },
+  })
+  assert(next(dupes) == nil, "Audio matching no script line has no name to clash")
+end)
+
+test("an empty name is never a clash", function()
+  local dupes = vo.DuplicateNames({
+    { line_key = "k1", deliver = "" },
+    { line_key = "k2", deliver = "" },
+  })
+  assert(next(dupes) == nil, "Empty names are not a collision")
 end)
 
 --------------------------------

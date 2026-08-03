@@ -322,7 +322,8 @@ function vo.BuildScriptLines(rows, cols, filters)
   return lines
 end
 
--- Script lines that two or more rows want delivered under the SAME filename.
+-- Script lines that two or more rows want DELIVERED under the same name, after
+-- each line's Append has been applied.
 -- The overview can still keep their takes apart -- it groups by script row --
 -- but the delivered files cannot be kept apart, so one line's audio would
 -- overwrite the other's. Nothing downstream can repair that; only the script
@@ -331,11 +332,16 @@ end
 function vo.DuplicateAssets(lines)
   local seen, order = {}, {}
   for _, l in ipairs(lines or {}) do
-    if l.asset and l.asset ~= "" then
-      local g = seen[l.asset]
+    -- The RESOLVED name, so an Append that separates two lines clears the
+    -- clash and an Append that does not still shows it. `asset` is the fallback
+    -- for callers that never ran ResolveNames (tests, older entry points).
+    local name = l.deliver
+    if name == nil or name == "" then name = l.asset end
+    if name and name ~= "" then
+      local g = seen[name]
       if not g then
-        g = { asset = l.asset, rows = {}, texts = {} }
-        seen[l.asset] = g
+        g = { asset = name, rows = {}, texts = {} }
+        seen[name] = g
         order[#order + 1] = g
       end
       g.rows[#g.rows + 1] = l.row
@@ -346,6 +352,40 @@ function vo.DuplicateAssets(lines)
   local dupes = {}
   for _, g in ipairs(order) do
     if #g.rows > 1 then dupes[#dupes + 1] = g end
+  end
+  return dupes
+end
+
+-- Row-level clash detection, for the red highlight in ajsfx VO Overview.
+--
+-- This exists alongside DuplicateAssets because the two questions differ. An
+-- Append belongs to a script LINE; a name override belongs to a single TAKE. So
+-- an override can separate a clash the line-level check still sees, or create
+-- one it cannot see at all. Takes of a single line resolving to the same name is
+-- normal and must never be flagged -- Cut is what numbers them apart.
+--
+-- rows: overview rows carrying line_key, deliver and optionally name_override.
+-- Returns a set of the names claimed by two or more DIFFERENT script lines.
+function vo.DuplicateNames(rows)
+  local owners = {}
+  for _, row in ipairs(rows or {}) do
+    if row.line_key then
+      local name = row.name_override
+      if name == nil or name == "" then name = row.deliver end
+      if name and name ~= "" then
+        local o = owners[name]
+        if not o then
+          owners[name] = { row.line_key }
+        elseif o[1] ~= row.line_key and o[2] == nil then
+          o[2] = row.line_key
+        end
+      end
+    end
+  end
+
+  local dupes = {}
+  for name, o in pairs(owners) do
+    if o[2] then dupes[name] = true end
   end
   return dupes
 end
