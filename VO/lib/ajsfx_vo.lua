@@ -1485,6 +1485,45 @@ function vo.MeasureNoiseFloor(gaps, probe, cfg)
   return quietest + vo.Opt(cfg, "snap_floor_offset")
 end
 
+-- The first and last moment inside [from, to] that is louder than the floor.
+--
+-- Whisper's word timestamps are contiguous by construction: a word's END is
+-- simply the next word's START, so 94% of them touch exactly. The pause around
+-- a take is therefore INSIDE the span, not outside it -- the first word of a
+-- take carries the silence before it and the last word carries the silence
+-- after. Snapping outward from those edges has nowhere to go, and every take
+-- gets cut from the previous take's last syllable to the next take's first, so
+-- the clips tile the recording end to end with no breaks between them at all.
+--
+-- Finding where the speech actually starts and stops inside the span is what
+-- gives the edges something to mean. The audio is the only evidence available:
+-- the word times cannot tell speech from the pause they absorbed.
+--
+-- Returns: first, last -- both nil when nothing in the range is above the
+-- floor, which the caller must read as "no speech found here", falling back to
+-- the span's own edges rather than trimming to nothing.
+function vo.FindSpeechBounds(from, to, floor_db, probe, cfg)
+  local step = vo.Opt(cfg, "snap_min_silence")
+  if not probe or not floor_db or step <= 0 then return nil, nil end
+  if (to - from) <= step then return nil, nil end
+
+  -- Stepped by index, not by accumulation: a span can be twenty seconds long
+  -- at a sixty-millisecond step, and drifting a window edge a hair past the
+  -- speech is enough to read the pause as sound and give the trim nothing to do.
+  local first, last
+  local n = 0
+  while from + (n + 1) * step <= to + 1e-9 do
+    local a  = from + n * step
+    local db = probe(a, a + step)
+    if db and db > floor_db then
+      if not first then first = a end
+      last = a + step
+    end
+    n = n + 1
+  end
+  return first, last
+end
+
 -- Place one boundary between a word edge and a hard limit.
 --
 --   from      -- the word's own edge, in the same time base as `probe`
@@ -1566,6 +1605,15 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
 
   for i, s in ipairs(spans) do
     if snap then
+      -- Where the speech in this span actually is. Whisper's word times put the
+      -- surrounding pause INSIDE the span (see vo.FindSpeechBounds), so an edge
+      -- has to be trimmed in to the sound before it is padded back out; without
+      -- this every take runs to the next take and the clips tile the recording.
+      -- Nothing found means the floor is untrustworthy here, so keep the edges.
+      local sp0, sp1 = vo.FindSpeechBounds(s.raw_start, s.raw_stop, floor_db, probe, cfg)
+      local at_start = sp0 or s.raw_start
+      local at_stop  = sp1 or s.raw_stop
+
       -- The search window is bounded by the neighbouring WORD -- every word the
       -- transcript holds, not just the ones this cut selected. Bounding by the
       -- neighbouring SPAN alone is not enough: a false start or an aside sitting
@@ -1574,18 +1622,18 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
       -- With the word bound in place that is structurally impossible, whatever
       -- the amplitude does inside the window. Raw boundaries throughout: a
       -- neighbour's already-padded edge describes a decision, not where audio is.
-      local start_limit = s.raw_start - pre
+      local start_limit = at_start - pre
       if spans[i - 1] then start_limit = math.max(start_limit, spans[i - 1].raw_stop) end
       local wb = word_end_before(words, s.raw_start)
       if wb then start_limit = math.max(start_limit, wb) end
 
-      local stop_limit = s.raw_stop + post
+      local stop_limit = at_stop + post
       if spans[i + 1] then stop_limit = math.min(stop_limit, spans[i + 1].raw_start) end
       local wa = word_start_after(words, s.raw_stop)
       if wa then stop_limit = math.min(stop_limit, wa) end
 
-      local a, how_a = vo.SnapBoundary(s.raw_start, start_limit, -1, floor_db, probe, cfg)
-      local b, how_b = vo.SnapBoundary(s.raw_stop,  stop_limit,   1, floor_db, probe, cfg)
+      local a, how_a = vo.SnapBoundary(at_start, start_limit, -1, floor_db, probe, cfg)
+      local b, how_b = vo.SnapBoundary(at_stop,  stop_limit,   1, floor_db, probe, cfg)
       s.start, s.stop = a, b
       s.snapped = (how_a == "silence" and how_b == "silence") and "silence" or "pad"
     else

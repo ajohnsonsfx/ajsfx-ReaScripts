@@ -1506,6 +1506,63 @@ test("with a probe the boundary lands in silence inside the pad", function()
   assert(spans[1].snapped == "silence", "snapped: " .. tostring(spans[1].snapped))
 end)
 
+--------------------------------
+print("\nFindSpeechBounds:")
+
+test("the sound inside a span is found, and the pause around it is not", function()
+  -- Speech in (12, 14) of a span running 10 to 16.
+  local probe = function(t0, t1) if t1 > 12.0 and t0 < 14.0 then return -10 end return -80 end
+  local a, b = vo.FindSpeechBounds(10.0, 16.0, -60, probe, { snap_min_silence = 0.5 })
+  assert(near(a, 12.0), "speech start: " .. tostring(a))
+  assert(near(b, 14.0), "speech stop: " .. tostring(b))
+end)
+
+test("a span that is silent throughout reports nothing rather than nothing found", function()
+  local a, b = vo.FindSpeechBounds(10.0, 16.0, -60, function() return -80 end,
+                                   { snap_min_silence = 0.5 })
+  assert(a == nil and b == nil, "Silence must not be trimmed to a point")
+end)
+
+test("no probe and no floor means no answer", function()
+  assert(vo.FindSpeechBounds(0, 5, -60, nil, {}) == nil, "no probe")
+  assert(vo.FindSpeechBounds(0, 5, nil, function() return -10 end, {}) == nil, "no floor")
+end)
+
+test("whisper's contiguous word times no longer weld the takes together", function()
+  -- The real shape of the bug. Whisper ends each word where the next begins,
+  -- so a take's span carries the pause before it AND the pause after it, and
+  -- two takes of a line share a boundary exactly. Cut faithfully, that tiles
+  -- the recording: every clip runs to the start of the next with no break.
+  -- Speech is in (10.5, 11.5) and (13.5, 14.5); the spans meet at 13.0.
+  local spans = { pad_span(10.0, 13.0), pad_span(13.0, 16.0) }
+  local words = { { t0 = 10.0, t1 = 13.0 }, { t0 = 13.0, t1 = 16.0 } }
+  local probe = function(t0, t1)
+    if (t1 > 10.5 and t0 < 11.5) or (t1 > 13.5 and t0 < 14.5) then return -10 end
+    return -80
+  end
+  vo.ApplyPadding(spans, { pre_pad = 0.3, post_pad = 0.3, snap_min_silence = 0.1 },
+                  nil, probe, -60, words)
+
+  assert(spans[1].stop < spans[2].start - 0.5,
+    string.format("The takes still touch: %.3f then %.3f", spans[1].stop, spans[2].start))
+  -- Each clip holds its own line with a little air, not three seconds of room.
+  assert(spans[1].start > 10.2 and spans[1].stop < 11.9,
+    string.format("take 1: %.3f..%.3f", spans[1].start, spans[1].stop))
+  assert(spans[2].start > 13.2 and spans[2].stop < 14.9,
+    string.format("take 2: %.3f..%.3f", spans[2].start, spans[2].stop))
+end)
+
+test("a take whose words are already tight is padded exactly as before", function()
+  -- The good case must not regress: speech fills the span, so there is nothing
+  -- to trim in and the edges travel outward into the pad as they always did.
+  local spans = { pad_span(2.0, 3.0) }
+  local probe = function(t0, t1) if t1 > 2.0 and t0 < 3.0 then return -10 end return -80 end
+  vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.05 },
+                  nil, probe, -60)
+  assert(near(spans[1].start, 1.95), "start: " .. spans[1].start)
+  assert(near(spans[1].stop,  3.05), "stop: " .. spans[1].stop)
+end)
+
 test("a boundary never crosses into the neighbouring take's audio", function()
   local spans = { pad_span(2.0, 3.0), pad_span(3.1, 4.0) }
   -- Silent everywhere: maximum temptation for the search to run away.
