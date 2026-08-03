@@ -433,6 +433,29 @@ Open **ajsfx VO Settings → Speech backend → Download backend & models**.
 6. Untick the mirror, change one column: the other no longer follows.
 7. Re-tick it, close and reopen the script: the two are still in step.
 
+## Several scripts, and the Append column (2026-08-02)
+
+1. Open **ajsfx VO Overview** on a project saved by the previous version. Its one
+   script is listed under **Script**, still mapped, and the table is unchanged.
+2. Press **Script** → **Add script…** and choose a second CSV. Both scripts' lines
+   appear; the **Script** column tells them apart.
+3. Add the same CSV again. It is refused with a message and the list is unchanged.
+4. Untick a script. Its lines vanish and the match re-runs — with no
+   re-transcription and no progress bar.
+5. Remove a script and add it back. Anything typed in its Append column is still
+   there.
+6. Point a script's **Filename** combo at the wrong column. That script alone shows
+   an error; the other script's lines are still matched.
+7. Load two scripts that deliver the same filename. Both lines show a **red
+   filename** and a **red Append cell**, on every take.
+8. Type `_ch2` in one line's Append. Both lines go back to normal, and the Item
+   name column shows `<filename>_ch2`.
+9. Two lines *inside one script* sharing a filename behave identically.
+10. Instead of an Append, rename one of two clashing lines with the Item name
+    field. The red clears. Rename it back to the other's name — the red returns.
+11. Run **ajsfx VO Cut**. The clips carry the appended names, and a script that
+    failed to load is reported in the Cut window too.
+
 ---
 
 ## Recording results

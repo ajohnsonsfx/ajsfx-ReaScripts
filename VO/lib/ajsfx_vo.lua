@@ -1,7 +1,7 @@
 -- @description ajsfx VO Shared Library
 -- @author ajsfx
 -- @version 0.5
--- @changelog Word-level transcript sidecars, a project file for the user's own marks, live matching, and silence-snapped clip boundaries
+-- @changelog Word-level transcript sidecars, a project file for the user's own marks, live matching, and silence-snapped clip boundaries The script side of a project is a list rather than a single CSV: the project file holds one row per script with its own column mapping and an on/off switch, plus the per-line Append that decides the delivered name. A project file written by the previous version still opens, and folds its one script into the list.
 -- @noindex
 -- @about Shared logic for the ajsfx VO windows.
 --        Split into a pure layer (parsing, normalization, matching, naming —
