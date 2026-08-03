@@ -350,6 +350,27 @@ function vo.DuplicateAssets(lines)
   return dupes
 end
 
+-- A script's short name, used in the Overview's Script column and as part of an
+-- Append's storage key. Sanitized because it is displayed beside filenames and
+-- must not carry anything a path would choke on.
+function vo.ScriptLabel(path)
+  if type(path) ~= "string" or path == "" then return "" end
+  local base = path:match("([^/\\]+)$") or path
+  local stem = base:match("^(.*)%.[^.]*$") or base
+  return vo.SanitizeName(stem)
+end
+
+-- A script line's identity for the Append it carries. The parts are NEVER
+-- joined for storage -- a filename containing the separator would make the
+-- split ambiguous -- so this is a lookup key only, built from parts the project
+-- file keeps apart. `nth` is the 1-based occurrence of `asset` WITHIN its own
+-- script, chosen over the CSV row number so that inserting a line at the top of
+-- a script does not orphan every Append below it.
+function vo.AppendKey(script_label, asset, nth)
+  return tostring(script_label or "") .. "|" .. tostring(asset or "")
+       .. "|" .. tostring(nth or 1)
+end
+
 --------------------------------
 -- Pure layer: number expansion
 --------------------------------

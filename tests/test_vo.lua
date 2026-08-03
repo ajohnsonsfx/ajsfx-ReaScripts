@@ -229,6 +229,54 @@ test("lines with no filename are not duplicates of each other", function()
 end)
 
 --------------------------------
+-- ScriptLabel / AppendKey
+--------------------------------
+print("\nScriptLabel:")
+
+test("a windows path becomes its basename without the extension", function()
+  assert(vo.ScriptLabel("D:/game/Chapter2_Script.csv") == "Chapter2_Script",
+    "Got " .. tostring(vo.ScriptLabel("D:/game/Chapter2_Script.csv")))
+end)
+
+test("backslashes are separators too", function()
+  assert(vo.ScriptLabel("D:\\game\\Chapter5.csv") == "Chapter5",
+    "Got " .. tostring(vo.ScriptLabel("D:\\game\\Chapter5.csv")))
+end)
+
+test("a label a filesystem would reject is sanitized", function()
+  local got = vo.ScriptLabel("D:/game/Act 1: Pickups.csv")
+  assert(not got:find("[:]"), "Colon survived: " .. got)
+  assert(got ~= "", "Sanitizing must not empty a real name")
+end)
+
+test("no path is the empty label", function()
+  assert(vo.ScriptLabel(nil) == "", "nil should give an empty label")
+  assert(vo.ScriptLabel("") == "", "empty should give an empty label")
+end)
+
+test("a name with no extension is left alone", function()
+  assert(vo.ScriptLabel("D:/game/script") == "script",
+    "Got " .. tostring(vo.ScriptLabel("D:/game/script")))
+end)
+
+print("\nAppendKey:")
+
+test("the same line keys the same way twice", function()
+  assert(vo.AppendKey("Ch2", "line_042", 1) == vo.AppendKey("Ch2", "line_042", 1),
+    "The key must be deterministic")
+end)
+
+test("two occurrences of one filename in one script key differently", function()
+  assert(vo.AppendKey("Ch2", "line_042", 1) ~= vo.AppendKey("Ch2", "line_042", 2),
+    "Occurrence must be part of the key")
+end)
+
+test("one filename in two scripts keys differently", function()
+  assert(vo.AppendKey("Ch2", "line_042", 1) ~= vo.AppendKey("Ch5", "line_042", 1),
+    "Script must be part of the key")
+end)
+
+--------------------------------
 -- Normalize
 --------------------------------
 print("\nNormalize:")
