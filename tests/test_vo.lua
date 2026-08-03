@@ -277,6 +277,88 @@ test("one filename in two scripts keys differently", function()
 end)
 
 --------------------------------
+-- MergeScriptLines
+--------------------------------
+print("\nMergeScriptLines:")
+
+local function script(label, enabled, assets)
+  local lines = {}
+  for i, a in ipairs(assets) do
+    lines[i] = { asset = a, text = "line " .. a, row = i }
+  end
+  return { label = label, enabled = enabled, lines = lines }
+end
+
+test("lines come out in script order then row order", function()
+  local merged = vo.MergeScriptLines({
+    script("Ch2", true, { "a", "b" }),
+    script("Ch5", true, { "c" }),
+  })
+  assert(#merged == 3, "Expected 3 lines, got " .. #merged)
+  assert(merged[1].asset == "a" and merged[2].asset == "b" and merged[3].asset == "c",
+    "Order is script-then-row")
+end)
+
+test("each line knows which script it came from", function()
+  local merged = vo.MergeScriptLines({
+    script("Ch2", true, { "a" }),
+    script("Ch5", true, { "c" }),
+  })
+  assert(merged[1].script == "Ch2", "Got " .. tostring(merged[1].script))
+  assert(merged[2].script == "Ch5", "Got " .. tostring(merged[2].script))
+end)
+
+test("a disabled script contributes nothing", function()
+  local merged = vo.MergeScriptLines({
+    script("Ch2", true,  { "a" }),
+    script("Ch5", false, { "c" }),
+  })
+  assert(#merged == 1 and merged[1].asset == "a",
+    "A disabled script must contribute no lines")
+end)
+
+test("no filename is modified by merging", function()
+  local merged = vo.MergeScriptLines({
+    script("Ch2", true, { "line_042" }),
+    script("Ch5", true, { "line_042" }),
+  })
+  assert(merged[1].asset == "line_042" and merged[2].asset == "line_042",
+    "Merging must never rename anything")
+end)
+
+test("a clash across scripts gets two distinct append keys", function()
+  local merged = vo.MergeScriptLines({
+    script("Ch2", true, { "line_042" }),
+    script("Ch5", true, { "line_042" }),
+  })
+  assert(merged[1].append_key ~= merged[2].append_key,
+    "Two scripts' identical filenames are still two different lines")
+end)
+
+test("two lines sharing a filename inside one script get distinct keys", function()
+  local merged = vo.MergeScriptLines({ script("Ch2", true, { "dup", "dup" }) })
+  assert(merged[1].append_key ~= merged[2].append_key,
+    "Occurrence index must separate them")
+end)
+
+test("occurrence counting is per script, not global", function()
+  local merged = vo.MergeScriptLines({
+    script("Ch2", true, { "shared" }),
+    script("Ch5", true, { "shared" }),
+  })
+  assert(merged[1].append_key == vo.AppendKey("Ch2", "shared", 1), "Ch2 line is its 1st")
+  assert(merged[2].append_key == vo.AppendKey("Ch5", "shared", 1), "Ch5 line is its 1st too")
+  assert(merged[1].append_nth == 1 and merged[2].append_nth == 1,
+    "The occurrence integer rides along for the mutator")
+end)
+
+test("enabled defaults to true when the field is absent", function()
+  local merged = vo.MergeScriptLines({ { label = "Ch2",
+    lines = { { asset = "a", text = "t", row = 1 } } } })
+  assert(#merged == 1, "A script with no enabled field is enabled")
+end)
+
+--------------------------------
 -- Normalize
 --------------------------------
 print("\nNormalize:")

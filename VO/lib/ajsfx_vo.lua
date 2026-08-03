@@ -371,6 +371,35 @@ function vo.AppendKey(script_label, asset, nth)
        .. "|" .. tostring(nth or 1)
 end
 
+-- Several scripts' lines, flattened into the one ordered list the matcher, the
+-- overview and the cut all already expect. NOTHING is renamed here: two scripts
+-- delivering one filename produce two ordinary lines that happen to share a
+-- name, and the Append column is what separates them. Merging's only job is to
+-- record which script each line came from and to give it a stable key.
+--
+-- scripts: { { label, enabled, lines = <BuildScriptLines output> }, ... }
+function vo.MergeScriptLines(scripts)
+  local out = {}
+  for _, sc in ipairs(scripts or {}) do
+    if sc.enabled ~= false then
+      -- Occurrence is counted WITHIN a script, so a filename appearing once in
+      -- each of two scripts is the 1st in both. Counting globally would make an
+      -- Append depend on which other scripts happened to be loaded.
+      local nth = {}
+      for _, l in ipairs(sc.lines or {}) do
+        local line = vo.ShallowCopy(l)
+        local n = (nth[l.asset] or 0) + 1
+        nth[l.asset] = n
+        line.script     = sc.label
+        line.append_nth = n
+        line.append_key = vo.AppendKey(sc.label, l.asset, n)
+        out[#out + 1] = line
+      end
+    end
+  end
+  return out
+end
+
 --------------------------------
 -- Pure layer: number expansion
 --------------------------------
