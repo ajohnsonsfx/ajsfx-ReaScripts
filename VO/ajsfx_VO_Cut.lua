@@ -210,23 +210,29 @@ local function Reload()
     if not any_selected then
       state.gate_message = "Nothing is selected. Tick Select in Overview on the takes you want cut."
     else
-      -- Every asset with more than one take must have exactly the kind of
+      -- Every LINE with more than one take must have exactly the kind of
       -- decision Select exists to record; a group with none is unresolved.
-      local by_asset = {}
+      --
+      -- Keyed by script row, not by filename. A script can name two lines with
+      -- one filename, and keying on the name merged them into a single group:
+      -- a select ticked on one line answered for the other, which then got cut
+      -- with no select of its own and no complaint.
+      local by_line = {}
       for _, row in ipairs(state.overview) do
         if row.status ~= "orphan" and row.status ~= "missing" and row.asset then
-          local b = by_asset[row.asset]
-          if not b then b = { count = 0, selected = false }; by_asset[row.asset] = b end
+          local key = row.script_row or row.asset
+          local b = by_line[key]
+          if not b then b = { count = 0, selected = false, asset = row.asset }; by_line[key] = b end
           b.count = b.count + 1
           if row.user_select then b.selected = true end
         end
       end
 
       local unresolved, names = 0, {}
-      for asset, b in pairs(by_asset) do
+      for _, b in pairs(by_line) do
         if b.count > 1 and not b.selected then
           unresolved = unresolved + 1
-          names[#names + 1] = asset
+          names[#names + 1] = b.asset
         end
       end
 
@@ -314,10 +320,19 @@ local function DoCut()
     end
   end
 
-  -- Assets with a resolved primary, for the alts-track sibling pull below.
-  local selected_assets = {}
+  -- Lines with a resolved primary, for the alts-track sibling pull below.
+  -- By script row, not filename, for the same reason the gate is: two lines
+  -- under one filename would otherwise drag each other's takes onto Alts.
+  local selected_lines = {}
   for _, row in ipairs(state.overview) do
-    if row.user_select and row.asset then selected_assets[row.asset] = true end
+    if row.user_select and row.asset then
+      selected_lines[row.script_row or row.asset] = true
+    end
+  end
+  local function line_key(s)
+    local l = s.line_idx and (state.lines or {})[s.line_idx]
+    if l and l.asset == s.asset then return l.row end
+    return s.asset
   end
 
   -- The spans this run tries to cut: every take the user selected, every
@@ -326,7 +341,7 @@ local function DoCut()
   local candidates = {}
   for _, s in ipairs(all_spans) do
     if s.kind == "match" then
-      if s.select or (cfg.use_alts_track and s.asset and selected_assets[s.asset]) then
+      if s.select or (cfg.use_alts_track and s.asset and selected_lines[line_key(s)]) then
         candidates[#candidates + 1] = s
       end
     elseif s.kind == "review" then
@@ -531,21 +546,22 @@ local function Draw()
     im.Separator(ctx)
     im.Spacing(ctx)
 
-    -- Ahead of the gate, because this one is not about the takes: two script
-    -- rows sharing a filename means whichever cuts second overwrites the first,
-    -- and the delivered folder ends up quietly one line short.
+    -- A note, not a warning, and never a gate. Cutting only names items, and
+    -- two items in REAPER may share a name quite happily -- nothing is written
+    -- and nothing is lost. It is worth saying once because the clash becomes
+    -- real later, when the named clips are rendered to files.
     local dupes = vo.DuplicateAssets(state.lines or {})
     if #dupes > 0 then
-      im.TextColored(ctx, 0xDD6666FF, string.format(
-        "%d filename%s used by more than one script line — cutting would deliver " ..
-        "one line over the other. Fix the script.",
+      im.TextDisabled(ctx, string.format(
+        "%d filename%s shared by two script lines — the clips cut fine, but they " ..
+        "will collide when rendered to files.",
         #dupes, #dupes == 1 and " is" or "s are"))
       for i, d in ipairs(dupes) do
         if i > 5 then
-          im.TextDisabled(ctx, string.format("... and %d more", #dupes - 5))
+          im.TextDisabled(ctx, string.format("    ... and %d more", #dupes - 5))
           break
         end
-        im.TextDisabled(ctx, string.format("    %s  (rows %s)",
+        im.TextDisabled(ctx, string.format("    %s  (script rows %s)",
           d.asset, table.concat(d.rows, ", ")))
       end
       im.Spacing(ctx)
