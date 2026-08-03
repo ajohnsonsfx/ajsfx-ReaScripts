@@ -3962,6 +3962,46 @@ test("a disabled script is loaded but contributes no lines", function()
   assert(#got.lines == 0, "It contributes nothing while off")
 end)
 
+--------------------------------
+-- deliver threading
+--------------------------------
+print("\ndeliver threading:")
+
+test("AssignNames names a take from deliver, not from asset", function()
+  local spans = { { kind = "match", asset = "line_042", deliver = "line_042_ch2",
+                    start = 0, stop = 1, select = true } }
+  vo.AssignNames(spans, {})
+  assert(spans[1].name and spans[1].name:find("line_042_ch2", 1, true),
+    "Got " .. tostring(spans[1].name))
+end)
+
+test("AssignNames falls back to asset when there is no deliver", function()
+  local spans = { { kind = "match", asset = "line_042", start = 0, stop = 1,
+                    select = true } }
+  vo.AssignNames(spans, {})
+  assert(spans[1].name and spans[1].name:find("line_042", 1, true),
+    "Got " .. tostring(spans[1].name))
+end)
+
+test("overview rows carry the line's identity and delivered name", function()
+  local lines = { { asset = "line_a", text = "Alpha", row = 1,
+                    script = "Ch2", append_key = "Ch2|line_a|1", append_nth = 1,
+                    deliver = "line_a_x" } }
+  local rows = vo.BuildOverview({ lines = lines, matches = {}, entries = {} })
+  assert(#rows == 1, "Expected 1 row, got " .. #rows)
+  assert(rows[1].line_key == "Ch2|line_a|1", "Got " .. tostring(rows[1].line_key))
+  assert(rows[1].deliver == "line_a_x", "Got " .. tostring(rows[1].deliver))
+  assert(rows[1].script == "Ch2", "Got " .. tostring(rows[1].script))
+  assert(rows[1].append_nth == 1, "The occurrence integer must reach the row")
+end)
+
+test("a row with no matching line carries no line key", function()
+  local rows = vo.BuildOverview({ lines = {}, matches = {}, entries = {} })
+  for _, row in ipairs(rows) do
+    assert(row.line_key == nil, "An orphan must not claim a script line")
+  end
+end)
+
 test("notes survive commas, quotes and newlines", function()
   local nasty = 'take 2, "the good one"\nwatch the plosive'
   local out = round_trip({

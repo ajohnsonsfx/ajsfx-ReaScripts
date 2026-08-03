@@ -1069,6 +1069,7 @@ function vo.FindCandidates(word_tokens, lines, index, cfg)
               score    = best_score,
               line_idx  = line_idx,
               asset     = lines[line_idx].asset,
+              deliver   = lines[line_idx].deliver,
               character = lines[line_idx].speaker,
             }
           end
@@ -1442,6 +1443,7 @@ function vo.PinnedSpans(word_tokens, pins, lines)
         pinned    = true,
         line_idx  = line_idx,
         asset     = pin.asset,
+        deliver   = lines[line_idx].deliver,
         character = lines[line_idx].speaker,
       }
     end
@@ -1970,19 +1972,30 @@ function vo.AssignNames(spans, cfg)
     for _, s in ipairs(g) do s.primary = (s == primary) end
   end
 
+  -- The name the SCRIPT asks this span to be delivered under: the filename plus
+  -- whatever the user typed in the Append column. The grouping above still keys
+  -- on the raw asset, and must -- two script lines that share a filename are
+  -- still two lines, and numbering their takes together would be wrong.
+  local function delivered(s)
+    if s.deliver ~= nil and s.deliver ~= "" then return s.deliver end
+    return s.asset
+  end
+
   for _, s in ipairs(spans) do
     if s.kind == "match" then
       s.dest = (use_alts and not s.primary) and "alts" or "selects"
       if suffix and not s.primary then
-        s.name = vo.SanitizeName(string.format("%s_tk%02d", s.asset, s.take_index), max_len)
+        s.name = vo.SanitizeName(
+          string.format("%s_tk%02d", delivered(s), s.take_index), max_len)
       else
-        s.name = vo.SanitizeName(s.asset, max_len)
+        s.name = vo.SanitizeName(delivered(s), max_len)
       end
 
     elseif s.kind == "review" then
       s.dest = "review"
       s.name = vo.SanitizeName(
-        string.format("%s%s_s%.2f", review_prefix, s.asset or "", s.score or 0), max_len)
+        string.format("%s%s_s%.2f", review_prefix, delivered(s) or "", s.score or 0),
+        max_len)
 
     else
       -- Unmatched audio (slates, chatter, false starts) is left exactly where it
@@ -2988,6 +3001,13 @@ function vo.BuildOverview(input)
       status        = rec.orphan and "orphan"
                       or (s.kind == "review" and "review" or "recorded"),
       asset         = s.asset,
+      deliver       = (line and line.deliver) or s.deliver or s.asset,
+      script        = line and line.script or nil,
+      append_key    = line and line.append_key or nil,
+      append_nth    = line and line.append_nth or nil,
+      -- The line's identity for clash detection. Orphans have none: audio that
+      -- matched no script line has no delivered name to collide with.
+      line_key      = line and line.append_key or nil,
       character     = s.character or (line and line.speaker) or nil,
       line_text     = line and line.text or nil,
       transcript    = s.transcript,
@@ -3047,6 +3067,11 @@ function vo.BuildOverview(input)
         key           = key,
         status        = "missing",
         asset         = line.asset,
+        deliver       = line.deliver or line.asset,
+        script        = line.script,
+        append_key    = line.append_key,
+        append_nth    = line.append_nth,
+        line_key      = line.append_key,
         character     = line.speaker,
         line_text     = line.text,
         take_count    = 0,
