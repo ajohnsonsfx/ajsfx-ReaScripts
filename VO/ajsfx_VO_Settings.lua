@@ -394,8 +394,11 @@ end
 
 local function DrawOutput()
   local changed
+  -- The four tracks Pull routes to. Selects and Alts are delivered; Outs holds
+  -- the takes kept but not shipped, and Review the lines nothing has decided.
   changed, cfg.track_selects = im.InputText(ctx, "Selects track", cfg.track_selects)
   changed, cfg.track_alts    = im.InputText(ctx, "Alts track",    cfg.track_alts)
+  changed, cfg.track_outs    = im.InputText(ctx, "Outs track",    cfg.track_outs)
   changed, cfg.track_review  = im.InputText(ctx, "Review track",  cfg.track_review)
   im.Spacing(ctx)
   changed, cfg.review_prefix    = im.InputText(ctx, "Review prefix",    cfg.review_prefix)
@@ -403,9 +406,6 @@ local function DrawOutput()
   im.TextDisabled(ctx, "Unmatched audio is left untouched on the source track, so the\n" ..
                        "unmatched prefix labels its rows in the report rather than\n" ..
                        "naming a clip.")
-  im.Spacing(ctx)
-  changed, cfg.create_regions = im.Checkbox(ctx, "Create regions over Selects clips", cfg.create_regions)
-  im.TextDisabled(ctx, "For Region Render Matrix delivery. Off by default.")
 end
 
 local function DrawScript()

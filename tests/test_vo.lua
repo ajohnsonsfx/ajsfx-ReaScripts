@@ -3090,7 +3090,7 @@ test("an empty ExtState yields documented defaults", function()
   assert(cfg.accept_threshold == 0.80, "accept: " .. tostring(cfg.accept_threshold))
   assert(cfg.review_floor == 0.55, "floor: " .. tostring(cfg.review_floor))
   assert(cfg.track_selects == "Selects", "selects: " .. tostring(cfg.track_selects))
-  assert(cfg.create_regions == false, "regions should default off")
+  assert(cfg.track_outs == "Outs", "outs: " .. tostring(cfg.track_outs))
   assert(cfg.whisper_language == "en", "language: " .. tostring(cfg.whisper_language))
 end)
 
@@ -3139,12 +3139,12 @@ end)
 test("booleans round-trip rather than becoming truthy strings", function()
   mock.reset()
   local cfg = vo.LoadConfig()
-  cfg.create_regions = true
+  cfg.snap_boundaries = true
   cfg.force_retranscribe = false
   vo.SaveConfig(cfg)
 
   local back = vo.LoadConfig()
-  assert(back.create_regions == true, "create_regions: " .. tostring(back.create_regions))
+  assert(back.snap_boundaries == true, "snap_boundaries: " .. tostring(back.snap_boundaries))
   assert(back.force_retranscribe == false, "force_retranscribe: " .. tostring(back.force_retranscribe))
 end)
 
@@ -3712,7 +3712,7 @@ test("a zero-length span is skipped and never sweeps the rest of the item", func
   }
   local cfg = { track_selects = "Selects", track_alts = "Alts", track_review = "Review" }
 
-  local applied, failures = vo.ApplyPlan(plan, cfg, raw)
+  local applied, failures = vo.ApplyPlan(plan, raw)
 
   -- Cutting moves nothing and creates no track: where a take goes is Pull's
   -- question, and it is answered from the name, not from this plan.
@@ -3766,7 +3766,7 @@ test("an unmatched span is neither split nor moved", function()
   }
   local cfg = { track_selects = "Selects", track_alts = "Alts", track_review = "Review" }
 
-  local applied, failures = vo.ApplyPlan(plan, cfg, raw)
+  local applied, failures = vo.ApplyPlan(plan, raw)
 
   local function track_by_name(nm)
     for _, t in ipairs(mock.tracks) do if t.name == nm then return t end end

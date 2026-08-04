@@ -2116,7 +2116,7 @@ local function DoCut()
   local applied, failures = 0, {}
   core.Transaction("VO Overview: cut and name", function()
     for _, g in pairs(by_item) do
-      local a, f = vo.ApplyPlan(g.spans, cfg, g.info.track)
+      local a, f = vo.ApplyPlan(g.spans, g.info.track)
       applied = applied + a
       for _, msg in ipairs(f) do failures[#failures + 1] = msg end
     end

@@ -3778,7 +3778,6 @@ vo.CONFIG_SCHEMA = {
   { key = "alt_append_pattern", kind = "string", default = "_alt{n}" },
   { key = "alt_append_start",   kind = "number", default = 1 },
   { key = "alt_append_digits",  kind = "number", default = 1 },
-  { key = "create_regions",     kind = "bool",   default = false },
 
   { key = "review_prefix",      kind = "string", default = vo.DEFAULTS.review_prefix },
   { key = "unmatched_prefix",   kind = "string", default = vo.DEFAULTS.unmatched_prefix },
@@ -4962,7 +4961,7 @@ vo.MIN_SPLIT_LENGTH = 0.001  -- seconds
 -- Caller wraps this in core.Transaction so the whole run is one undo step.
 -- UNVERIFIED outside REAPER — see SPEC.md §10.
 -- Returns: applied count, array of failure strings.
-function vo.ApplyPlan(plan, cfg, source_track)
+function vo.ApplyPlan(plan, source_track)
   local applied = 0
   local failures = {}
 
