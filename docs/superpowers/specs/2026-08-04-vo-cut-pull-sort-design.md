@@ -140,6 +140,39 @@ and everything else as unmarked, so no version bump and no migration.
 The **Select takes** button and Cut's gate both keep counting only Selects: an
 alt does not answer the question "which take is the delivery".
 
+### 5.2 Auto append alts
+
+Typing an Append for every alt by hand is the tedious half of the rule above, so
+the Pull panel offers to fill them in — on a press, never on its own. The
+convention is yours to define, because it belongs to whoever you are delivering
+to:
+
+```
+Auto append alts:  pattern [_alt{n}]  start at [1]  digits [1]   [Apply]
+                   line_042_alt1, line_042_alt2, line_042_alt3
+```
+
+- **pattern** — free text. `{n}` is where the number goes; with no `{n}` the
+  number goes on the end. `_alt{n}`, `_ALT{n}`, `-take{n}`, `{n}` alone, or a
+  pattern with no number at all (a single alt needs no counter) all work.
+- **start at** — the first alt's number. 1 gives `_alt1`; 2 gives `_alt2` and
+  reads the select as take 1.
+- **digits** — zero padding. 1 gives `_alt2`, 2 gives `_alt02`.
+- the line under the controls previews the result against a real line from the
+  current rows, so the convention is checked before it is applied.
+
+Numbering runs per line, in timeline order, over the alts of that line only.
+
+**It never overwrites an Append you typed.** Those rows are skipped and counted
+in the summary — the button fills blanks, it does not impose a convention on
+work you have already done. Clearing an Append by hand and pressing again is how
+you change your mind.
+
+Scope follows the same rule as every other tool here: the selected rows if any
+are selected, otherwise every row currently shown. The pattern, start and digits
+live in the settings beside the track names, since a delivery convention outlives
+one project.
+
 Destination tracks are created as **children of the item's current track**,
 nested with `vo.FolderDepthForChild` — the same code `vo.EnsureSortChildTracks`
 already uses. This is the bug this design fixes.
@@ -217,6 +250,8 @@ The pure layer carries the weight, as everywhere else in this project:
   nothing → untouched
 - the Select column's three states through a project-file round trip, including
   a file written before alts existed
+- the alt-append pattern as a pure function: `{n}` placed anywhere or absent,
+  start and padding, numbering per line, and an existing Append left alone
 - the character selection's effect on `vo.BuildIndex` and `vo.ResidualPass`:
   an ineligible line never wins a window, and a pinned one still does
 - child-track nesting reuses `vo.FolderDepthForChild`, which is already covered
