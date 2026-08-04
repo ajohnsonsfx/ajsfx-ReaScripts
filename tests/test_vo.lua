@@ -509,23 +509,24 @@ test("one item for a line is the delivery without being marked", function()
   assert(n.selects == 1, "counted")
 end)
 
-test("a select takes the delivery and the rest go to outs", function()
+test("Sel delivers and the unticked takes wait on review", function()
   local moves = vo.PlanPull(pull_items("line_042", "line_042", "line_042"),
                             name_lines("line_042"), { [2] = "select" })
-  assert(dest_of(moves, 2) == "selects", "the marked one delivers")
-  assert(dest_of(moves, 1) == "outs" and dest_of(moves, 3) == "outs",
-    "the rest are kept, not delivered")
+  assert(dest_of(moves, 2) == "selects", "the ticked one delivers")
+  assert(dest_of(moves, 1) == "review" and dest_of(moves, 3) == "review",
+    "the rest stay where the first pull put them")
 end)
 
-test("an alt is delivered alongside the select", function()
+test("Keep is delivered alongside the select, as an alt", function()
   local moves = vo.PlanPull(pull_items("line_042", "line_042", "line_042"),
-                            name_lines("line_042"), { [1] = "select", [2] = "alt" })
+                            name_lines("line_042"), { [1] = "select", [2] = "keep" })
   assert(dest_of(moves, 1) == "selects", "select")
-  assert(dest_of(moves, 2) == "alts", "alt")
-  assert(dest_of(moves, 3) == "outs", "unmarked")
+  assert(dest_of(moves, 2) == "alts", "keep")
+  assert(dest_of(moves, 3) == "review", "unticked")
 end)
 
-test("several takes with nothing marked are a decision, not a guess", function()
+test("nothing ticked puts the whole session on review", function()
+  -- The first pull of a real session: cut, named, nothing listened to yet.
   local moves, n = vo.PlanPull(pull_items("line_042", "line_042"),
                                name_lines("line_042"), {})
   assert(dest_of(moves, 1) == "review" and dest_of(moves, 2) == "review",
@@ -533,11 +534,20 @@ test("several takes with nothing marked are a decision, not a guess", function()
   assert(n.review == 2, "counted")
 end)
 
-test("an alt with no select is half a decision and goes to review", function()
+test("a Keep with no Sel is still delivered as an alt", function()
+  -- The ticks are independent now: marking an alt must not require choosing a
+  -- select first, which is exactly what the old three-state cycle forced.
   local moves = vo.PlanPull(pull_items("line_042", "line_042"),
-                            name_lines("line_042"), { [1] = "alt" })
-  assert(dest_of(moves, 1) == "review" and dest_of(moves, 2) == "review",
-    "an alt does not answer which take is the delivery")
+                            name_lines("line_042"), { [1] = "keep" })
+  assert(dest_of(moves, 1) == "alts", "the keep is delivered")
+  assert(dest_of(moves, 2) == "review", "the other still waits")
+end)
+
+test("a lone take that IS ticked keeps to its tick", function()
+  local moves = vo.PlanPull(pull_items("line_042"), name_lines("line_042"),
+                            { [1] = "keep" })
+  assert(dest_of(moves, 1) == "alts",
+    "the one-take shortcut must not override an explicit tick")
 end)
 
 test("an item no line claims is left entirely alone", function()
@@ -560,7 +570,7 @@ test("a take's own name wins over the line's delivered name", function()
   local items = pull_items("line_042", "line_042")
   items[2].override = "line_042_alt1"
   local moves = vo.PlanPull(items, name_lines("line_042"),
-                            { [1] = "select", [2] = "alt" })
+                            { [1] = "select", [2] = "keep" })
   for _, m in ipairs(moves) do
     if m.dest == "selects" then
       assert(m.rename == "line_042", "the select keeps the line's name")
@@ -586,6 +596,37 @@ test("only delivered items are renamed", function()
 end)
 
 --------------------------------
+-- IsDestTrackName
+--------------------------------
+print("\nIsDestTrackName:")
+
+test("a track Pull made is recognised, with or without a character", function()
+  local bases = { "Selects", "Alts", "Review" }
+  assert(vo.IsDestTrackName("MERIS_Selects", bases), "character prefixed")
+  assert(vo.IsDestTrackName("Review", bases), "bare base name")
+  assert(vo.IsDestTrackName("JORDAN_Alts", bases), "another character")
+end)
+
+test("a recording's own track is not one of ours", function()
+  -- The check that matters: a second pull must nest under the RECORDING, not
+  -- under the Review track the first pull put the item on.
+  local bases = { "Selects", "Alts", "Review" }
+  assert(not vo.IsDestTrackName("MERIS raw session", bases), "a recording")
+  assert(not vo.IsDestTrackName("", bases), "an unnamed track")
+  assert(not vo.IsDestTrackName("Selects and outtakes", bases),
+    "a name that merely starts with one of ours")
+  assert(not vo.IsDestTrackName("PreReview", bases),
+    "the separator matters, or any suffix would match")
+end)
+
+test("renamed destinations are recognised, the defaults then are not", function()
+  local bases = { "DELIVER", "ALT", "CHECK" }
+  assert(vo.IsDestTrackName("MERIS_DELIVER", bases), "renamed in Settings")
+  assert(not vo.IsDestTrackName("MERIS_Selects", bases),
+    "the default name is just a track once it has been renamed")
+end)
+
+--------------------------------
 -- Alt appends
 --------------------------------
 print("\nAltAppends:")
@@ -604,15 +645,17 @@ test("digits pad the number", function()
   assert(vo.FormatAltAppend("_alt{n}", 12, 2) == "_alt12", "no truncation")
 end)
 
+-- mark is "select", "keep", or nil -- the two ticks the table now carries.
 local function alt_row(mark, asset, line, override)
-  return { user_mark = mark, script = "Ch2", asset = asset, deliver = asset,
+  return { user_select = mark == "select", user_keep = mark == "keep",
+           script = "Ch2", asset = asset, deliver = asset,
            script_row = line or 1, name_override = override }
 end
 
 test("alts are numbered per line, from the start value", function()
   local edits = vo.PlanAltNames({
-    alt_row("select", "line_042", 1), alt_row("alt", "line_042", 1),
-    alt_row("alt", "line_042", 1),    alt_row("alt", "line_099", 2),
+    alt_row("select", "line_042", 1), alt_row("keep", "line_042", 1),
+    alt_row("keep", "line_042", 1),    alt_row("keep", "line_099", 2),
   }, { pattern = "_alt{n}", start = 1, digits = 1 })
   assert(#edits == 3, "three alts, got " .. #edits)
   assert(edits[1].name == "line_042_alt1" and edits[2].name == "line_042_alt2",
@@ -625,7 +668,7 @@ test("an alt is named per take, so the select keeps its own name", function()
   -- The bug this replaces: an Append belongs to the line, so writing one for
   -- the alt renamed the select as well and the two still collided.
   local rows = {
-    alt_row("select", "line_042", 1), alt_row("alt", "line_042", 1),
+    alt_row("select", "line_042", 1), alt_row("keep", "line_042", 1),
   }
   local edits = vo.PlanAltNames(rows, { pattern = "_alt{n}", start = 1, digits = 1 })
   assert(#edits == 1 and edits[1].index == 2,
@@ -634,7 +677,7 @@ test("an alt is named per take, so the select keeps its own name", function()
 end)
 
 test("an alt of a line that already has an Append keeps it", function()
-  local row = alt_row("alt", "line_042", 1)
+  local row = alt_row("keep", "line_042", 1)
   row.deliver = "line_042_ch2"
   local edits = vo.PlanAltNames({ row }, { pattern = "_alt{n}", start = 1, digits = 1 })
   assert(edits[1].name == "line_042_ch2_alt1", "Got " .. tostring(edits[1].name))
@@ -642,21 +685,21 @@ end)
 
 test("two lines sharing a filename number their alts separately", function()
   local edits = vo.PlanAltNames({
-    alt_row("alt", "dup", 7), alt_row("alt", "dup", 9),
+    alt_row("keep", "dup", 7), alt_row("keep", "dup", 9),
   }, { pattern = "_alt{n}", start = 1, digits = 1 })
   assert(edits[1].name == "dup_alt1" and edits[2].name == "dup_alt1",
     "each line counts its own alts")
 end)
 
 test("the start value moves the first number", function()
-  local edits = vo.PlanAltNames({ alt_row("alt", "line_042", 1) },
+  local edits = vo.PlanAltNames({ alt_row("keep", "line_042", 1) },
     { pattern = "_alt{n}", start = 2, digits = 1 })
   assert(edits[1].name == "line_042_alt2", "Got " .. tostring(edits[1].name))
 end)
 
 test("a name already chosen is never overwritten", function()
   local edits, skipped = vo.PlanAltNames({
-    alt_row("alt", "line_042", 1, "line_042_pickup"), alt_row("alt", "line_042", 1),
+    alt_row("keep", "line_042", 1, "line_042_pickup"), alt_row("keep", "line_042", 1),
   }, { pattern = "_alt{n}", start = 1, digits = 1 })
   assert(#edits == 1, "only the blank one is filled, got " .. #edits)
   assert(skipped == 1, "and the other is counted")
@@ -668,7 +711,7 @@ test("only alts are touched", function()
   local edits = vo.PlanAltNames({
     alt_row("select", "line_042", 1), alt_row(nil, "line_042", 1),
   }, { pattern = "_alt{n}", start = 1, digits = 1 })
-  assert(#edits == 0, "a select and an unmarked take are not alts")
+  assert(#edits == 0, "a select and an unticked take are not alts")
 end)
 
 --------------------------------
@@ -3090,7 +3133,7 @@ test("an empty ExtState yields documented defaults", function()
   assert(cfg.accept_threshold == 0.80, "accept: " .. tostring(cfg.accept_threshold))
   assert(cfg.review_floor == 0.55, "floor: " .. tostring(cfg.review_floor))
   assert(cfg.track_selects == "Selects", "selects: " .. tostring(cfg.track_selects))
-  assert(cfg.track_outs == "Outs", "outs: " .. tostring(cfg.track_outs))
+  assert(cfg.track_review == "Review", "review: " .. tostring(cfg.track_review))
   assert(cfg.whisper_language == "en", "language: " .. tostring(cfg.whisper_language))
 end)
 
@@ -4066,7 +4109,7 @@ end
 test("a full entry survives the round trip", function()
   local out = round_trip({
     { key = "RIVA.wav|1230", source = "D:\\S\\RIVA.wav", source_start = 1.23,
-      asset = "vo_guard_halt_01", select = "select", status = "verified",
+      asset = "vo_guard_halt_01", select = true, status = "verified",
       name_override = "vo_guard_halt_01_alt", notes = "great read" },
   })
   assert(#out.entries == 1, "Expected 1 entry, got " .. #out.entries)
@@ -4075,35 +4118,45 @@ test("a full entry survives the round trip", function()
   assert(e.source == "D:\\S\\RIVA.wav", "source")
   assert(math.abs(e.source_start - 1.23) < 1e-6, "source_start")
   assert(e.asset == "vo_guard_halt_01", "asset")
-  assert(e.select == "select", "select")
+  assert(e.select == true, "select")
   assert(e.status == "verified", "status")
   assert(e.name_override == "vo_guard_halt_01_alt", "name_override")
   assert(e.notes == "great read", "notes")
 end)
 
-test("a select and an alt round-trip as distinct marks", function()
+test("Sel and Keep round-trip as independent ticks", function()
   local out = round_trip({
-    { key = "A.wav|1000", asset = "line_042", select = "select" },
-    { key = "A.wav|2000", asset = "line_042", select = "alt" },
-    { key = "A.wav|3000", asset = "line_042", notes = "spare" },
+    { key = "A.wav|1000", asset = "line_042", select = true },
+    { key = "A.wav|2000", asset = "line_042", keep = true },
+    { key = "A.wav|3000", asset = "line_042", select = true, keep = true },
+    { key = "A.wav|4000", asset = "line_042", notes = "spare" },
   })
-  assert(out.entries[1].select == "select", "Got " .. tostring(out.entries[1].select))
-  assert(out.entries[2].select == "alt", "Got " .. tostring(out.entries[2].select))
-  assert(out.entries[3].select == nil, "An unmarked take carries no mark")
+  assert(out.entries[1].select == true and not out.entries[1].keep, "select alone")
+  assert(out.entries[2].keep == true and not out.entries[2].select, "keep alone")
+  assert(out.entries[3].select == true and out.entries[3].keep == true, "both")
+  assert(not out.entries[4].select and not out.entries[4].keep, "neither")
 end)
 
-test("a file written before alts existed still reads its selects", function()
-  -- The old writer put "yes" in this field. Anything else it could have held
-  -- was never a mark, so it reads as unmarked rather than as an alt.
+test("a Keep alone counts as user work", function()
+  local out = round_trip({ { key = "A.wav|1", asset = "x", keep = true } })
+  assert(#out.entries == 1, "a keep is a judgement and must be written")
+end)
+
+test("a file written before Keep had a column still reads its marks", function()
+  -- 0.13 briefly wrote "alt" in the Select field, before the cycling mark was
+  -- split into two ticks. It reads as a Keep, so that work survives.
   local text = table.concat({
     "ajsfx VO Project,1", "", PF_HEADER,
     "A.wav|1000,line_042,D:\\A.wav,1.000,yes,,,",
-    "A.wav|2000,line_042,D:\\A.wav,2.000,,,,x",
+    "A.wav|2000,line_042,D:\\A.wav,2.000,alt,,,",
+    "A.wav|3000,line_042,D:\\A.wav,3.000,,,,x",
   }, "\n")
   local out = vo.ParseProjectFile(text)
   assert(out, "must parse")
-  assert(out.entries[1].select == "select", "yes means select")
-  assert(out.entries[2].select == nil, "empty means unmarked")
+  assert(out.entries[1].select == true, "yes still means Sel")
+  assert(out.entries[2].keep == true and not out.entries[2].select,
+    "the old alt becomes a Keep")
+  assert(not out.entries[3].select and not out.entries[3].keep, "empty is unticked")
 end)
 
 test("the script path and mapping survive the round trip", function()
@@ -4221,10 +4274,10 @@ end)
 test("entries still round-trip alongside the new rows", function()
   local text = vo.SerializeProjectFile(
     { { key = "a.wav|1500", source = "D:/a.wav", source_start = 1.5,
-        asset = "line_1", select = "select" } },
+        asset = "line_1", select = true } },
     { scripts = { { path = "D:/g/Ch2.csv", mapping = {}, enabled = true } } })
   local p = assert(vo.ParseProjectFile(text), "Should parse")
-  assert(#p.entries == 1 and p.entries[1].select == "select", "Entry rows must be unharmed")
+  assert(#p.entries == 1 and p.entries[1].select == true, "Entry rows must be unharmed")
 end)
 
 --------------------------------
@@ -4360,16 +4413,16 @@ end)
 
 test("a select alone counts as user work", function()
   local out = round_trip({
-    { key = "a.wav|0", source = "a.wav", source_start = 0, asset = "x", select = "select" },
+    { key = "a.wav|0", source = "a.wav", source_start = 0, asset = "x", select = true },
   })
   assert(#out.entries == 1, "Expected the selected row to be kept, got " .. #out.entries)
-  assert(out.entries[1].select == "select", "Select lost in the round trip")
+  assert(out.entries[1].select == true, "Select lost in the round trip")
 end)
 
 test("clearing a row's marks removes it from the file", function()
   local out = round_trip({
     { key = "a.wav|0", source = "a.wav", source_start = 0, asset = "x",
-      status = nil, notes = "", name_override = "", select = nil },
+      status = nil, notes = "", name_override = "", select = false, keep = false },
   })
   assert(#out.entries == 0, "A cleared row must vanish, got " .. #out.entries)
 end)
@@ -4431,7 +4484,7 @@ test("status and select are read case-insensitively", function()
             .. 'a.wav|0,x,a.wav,0.000,YES,VERIFIED,,\n'
   local out = vo.ParseProjectFile(text)
   assert(out.entries[1].status == "verified", "Got " .. tostring(out.entries[1].status))
-  assert(out.entries[1].select == "select", "Select should read case-insensitively")
+  assert(out.entries[1].select == true, "Select should read case-insensitively")
 end)
 
 --------------------------------
@@ -4586,7 +4639,7 @@ test("an explicit select in the project file names the primary", function()
       span(30, 31, "match", "a", "three", 0.9),
     } } },
     entries = { { key = "s.wav|20000", source = "s.wav", source_start = 20,
-                  asset = "a", select = "select" } },
+                  asset = "a", select = true } },
   })
   assert(rows[2].is_primary == true, "The user's chosen take is the select")
   assert(rows[3].is_primary == false, "The last take yields to the user's choice")

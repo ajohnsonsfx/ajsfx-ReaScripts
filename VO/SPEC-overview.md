@@ -363,35 +363,58 @@ which is the delivery is not a question cutting can answer. It moves nothing and
 creates no track.
 
 Every take of a **decided** line is cut, not only the SEL: the alts are
-deliveries too, and the takes marked neither are what Pull puts on Outs.
+deliveries too, and the takes ticked neither still have to exist before they
+can be listened to and ticked.
 
 Two gates, both about acting on something undecided or no longer true: a source
 whose audio has changed since it was transcribed, and a line with several takes
 and no SEL.
 
-### 4a.3 The Select mark
+### 4a.3 Sel and Keep
 
-Three states, cycled by clicking the cell: blank → **SEL** → **ALT** → blank.
-One SEL per line (marking a second clears the first); any number of ALTs, because
-an alt is an extra delivery rather than a competing answer to which take the
-delivery is. In the project file the `Select` field carries `yes`, `alt`, or
-empty; `yes` is what the pre-alts writer emitted and still reads as a SEL.
+Two independent checkboxes.
+
+**Sel** is the take being delivered — one per line, so ticking one unticks the
+line's others. That exclusivity is keyed by **script row**, never by filename:
+two CSV rows may ask for the same filename (that is what the Append column
+separates), and keying on the name made ticking one line's Sel clear a different
+line's.
+
+**Keep** is a read worth keeping — any number per line, and independent of Sel.
+Independence is the point: the single cycling mark this replaces forced you
+through SEL on the way to ALT, which took the select off whichever take already
+had it.
+
+A kept take that is not the Sel is delivered as an **alt**. A take with neither
+tick stays on Review.
+
+In the project file they are two columns, `Select` and `Keep`, each `yes` or
+empty. 0.13 briefly wrote `alt` in the `Select` field before Keep had a column;
+that reads back as a Keep, so the work survives.
 
 ### 4a.4 Pull
 
 Items are grouped by the line they resolve to and routed by one question — does
 anything say which of these is the delivery?
 
-| group | goes to |
+| item | goes to |
 |---|---|
-| one item | **Selects**, renamed, marked or not — one take is not a decision |
-| several, one SEL | the SEL to **Selects**, ALTs to **Alts**, the rest to **Outs** |
-| several, no SEL | all to **Review**, unrenamed, and reported |
+| **Sel** ticked | **Selects**, renamed to the delivered name |
+| **Keep** ticked, not Sel | **Alts**, renamed to its own name (§5.2) |
+| neither | **Review**, unrenamed |
+| the only item for its line, unticked | **Selects** — one take is not a decision |
 
-Selects and Alts are **delivered**; Outs and Review are not. An ALT with no SEL
-is half a decision and waits in Review with its group. Destination tracks are
-**children** of the item's current track (`vo.EnsureChildTrack`), so collapsing
-the recording folds everything cut from it away too.
+Selects and Alts are **delivered**; Review is not. On a fresh session nothing is
+ticked, so the first Pull puts the whole read on Review; that is the pile the
+user works through. What is still there at the end is what was never wanted.
+
+Destination tracks are **children of the recording the item came from**
+(`vo.EnsureChildTrack`), so collapsing the recording folds everything cut from it
+away too. Because Pull runs repeatedly, "the recording" means the first parent
+that is not itself one of Pull's tracks (`vo.IsDestTrackName`) — without that, a
+second Pull would nest a track inside the Review track it made on the first. An
+item already on its destination is left alone rather than moved to where it
+already is.
 
 **Name alts** gives every alt that has none a delivered name of its own, from a
 pattern the user defines (`{n}` marks the number, plus a start value and zero

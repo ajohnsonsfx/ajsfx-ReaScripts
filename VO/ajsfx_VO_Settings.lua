@@ -394,11 +394,10 @@ end
 
 local function DrawOutput()
   local changed
-  -- The four tracks Pull routes to. Selects and Alts are delivered; Outs holds
-  -- the takes kept but not shipped, and Review the lines nothing has decided.
+  -- The three tracks Pull routes to. Selects and Alts are delivered; Review
+  -- holds everything untouched -- undecided, unwanted, or not listened to yet.
   changed, cfg.track_selects = im.InputText(ctx, "Selects track", cfg.track_selects)
   changed, cfg.track_alts    = im.InputText(ctx, "Alts track",    cfg.track_alts)
-  changed, cfg.track_outs    = im.InputText(ctx, "Outs track",    cfg.track_outs)
   changed, cfg.track_review  = im.InputText(ctx, "Review track",  cfg.track_review)
   im.Spacing(ctx)
   changed, cfg.review_prefix    = im.InputText(ctx, "Review prefix",    cfg.review_prefix)

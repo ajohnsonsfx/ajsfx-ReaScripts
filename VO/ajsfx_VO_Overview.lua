@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.13
--- @changelog Cutting and routing were one operation; they are now three, and they live in ajsfx VO Overview beside the table they act on -- the separate "ajsfx VO Cut" window is gone, so reinstall from ReaPack to clear it. "Cut and Name" splits every take of every decided line out of its recording and names it the script's own filename, and moves nothing. "Pull" moves items onto Selects, Alts, Outs and Review tracks, which are now CHILDREN of the recording they came from rather than siblings, so collapsing the recording folds the whole session away with it. "Sort" lays them out on the timeline as before. The important change is how Pull and Sort decide what an item is: they read the NAME it carries and look that up in the script, and never consult the transcript at all. A folder of rendered wav files someone else delivered -- no transcripts, never cut here -- now pulls and sorts exactly as well as a session you cut yourself. It also means neither tool can touch audio it was not asked to: an uncut recording carries the recording's name, which is not a script filename, so it resolves to nothing and is left where it is, and the count line says how many were left. A name two script lines both claim resolves to nothing rather than to the first of them. The Select column is now three states, cycled by clicking: SEL is the take you are delivering, ALT is delivered as well under its own name, and unmarked takes are kept on the Outs track but not delivered. One SEL per line, any number of ALTs; a line whose only mark is an ALT still has its delivery to decide. An alt needs a filename of its own, so "Name alts" in the Pull panel gives every alt that has none one, built on the line's delivered name -- the pattern, the first number and the zero padding are all yours to set, {n} marks where the number goes, and a preview shows the result before you press it. The name is held against the take, so the select keeps the plain delivery. A name you chose is never overwritten. "Cut and Name" no longer refuses to run because some line is undecided: slicing the recording is the first step of the job and has to happen before there is anything to decide about, so it cuts every take the match found and reports what it skipped. With nothing selected it works on every row on show. The only thing it still refuses is a recording whose audio has changed since it was transcribed, and that is skipped per file rather than stopping the run. The "use alts track" toggle is gone: alts are marked per take now rather than switched on per run. The six filter presets are gone too -- the Status column's own filter box already matches Recorded, Review, Missing, Orphan and Flagged, and Lock covers verified. The toolbar is one row of six: Script, Sources, Cut and Name, Pull, Sort, Settings, with one panel open at a time.
+-- @changelog Cutting and routing were one operation; they are now three, and they live in ajsfx VO Overview beside the table they act on -- the separate "ajsfx VO Cut" window is gone, so reinstall from ReaPack to clear it. The workflow is: Cut and Name, then Pull, then listen and tick, then Pull again. "Cut and Name" splits every take the match found out of its recording and names it the script's own filename. It moves nothing and decides nothing, so it no longer refuses to run because some line is undecided -- slicing the recording is the first step of the job and has to happen before there is anything to decide about. With nothing selected it works on every row on show. The only thing it skips is a recording whose audio has changed since it was transcribed, and that is skipped per file rather than stopping the run. "Pull" moves items onto Selects, Alts and Review tracks, which are now CHILDREN of the recording they came from rather than siblings, so collapsing the recording folds the whole session away with it. On a fresh session nothing is ticked, so the first Pull puts everything on Review -- that is the pile you work through. "Sort" lays them out on the timeline as before. The important change is how Pull and Sort decide what an item is: they read the NAME it carries and look that up in the script, and never consult the transcript at all. A folder of rendered wav files someone else delivered -- no transcripts, never cut here -- now pulls and sorts exactly as well as a session you cut yourself. It also means neither tool can touch audio it was not asked to: an uncut recording carries the recording's name, which is not a script filename, so it resolves to nothing and is left where it is, and the count line says how many were left. A name two script lines both claim resolves to nothing rather than to the first of them. The Select column is now two independent checkboxes, Sel and Keep. Sel is the take you are delivering, one per line. Keep is a read worth keeping, any number per line, and Pull delivers a kept take that is not the Sel as an alt. Ticking Keep steals nothing from anybody -- the single cycling mark this replaces made you pass through Sel to reach Alt, which took the select off whichever take already had it. Sel's exclusivity is now keyed by SCRIPT ROW rather than by filename, so two CSV rows that ask for the same filename are two lines again and ticking one no longer unticks the other; they were separate rows in the script and they stay separate here. An alt needs a filename of its own, so "Name alts" in the Pull panel gives every alt that has none one, built on the line's delivered name -- the pattern, the first number and the zero padding are all yours to set, {n} marks where the number goes, and a preview shows the result before you press it. The name is held against the take, so the select keeps the plain delivery. A name you chose is never overwritten. The "use alts track" toggle is gone, and so are the six filter presets -- the Status column's own filter box already matches Recorded, Review, Missing, Orphan and Flagged, and Lock covers verified. The toolbar is one row of six: Script, Sources, Cut and Name, Pull, Sort, Settings, with one panel open at a time.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -130,13 +130,18 @@ local COLUMNS = {
   { key = "status",     label = "Status",     width =  74,
     num  = function(row) return SORT_RANK[row.status] or 9 end,
     text = StatusLabel },
-  { key = "select",     label = "Select",     width =  60,
+  { key = "select",     label = "Sel",        width =  40,
     text = function(row)
       if row.status == "missing" or row.status == "orphan" then return "" end
-      -- The filter box matches what the cell says, so the words are the marks
-      -- themselves rather than yes/no: filtering for "alt" finds the alts.
-      return row.user_mark == "select" and "select"
-          or (row.user_mark == "alt" and "alt" or "")
+      return row.user_select and "yes" or "no"
+    end },
+  -- Two independent ticks, not one cycling mark. Marking a take as an alt used
+  -- to mean passing through "select" on the way, which stole the select from
+  -- whichever take already had it.
+  { key = "keep",       label = "Keep",       width =  46,
+    text = function(row)
+      if row.status == "missing" or row.status == "orphan" then return "" end
+      return row.user_keep and "yes" or "no"
     end },
   { key = "character",  label = "Character",  width =  90,
     text = function(row) return row.character or "" end },
@@ -226,7 +231,7 @@ local state = {
   -- The Pull panel's count line, memoised: working it out reads a take name per
   -- item. Keyed on the project-state counter and the selection size.
   pull_count_key = nil,
-  pull_count     = { selects = 0, alts = 0, outs = 0, review = 0,
+  pull_count     = { selects = 0, alts = 0, review = 0,
                      unknown = 0, ambiguous = 0 },
   -- The Sort panel's count line, memoised for the same reason.
   layout_count_key = nil,
@@ -689,31 +694,36 @@ local function SetAppend(row, text)
   Rebuild()
 end
 
--- blank -> select -> alt -> blank.
---
--- Exactly one take of a line may be the SELECT, so marking one clears the rest
--- of its group. Without this the project file could hold two selected rows for
--- one filename and BuildOverview would silently pick whichever the build order
--- put first (see vo.BuildOverview's "no first/last fallback").
---
--- Any number may be ALTS: an alt is an extra delivery, not a competing answer
--- to the question of which take the delivery is.
-local NEXT_MARK = { [false] = "select", select = "alt", alt = false }
+-- Which takes of a line are the same line's takes, for the Sel exclusivity
+-- below. By SCRIPT ROW, never by filename: two CSV rows may ask for the same
+-- filename -- that is what the Append column exists to separate -- and keying
+-- on the name made ticking one line's Sel clear the other line's, which is a
+-- different line entirely.
+local function LineKeyOf(row)
+  return row.script_row or ("asset:" .. tostring(row.asset))
+end
 
-local function SetMark(row, mark)
-  if mark == "select" then
+-- Exactly one take of a line may be the SELECT, so ticking one clears the rest
+-- of its group. Without this the project file could hold two selected rows for
+-- one line and BuildOverview would silently pick whichever the build order put
+-- first (see vo.BuildOverview's "no first/last fallback").
+local function SetSelect(row, on)
+  if on then
+    local mine = LineKeyOf(row)
     for _, other in ipairs(state.overview) do
-      if other ~= row and other.asset == row.asset and other.status ~= "orphan"
-         and other.user_mark == "select" then
+      if other ~= row and other.status ~= "orphan" and other.user_select
+         and LineKeyOf(other) == mine then
         Mutate(other, function(e) e.select = nil end)
       end
     end
   end
-  Mutate(row, function(e) e.select = mark or nil end)
+  Mutate(row, function(e) e.select = on or nil end)
 end
 
-local function CycleMark(row)
-  SetMark(row, NEXT_MARK[row.user_mark or false])
+-- Any number of takes may be KEPT, so this has no exclusivity at all. A keep
+-- is an extra delivery, not a competing answer to which take the delivery is.
+local function SetKeep(row, on)
+  Mutate(row, function(e) e.keep = on or nil end)
 end
 
 -- Renaming is the one edit that reaches into the project. It is recorded in
@@ -1351,8 +1361,8 @@ local function AutoSelectTakes(rows)
   for _, row in pairs(best) do
     -- An alt is not an answer to "which take is the delivery", so a line whose
     -- only mark is an alt still has one to make and this fills it in.
-    if row.user_mark ~= "select" then
-      SetMark(row, "select")
+    if not row.user_select then
+      SetSelect(row, true)
       changed = changed + 1
     end
   end
@@ -1410,7 +1420,7 @@ local function TargetItems()
   for _, row in ipairs(state.overview) do
     if row.item then
       local cur = by_item[row.item]
-      if not cur or (row.user_mark == "select" and cur.user_mark ~= "select") then
+      if not cur or (row.user_select and not cur.user_select) then
         by_item[row.item] = row
       end
     end
@@ -1434,7 +1444,12 @@ local function TargetItems()
         character = row and row.character or nil,
         override  = row and row.name_override or nil,
       }
-      if row and row.user_mark then marks[item] = row.user_mark end
+      -- Sel wins over Keep: a take that is both is the delivery, and the keep
+      -- is then just saying the obvious.
+      if row then
+        if row.user_select then marks[item] = "select"
+        elseif row.user_keep then marks[item] = "keep" end
+      end
     end
   end
   table.sort(items, function(a, b) return a.pos < b.pos end)
@@ -2006,7 +2021,7 @@ local function DoCut()
       for _, s in ipairs(all_spans) do
         if s.source_path == row.source_path
            and math.abs((s.start or 0) - row.source_start) < 1e-6 then
-          s.select = row.user_mark == "select"
+          s.select = row.user_select == true
           break
         end
       end
@@ -2202,24 +2217,48 @@ local function Pull()
   local cfg  = vo.LoadConfig()
   local base = { selects = cfg.track_selects or "Selects",
                  alts    = cfg.track_alts    or "Alts",
-                 outs    = cfg.track_outs    or "Outs",
                  review  = cfg.track_review  or "Review" }
 
   local by_id = {}
   for _, it in ipairs(items) do by_id[it.id] = it end
 
+  local bases = { base.selects, base.alts, base.review }
+
+  -- The recording an item came out of, which is what its destination nests
+  -- under. Pull runs more than once -- that is the whole workflow -- so by the
+  -- second pass an item is sitting on "<CHAR>_Review", and nesting its new
+  -- destination under THAT would bury a track inside a track on every run.
+  local function RecordingTrackOf(item)
+    local track = r.GetMediaItem_Track(item)
+    while track do
+      local _, name = r.GetSetMediaTrackInfo_String(track, "P_NAME", "", false)
+      if not vo.IsDestTrackName(name, bases) then return track end
+      local parent = r.GetParentTrack(track)
+      if not parent then return track end
+      track = parent
+    end
+    return track
+  end
+
   core.Transaction("VO Overview: pull", function()
     local tracks = {}
     for _, move in ipairs(moves) do
-      local item = move.id
-      -- Read the parent INSIDE the loop: an earlier move may already have taken
-      -- this item off the track it started on.
-      local parent = r.GetMediaItem_Track(item)
+      local item   = move.id
+      -- Read the track INSIDE the loop: an earlier move may already have taken
+      -- this item off the one it started on.
+      local parent = RecordingTrackOf(item)
       local name   = vo.CharacterTrackName(by_id[item].character, base[move.dest])
       local key    = tostring(parent) .. "|" .. name
       if not tracks[key] then tracks[key] = vo.EnsureChildTrack(parent, name) end
 
-      if r.MoveMediaItemToTrack(item, tracks[key]) and move.rename then
+      -- An item already on its destination is left alone rather than moved to
+      -- where it is: the common case on a second pull is "most of these stay on
+      -- Review", and a no-op move would still dirty the project.
+      local dest = tracks[key]
+      if r.GetMediaItem_Track(item) ~= dest then
+        r.MoveMediaItemToTrack(item, dest)
+      end
+      if move.rename then
         local take = r.GetActiveTake(item)
         if take then
           r.GetSetMediaItemTakeInfo_String(take, "P_NAME", move.rename, true)
@@ -2230,8 +2269,8 @@ local function Pull()
   end)
 
   state.message, state.message_kind = string.format(
-    "Pulled %d select, %d alt, %d out, %d to review. %d item(s) not on the script.",
-    summary.selects, summary.alts, summary.outs, summary.review,
+    "Pulled %d select, %d alt, %d to review. %d item(s) not on the script.",
+    summary.selects, summary.alts, summary.review,
     summary.unknown + summary.ambiguous), "ok"
   Reload()
 end
@@ -2286,10 +2325,11 @@ end
 local function DrawPullPanel()
   im.Separator(ctx)
   im.TextWrapped(ctx,
-    "Moves items onto Selects, Alts, Outs and Review tracks nested under the " ..
-    "recording they came from. Items are matched to the script by NAME, so this " ..
-    "works on rendered files that were never cut here. An item whose name is not " ..
-    "on the script is left alone.")
+    "Moves items onto Selects, Alts and Review tracks nested under the recording " ..
+    "they came from. Sel is the delivery, Keep is delivered alongside it as an " ..
+    "alt, and everything unticked waits on Review. Items are matched to the " ..
+    "script by NAME, so this works on rendered files that were never cut here; " ..
+    "an item whose name is not on the script is left alone.")
   im.Spacing(ctx)
 
   -- Alt naming ----------------------------------------------------------
@@ -2348,8 +2388,8 @@ local function DrawPullPanel()
   end
   local n = state.pull_count
   im.TextDisabled(ctx, string.format(
-    "%d select, %d alt, %d out, %d review; %d not on the script%s",
-    n.selects, n.alts, n.outs, n.review, n.unknown + n.ambiguous,
+    "%d select, %d alt, %d review; %d not on the script%s",
+    n.selects, n.alts, n.review, n.unknown + n.ambiguous,
     n.ambiguous > 0 and string.format(" (%d name clashes)", n.ambiguous) or ""))
 
   im.Separator(ctx)
@@ -2979,23 +3019,33 @@ local function DrawTableBody()
     end
     PopCellFont(sf)
 
-    -- Select --------------------------------------------------------------
+    -- Sel and Keep ---------------------------------------------------------
+    local markable = row.status ~= "missing" and row.status ~= "orphan"
+                     and (row.take_count or 0) > 0
+
     im.TableSetColumnIndex(ctx, CI.select)
-    if row.status ~= "missing" and row.status ~= "orphan" and (row.take_count or 0) > 0 then
+    if markable then
       CellWidget("select", row_h)
-      -- A button, not a checkbox: the mark has three states and a checkbox can
-      -- only show two.
-      local mark  = row.user_mark
-      local label = mark == "select" and "SEL" or (mark == "alt" and "ALT" or "--")
-      if im.Button(ctx, label .. "##sel", -1, 0) then
-        pending_action = function() CycleMark(row) end
-      end
+      local hit, now = im.Checkbox(ctx, "##sel", row.user_select == true)
+      if hit then pending_action = function() SetSelect(row, now) end end
       if im.IsItemHovered(ctx) then
         im.SetTooltip(ctx,
-          "Click to cycle: unmarked -> SEL -> ALT -> unmarked.\n\n" ..
-          "SEL is the take you are delivering; ALT is delivered as well,\n" ..
-          "under its own name. One SEL per line, any number of ALTs.\n" ..
-          "Everything unmarked is kept but not delivered.")
+          "The take you are delivering. One per line —\n" ..
+          "ticking this one unticks the line's other takes.")
+      end
+    end
+
+    im.TableSetColumnIndex(ctx, CI.keep)
+    if markable then
+      CellWidget("keep", row_h)
+      local hit, now = im.Checkbox(ctx, "##keep", row.user_keep == true)
+      if hit then pending_action = function() SetKeep(row, now) end end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx,
+          "A read worth keeping. Any number per line, and\n" ..
+          "independent of Sel — ticking this steals nothing.\n\n" ..
+          "Pull delivers a kept take that is not the Sel as an ALT.\n" ..
+          "Takes with neither tick stay on the Review track.")
       end
     end
 

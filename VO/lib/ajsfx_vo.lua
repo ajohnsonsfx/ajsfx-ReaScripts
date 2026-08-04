@@ -555,12 +555,12 @@ function vo.ResolveItemName(index, name)
   return at
 end
 
--- Where each item goes, as a pure function of its NAME and its mark. Two of the
--- four destinations are delivered (selects, alts) and two are not (outs,
--- review) -- that is the distinction this exists to make.
+-- Where each item goes, as a pure function of its NAME and its two ticks.
+-- Selects and Alts are DELIVERED; Review is everything else -- undecided,
+-- unwanted, or simply not listened to yet.
 --
 -- `items` are { id, name, override } in timeline order; `marks` maps an item id
--- to "select" or "alt". An item whose name resolves to nothing produces no move
+-- to "select" (the delivery) or "keep" (delivered alongside it, as an alt). An item whose name resolves to nothing produces no move
 -- at all: not moved, not renamed, not an error. It is counted so a run that
 -- does nothing can say why.
 --
@@ -573,7 +573,7 @@ function vo.PlanPull(items, lines, marks)
   local index = vo.BuildNameIndex(lines)
 
   local groups, order = {}, {}
-  local summary = { selects = 0, alts = 0, outs = 0, review = 0,
+  local summary = { selects = 0, alts = 0, review = 0,
                     unknown = 0, ambiguous = 0 }
 
   for _, item in ipairs(items or {}) do
@@ -597,24 +597,13 @@ function vo.PlanPull(items, lines, marks)
     local line    = lines[at] or {}
     local deliver = line.deliver or line.asset
 
-    local has_select = false
-    for _, item in ipairs(group) do
-      if marks[item.id] == "select" then has_select = true; break end
-    end
-
-    -- One take is not a decision, so a lone item delivers whether or not it is
-    -- marked -- a folder of rendered files carries no marks at all. Several
-    -- takes with nothing marked ARE a decision, and an alt without a select is
-    -- only half of one, so the whole group waits in review.
-    if #group == 1 then
+    -- One take is not a decision: a lone item IS the delivery, whether or not
+    -- anybody ticked it, and a folder of rendered files carries no ticks at
+    -- all. Everything else follows the two ticks.
+    if #group == 1 and not marks[group[1].id] then
       moves[#moves + 1] = { id = group[1].id, line = at,
                             dest = "selects", rename = group[1].override or deliver }
       summary.selects = summary.selects + 1
-    elseif not has_select then
-      for _, item in ipairs(group) do
-        moves[#moves + 1] = { id = item.id, line = at, dest = "review" }
-        summary.review = summary.review + 1
-      end
     else
       for _, item in ipairs(group) do
         local mark = marks[item.id]
@@ -622,17 +611,20 @@ function vo.PlanPull(items, lines, marks)
           moves[#moves + 1] = { id = item.id, line = at,
                                 dest = "selects", rename = item.override or deliver }
           summary.selects = summary.selects + 1
-        elseif mark == "alt" then
+        elseif mark == "keep" then
           -- Without a per-take name of its own an alt takes the line's, which
           -- clashes with the select. That clash is real and is reported in red
-          -- rather than uniqued behind the user's back -- "Auto append alts" is
-          -- the button that gives every alt a name.
+          -- rather than uniqued behind the user's back -- "Name alts" is the
+          -- button that gives every alt a name.
           moves[#moves + 1] = { id = item.id, line = at,
                                 dest = "alts", rename = item.override or deliver }
           summary.alts = summary.alts + 1
         else
-          moves[#moves + 1] = { id = item.id, line = at, dest = "outs" }
-          summary.outs = summary.outs + 1
+          -- Unticked takes go to Review and STAY there. Not a rejection and not
+          -- a decision -- the first Pull of a session puts everything there,
+          -- and what is left after the marking is what was never wanted.
+          moves[#moves + 1] = { id = item.id, line = at, dest = "review" }
+          summary.review = summary.review + 1
         end
       end
     end
@@ -655,7 +647,8 @@ function vo.FormatAltAppend(pattern, n, digits)
   return text .. num
 end
 
--- Gives every alt a delivered name of its own.
+-- Gives every alt -- a row with Keep ticked and Sel not -- a delivered name of
+-- its own.
 --
 -- It writes a PER-TAKE name, not an Append. An Append belongs to the script
 -- LINE -- `vo.AppendKey` has no take component and `line.deliver` feeds every
@@ -678,7 +671,8 @@ function vo.PlanAltNames(rows, opts)
 
   local edits, skipped, seen = {}, 0, {}
   for i, row in ipairs(rows or {}) do
-    if row.user_mark == "alt" and row.asset then
+    -- An alt is a take kept but not chosen: Keep ticked, Sel not.
+    if row.user_keep and not row.user_select and row.asset then
       -- Keyed by the LINE, so two lines that happen to share a filename number
       -- their alts separately -- the same reason the cut gate was keyed this
       -- way before it.
@@ -1841,6 +1835,24 @@ end
 
 -- Track name for a character bucket: "<Character>_<Base>" when a character is
 -- present, else the base name. The character is sanitized like a clip name.
+-- Is this track one Pull made? Needed because Pull runs more than once: on the
+-- second pass an item already sits on "<CHAR>_Review", and nesting its new
+-- destination under THAT would bury a track inside a track every run. The
+-- recording it came from is the first parent that is not one of ours.
+--
+-- Matched on the base names rather than a marker, because the user can rename
+-- them in Settings and a project can hold any number of characters.
+function vo.IsDestTrackName(name, bases)
+  name = tostring(name or "")
+  if name == "" then return false end
+  for _, base in ipairs(bases or {}) do
+    if base ~= "" and (name == base or name:sub(-(#base + 1)) == "_" .. base) then
+      return true
+    end
+  end
+  return false
+end
+
 function vo.CharacterTrackName(character, base)
   if character and character ~= "" then
     return vo.SanitizeName(character) .. "_" .. base
@@ -2831,7 +2843,7 @@ vo.PROJECT_VERSION = 1
 
 vo.PROJECT_HEADER = {
   "Key", "Filename", "Source", "Source start", "Select", "Status",
-  "Name override", "Notes",
+  "Name override", "Notes", "Keep",
 }
 
 -- Statuses the USER sets. Derived statuses (missing/recorded/review/orphan) are
@@ -2940,7 +2952,7 @@ function vo.SerializeProjectFile(entries, meta)
   for _, e in ipairs(entries or {}) do
     -- Only rows carrying actual user work are written. Without this the file
     -- would grow a line per script line per session and the signal would drown.
-    local has_work = (e.select ~= nil)
+    local has_work = e.select or e.keep
                   or (e.status and e.status ~= "")
                   or (e.name_override and e.name_override ~= "")
                   or (e.notes and e.notes ~= "")
@@ -2950,24 +2962,17 @@ function vo.SerializeProjectFile(entries, meta)
         e.asset or "",
         e.source or "",
         e.source_start and string.format("%.3f", e.source_start) or "",
-        -- Three states in one field: a select, an alt, or no mark. "yes" is
-        -- what the pre-alts writer emitted and stays the select's spelling, so
-        -- a file written by either version reads the same in both.
-        e.select == "select" and "yes" or (e.select == "alt" and "alt" or ""),
+        e.select and "yes" or "",
         e.status or "",
         e.name_override or "",
         e.notes or "",
+        e.keep and "yes" or "",
       })
     end
   end
 
   return table.concat(out, "\n") .. "\n"
 end
-
--- What the Select field may say. Anything else is no mark at all rather than a
--- mark we cannot honour -- a spreadsheet round-trip that mangles the field must
--- not silently promote a take to the delivery.
-local SELECT_MARKS = { yes = "select", select = "select", alt = "alt" }
 
 -- Returns the parsed file, or nil plus a reason. Nothing here raises: a project
 -- file mangled by a spreadsheet round-trip must never stop the window opening,
@@ -3059,7 +3064,11 @@ function vo.ParseProjectFile(text)
         asset         = row[2] ~= "" and row[2] or nil,
         source        = row[3] ~= "" and row[3] or nil,
         source_start  = tonumber(row[4] or ""),
-        select        = SELECT_MARKS[fold(row[5] or "")] or nil,
+        -- Two independent marks. 0.13 briefly wrote "alt" in the Select field
+        -- before Keep had a column of its own; it reads as a keep, so a file
+        -- written by that version keeps the work rather than losing it.
+        select        = fold(row[5] or "") == "yes",
+        keep          = fold(row[9] or "") == "yes" or fold(row[5] or "") == "alt",
         -- An unrecognised status is dropped rather than carried: it would
         -- otherwise render as an unknown badge with no way to clear it.
         status        = vo.TRACKER_STATUSES[status] and status or nil,
@@ -3279,7 +3288,8 @@ function vo.BuildOverview(input)
       user_status   = t and t.status or nil,
       name_override = t and t.name_override or nil,
       notes         = t and t.notes or nil,
-      user_mark     = t and t.select or nil,
+      user_select   = t and t.select or false,
+      user_keep     = t and t.keep or false,
     }
   end
 
@@ -3306,7 +3316,7 @@ function vo.BuildOverview(input)
       -- primary -- which Cut reports as needing a decision.
       local chosen
       for _, row in ipairs(built) do
-        if row.user_mark == "select" then chosen = row; break end
+        if row.user_select then chosen = row; break end
       end
       for _, row in ipairs(built) do
         row.is_primary = (row == chosen)
@@ -3332,7 +3342,8 @@ function vo.BuildOverview(input)
         name_override = t and t.name_override or nil,
         notes         = t and t.notes or nil,
         is_primary    = false,
-        user_mark     = t and t.select or nil,
+        user_select   = t and t.select or false,
+      user_keep     = t and t.keep or false,
       }
     end
   end
@@ -3363,7 +3374,8 @@ function vo.ProjectEntriesFromRows(rows)
       source        = row.source_path,
       source_start  = row.source_start,
       asset         = row.asset,
-      select        = row.user_mark,
+      select        = row.user_select or nil,
+      keep          = row.user_keep or nil,
       status        = row.user_status,
       name_override = row.name_override,
       notes         = row.notes,
@@ -3771,7 +3783,6 @@ vo.CONFIG_SCHEMA = {
 
   { key = "track_selects",      kind = "string", default = "Selects" },
   { key = "track_alts",         kind = "string", default = "Alts" },
-  { key = "track_outs",         kind = "string", default = "Outs" },
   { key = "track_review",       kind = "string", default = "Review" },
   -- The alt naming convention. Not bounded here: vo.PlanAltNames floors and
   -- clamps its own inputs, so a hand-edited ExtState cannot break a run.

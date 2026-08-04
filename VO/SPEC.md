@@ -33,7 +33,7 @@ rationale behind the split; this document describes the result.
 - Match each spoken span against the script's `Text` column and assign its `AudioAsset`,
   recomputed live rather than stored.
 - Cut the session into named clips with their edges snapped to silence, and route them to
-  **Selects / Alts / Outs / Review** tracks nested under the recording they came from.
+  **Selects / Alts / Review** tracks nested under the recording they came from.
   Routing identifies a clip by its NAME, not by the match, so it serves rendered files
   this tool never cut as well as a session it did.
 - Handle real session conditions: lines out of CSV order, multiple takes of a line,

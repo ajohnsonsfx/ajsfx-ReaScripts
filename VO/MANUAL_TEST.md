@@ -488,11 +488,22 @@ Open **ajsfx VO Settings → Speech backend → Download backend & models**.
 
 ## Pull (2026-08-04)
 
-1. Cut two takes of one line, one SEL and one unmarked. Press **Pull**. The SEL
-   lands on `<CHAR>_Selects`, the other on `<CHAR>_Outs`, and BOTH are CHILDREN
-   of the recording's track — collapse the recording and they go with it.
-2. Mark the second take ALT and Pull again: it moves to `<CHAR>_Alts`.
-3. Two takes, both ALT and none SEL: both go to `<CHAR>_Review`.
+This is the real workflow, in order. Do it on a session with several takes of
+some lines.
+
+1. Cut and Name the session, tick NOTHING, press **Pull**. Everything lands on
+   `<CHAR>_Review`, which is a CHILD of the recording's track — collapse the
+   recording and it goes with it. Lines with only one take go to
+   `<CHAR>_Selects`: there was no decision to make.
+2. Work through Review. Tick **Sel** on the take you are delivering and **Keep**
+   on any others worth having. Ticking Keep must NOT untick anybody's Sel.
+3. Two script lines that share a filename: tick Sel on one. The other line's Sel
+   is untouched — they are separate rows in the CSV and separate lines here.
+4. Press **Pull** again. The Sel moves to `<CHAR>_Selects`, the Keeps to
+   `<CHAR>_Alts`, and everything unticked stays exactly where it is on Review.
+5. Press **Pull** a third time with nothing changed. Nothing moves, and NO new
+   track appears nested inside `<CHAR>_Review` — that is the check for the
+   destination-track recursion.
 4. Drop a folder of already-named rendered wavs into the project, with no
    transcripts at all. Pull moves each one to Selects by its filename.
 5. An item whose name is not on the script is not moved, and the count line
