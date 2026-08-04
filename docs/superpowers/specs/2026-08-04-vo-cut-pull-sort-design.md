@@ -93,31 +93,60 @@ What it no longer does: move anything, create any track, write any region.
 
 ## 5. Pull
 
-Items are grouped by the line they resolve to, and each group is routed by ONE
-question: does anything say which of these is the delivery?
+Two of the four destinations are DELIVERED and two are not. That is the
+distinction the routing exists to make:
 
-- **one item for the line** → renamed to the delivered name (Append applied, or
-  the Item name override) and moved to `<CHARACTER> Selects`
-- **several items, one of them Selected** → the selected item is renamed and
-  moved to `<CHARACTER> Selects`; every other item in the group moves to
-  `<CHARACTER> Alts`, unrenamed
-- **several items, none Selected** → all move to `<CHARACTER> Review`,
-  unrenamed, and are reported. Which one is the delivery is a decision, not a
-  guess.
+| track | delivered | holds |
+|---|---|---|
+| `<CHARACTER> Selects` | yes | the take you are delivering, one per line |
+| `<CHARACTER> Alts` | yes | takes you are also delivering, alongside the select |
+| `<CHARACTER> Outs` | no | the rest of the session's takes, kept, not shipped |
+| `<CHARACTER> Review` | no | a line whose delivery nothing has decided |
 
-The Select tick is the ONLY thing Pull reads from the table, and it is read as
-"which ITEM is the delivery": the row carrying the tick names an item, and that
-item is the select if it is one of the group. A rendered file with no row has no
-tick, which is why a folder of unlabelled duplicates goes to Review — the rule
+Items are grouped by the line they resolve to, and routed by what the Select
+cell says (§5.1):
+
+- **one item for the line** → renamed to the delivered name and moved to
+  **Selects**, whether or not it is marked. One take is not a decision.
+- **several items, one marked Select** → that one is renamed and moved to
+  **Selects**; those marked Alt are renamed and moved to **Alts**; the rest go
+  to **Outs**, unrenamed.
+- **several items, none marked Select** → all move to **Review**, unrenamed, and
+  are reported. Which one is the delivery is a decision, not a guess. An Alt
+  without a Select is not a delivery either — it is half a decision, and it
+  goes to Review with the rest of its group.
+
+The Select cell is the ONLY thing Pull reads from the table, and it is read as
+"which ITEM is this": the row carrying the mark names an item, and that item
+takes the mark if it is one of the group. A rendered file with no row has no
+mark, which is why a folder of unlabelled duplicates goes to Review — the rule
 above already covers it, with nothing special-cased.
+
+### 5.1 Select becomes three-state
+
+The Select cell cycles **blank → Select → Alt → blank**. A line may carry one
+Select and any number of Alts; marking a second row Select clears the first, as
+it does today.
+
+An Alt is a delivery, so it needs a filename of its own. **The user supplies
+it**, through the Append column that already exists for two lines sharing a
+filename — and an Alt with no Append shows the same red clash against its own
+Select. Nothing is ever renamed automatically; that rule does not bend for alts.
+
+In the project file the `Select` column carries `yes` for a select and `alt` for
+an alt, in the same field. A file written before this reads `yes` as a select
+and everything else as unmarked, so no version bump and no migration.
+
+The **Select takes** button and Cut's gate both keep counting only Selects: an
+alt does not answer the question "which take is the delivery".
 
 Destination tracks are created as **children of the item's current track**,
 nested with `vo.FolderDepthForChild` — the same code `vo.EnsureSortChildTracks`
 already uses. This is the bug this design fixes.
 
-The `use_alts_track` toggle goes: with alts produced by the Select tick rather
-than by a mode, there is nothing for it to switch. The `track_alts` name setting
-stays.
+The `use_alts_track` toggle goes: with alts marked per take rather than switched
+on per run, there is nothing for it to toggle. The `track_alts` name setting
+stays and is joined by `track_outs`.
 
 ## 6. Sort
 
@@ -183,8 +212,11 @@ The pure layer carries the weight, as everywhere else in this project:
 - `vo.ResolveItemNames` — case, extension, whitespace, delivered-name recognition,
   ambiguity, and the "resolves to nothing" path
 - Pull's routing decision as a pure function of the resolution result and the
-  Select tick: one item → select; several with a tick → select plus alts;
-  several without → all review; resolving to nothing → untouched
+  Select marks: one item → select; several with a Select → select, alts, outs;
+  several without → all review; an Alt with no Select → review; resolving to
+  nothing → untouched
+- the Select column's three states through a project-file round trip, including
+  a file written before alts existed
 - the character selection's effect on `vo.BuildIndex` and `vo.ResidualPass`:
   an ineligible line never wins a window, and a pinned one still does
 - child-track nesting reuses `vo.FolderDepthForChild`, which is already covered
