@@ -42,7 +42,7 @@ an inline panel, one open at a time, in the space the Script panel already uses.
 | | reads | writes | needs the transcript |
 |---|---|---|---|
 | **Cut and Name** | the match | splits the recording, names each piece | **yes** |
-| **Pull** | item names | renames to the delivered name, moves to child tracks | no |
+| **Pull** | item names, and the Select tick | renames to the delivered name, moves to child tracks | no |
 | **Sort** | item names | item positions on the timeline | no |
 
 Cut is the only tool left that consults the match. That is correct: cutting a
@@ -93,21 +93,31 @@ What it no longer does: move anything, create any track, write any region.
 
 ## 5. Pull
 
-For every item whose name resolves:
+Items are grouped by the line they resolve to, and each group is routed by ONE
+question: does anything say which of these is the delivery?
 
-- **exactly one item for that line** → renamed to the delivered name (Append
-  applied, or the Item name override) and moved to `<CHARACTER> Selects`
-- **several items for one line** → all moved to `<CHARACTER> Review`, unrenamed,
-  and reported. Which one is the delivery is a decision, not a guess.
+- **one item for the line** → renamed to the delivered name (Append applied, or
+  the Item name override) and moved to `<CHARACTER> Selects`
+- **several items, one of them Selected** → the selected item is renamed and
+  moved to `<CHARACTER> Selects`; every other item in the group moves to
+  `<CHARACTER> Alts`, unrenamed
+- **several items, none Selected** → all move to `<CHARACTER> Review`,
+  unrenamed, and are reported. Which one is the delivery is a decision, not a
+  guess.
+
+The Select tick is the ONLY thing Pull reads from the table, and it is read as
+"which ITEM is the delivery": the row carrying the tick names an item, and that
+item is the select if it is one of the group. A rendered file with no row has no
+tick, which is why a folder of unlabelled duplicates goes to Review — the rule
+above already covers it, with nothing special-cased.
 
 Destination tracks are created as **children of the item's current track**,
 nested with `vo.FolderDepthForChild` — the same code `vo.EnsureSortChildTracks`
 already uses. This is the bug this design fixes.
 
-**The Alts track is removed.** It existed because the match knew a line's other
-takes; name resolution has no takes, and duplicates go to Review. Nothing
-produces alts, so the destination goes, along with the `use_alts_track` toggle
-and the `track_alts` setting.
+The `use_alts_track` toggle goes: with alts produced by the Select tick rather
+than by a mode, there is nothing for it to switch. The `track_alts` name setting
+stays.
 
 ## 6. Sort
 
@@ -164,7 +174,7 @@ never re-transcribes.
 - **`ajsfx_VO_Cut.lua`**, outright. Its gate moves into the Cut panel, its
   per-character track overrides into the Pull panel. There are no users to
   migrate.
-- **The Alts track**, per §5.
+- **The `use_alts_track` toggle**, per §5. The Alts track itself stays.
 
 ## 9. Testing
 
@@ -172,8 +182,9 @@ The pure layer carries the weight, as everywhere else in this project:
 
 - `vo.ResolveItemNames` — case, extension, whitespace, delivered-name recognition,
   ambiguity, and the "resolves to nothing" path
-- Pull's routing decision as a pure function of the resolution result: one item
-  → select, several → review, none → untouched
+- Pull's routing decision as a pure function of the resolution result and the
+  Select tick: one item → select; several with a tick → select plus alts;
+  several without → all review; resolving to nothing → untouched
 - the character selection's effect on `vo.BuildIndex` and `vo.ResidualPass`:
   an ineligible line never wins a window, and a pinned one still does
 - child-track nesting reuses `vo.FolderDepthForChild`, which is already covered
