@@ -1985,10 +1985,16 @@ local function DoCut()
   local stale_paths, stale_names = StaleSources()
 
   -- Every span from every source, tagged with the path it came from.
+  --
+  -- in_range is CLEARED here, not just set below: the match is memoised, so
+  -- these are the same span tables the last run marked. Cutting a selection and
+  -- then cutting again with nothing selected would otherwise cut the union of
+  -- the two.
   local all_spans = {}
   for _, m in ipairs(state.matches or {}) do
     for _, s in ipairs(m.spans or {}) do
       s.source_path = m.path
+      s.in_range    = nil
       all_spans[#all_spans + 1] = s
     end
   end
