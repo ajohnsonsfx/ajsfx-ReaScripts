@@ -553,6 +553,23 @@ test("an ambiguous name is counted apart from an unknown one", function()
   assert(n.ambiguous == 1 and n.unknown == 0, "the user can fix an ambiguity")
 end)
 
+test("a take's own name wins over the line's delivered name", function()
+  -- The Append belongs to the LINE, so it renames the select as well as the
+  -- alt. A per-take override is the only thing that can separate two takes of
+  -- one line, which is what an alt delivery needs.
+  local items = pull_items("line_042", "line_042")
+  items[2].override = "line_042_alt1"
+  local moves = vo.PlanPull(items, name_lines("line_042"),
+                            { [1] = "select", [2] = "alt" })
+  for _, m in ipairs(moves) do
+    if m.dest == "selects" then
+      assert(m.rename == "line_042", "the select keeps the line's name")
+    else
+      assert(m.rename == "line_042_alt1", "Got " .. tostring(m.rename))
+    end
+  end
+end)
+
 test("only delivered items are renamed", function()
   local lines = name_lines("line_042")
   lines[1].deliver = "line_042_ch2"

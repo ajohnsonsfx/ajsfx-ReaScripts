@@ -559,10 +559,15 @@ end
 -- four destinations are delivered (selects, alts) and two are not (outs,
 -- review) -- that is the distinction this exists to make.
 --
--- `items` are { id, name } in timeline order; `marks` maps an item id to
--- "select" or "alt". An item whose name resolves to nothing produces no move at
--- all: not moved, not renamed, not an error. It is counted so a run that does
--- nothing can say why.
+-- `items` are { id, name, override } in timeline order; `marks` maps an item id
+-- to "select" or "alt". An item whose name resolves to nothing produces no move
+-- at all: not moved, not renamed, not an error. It is counted so a run that
+-- does nothing can say why.
+--
+-- `override` is a name the user chose for THIS TAKE, and it wins over the
+-- line's delivered name. It is how two takes of one line can be delivered under
+-- different names: the Append belongs to the line and would rename the select
+-- as well as the alt.
 function vo.PlanPull(items, lines, marks)
   marks = marks or {}
   local index = vo.BuildNameIndex(lines)
@@ -603,7 +608,7 @@ function vo.PlanPull(items, lines, marks)
     -- only half of one, so the whole group waits in review.
     if #group == 1 then
       moves[#moves + 1] = { id = group[1].id, line = at,
-                            dest = "selects", rename = deliver }
+                            dest = "selects", rename = group[1].override or deliver }
       summary.selects = summary.selects + 1
     elseif not has_select then
       for _, item in ipairs(group) do
@@ -615,14 +620,15 @@ function vo.PlanPull(items, lines, marks)
         local mark = marks[item.id]
         if mark == "select" then
           moves[#moves + 1] = { id = item.id, line = at,
-                                dest = "selects", rename = deliver }
+                                dest = "selects", rename = item.override or deliver }
           summary.selects = summary.selects + 1
         elseif mark == "alt" then
-          -- The same delivered name as the select: an alt whose Append the user
-          -- has not typed yet SHOULD clash, and the red warning in Overview is
-          -- what says so. Nothing is uniqued behind their back.
+          -- Without a per-take name of its own an alt takes the line's, which
+          -- clashes with the select. That clash is real and is reported in red
+          -- rather than uniqued behind the user's back -- "Auto append alts" is
+          -- the button that gives every alt a name.
           moves[#moves + 1] = { id = item.id, line = at,
-                                dest = "alts", rename = deliver }
+                                dest = "alts", rename = item.override or deliver }
           summary.alts = summary.alts + 1
         else
           moves[#moves + 1] = { id = item.id, line = at, dest = "outs" }

@@ -230,7 +230,7 @@ local state = {
                      unknown = 0, ambiguous = 0 },
   -- The Sort panel's count line, memoised for the same reason.
   layout_count_key = nil,
-  layout_count     = { items = 0, sources = 0, unresolved = 0 },
+  layout_count     = { items = 0, unresolved = 0, scope = "" },
   appends       = {},         -- vo.SetAppend records, per script line
   dupe_names    = {},         -- vo.DuplicateNames set, for the red highlight
   lines         = {},         -- the merged, resolved script lines
@@ -1374,58 +1374,112 @@ local function AffectedRows()
   return state.visible, false
 end
 
+-- The items Pull and Sort may act on, in timeline order, each carrying the name
+-- REAPER has for it right now.
+--
+-- Deliberately NOT the table's rows. A row exists only where the match put a
+-- span, so a project of rendered files with no transcripts has no rows at all
+-- -- and that is precisely the case these two tools exist to serve. They walk
+-- the project's items and let name resolution decide which are theirs; an item
+-- the script does not name is skipped, which is also what keeps them off audio
+-- they were not asked to touch.
+--
+-- Scope, narrowest first: the items selected in REAPER, else the items behind
+-- the selected rows, else every item in the project.
+local function TargetItems()
+  local chosen, scope = {}, "every item in the project"
+
+  local n = r.CountSelectedMediaItems(0)
+  if n > 0 then
+    for i = 0, n - 1 do chosen[r.GetSelectedMediaItem(0, i)] = true end
+    scope = string.format("%d item%s selected in REAPER", n, n == 1 and "" or "s")
+  else
+    local sel = SelectedRows()
+    for _, row in ipairs(sel) do
+      if row.item then chosen[row.item] = true end
+    end
+    if next(chosen) then scope = "the items behind the selected rows" end
+  end
+  local everything = next(chosen) == nil
+
+  -- Marks, characters and per-take names come from the row where one exists.
+  -- An item with no row has none of them, which is exactly what a delivered
+  -- file looks like. Where several rows share an item, the one carrying SEL
+  -- speaks for it.
+  local by_item = {}
+  for _, row in ipairs(state.overview) do
+    if row.item then
+      local cur = by_item[row.item]
+      if not cur or (row.user_mark == "select" and cur.user_mark ~= "select") then
+        by_item[row.item] = row
+      end
+    end
+  end
+
+  local items, marks = {}, {}
+  for _, info in ipairs(state.items or {}) do
+    local item = info.item
+    if item and not info.skip and (everything or chosen[item]) then
+      local take = r.GetActiveTake(item)
+      local name = ""
+      if take then
+        local _, got = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+        name = got or ""
+      end
+      local row = by_item[item]
+      items[#items + 1] = {
+        id        = item,
+        name      = name,
+        pos       = info.pos or 0,
+        character = row and row.character or nil,
+        override  = row and row.name_override or nil,
+      }
+      if row and row.user_mark then marks[item] = row.user_mark end
+    end
+  end
+  table.sort(items, function(a, b) return a.pos < b.pos end)
+  return items, marks, scope
+end
+
 -- Clusters worth moving, each tagged with the sort key of its earliest member.
 -- Returns the clusters, the number skipped for being locked, and the number
 -- left out because their name is not on the script.
 local function BuildSortClusters()
-  local rows = AffectedRows()
-
-  -- Script order is a question about the SCRIPT, so it is answered by the name
-  -- the item CARRIES, not by what the transcript matched it to. That is what
-  -- keeps an uncut recording out of the run -- its name is not a script
-  -- filename, so it resolves to nothing and is left where it is -- and what
-  -- lets a folder of rendered files sort with no transcripts at all.
-  --
-  -- Record order asks where an item sat inside a recording, which a name cannot
-  -- answer, so it keeps reading the row.
-  local by_name = state.layout_order == "script"
-  local index   = by_name and vo.BuildNameIndex(state.lines) or nil
-
-  -- One key per ITEM, taken from its earliest recognised line: an uncut item
-  -- holding five lines is a single thing you can drag, so the first line in it
-  -- decides where the whole thing goes.
   local keys, wanted, unresolved = {}, {}, 0
-  for _, row in ipairs(rows) do
-    if row.item then
-      local at, orphan = row.script_row, (row.status == "orphan") or (row.script_row == nil)
-      local skip = false
 
-      if by_name and not wanted[row.item] then
-        local take = r.GetActiveTake(row.item)
-        local name = ""
-        if take then
-          local _, got = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
-          name = got or ""
-        end
-        at = vo.ResolveItemName(index, name)
-        if at then
-          orphan = false
-        else
-          unresolved = unresolved + 1
-          skip = true
-        end
+  if state.layout_order == "script" then
+    -- Script order is a question about the SCRIPT, so it is answered by the
+    -- name the item CARRIES, from the project's ITEMS rather than the table's
+    -- rows -- a project of rendered files has no rows at all. One resolution
+    -- per item, so an uncut recording holding forty lines is one skip and not
+    -- forty, and so a single item can never end up keyed two different ways.
+    local index = vo.BuildNameIndex(state.lines)
+    for _, it in ipairs((TargetItems())) do
+      local at = vo.ResolveItemName(index, it.name)
+      if at then
+        wanted[it.id] = true
+        keys[it.id] = { script_row = at, source_start = it.pos, orphan = false }
+      else
+        unresolved = unresolved + 1
       end
-
-      if not skip then
+    end
+  else
+    -- Record order asks where an item sat inside a recording, which a name
+    -- cannot answer, so it reads the rows the match produced. One key per ITEM,
+    -- taken from its earliest recognised line: an uncut item holding five lines
+    -- is a single thing you can drag, so the first line in it decides where the
+    -- whole thing goes.
+    for _, row in ipairs(AffectedRows()) do
+      if row.item then
         wanted[row.item] = true
         local start = row.source_start or 0
         local existing = keys[row.item]
         if not existing or start < existing.source_start then
           keys[row.item] = {
-            script_row   = at,
+            script_row   = row.script_row,
             source_start = start,
             source_path  = row.source_path,
-            orphan       = orphan,
+            orphan       = (row.status == "orphan") or (row.script_row == nil),
           }
         end
       end
@@ -2127,35 +2181,9 @@ end
 -- transcripts at all as well as a session this window cut.
 -- -----------------------------------------------------------------------
 
--- Every item behind the affected rows, in timeline order, carrying the name
--- REAPER has for it right now -- not the name the table thinks it should have.
--- Pull resolves what is actually there.
-local function PullItems()
-  local rows = AffectedRows()
-  local items, marks, seen = {}, {}, {}
-  for _, row in ipairs(rows) do
-    local item = row.item
-    if item and not seen[item] then
-      seen[item] = true
-      local take = r.GetActiveTake(item)
-      local name = ""
-      if take then
-        local _, got = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
-        name = got or ""
-      end
-      items[#items + 1] = { id = item, name = name, character = row.character,
-                            pos = r.GetMediaItemInfo_Value(item, "D_POSITION") }
-    end
-    -- The mark rides on the ROW, so it is read even when several rows share an
-    -- item: the one carrying SEL is the one that speaks for it.
-    if item and row.user_mark then marks[item] = row.user_mark end
-  end
-  table.sort(items, function(a, b) return a.pos < b.pos end)
-  return items, marks
-end
 
 local function Pull()
-  local items, marks = PullItems()
+  local items, marks = TargetItems()
   local moves, summary = vo.PlanPull(items, state.lines, marks)
 
   if #moves == 0 then
@@ -2278,9 +2306,10 @@ local function DrawPullPanel()
   -- reads a take name per item, which is a REAPER call per item and has no
   -- business running at frame rate. Both inputs move exactly when the answer
   -- would change.
-  local key = tostring(state.scanned_at) .. "|" .. tostring(#SelectedRows())
+  local key = table.concat({ tostring(state.scanned_at), tostring(#SelectedRows()),
+                             tostring(r.CountSelectedMediaItems(0)) }, "|")
   if key ~= state.pull_count_key then
-    local items, marks = PullItems()
+    local items, marks = TargetItems()
     local _, n = vo.PlanPull(items, state.lines, marks)
     state.pull_count_key, state.pull_count = key, n
   end
@@ -2471,50 +2500,41 @@ local function DrawLayoutBar()
 
   -- Counted from the rows alone: clustering walks every item in the project and
   -- has no business running at frame rate.
-  local rows, from_selection = AffectedRows()
-  -- Memoised on everything that could change the answer: in script order this
-  -- reads a take name per item, which is a REAPER call per item and must not
-  -- run at frame rate.
-  local key = table.concat({ tostring(state.scanned_at), tostring(#rows),
+  -- Memoised on everything that could change the answer: working it out reads
+  -- a take name per item, which is a REAPER call per item and must not run at
+  -- frame rate.
+  local key = table.concat({ tostring(state.scanned_at), tostring(#SelectedRows()),
+                             tostring(r.CountSelectedMediaItems(0)),
                              state.layout_order }, "|")
   if key ~= state.layout_count_key then
-    local items, sources, item_seen, source_seen = 0, 0, {}, {}
-    local index = (state.layout_order == "script")
-                  and vo.BuildNameIndex(state.lines) or nil
-    local unresolved = 0
-    for _, row in ipairs(rows) do
-      if row.item and not item_seen[row.item] then
-        item_seen[row.item] = true
-        if index then
-          local take = r.GetActiveTake(row.item)
-          local name = ""
-          if take then
-            local _, got = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
-            name = got or ""
-          end
-          if vo.ResolveItemName(index, name) then items = items + 1
-          else unresolved = unresolved + 1 end
-        else
+    local items, unresolved, scope = 0, 0, nil
+    if state.layout_order == "script" then
+      local index = vo.BuildNameIndex(state.lines)
+      local list
+      list, _, scope = TargetItems()
+      for _, it in ipairs(list) do
+        if vo.ResolveItemName(index, it.name) then items = items + 1
+        else unresolved = unresolved + 1 end
+      end
+    else
+      local rows, from_selection = AffectedRows()
+      local seen = {}
+      for _, row in ipairs(rows) do
+        if row.item and not seen[row.item] then
+          seen[row.item] = true
           items = items + 1
         end
       end
-      local path = row.source_path
-      if path and not source_seen[path] then
-        source_seen[path] = true
-        sources = sources + 1
-      end
+      scope = from_selection and "selected rows" or "all shown rows"
     end
     state.layout_count_key = key
-    state.layout_count = { items = items, sources = sources, unresolved = unresolved }
+    state.layout_count = { items = items, unresolved = unresolved, scope = scope }
   end
-  local items      = state.layout_count.items
-  local sources    = state.layout_count.sources
-  local unresolved = state.layout_count.unresolved
+  local c = state.layout_count
   im.SameLine(ctx)
-  im.TextDisabled(ctx, string.format("%d item%s from %d recording%s (%s)%s",
-    items, items == 1 and "" or "s", sources, sources == 1 and "" or "s",
-    from_selection and "selected rows" or "all shown rows",
-    unresolved > 0 and string.format(", %d not on the script", unresolved) or ""))
+  im.TextDisabled(ctx, string.format("%d item%s (%s)%s",
+    c.items, c.items == 1 and "" or "s", c.scope or "",
+    c.unresolved > 0 and string.format(", %d not on the script", c.unresolved) or ""))
   if im.IsItemHovered(ctx) then
     im.SetTooltip(ctx,
       "With rows selected, only those items move.\n" ..
