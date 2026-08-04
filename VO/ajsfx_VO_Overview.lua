@@ -603,9 +603,14 @@ local function Rebuild()
   -- frame rate on a long session.
   for _, row in ipairs(state.overview) do
     if row.source_path and row.source_start then
-      local item, proj_time =
-        vo.ResolveSourceTime(row.source_path, row.source_start, state.items)
-      row.item, row.proj_time = item, proj_time
+      -- By SPAN, not by instant: trimming an item's head throws away the source
+      -- time a take began at, and asking about that one instant answers nothing
+      -- even when most of the take is still in the project. `coverage` records
+      -- which answer this was, so a partial one can be shown as such and Cut
+      -- can refuse it.
+      local item, proj_time, _, coverage = vo.ResolveSourceSpan(
+        row.source_path, row.source_start, row.source_stop, state.items)
+      row.item, row.proj_time, row.coverage = item, proj_time, coverage
     end
     -- The name REAPER is showing on the item right now, so the Item name column
     -- reflects a rename made anywhere else in the project, not just here.
@@ -748,7 +753,7 @@ end
 -- by pressing the button again.
 local function LiveItemFor(row)
   if not (row.source_path and row.source_start) then return nil end
-  return (vo.ResolveSourceTime(row.source_path, row.source_start,
+  return (vo.ResolveSourceSpan(row.source_path, row.source_start, row.source_stop,
                                vo.CollectProjectSpans()))
 end
 
@@ -1084,7 +1089,7 @@ local function SyncProjectSelection()
 
   local function resolve(row)
     if not (row.source_path and row.source_start) then return nil end
-    return vo.ResolveSourceTime(row.source_path, row.source_start, items)
+    return vo.ResolveSourceSpan(row.source_path, row.source_start, row.source_stop, items)
   end
 
   r.Main_OnCommand(40289, 0)                       -- unselect all items
@@ -2175,6 +2180,10 @@ local function DoCut()
   -- working from nonsense.
   local skipped_msgs, by_item = {}, {}
   for _, s in ipairs(candidates) do
+    -- Strictly, by instant. A take whose start has been trimmed away would cut
+    -- as a truncated line delivered under the full line's name, which is worse
+    -- than not cutting it -- so it is reported instead. Navigation is the
+    -- lenient one; delivery is not.
     local item, proj_start, info = vo.ResolveSourceTime(s.source_path, s.start, state.items)
     if not item then
       skipped_msgs[#skipped_msgs + 1] = string.format("%s: no item covers %.3fs in %s",

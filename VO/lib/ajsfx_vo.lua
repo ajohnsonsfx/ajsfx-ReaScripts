@@ -4865,6 +4865,43 @@ function vo.ResolveSourceTime(source_path, source_start, items)
   return find(true)
 end
 
+-- The item holding a take, when the take's own start may no longer be in the
+-- project at all.
+--
+-- Trimming an item's head throws away source time, and a take that began in
+-- what was trimmed has no covered start -- so vo.ResolveSourceTime, which asks
+-- about one instant, answers nothing and the row goes blank even though most of
+-- the take is still sitting there. This asks about the take's WHOLE span and
+-- takes the item covering most of it.
+--
+-- Returns item, the project time of the first covered moment, info, and the
+-- coverage: "full" when the take's start is really there, "partial" when the
+-- answer is a best effort over what is left. Callers that must not act on a
+-- truncated take -- cutting, above all -- check that flag; navigation does not
+-- care, because taking the user near a take beats taking them nowhere.
+function vo.ResolveSourceSpan(source_path, source_start, source_stop, items)
+  local item, proj, info = vo.ResolveSourceTime(source_path, source_start, items)
+  if item then return item, proj, info, "full" end
+
+  if not source_stop or not source_start or source_stop <= source_start then return nil end
+
+  local best, best_overlap = nil, 0
+  for _, cand in ipairs(items or {}) do
+    if cand.path == source_path and not cand.skip then
+      local range = vo.SourceCoverageRanges({ cand })[1]
+      if range then
+        local from = math.max(source_start, range.from)
+        local to   = math.min(source_stop,  range.to)
+        if to - from > best_overlap then best, best_overlap = { cand, from }, to - from end
+      end
+    end
+  end
+
+  if not best then return nil end
+  local cand, from = best[1], best[2]
+  return cand.item, vo.SourceTimeToProject(from, cand), cand, "partial"
+end
+
 -- Find a track by name, or create one directly below `track`.
 function vo.EnsureTrackBelow(track, name)
   for i = 0, r.CountTracks(0) - 1 do

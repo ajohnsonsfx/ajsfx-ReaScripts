@@ -637,6 +637,41 @@ test("a time no item covers resolves to nothing", function()
   assert(vo.ResolveSourceTime("other.wav", 5, cut_items()) == nil, "another source")
 end)
 
+test("a take whose start was trimmed away still finds its item", function()
+  -- The item now begins at source 12, and the take runs 10..20. Its start is
+  -- gone, but eight of its ten seconds are right there.
+  local items = { { item = "B", path = "s.wav", pos = 100, length = 8,
+                    start_offs = 12, playrate = 1 } }
+  local item, proj, _, coverage = vo.ResolveSourceSpan("s.wav", 10, 20, items)
+  assert(item == "B", "Got " .. tostring(item))
+  assert(coverage == "partial", "coverage: " .. tostring(coverage))
+  assert(math.abs(proj - 100) < 1e-9,
+    "lands on the first covered moment, not off the front: " .. tostring(proj))
+end)
+
+test("an intact take reports full coverage", function()
+  local item, proj, _, coverage = vo.ResolveSourceSpan("s.wav", 5, 8, cut_items())
+  assert(item == "A" and coverage == "full", "Got " .. tostring(item))
+  assert(math.abs(proj - 105) < 1e-9, "project time: " .. tostring(proj))
+end)
+
+test("the item holding MOST of the take wins", function()
+  local items = {
+    { item = "A", path = "s.wav", pos = 0,  length = 1, start_offs = 10, playrate = 1 },
+    { item = "B", path = "s.wav", pos = 50, length = 6, start_offs = 13, playrate = 1 },
+  }
+  -- The take runs 9..20 and its start is covered by neither: A holds one second
+  -- of what is left, B holds six.
+  local item = vo.ResolveSourceSpan("s.wav", 9, 20, items)
+  assert(item == "B", "Got " .. tostring(item))
+end)
+
+test("a take with nothing left of it resolves to nothing", function()
+  local items = { { item = "B", path = "s.wav", pos = 100, length = 5,
+                    start_offs = 40, playrate = 1 } }
+  assert(vo.ResolveSourceSpan("s.wav", 10, 20, items) == nil, "no overlap at all")
+end)
+
 --------------------------------
 -- IsDestTrackName
 --------------------------------
