@@ -2100,6 +2100,13 @@ local function DoCut()
   -- Resolve each candidate against the live item that plays it, in project
   -- time. A span no current item covers any more is dropped and counted rather
   -- than cut against silence.
+  --
+  -- Converted onto a COPY, never onto the span itself. The match is memoised
+  -- and the table is built from those same span tables, so rewriting `start`
+  -- from source time to project time would leave every row's source_start
+  -- holding a project time the moment a cut succeeded -- rows would stop
+  -- resolving to their items, statuses would drift, and a second cut would be
+  -- working from nonsense.
   local skipped_msgs, by_item = {}, {}
   for _, s in ipairs(candidates) do
     local item, proj_start, info = vo.ResolveSourceTime(s.source_path, s.start, state.items)
@@ -2107,14 +2114,15 @@ local function DoCut()
       skipped_msgs[#skipped_msgs + 1] = string.format("%s: no item covers %.3fs in %s",
         s.name or s.asset or "(unnamed)", s.start or 0, vo.Basename(s.source_path))
     else
-      s.start = proj_start
-      s.stop  = vo.SourceTimeToProject(s.stop, info)
+      local c = vo.ShallowCopy(s)
+      c.start = proj_start
+      c.stop  = vo.SourceTimeToProject(s.stop, info)
       local g = by_item[item]
       if not g then
         g = { item = item, info = info, spans = {} }
         by_item[item] = g
       end
-      g.spans[#g.spans + 1] = s
+      g.spans[#g.spans + 1] = c
     end
   end
 
