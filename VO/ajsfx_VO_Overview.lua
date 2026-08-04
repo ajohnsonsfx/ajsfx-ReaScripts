@@ -2105,6 +2105,172 @@ local function DrawCutPanel()
   im.Separator(ctx)
 end
 
+-- -----------------------------------------------------------------------
+-- Pull
+--
+-- Moves items onto Selects / Alts / Outs / Review tracks nested under the
+-- recording they came from. It identifies an item by its NAME, never by the
+-- match, which is what lets it serve a folder of rendered files with no
+-- transcripts at all as well as a session this window cut.
+-- -----------------------------------------------------------------------
+
+-- Every item behind the affected rows, in timeline order, carrying the name
+-- REAPER has for it right now -- not the name the table thinks it should have.
+-- Pull resolves what is actually there.
+local function PullItems()
+  local rows = AffectedRows()
+  local items, marks, seen = {}, {}, {}
+  for _, row in ipairs(rows) do
+    local item = row.item
+    if item and not seen[item] then
+      seen[item] = true
+      local take = r.GetActiveTake(item)
+      local name = ""
+      if take then
+        local _, got = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+        name = got or ""
+      end
+      items[#items + 1] = { id = item, name = name, character = row.character,
+                            pos = r.GetMediaItemInfo_Value(item, "D_POSITION") }
+    end
+    -- The mark rides on the ROW, so it is read even when several rows share an
+    -- item: the one carrying SEL is the one that speaks for it.
+    if item and row.user_mark then marks[item] = row.user_mark end
+  end
+  table.sort(items, function(a, b) return a.pos < b.pos end)
+  return items, marks
+end
+
+local function Pull()
+  local items, marks = PullItems()
+  local moves, summary = vo.PlanPull(items, state.lines, marks)
+
+  if #moves == 0 then
+    state.message, state.message_kind = string.format(
+      "Nothing to pull. %d item(s) are not on the script; %d name(s) are claimed by two lines.",
+      summary.unknown, summary.ambiguous), "error"
+    return
+  end
+
+  local cfg  = vo.LoadConfig()
+  local base = { selects = cfg.track_selects or "Selects",
+                 alts    = cfg.track_alts    or "Alts",
+                 outs    = cfg.track_outs    or "Outs",
+                 review  = cfg.track_review  or "Review" }
+
+  local by_id = {}
+  for _, it in ipairs(items) do by_id[it.id] = it end
+
+  core.Transaction("VO Overview: pull", function()
+    local tracks = {}
+    for _, move in ipairs(moves) do
+      local item = move.id
+      -- Read the parent INSIDE the loop: an earlier move may already have taken
+      -- this item off the track it started on.
+      local parent = r.GetMediaItem_Track(item)
+      local name   = vo.CharacterTrackName(by_id[item].character, base[move.dest])
+      local key    = tostring(parent) .. "|" .. name
+      if not tracks[key] then tracks[key] = vo.EnsureChildTrack(parent, name) end
+
+      if r.MoveMediaItemToTrack(item, tracks[key]) and move.rename then
+        local take = r.GetActiveTake(item)
+        if take then
+          r.GetSetMediaItemTakeInfo_String(take, "P_NAME", move.rename, true)
+        end
+      end
+    end
+    r.UpdateArrange()
+  end)
+
+  state.message, state.message_kind = string.format(
+    "Pulled %d select, %d alt, %d out, %d to review. %d item(s) not on the script.",
+    summary.selects, summary.alts, summary.outs, summary.review,
+    summary.unknown + summary.ambiguous), "ok"
+  Reload()
+end
+
+local function ApplyAltAppends()
+  local cfg = vo.LoadConfig()
+  local edits, skipped = vo.PlanAltAppends(AffectedRows(), {
+    pattern = cfg.alt_append_pattern,
+    start   = cfg.alt_append_start,
+    digits  = cfg.alt_append_digits,
+  })
+  for _, e in ipairs(edits) do
+    vo.SetAppend(state.appends, e.script, e.asset, e.nth, e.text)
+  end
+  if #edits > 0 then
+    state.dirty = true
+    Reload()
+  end
+  state.message, state.message_kind = string.format(
+    "Filled %d alt Append(s).%s", #edits,
+    skipped > 0 and string.format(" %d already had one and were left alone.", skipped) or ""),
+    (#edits > 0) and "ok" or "error"
+end
+
+local function DrawPullPanel()
+  im.Separator(ctx)
+  im.TextWrapped(ctx,
+    "Moves items onto Selects, Alts, Outs and Review tracks nested under the " ..
+    "recording they came from. Items are matched to the script by NAME, so this " ..
+    "works on rendered files that were never cut here. An item whose name is not " ..
+    "on the script is left alone.")
+  im.Spacing(ctx)
+
+  -- Alt naming ----------------------------------------------------------
+  local cfg = vo.LoadConfig()
+  im.Text(ctx, "Auto append alts:")
+  im.SameLine(ctx)
+  im.SetNextItemWidth(ctx, 110)
+  local changed, pattern = im.InputText(ctx, "pattern##altpat", cfg.alt_append_pattern or "_alt{n}")
+  if changed then cfg.alt_append_pattern = pattern; vo.SaveConfig(cfg) end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "{n} is where the number goes. With no {n} it goes on the end.")
+  end
+  im.SameLine(ctx)
+  im.SetNextItemWidth(ctx, 70)
+  local schanged, start = im.InputInt(ctx, "start##altstart", math.floor(cfg.alt_append_start or 1))
+  if schanged then cfg.alt_append_start = math.max(0, start); vo.SaveConfig(cfg) end
+  im.SameLine(ctx)
+  im.SetNextItemWidth(ctx, 70)
+  local dchanged, digits = im.InputInt(ctx, "digits##altdig", math.floor(cfg.alt_append_digits or 1))
+  if dchanged then cfg.alt_append_digits = math.max(1, math.min(4, digits)); vo.SaveConfig(cfg) end
+  im.SameLine(ctx)
+  if im.Button(ctx, "Apply##altapply") then pending_action = ApplyAltAppends end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Fills the Append of every alt that has none.\n" ..
+                       "An Append you typed is never overwritten.")
+  end
+
+  -- Preview against a real line, so the convention is checked before it lands.
+  local sample = (state.visible[1] and state.visible[1].asset) or "line_042"
+  local preview = {}
+  for i = 0, 2 do
+    preview[#preview + 1] = sample ..
+      vo.FormatAltAppend(cfg.alt_append_pattern or "_alt{n}",
+                         math.floor(cfg.alt_append_start or 1) + i,
+                         math.floor(cfg.alt_append_digits or 1))
+  end
+  im.TextDisabled(ctx, "  " .. table.concat(preview, ", "))
+  im.Spacing(ctx)
+
+  -- Pull ----------------------------------------------------------------
+  if im.Button(ctx, "Pull") then pending_action = Pull end
+  im.SameLine(ctx)
+  if im.Button(ctx, "Close##pull") then state.panel = nil end
+  im.SameLine(ctx)
+
+  local items, marks = PullItems()
+  local _, n = vo.PlanPull(items, state.lines, marks)
+  im.TextDisabled(ctx, string.format(
+    "%d select, %d alt, %d out, %d review; %d not on the script%s",
+    n.selects, n.alts, n.outs, n.review, n.unknown + n.ambiguous,
+    n.ambiguous > 0 and string.format(" (%d name clashes)", n.ambiguous) or ""))
+
+  im.Separator(ctx)
+end
+
 local function DrawFilters()
   -- Every control here writes state.dirty: the filters are stored in the project
   -- file so the table opens the way it was left. The flush is throttled, so a
@@ -3219,10 +3385,15 @@ local function loop()
       "Splits every take of every decided line out of its recording\n" ..
       "and names it the script's filename. Moves nothing.")
 
+    PanelButton("pull", "Pull",
+      "Moves items onto Selects, Alts, Outs and Review tracks nested\n" ..
+      "under the recording they came from, matched to the script by name.")
+
     if im.Button(ctx, "Settings") then state.settings_open = true end
 
     if     state.panel == "script" then DrawScriptPanel()
-    elseif state.panel == "cut"    then DrawCutPanel() end
+    elseif state.panel == "cut"    then DrawCutPanel()
+    elseif state.panel == "pull"   then DrawPullPanel() end
 
     local bad = BadScriptCount()
     if bad > 0 then

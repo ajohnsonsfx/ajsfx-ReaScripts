@@ -484,6 +484,23 @@ Open **ajsfx VO Settings → Speech backend → Download backend & models**.
    until the audio and its transcript agree again.
 6. Undo. One Ctrl+Z puts the recording back as it was.
 
+## Pull (2026-08-04)
+
+1. Cut two takes of one line, one SEL and one unmarked. Press **Pull**. The SEL
+   lands on `<CHAR>_Selects`, the other on `<CHAR>_Outs`, and BOTH are CHILDREN
+   of the recording's track — collapse the recording and they go with it.
+2. Mark the second take ALT and Pull again: it moves to `<CHAR>_Alts`.
+3. Two takes, both ALT and none SEL: both go to `<CHAR>_Review`.
+4. Drop a folder of already-named rendered wavs into the project, with no
+   transcripts at all. Pull moves each one to Selects by its filename.
+5. An item whose name is not on the script is not moved, and the count line
+   says how many were left.
+6. Set the alt pattern to `-take{n}`, start 2, digits 2. The preview reads
+   `-take02`. Press **Apply**: only alts with an empty Append are filled.
+7. Press Apply twice. The second press reports that everything already had one.
+8. Pull twice. The second run recognises the items it renamed and does not
+   double-move them.
+
 ## Filters are remembered (2026-08-04)
 
 1. Pick a character, set the status filter, type in the search box, open **Filters**
