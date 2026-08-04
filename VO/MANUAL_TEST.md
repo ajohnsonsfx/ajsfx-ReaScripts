@@ -501,6 +501,19 @@ Open **ajsfx VO Settings → Speech backend → Download backend & models**.
 8. Pull twice. The second run recognises the items it renamed and does not
    double-move them.
 
+## Sort by name (2026-08-04)
+
+1. A project of rendered wavs, no transcripts, names matching the script.
+   **Sort** in script order lays them out in the script's order.
+2. An uncut recording is NOT moved, and the count line reads "N not on the
+   script". With nothing else in range, Sort refuses and says to cut first.
+3. Sort a Selects track that Pull already renamed with Appends. It still sorts:
+   the delivered name resolves too.
+4. Sort twice. The second run makes a fresh set of "sorted N" tracks and the
+   first set is untouched.
+5. Switch to **record order**. The uncut recording is a member again — record
+   order asks where audio sat in a recording, which needs no name.
+
 ## Filters are remembered (2026-08-04)
 
 1. Pick a character, set the status filter, type in the search box, open **Filters**

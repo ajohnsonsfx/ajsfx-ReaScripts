@@ -1393,26 +1393,59 @@ local function AffectedRows()
 end
 
 -- Clusters worth moving, each tagged with the sort key of its earliest member.
--- Returns the clusters and the number skipped for being locked.
+-- Returns the clusters, the number skipped for being locked, and the number
+-- left out because their name is not on the script.
 local function BuildSortClusters()
   local rows = AffectedRows()
+
+  -- Script order is a question about the SCRIPT, so it is answered by the name
+  -- the item CARRIES, not by what the transcript matched it to. That is what
+  -- keeps an uncut recording out of the run -- its name is not a script
+  -- filename, so it resolves to nothing and is left where it is -- and what
+  -- lets a folder of rendered files sort with no transcripts at all.
+  --
+  -- Record order asks where an item sat inside a recording, which a name cannot
+  -- answer, so it keeps reading the row.
+  local by_name = state.layout_order == "script"
+  local index   = by_name and vo.BuildNameIndex(state.lines) or nil
 
   -- One key per ITEM, taken from its earliest recognised line: an uncut item
   -- holding five lines is a single thing you can drag, so the first line in it
   -- decides where the whole thing goes.
-  local keys, wanted = {}, {}
+  local keys, wanted, unresolved = {}, {}, 0
   for _, row in ipairs(rows) do
     if row.item then
-      wanted[row.item] = true
-      local start = row.source_start or 0
-      local existing = keys[row.item]
-      if not existing or start < existing.source_start then
-        keys[row.item] = {
-          script_row   = row.script_row,
-          source_start = start,
-          source_path  = row.source_path,
-          orphan       = (row.status == "orphan") or (row.script_row == nil),
-        }
+      local at, orphan = row.script_row, (row.status == "orphan") or (row.script_row == nil)
+      local skip = false
+
+      if by_name and not wanted[row.item] then
+        local take = r.GetActiveTake(row.item)
+        local name = ""
+        if take then
+          local _, got = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+          name = got or ""
+        end
+        at = vo.ResolveItemName(index, name)
+        if at then
+          orphan = false
+        else
+          unresolved = unresolved + 1
+          skip = true
+        end
+      end
+
+      if not skip then
+        wanted[row.item] = true
+        local start = row.source_start or 0
+        local existing = keys[row.item]
+        if not existing or start < existing.source_start then
+          keys[row.item] = {
+            script_row   = at,
+            source_start = start,
+            source_path  = row.source_path,
+            orphan       = orphan,
+          }
+        end
       end
     end
   end
@@ -1439,7 +1472,7 @@ local function BuildSortClusters()
     end
   end
 
-  return chosen, locked
+  return chosen, locked, unresolved
 end
 
 local function FormatSpan(seconds)
@@ -1448,11 +1481,15 @@ local function FormatSpan(seconds)
 end
 
 local function SortOnTimeline()
-  local clusters, locked = BuildSortClusters()
+  local clusters, locked, unresolved = BuildSortClusters()
   if #clusters == 0 then
     state.message, state.message_kind =
       (locked > 0)
         and "Every item in range is locked; nothing was moved."
+        or  (unresolved > 0)
+        and string.format(
+              "Nothing to lay out: %d item(s) carry a name that is not on the script. " ..
+              "Cut and Name them first, or switch to record order.", unresolved)
         or  "No audio in range to lay out.", "error"
     return
   end
@@ -2453,10 +2490,25 @@ local function DrawLayoutBar()
   -- has no business running at frame rate.
   local rows, from_selection = AffectedRows()
   local items, sources, item_seen, source_seen = 0, 0, {}, {}
+  -- In script order, an item is only a member if its NAME is on the script, so
+  -- the count has to answer the same question the run will.
+  local index = (state.layout_order == "script") and vo.BuildNameIndex(state.lines) or nil
+  local unresolved = 0
   for _, row in ipairs(rows) do
     if row.item and not item_seen[row.item] then
       item_seen[row.item] = true
-      items = items + 1
+      if index then
+        local take = r.GetActiveTake(row.item)
+        local name = ""
+        if take then
+          local _, got = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+          name = got or ""
+        end
+        if vo.ResolveItemName(index, name) then items = items + 1
+        else unresolved = unresolved + 1 end
+      else
+        items = items + 1
+      end
     end
     local path = row.source_path
     if path and not source_seen[path] then
@@ -2465,14 +2517,17 @@ local function DrawLayoutBar()
     end
   end
   im.SameLine(ctx)
-  im.TextDisabled(ctx, string.format("%d item%s from %d recording%s (%s)",
+  im.TextDisabled(ctx, string.format("%d item%s from %d recording%s (%s)%s",
     items, items == 1 and "" or "s", sources, sources == 1 and "" or "s",
-    from_selection and "selected rows" or "all shown rows"))
+    from_selection and "selected rows" or "all shown rows",
+    unresolved > 0 and string.format(", %d not on the script", unresolved) or ""))
   if im.IsItemHovered(ctx) then
     im.SetTooltip(ctx,
       "With rows selected, only those items move.\n" ..
       "With nothing selected, every item behind the rows shown here moves.\n" ..
-      "Overlapping items on one track always travel together, so crossfades survive.")
+      "Overlapping items on one track always travel together, so crossfades survive.\n\n" ..
+      "In script order an item is placed by the NAME it carries, so an uncut\n" ..
+      "recording is left where it is. Record order needs no name.")
   end
 end
 
