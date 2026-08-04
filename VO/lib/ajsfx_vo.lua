@@ -42,7 +42,7 @@ end
 -- Shallow copy: a new table with the same top-level key/value pairs. Nested
 -- tables (e.g. cfg.column_mapping) remain shared with the original -- callers
 -- that need to isolate a config snapshot from later top-level field writes
--- (see run_cfg in ajsfx_VO_Cut.lua) only need the top level copied.
+-- (see the Cut panel's run config) only need the top level copied.
 function vo.ShallowCopy(t)
   local out = {}
   for k, v in pairs(t) do out[k] = v end
@@ -683,9 +683,9 @@ function vo.PlanAltAppends(rows, opts)
 end
 
 -- The whole script side of a project, loaded in one call. Both ajsfx VO Overview
--- and ajsfx VO Cut used to keep their own near-identical copy of this; they now
--- share it, so a script that loads in one window cannot fail to load in the
--- other.
+-- and the old ajsfx VO Cut window kept near-identical copies of this; it is now
+-- one function, so a script that loads for the table cannot fail to load for
+-- the cut.
 --
 -- `read_fn(path)` returns the file's text or nil. Injected rather than opened
 -- here so the whole thing stays in the pure layer and is testable headlessly.
@@ -2896,7 +2896,6 @@ function vo.SerializeProjectFile(entries, meta)
   local v = meta.view
   if v then
     local function row(key, ...) out[#out + 1] = vo.FormatCSVRow({ "View", key, ... }) end
-    if v.status and v.status ~= "" and v.status ~= "all" then row("status", v.status) end
     if v.character and v.character ~= ""                 then row("character", v.character) end
     if v.search and v.search ~= ""                       then row("search", v.search) end
     if v.filter_row                                      then row("filter_row", "yes") end
@@ -3000,8 +2999,9 @@ function vo.ParseProjectFile(text)
       end
     elseif key == "View" then
       local what, a, b = rows[i][2] or "", rows[i][3] or "", rows[i][4] or ""
-      if     what == "status"     then parsed.view.status     = a ~= "" and a or nil
-      elseif what == "character"  then parsed.view.character  = a ~= "" and a or nil
+      -- "status" was a preset filter that no longer exists; a file written by
+      -- that version is read without it rather than rejected.
+      if     what == "character"  then parsed.view.character  = a ~= "" and a or nil
       elseif what == "search"     then parsed.view.search     = a ~= "" and a or nil
       elseif what == "filter_row" then parsed.view.filter_row = a ~= ""
       elseif what == "column" and a ~= "" and b ~= "" then

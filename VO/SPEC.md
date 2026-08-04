@@ -2,9 +2,10 @@
 
 **Status:** Implemented, unverified in REAPER · **Version:** 0.2 · **Date:** 2026-08-01
 
-Script-matched cut-and-name for game VO / dialogue delivery, built as three windows —
-**ajsfx VO Sources**, **ajsfx VO Overview** and **ajsfx VO Cut** — plus **ajsfx VO
-Settings**. Given a recorded session in REAPER and a CSV script that lists each line's
+Script-matched cut-and-name for game VO / dialogue delivery, built as two windows —
+**ajsfx VO Sources** and **ajsfx VO Overview** — plus **ajsfx VO Settings**. Cutting,
+pulling and sorting are panels inside Overview; the separate **ajsfx VO Cut** window was
+retired in 0.13 (see `SPEC-overview.md` §7). Given a recorded session in REAPER and a CSV script that lists each line's
 text and its required asset filename, cut the session into one clip per line and name
 each clip with the correct asset name.
 
@@ -31,8 +32,10 @@ rationale behind the split; this document describes the result.
   of any script.
 - Match each spoken span against the script's `Text` column and assign its `AudioAsset`,
   recomputed live rather than stored.
-- Cut the session and route clips to **Selects / Alts / Review** tracks, named correctly,
-  with clip edges snapped to silence.
+- Cut the session into named clips with their edges snapped to silence, and route them to
+  **Selects / Alts / Outs / Review** tracks nested under the recording they came from.
+  Routing identifies a clip by its NAME, not by the match, so it serves rendered files
+  this tool never cut as well as a session it did.
 - Handle real session conditions: lines out of CSV order, multiple takes of a line,
   slates, false starts, and chatter between takes.
 - Report confidence; flag low-confidence and unmatched spans for review rather than
@@ -247,10 +250,10 @@ tests/
   fixtures/vo_sample_script.csv
 ```
 
-The three windows divide by verb: Sources transcribes, Overview matches and records
-judgements, Cut mutates the project. `ajsfx_VO_Overview.lua` is the ReaPack **package
-main file**; Sources, Cut and Settings ship alongside it as additional `[main]` entries
-in its `@provides`, the same pattern PVX uses for its own siblings:
+The windows divide by verb: Sources transcribes, Overview matches, records judgements and
+mutates the project. `ajsfx_VO_Overview.lua` is the ReaPack **package main file**; Sources
+and Settings ship alongside it as additional `[main]` entries in its `@provides`, the same
+pattern PVX uses for its own siblings:
 
 ```lua
 -- @provides
@@ -354,8 +357,10 @@ is gone — see `VO/SPEC-cut.md` §6.
 
 | Toggle | Values | Effect |
 |---|---|---|
-| `use_alts_track` | off / on | **off:** every take goes to Selects. **on:** non-selected takes go to Alts. |
 | `suffix_alt_names` | off / on | **off:** all takes named identically (`vo_npc_greet_01`). **on:** non-selected takes get `_tk01`, `_tk02`… |
+
+`use_alts_track` was removed in 0.13. Alts are marked per take in the Select column
+rather than switched on per run — see `SPEC-overview.md` §7.
 
 These are session-only state in the Cut window, not part of `vo.CONFIG_SCHEMA`, so they
 do not persist between runs — the user's `Select` column is the persistent decision.
@@ -430,8 +435,9 @@ Documented in `VO/MANUAL_TEST.md`.
 ## 10. Explicitly unverified
 
 Stated plainly rather than assumed working. **No manual testing in REAPER has been run
-for any of the three windows** — Sources, Overview and Cut are implemented and pass the
-automated suite, but none has been exercised against real audio yet.
+for the Cut and Name, Pull and Sort panels** — they are implemented and pass the
+automated suite, but have not been exercised against real audio yet. See
+`VO/MANUAL_TEST.md` for the checks that would clear them.
 
 - **whisper-cli has not been executed.** Its flags and CSV output format were read from
   upstream source (`examples/cli/cli.cpp`), not observed. The first manual test must

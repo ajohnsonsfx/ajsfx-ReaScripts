@@ -73,9 +73,9 @@ would grow a line per script line per session and the signal would drown.
 Clearing a row's marks removes it from the file. See `VO/SPEC.md` §4.2 for the
 full format, which this window owns.
 
-`View` rows in the preamble hold how the table was last left: the status filter,
-the character filter, the search box, whether the per-column filter row is
-showing, and each column's filter needle. Only what is actually set is written,
+`View` rows in the preamble hold how the table was last left: the character
+filter, the search box, whether the per-column filter row is showing, and each
+column's filter needle. Only what is actually set is written,
 so an unfiltered table adds nothing to the file. They live here rather than in
 the global ExtState that holds the appearance settings because a character
 filter names *this project's* characters. A restored filter naming a status or
@@ -185,7 +185,16 @@ user cannot see.
 
 **Sort on timeline** re-lays the affected audio along the timeline in either
 script order or record order. It moves whole media items and **never cuts** —
-cutting is Cut's job, and the non-goal in §1 holds here.
+cutting is the Cut and Name panel's job.
+
+**Script order is resolved by NAME**, not by the match: each item's take name is
+looked up in the script (`vo.BuildNameIndex` / `vo.ResolveItemName`, §7.1), and an
+item whose name is not on the script is left exactly where it is and counted in
+the panel's summary. Two things follow from the one rule. A folder of rendered
+files with no transcripts at all sorts into script order. And an uncut recording
+cannot be swept up by accident: it carries the recording's name, which is not a
+script filename. **Record order is unchanged** — it asks where an item sat inside
+a recording, which a name cannot answer, so it still reads the row.
 
 The unit of movement is the **cluster**, and two relations weld one. They chain
 through each other, so a crossfade partner that carries no group of its own still
@@ -313,6 +322,81 @@ a re-read — that is the button to press after transcribing in Sources.
 
 Project file writes are throttled to 2 s while typing and flushed on window
 close.
+
+---
+
+## 4a. Cut and Name, Pull, Sort
+
+One toolbar row — `Script | Sources… | Cut and Name | Pull | Sort | Settings` —
+where Sources and Settings open their own windows and the rest toggle an inline
+panel, one at a time.
+
+| | reads | writes | needs the transcript |
+|---|---|---|---|
+| **Cut and Name** | the match | splits the recording, names each piece | **yes** |
+| **Pull** | item names, and the Select mark | renames to the delivered name, moves to child tracks | no |
+| **Sort** | item names | item positions on the timeline | no |
+
+Cut is the only tool that consults the match, and correctly so: cutting a span
+out of a continuous recording is a question only the transcript can answer.
+
+### 4a.1 Name resolution
+
+`vo.NormalizeItemName` lowercases, trims, and drops a trailing **alphabetic**
+extension of up to four characters — `line_042_v1.2` keeps its numeric tail,
+because that is part of what the file is called.
+
+`vo.BuildNameIndex` holds **two keys per line**: the script's own Filename and
+the DELIVERED name (Filename + Append, or the user's override). The delivered
+name is one this tool wrote, so recognising it is reading our own output back —
+that is what lets a second Pull see what the first one renamed. A key two lines
+claim resolves to **nothing** rather than to the first of them; that clash is
+what the Append column exists to fix, and guessing would put one line's audio
+under the other's name. `vo.ResolveItemName` returns the line index, or nil plus
+`"unknown"` / `"ambiguous"`.
+
+### 4a.2 Cut and Name
+
+Splits each take out of its source item and names it the **plain CSV filename** —
+no Append, no override, no uniquing. Two takes of one line SHOULD collide here;
+which is the delivery is not a question cutting can answer. It moves nothing and
+creates no track.
+
+Every take of a **decided** line is cut, not only the SEL: the alts are
+deliveries too, and the takes marked neither are what Pull puts on Outs.
+
+Two gates, both about acting on something undecided or no longer true: a source
+whose audio has changed since it was transcribed, and a line with several takes
+and no SEL.
+
+### 4a.3 The Select mark
+
+Three states, cycled by clicking the cell: blank → **SEL** → **ALT** → blank.
+One SEL per line (marking a second clears the first); any number of ALTs, because
+an alt is an extra delivery rather than a competing answer to which take the
+delivery is. In the project file the `Select` field carries `yes`, `alt`, or
+empty; `yes` is what the pre-alts writer emitted and still reads as a SEL.
+
+### 4a.4 Pull
+
+Items are grouped by the line they resolve to and routed by one question — does
+anything say which of these is the delivery?
+
+| group | goes to |
+|---|---|
+| one item | **Selects**, renamed, marked or not — one take is not a decision |
+| several, one SEL | the SEL to **Selects**, ALTs to **Alts**, the rest to **Outs** |
+| several, no SEL | all to **Review**, unrenamed, and reported |
+
+Selects and Alts are **delivered**; Outs and Review are not. An ALT with no SEL
+is half a decision and waits in Review with its group. Destination tracks are
+**children** of the item's current track (`vo.EnsureChildTrack`), so collapsing
+the recording folds everything cut from it away too.
+
+**Auto append alts** fills the Append of every alt that has none, from a pattern
+the user defines (`{n}` marks the number, plus a start value and zero padding).
+An Append already typed is never overwritten — but it still consumes its number,
+or typing one on the second alt would silently renumber the third.
 
 ---
 

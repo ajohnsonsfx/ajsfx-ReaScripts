@@ -1,17 +1,16 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.12
--- @changelog The VO tools are now three windows instead of one. "ajsfx VO Sources" lists every recorded file in the project and whether it has been transcribed; double-click a file to read its transcript, hear where each word sits, and re-transcribe just that file. "ajsfx VO Overview" is now the front door: it derives the match from the stored transcripts every time, so swapping the script CSV re-matches instantly with no re-transcription, and a new Select column records which take you are delivering. "ajsfx VO Cut" does the cutting, and it now places clip edges by looking for silence in the gap between the words either side, so an edge can never contain a syllable of the neighbouring line; the old fixed 150/250 ms pads become the furthest an edge may travel and the noise floor is measured from the recording rather than assumed. Transcription is now stored per wav file as word-level timings in "<audio>_vo_transcript.csv", so copying a recording and its sidecar to another project carries the transcription with it. Your selects, verified marks, notes and renames live in "<project>_vo.csv" beside the project. Transcription no longer conditions each window on the text it just decoded, which on a long read could lock the transcriber into repeating one phrase for the rest of the file; if an existing transcript contains such a loop, "ajsfx VO Sources" now flags it and says where it starts. Every column in Overview now sorts on a header click and filters from a box under the header, there is a new "#" column carrying each line's position in the script, and spacebar is REAPER's again -- it starts the transport instead of ticking the selected row. Matching now weighs where a line falls in the read: a line too short to identify itself -- one that is just "You." matches every "you" in the recording -- is sent to review when it contradicts the order the rest of the read was in, rather than being named on the strength of one word. Right-click a row (or a selection of rows) for "Find candidates": every place in the transcripts that line could sit, with what was said either side of it, what already occupies that spot, and a click to select it on the timeline and put the play cursor there. It is a search only -- it changes nothing. When you find a placement yourself you can lock it there: press "Lock here" beside a result in Find candidates, or make a time selection in REAPER over the audio and right-click the row for "Lock to time selection". A lock is stored in "<project>_vo.csv" against the recording rather than the timeline, so it survives the item being moved, and ajsfx VO Cut cuts what you locked. Untick Lock to hand the take back. Matching is substantially more accurate: a window is now scored as it is finally kept rather than as it was proposed (a line could lose its opening words and a quarter of its score when the recogniser fused two words together), placements are considered longest and most confident first so a one-word line can no longer cut a twelve-word line in half, and a second pass gives any line that lost every window a look at the audio nothing claimed. Transcription no longer discards a stretch as non-speech unless it is almost certainly not speech -- the default threshold threw away 29 seconds of a real read, four script lines, at full level and with no error anywhere. The OK column is now Lock: ticking it freezes the take where it is, and a new Rematch button identifies everything again from scratch while leaving locked takes alone -- so you can work through a session settling lines, re-transcribe or edit the script, and keep what you already settled. A lock speaks only for its own take, so locking one take of three leaves the other two where they were. "Select takes" marks one take of every line as the select, last or first, and skips locked lines. NOTE: this replaces "ajsfx VO ScriptMatch", which has been removed — reinstall from ReaPack, and re-transcribe your recordings, as the old report files are not read. Matching now understands that where a word break falls is a spelling decision, not a difference in what was said: a line written "Some day it will be you" and a read heard as "Someday, it'll be you" are now a full match instead of a two-thirds one, and the take keeps its opening word instead of having it trimmed off the front. Takes are grouped by script line rather than by delivered filename, so a script that names two different lines with one filename no longer shows each of them the other's takes; that collision is now reported in Overview's summary and again in ajsfx VO Cut, since the two lines would still be delivered over each other -- only the script can fix it. Cut clips no longer run together. Whisper ends each word exactly where the next one starts, so the pause around a take was carried INSIDE the take's own span -- the first word held the silence before it and the last word the silence after -- and edge snapping, which only ever searched outward, had nowhere to go. Every clip was cut from the previous take's last syllable to the next take's first, tiling the recording with no breaks at all. Each take is now trimmed in to where the sound actually is before the pad is applied outward, so a clip holds its own line with a little air either side. Takes whose word timings are already tight are padded exactly as before. The Choose… button now opens in the project's own folder instead of REAPER's resource folder. A filename shared by two script lines no longer reads as an error: cutting only names items, and two items in REAPER may share a name, so the clips cut fine -- it is noted because the clash becomes real later, when they are rendered to files. ajsfx VO Cut's check that every line with several takes has a select now counts by script line rather than by filename, so a select ticked on one of two lines sharing a name no longer answers for the other, and the alts track no longer pulls one line's spare takes under the other. A project can now read more than one script CSV. Press "Script" for the list: add a CSV, switch one off without removing it, and map each script's own Filename, Line text and Character columns -- a character who recorded lines from three scripts is one session again. The "Choose..." button is gone; "Script" replaces it, and the old Columns... panel now lives inside it, one row per script. A new "Script" column says which CSV a line came from. When two script lines ask to be delivered under the same filename -- whether they come from two scripts or from two rows of one -- the filename turns red and so does a new "Append" column beside it. Type anything in Append and it goes on the end of the delivered name, with no separator added, so you choose it: type "_ch2" and the line delivers as "line_042_ch2". Both lines go back to normal as soon as their names differ. Renaming a take by hand does the same job, and a rename that recreates a clash turns red too. Nothing is ever renamed for you. ajsfx VO Cut reads the whole script list and cuts with the appended names. The script list now lines every row up on the same columns, so a long filename no longer pushes one script's column pickers out of line with another's, and "Add script..." takes several CSVs in one go where js_ReaScriptAPI is installed. Scripts can be reordered with the arrows beside each one, and that order is the line order: every line of the first script comes before every line of the second, so where two scripts could each claim to come first, the list says which does. A line is now identified by its position across the whole list rather than by its row number inside its own CSV, which two scripts can share: with more than one script loaded, "Reorder on timeline" in script order no longer interleaves the two scripts' lines, Find candidates no longer answers with the first script's line of that number, and ajsfx VO Cut no longer groups two different lines together because they sat on the same row of different CSVs. Overview also opens the way you left it: the character filter, the status filter, the search box, the per-column filters and whether the filter row is showing are all stored in the project file, so closing the window no longer throws them away. A character filter that no longer matches anything -- because the script changed -- is dropped rather than leaving you with an empty table and no reason for it.
+-- @version 0.13
+-- @changelog Cutting and routing were one operation; they are now three, and they live in ajsfx VO Overview beside the table they act on -- the separate "ajsfx VO Cut" window is gone, so reinstall from ReaPack to clear it. "Cut and Name" splits every take of every decided line out of its recording and names it the script's own filename, and moves nothing. "Pull" moves items onto Selects, Alts, Outs and Review tracks, which are now CHILDREN of the recording they came from rather than siblings, so collapsing the recording folds the whole session away with it. "Sort" lays them out on the timeline as before. The important change is how Pull and Sort decide what an item is: they read the NAME it carries and look that up in the script, and never consult the transcript at all. A folder of rendered wav files someone else delivered -- no transcripts, never cut here -- now pulls and sorts exactly as well as a session you cut yourself. It also means neither tool can touch audio it was not asked to: an uncut recording carries the recording's name, which is not a script filename, so it resolves to nothing and is left where it is, and the count line says how many were left. A name two script lines both claim resolves to nothing rather than to the first of them. The Select column is now three states, cycled by clicking: SEL is the take you are delivering, ALT is delivered as well under its own name, and unmarked takes are kept on the Outs track but not delivered. One SEL per line, any number of ALTs; a line whose only mark is an ALT still has its delivery to decide. An alt needs a filename of its own, so "Auto append alts" in the Pull panel fills in the Append column for every alt that has none -- the pattern, the first number and the zero padding are all yours to set, {n} marks where the number goes, and a preview shows the result before you press it. An Append you typed is never overwritten. The "use alts track" toggle is gone: alts are marked per take now rather than switched on per run. The six filter presets are gone too -- the Status column's own filter box already matches Recorded, Review, Missing, Orphan and Flagged, and Lock covers verified. The toolbar is one row of six: Script, Sources, Cut and Name, Pull, Sort, Settings, with one panel open at a time.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
---        takes you are delivering, and cut them in "ajsfx VO Cut". Runs fully
---        locally with whisper.cpp; configure the backend in "ajsfx VO
---        Settings". See VO/SPEC.md.
+--        takes you are delivering, then Cut and Name, Pull and Sort them from
+--        the same window. Runs fully locally with whisper.cpp; configure the
+--        backend in "ajsfx VO Settings". See VO/SPEC.md.
 -- @provides
 --   [main] .
 --   [main] ajsfx_VO_Sources.lua
---   [main] ajsfx_VO_Cut.lua
 --   [main] ajsfx_VO_Settings.lua
 --   lib/ajsfx_vo.lua
 --   lib/ajsfx_vo_view.lua
@@ -22,7 +21,7 @@
 -- Every line the script says should exist, every span a LIVE match against
 -- each source's transcript says does exist, in one table across every
 -- recording in the project. This script does not transcribe (ajsfx VO
--- Sources) or cut (ajsfx VO Cut): it reads the per-source transcripts plus
+-- Sources): it reads the per-source transcripts plus
 -- one project file (<project>_vo.csv) and adds the one thing nothing else
 -- records, which is what the USER decided. The match itself is never stored
 -- -- see the memoised LoadMatches below. See VO/SPEC-overview.md.
@@ -213,19 +212,6 @@ local LAYOUT_SPACINGS = {
   { key = "original", label = "Original spacing" },
 }
 
-local STATUS_FILTERS = {
-  { key = "all",       label = "All" },
-  { key = "missing",   label = "Missing" },
-  { key = "review",    label = "Needs review" },
-  { key = "orphan",    label = "Orphans" },
-  { key = "unverified",label = "Not yet verified" },
-  { key = "verified",  label = "Verified" },
-  { key = "flagged",   label = "Flagged" },
-}
-
-local STATUS_BY_KEY = {}
-for _, f in ipairs(STATUS_FILTERS) do STATUS_BY_KEY[f.key] = f end
-
 local state = {
   -- The scripts this project reads, in the order they were added. This is the
   -- PERSISTED shape: { path, mapping, enabled }. state.loaded below is what
@@ -289,7 +275,6 @@ local state = {
   -- its output, so changing one has to re-run the match.
   pins            = {},
 
-  status_filter = "all",
   character     = nil,
   search        = "",
   -- Set when a character filter is restored from the project file, cleared by
@@ -409,7 +394,6 @@ local function LoadProjectFile()
     -- against the rows -- see CheckRestoredCharacter. The sort is not here:
     -- ImGui restores that itself, from its own ini.
     local v = parsed.view or {}
-    if v.status and STATUS_BY_KEY[v.status] then state.status_filter = v.status end
     state.character   = v.character
     state.search      = v.search or ""
     state.filter_row  = v.filter_row or false
@@ -449,7 +433,6 @@ local function SaveProjectFile()
     vo.ProjectEntriesFromRows(state.overview),
     { scripts = state.scripts, appends = state.appends, pins = state.pins,
       view = {
-        status      = state.status_filter,
         character   = state.character,
         search      = state.search,
         filter_row  = state.filter_row,
@@ -1097,15 +1080,6 @@ end
 -- -----------------------------------------------------------------------
 
 local function Matches(row)
-  local f = state.status_filter
-  if f == "unverified" then
-    if row.user_status == "verified" or row.status == "orphan" then return false end
-  elseif f == "verified" or f == "flagged" then
-    if row.user_status ~= f then return false end
-  elseif f ~= "all" then
-    if row.status ~= f then return false end
-  end
-
   if state.character and (row.character or "") ~= state.character then return false end
 
   if state.search ~= "" then
@@ -2312,9 +2286,6 @@ local function DrawFilters()
   -- Every control here writes state.dirty: the filters are stored in the project
   -- file so the table opens the way it was left. The flush is throttled, so a
   -- filter box being typed into does not write a file per keystroke.
-  Combo("##status", 130, STATUS_FILTERS, state.status_filter,
-        function(k) state.status_filter = k; state.dirty = true end)
-  im.SameLine(ctx)
 
   -- Characters come from the rows, not the CSV: an orphan can carry a character
   -- the current script filter excludes, and hiding it from the droplist would
@@ -2438,6 +2409,7 @@ local function GapField(label, width, value, tip)
 end
 
 local function DrawLayoutBar()
+  im.Separator(ctx)
   im.Text(ctx, "Sort on timeline:")
   im.SameLine(ctx)
 
@@ -2529,6 +2501,10 @@ local function DrawLayoutBar()
       "In script order an item is placed by the NAME it carries, so an uncut\n" ..
       "recording is left where it is. Record order needs no name.")
   end
+  im.SameLine(ctx)
+  if im.Button(ctx, "Close##sort") then state.panel = nil end
+
+  im.Separator(ctx)
 end
 
 -- Depth of the row ID stack, so an error thrown mid-row can be unwound. ImGui
@@ -3444,11 +3420,16 @@ local function loop()
       "Moves items onto Selects, Alts, Outs and Review tracks nested\n" ..
       "under the recording they came from, matched to the script by name.")
 
+    PanelButton("sort", "Sort",
+      "Lays the items out on the timeline in script order or record\n" ..
+      "order, on fresh child tracks so nothing lands on anything.")
+
     if im.Button(ctx, "Settings") then state.settings_open = true end
 
     if     state.panel == "script" then DrawScriptPanel()
     elseif state.panel == "cut"    then DrawCutPanel()
-    elseif state.panel == "pull"   then DrawPullPanel() end
+    elseif state.panel == "pull"   then DrawPullPanel()
+    elseif state.panel == "sort"   then DrawLayoutBar() end
 
     local bad = BadScriptCount()
     if bad > 0 then
@@ -3463,8 +3444,6 @@ local function loop()
     DrawSummary()
     im.Spacing(ctx)
     DrawFilters()
-    im.Spacing(ctx)
-    DrawLayoutBar()
     im.Spacing(ctx)
 
     -- Reserve room for whatever notices are showing; the table takes the rest.

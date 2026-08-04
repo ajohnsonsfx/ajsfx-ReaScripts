@@ -4073,11 +4073,10 @@ end)
 
 test("the filters survive the round trip", function()
   local out = round_trip({}, { scripts = {}, view = {
-    status = "review", character = "Meris", search = "halt", filter_row = true,
+    character = "Meris", search = "halt", filter_row = true,
     col_filters = { asset = "guard", line_text = "halt, now" },
   } })
   local v = out.view
-  assert(v.status == "review", "status: " .. tostring(v.status))
   assert(v.character == "Meris", "character: " .. tostring(v.character))
   assert(v.search == "halt", "search: " .. tostring(v.search))
   assert(v.filter_row == true, "filter_row")
@@ -4094,14 +4093,14 @@ end)
 
 test("a view with nothing filtered writes no View rows", function()
   local text = vo.SerializeProjectFile({}, { scripts = {}, view = {
-    status = "all", search = "", filter_row = false, col_filters = { asset = "" } } })
+    search = "", filter_row = false, col_filters = { asset = "" } } })
   assert(not text:find("View", 1, true), "An unfiltered table must add nothing:\n" .. text)
 end)
 
 test("a project file with no View rows loads with no filters", function()
   local out = round_trip({})
   assert(out.view, "view must always be present, even empty")
-  assert(out.view.status == nil and out.view.character == nil, "no stored filters")
+  assert(out.view.character == nil and out.view.search == nil, "no stored filters")
   assert(next(out.view.col_filters) == nil, "no stored column filters")
 end)
 
