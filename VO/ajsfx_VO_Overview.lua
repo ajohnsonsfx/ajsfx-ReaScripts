@@ -735,6 +735,18 @@ end
 -- Renaming is the one edit that reaches into the project. It is recorded in
 -- the project file AND applied to the take, so the delivery name survives
 -- even if the item is later deleted, and one edit is one undo step.
+-- The item a row plays, resolved against the live project rather than the
+-- pointer cached on the row. Anything that WRITES to an item must go through
+-- this: cutting destroys and recreates every item in a recording and REAPER
+-- reuses the pointers, so a row rebuilt before a cut can hold one that now
+-- refers to a different item -- and renaming the wrong clip is not recoverable
+-- by pressing the button again.
+local function LiveItemFor(row)
+  if not (row.source_path and row.source_start) then return nil end
+  return (vo.ResolveSourceTime(row.source_path, row.source_start,
+                               vo.CollectProjectSpans()))
+end
+
 local function Rename(row, name)
   local clean = vo.SanitizeName(name)
   if clean == "" then
@@ -745,9 +757,10 @@ local function Rename(row, name)
 
   -- The take is written BEFORE the entry, because Mutate rebuilds and the
   -- rebuild reads the take's live name back into the row.
-  if row.item then
+  local item = LiveItemFor(row)
+  if item then
     core.Transaction("VO Overview: rename take", function()
-      local take = r.GetActiveTake(row.item)
+      local take = r.GetActiveTake(item)
       if take then
         r.GetSetMediaItemTakeInfo_String(take, "P_NAME", clean, true)
       end
@@ -768,9 +781,10 @@ local function ResetName(row)
   local clean = vo.SanitizeName(row.deliver or row.asset or "")
   if clean == "" then return end
 
-  if row.item then
+  local item = LiveItemFor(row)
+  if item then
     core.Transaction("VO Overview: reset take name", function()
-      local take = r.GetActiveTake(row.item)
+      local take = r.GetActiveTake(item)
       if take then
         r.GetSetMediaItemTakeInfo_String(take, "P_NAME", clean, true)
       end
@@ -1050,18 +1064,41 @@ end
 -- Push the row selection out to the project. The edit cursor follows the FOCUS
 -- row only: seeking once per gesture rather than once per selected row keeps a
 -- fifty-row shift-click from thrashing the transport.
+-- Selecting rows drives REAPER's own item selection and the edit cursor.
+--
+-- Items are resolved HERE, against a fresh walk of the project, rather than
+-- trusting the pointers cached on the rows. Cutting destroys and recreates
+-- every item in a recording, and REAPER reuses those pointers -- a row rebuilt
+-- before the cut can hold one that now refers to a different item entirely.
+-- Rebuilds are throttled, so whether a click landed on the right item depended
+-- on when the last rebuild happened, which is as random as it looked.
+--
+-- One project walk per click is affordable; this runs on a click, not a frame.
 local function SyncProjectSelection()
+  local items = vo.CollectProjectSpans()
+
+  local function resolve(row)
+    if not (row.source_path and row.source_start) then return nil end
+    return vo.ResolveSourceTime(row.source_path, row.source_start, items)
+  end
+
   r.Main_OnCommand(40289, 0)                       -- unselect all items
   local seen = {}
   for _, row in ipairs(SelectedRows()) do
-    if row.item and not seen[row.item] then
-      seen[row.item] = true
-      r.SetMediaItemSelected(row.item, true)
+    local item = resolve(row)
+    if item and not seen[item] then
+      seen[item] = true
+      r.SetMediaItemSelected(item, true)
     end
   end
+
+  -- The cursor goes to the first WORD of the take, not to the item's edge:
+  -- source_start is the transcript's start for this span, and the padding a cut
+  -- applies is never part of it.
   for _, row in ipairs(state.visible) do
-    if row.uid == state.focus_key and row.proj_time then
-      r.SetEditCurPos(row.proj_time, true, true)   -- move and seek playback
+    if row.uid == state.focus_key then
+      local _, proj = resolve(row)
+      if proj then r.SetEditCurPos(proj, true, true) end   -- move and seek playback
       break
     end
   end
