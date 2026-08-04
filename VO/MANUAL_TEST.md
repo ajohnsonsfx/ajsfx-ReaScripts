@@ -472,17 +472,19 @@ Open **ajsfx VO Settings → Speech backend → Download backend & models**.
 
 ## Cut and Name (2026-08-04)
 
-1. Click a take's Select cell until it reads **SEL**, then press **Cut and Name**.
-   The take is split out of the recording, named the plain CSV filename, and is
-   STILL on the recording's own track. No new track appeared.
-2. Two takes of one line, one SEL and one ALT. Both are cut, both carry the same
-   plain name. That is expected — Pull is what separates them.
-3. A third take of that line, unmarked, is cut too: it is what Pull puts on Outs.
-4. A line with several takes and none marked SEL: the panel says so and the
-   button is greyed.
-5. Re-transcribe a source in ajsfx VO Sources, then reopen the panel. It refuses
-   until the audio and its transcript agree again.
-6. Undo. One Ctrl+Z puts the recording back as it was.
+1. With **nothing selected**, press **Cut and Name**. Every take the match found
+   is split out of its recording and named the plain CSV filename, and every one
+   is STILL on the recording's own track. No new track appeared. Lines with no
+   SEL are cut too — cutting decides nothing.
+2. Two takes of one line both carry the same plain name. That is expected; Pull
+   is what separates them.
+3. Select a few rows and press it again. Only those rows' takes are affected, and
+   the line beside the button says "the selected rows only".
+4. Re-record one source so its audio no longer matches its transcript. Cut still
+   runs; the summary names that file as skipped and everything else is cut.
+5. Undo. One Ctrl+Z puts the recording back as it was.
+6. Open the panel and leave it open for a minute. The window stays responsive —
+   the staleness check runs on the press, not per frame.
 
 ## Pull (2026-08-04)
 
@@ -495,11 +497,19 @@ Open **ajsfx VO Settings → Speech backend → Download backend & models**.
    transcripts at all. Pull moves each one to Selects by its filename.
 5. An item whose name is not on the script is not moved, and the count line
    says how many were left.
-6. Set the alt pattern to `-take{n}`, start 2, digits 2. The preview reads
-   `-take02`. Press **Apply**: only alts with an empty Append are filled.
-7. Press Apply twice. The second press reports that everything already had one.
-8. Pull twice. The second run recognises the items it renamed and does not
+6. Set the alt pattern to `-take{n}`, start 2, digits 2. The preview updates.
+   Press **Name them**: every ALT with no name of its own gets one, and the
+   **select keeps its plain name** — this is the check that matters.
+7. An alt of a line that already has an Append becomes `line_042_ch2_alt1`, not
+   `line_042_alt1`.
+8. Press **Name them** twice. The second press reports that everything already
+   had a name, and nothing is renamed.
+9. Pull twice. The second run recognises the items it renamed and does not
    double-move them.
+10. **With no transcripts at all**: open a project holding only rendered wavs
+    named after script lines. The table is all Missing plus orphans, and Pull
+    still moves each file to Selects by its name. This is the case that has no
+    rows, so it is the one that proves Pull reads items and not rows.
 
 ## Sort by name (2026-08-04)
 
