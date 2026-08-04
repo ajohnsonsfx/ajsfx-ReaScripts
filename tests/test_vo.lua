@@ -569,6 +569,65 @@ test("only delivered items are renamed", function()
 end)
 
 --------------------------------
+-- Alt appends
+--------------------------------
+print("\nAltAppends:")
+
+test("the number goes where the pattern says", function()
+  assert(vo.FormatAltAppend("_alt{n}", 2, 1) == "_alt2", "tail")
+  assert(vo.FormatAltAppend("{n}_x", 2, 1) == "2_x", "head")
+  assert(vo.FormatAltAppend("_alt", 2, 1) == "_alt2",
+    "with no placeholder the number goes on the end")
+  assert(vo.FormatAltAppend("_pickup", nil, 1) == "_pickup",
+    "a pattern used without a number is left alone")
+end)
+
+test("digits pad the number", function()
+  assert(vo.FormatAltAppend("_alt{n}", 2, 2) == "_alt02", "two digits")
+  assert(vo.FormatAltAppend("_alt{n}", 12, 2) == "_alt12", "no truncation")
+end)
+
+local function alt_row(mark, asset, nth, text)
+  return { user_mark = mark, script = "Ch2", asset = asset,
+           append_nth = nth or 1, append = text }
+end
+
+test("alts are numbered per line, from the start value", function()
+  local edits = vo.PlanAltAppends({
+    alt_row("select", "line_042"), alt_row("alt", "line_042"),
+    alt_row("alt", "line_042"),    alt_row("alt", "line_099"),
+  }, { pattern = "_alt{n}", start = 1, digits = 1 })
+  assert(#edits == 3, "three alts, got " .. #edits)
+  assert(edits[1].text == "_alt1" and edits[2].text == "_alt2",
+    "numbered in timeline order within their line")
+  assert(edits[3].text == "_alt1",
+    "a different line starts again: " .. tostring(edits[3].text))
+end)
+
+test("the start value moves the first number", function()
+  local edits = vo.PlanAltAppends({ alt_row("alt", "line_042") },
+    { pattern = "_alt{n}", start = 2, digits = 1 })
+  assert(edits[1].text == "_alt2", "Got " .. tostring(edits[1].text))
+end)
+
+test("an Append already typed is never overwritten", function()
+  local edits, skipped = vo.PlanAltAppends({
+    alt_row("alt", "line_042", 1, "_pickup"), alt_row("alt", "line_042", 1),
+  }, { pattern = "_alt{n}", start = 1, digits = 1 })
+  assert(#edits == 1, "only the blank one is filled, got " .. #edits)
+  assert(skipped == 1, "and the other is counted")
+  assert(edits[1].text == "_alt2",
+    "the skipped alt still consumes its number: " .. tostring(edits[1].text))
+end)
+
+test("only alts are touched", function()
+  local edits = vo.PlanAltAppends({
+    alt_row("select", "line_042"), alt_row(nil, "line_042"),
+  }, { pattern = "_alt{n}", start = 1, digits = 1 })
+  assert(#edits == 0, "a select and an unmarked take are not alts")
+end)
+
+--------------------------------
 -- AppendMap / SetAppend / ResolveNames
 --------------------------------
 print("\nAppendMap and SetAppend:")

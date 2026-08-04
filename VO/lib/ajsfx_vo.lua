@@ -635,6 +635,53 @@ function vo.PlanPull(items, lines, marks)
   return moves, summary
 end
 
+-- The alt naming convention belongs to whoever the delivery is for, so it is
+-- three fields rather than a hardcoded "_alt2". `{n}` is where the number goes;
+-- with no placeholder it goes on the end. A pattern used with no number at all
+-- is returned as written -- a single alt may not need a counter.
+function vo.FormatAltAppend(pattern, n, digits)
+  local text = tostring(pattern or "")
+  if not n then return (text:gsub("{n}", "")) end
+  local num = string.format("%0" .. math.max(1, math.floor(digits or 1)) .. "d", n)
+  if text:find("{n}", 1, true) then
+    return (text:gsub("{n}", num))
+  end
+  return text .. num
+end
+
+-- Fills the Append of every alt that has none. Numbering runs per line, in the
+-- order the rows are given, and an alt that ALREADY has an Append still
+-- consumes its number -- otherwise typing "_pickup" on the second alt would
+-- silently renumber the third.
+--
+-- It never overwrites: this button fills blanks, it does not impose a
+-- convention on work already done. Returns the edits, ready for vo.SetAppend,
+-- and the number skipped.
+function vo.PlanAltAppends(rows, opts)
+  opts = opts or {}
+  local pattern = opts.pattern or "_alt{n}"
+  local start   = math.floor(tonumber(opts.start) or 1)
+  local digits  = math.floor(tonumber(opts.digits) or 1)
+
+  local edits, skipped, seen = {}, 0, {}
+  for _, row in ipairs(rows or {}) do
+    if row.user_mark == "alt" and row.asset then
+      local key = (row.script or "") .. "\0" .. row.asset
+      local n = (seen[key] or start - 1) + 1
+      seen[key] = n
+      if row.append and trim(row.append) ~= "" then
+        skipped = skipped + 1
+      else
+        edits[#edits + 1] = {
+          script = row.script, asset = row.asset, nth = row.append_nth or 1,
+          text   = vo.FormatAltAppend(pattern, n, digits),
+        }
+      end
+    end
+  end
+  return edits, skipped
+end
+
 -- The whole script side of a project, loaded in one call. Both ajsfx VO Overview
 -- and ajsfx VO Cut used to keep their own near-identical copy of this; they now
 -- share it, so a script that loads in one window cannot fail to load in the
@@ -3705,7 +3752,13 @@ vo.CONFIG_SCHEMA = {
 
   { key = "track_selects",      kind = "string", default = "Selects" },
   { key = "track_alts",         kind = "string", default = "Alts" },
+  { key = "track_outs",         kind = "string", default = "Outs" },
   { key = "track_review",       kind = "string", default = "Review" },
+  -- The alt naming convention. Not bounded here: vo.PlanAltAppends floors and
+  -- clamps its own inputs, so a hand-edited ExtState cannot break a run.
+  { key = "alt_append_pattern", kind = "string", default = "_alt{n}" },
+  { key = "alt_append_start",   kind = "number", default = 1 },
+  { key = "alt_append_digits",  kind = "number", default = 1 },
   { key = "create_regions",     kind = "bool",   default = false },
 
   { key = "review_prefix",      kind = "string", default = vo.DEFAULTS.review_prefix },
