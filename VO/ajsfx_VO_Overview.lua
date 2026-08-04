@@ -1900,56 +1900,35 @@ end
 -- of rendered files this window never cut.
 -- -----------------------------------------------------------------------
 
--- Why cutting must not run, or "" when it may. Two refusals, both about
--- acting on something the user has not decided or that is no longer true.
-local function CutGate()
-  local stale = {}
+-- There is NO gate on cutting.
+--
+-- The old one refused to run until every line with several takes had a SEL,
+-- which made sense when cutting also routed clips onto Selects and Alts: the
+-- run committed to a delivery, so it needed the delivery decided. Cutting now
+-- only splits and names, and slicing the recording is the FIRST step of the
+-- job -- it has to happen before there is anything to decide about. So it cuts
+-- what it can and reports what it could not, rather than refusing the lot
+-- because two lines are still undecided.
+--
+-- The one thing it still will not do is cut to word timings the audio no
+-- longer matches. That is skipped per SOURCE, so one re-recorded file cannot
+-- stop the others. Reading it is expensive -- a transcript parse and a file
+-- fingerprint each -- so it happens on the press, never per frame.
+local function StaleSources()
+  local stale, names = {}, {}
   for _, path in ipairs(vo.ProjectSourcePaths(state.items) or {}) do
-    if vo.TranscriptState(path) == "stale" then stale[#stale + 1] = vo.Basename(path) end
-  end
-  if #stale > 0 then
-    table.sort(stale)
-    return "Audio changed since it was transcribed — re-transcribe in " ..
-           "ajsfx VO Sources before cutting:\n" .. table.concat(stale, ", ")
-  end
-
-  -- Every LINE with more than one take needs the decision SEL exists to
-  -- record. Keyed by script row, not by filename: a script can name two lines
-  -- with one filename, and keying on the name would let a SEL on one line
-  -- answer for the other.
-  local by_line = {}
-  for _, row in ipairs(state.overview) do
-    if row.status ~= "orphan" and row.status ~= "missing" and row.asset then
-      local key = row.script_row or row.asset
-      local b = by_line[key]
-      if not b then b = { count = 0, selected = false, asset = row.asset }; by_line[key] = b end
-      b.count = b.count + 1
-      if row.user_mark == "select" then b.selected = true end
+    if vo.TranscriptState(path) == "stale" then
+      stale[path] = true
+      names[#names + 1] = vo.Basename(path)
     end
   end
-
-  local any, unresolved, names = false, 0, {}
-  for _, b in pairs(by_line) do
-    if b.selected then any = true end
-    if b.count > 1 and not b.selected then
-      unresolved = unresolved + 1
-      names[#names + 1] = b.asset
-    end
-  end
-
-  if not any then
-    return "Nothing is marked SEL. Click the Select cell on the takes you want cut."
-  end
-  if unresolved > 0 then
-    table.sort(names)
-    return string.format("%d line(s) have several takes and no SEL yet.", unresolved)
-        .. "\n" .. table.concat(names, ", ")
-  end
-  return ""
+  table.sort(names)
+  return stale, names
 end
 
 local function DoCut()
   local cfg = vo.LoadConfig()
+  local stale_paths, stale_names = StaleSources()
 
   -- Every span from every source, tagged with the path it came from.
   local all_spans = {}
@@ -1974,29 +1953,37 @@ local function DoCut()
     end
   end
 
-  -- Lines the user has decided. EVERY take of such a line is cut, not just the
-  -- SEL: the alts are deliveries too, and the takes marked neither are what
-  -- Pull puts on Outs. A line nobody has decided is cut by nothing here -- the
-  -- gate above already refused the run.
-  local decided = {}
-  for _, row in ipairs(state.overview) do
-    if row.user_mark == "select" and row.asset then
-      decided[row.script_row or row.asset] = true
+  -- EVERYTHING the match identified is cut. Not just the SEL, and not only
+  -- decided lines: slicing the recording is the first step of the job, and it
+  -- has to happen before there is anything to decide about. Cutting commits to
+  -- nothing -- it splits and names, and Pull is where a take's fate is settled.
+  --
+  -- Which rows are in range follows the same rule as every other tool here:
+  -- the selected rows if any are selected, otherwise every row on show. So a
+  -- filtered table cuts what it is showing, and an untouched one cuts the lot.
+  -- Matched span to row by the same epsilon the mark-crossing above uses, not
+  -- by a rounded key: a span missed on a rounding boundary would silently not
+  -- be cut, which is the one failure mode that would look like the tool simply
+  -- not working.
+  for _, row in ipairs(AffectedRows()) do
+    if row.source_path and row.source_start ~= nil then
+      for _, s in ipairs(all_spans) do
+        if s.source_path == row.source_path
+           and math.abs((s.start or 0) - row.source_start) < 1e-6 then
+          s.in_range = true
+          break
+        end
+      end
     end
-  end
-  local function line_key(s)
-    local l = s.line_idx and (state.lines or {})[s.line_idx]
-    if l and l.asset == s.asset then return l.index or l.row end
-    return s.asset
   end
 
   local candidates = {}
   for _, s in ipairs(all_spans) do
-    if s.kind == "match" then
-      if s.select or (s.asset and decided[line_key(s)]) then
-        candidates[#candidates + 1] = s
-      end
-    elseif s.kind == "review" then
+    -- Cutting to word timings the audio no longer matches would put the edges
+    -- in the wrong places, so a stale source is skipped -- per source, so one
+    -- re-recorded file cannot stop the others.
+    if (s.kind == "match" or s.kind == "review")
+       and s.in_range and not stale_paths[s.source_path] then
       candidates[#candidates + 1] = s
     end
   end
@@ -2082,6 +2069,15 @@ local function DoCut()
   end)
 
   state.cut_summary = vo.FormatCutSummary(all_spans, applied, skipped_msgs, failures)
+  if #stale_names > 0 then
+    state.cut_summary[#state.cut_summary + 1] = {
+      text = string.format(
+        "%d recording(s) changed since they were transcribed and were skipped: %s. " ..
+        "Re-transcribe them in ajsfx VO Sources.",
+        #stale_names, table.concat(stale_names, ", ")),
+      warn = true,
+    }
+  end
   if pad_fallbacks > 0 then
     state.cut_summary[#state.cut_summary + 1] = {
       text = string.format(
@@ -2091,30 +2087,28 @@ local function DoCut()
     }
   end
   state.message, state.message_kind =
-    string.format("Cut and named %d clip(s). Press Pull to route them.", applied), "ok"
+    string.format("Cut and named %d clip(s). Press Pull to route them.", applied),
+    (applied > 0) and "ok" or "error"
   Reload()
 end
 
 local function DrawCutPanel()
   im.Separator(ctx)
   im.TextWrapped(ctx,
-    "Splits every take of every decided line out of its recording and names it " ..
-    "the script's filename. Nothing moves: press Pull afterwards to route the " ..
-    "takes onto their tracks.")
+    "Splits every take the match identified out of its recording and names it " ..
+    "the script's filename. Nothing moves and nothing is decided: press Pull " ..
+    "afterwards to route the takes onto their tracks.")
   im.Spacing(ctx)
 
-  local blocked = CutGate()
-  if blocked ~= "" then
-    im.TextColored(ctx, 0xDDAA33FF, blocked)
-    im.Spacing(ctx)
-    im.BeginDisabled(ctx, true)
-    im.Button(ctx, "Cut and Name")
-    im.EndDisabled(ctx)
-  elseif im.Button(ctx, "Cut and Name") then
-    pending_action = DoCut
-  end
+  if im.Button(ctx, "Cut and Name") then pending_action = DoCut end
   im.SameLine(ctx)
   if im.Button(ctx, "Close##cut") then state.panel = nil end
+  im.SameLine(ctx)
+
+  local _, from_selection = AffectedRows()
+  im.TextDisabled(ctx, from_selection
+    and "the selected rows only"
+    or  "every row on show — select rows to narrow it")
 
   for _, line in ipairs(state.cut_summary or {}) do
     if line.warn then im.TextColored(ctx, 0xDDAA33FF, line.text)
