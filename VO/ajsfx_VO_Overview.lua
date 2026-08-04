@@ -2128,13 +2128,19 @@ local function DoCut()
 
   -- Pad outward from the recognised words, snapping to silence where it can be
   -- measured.
-  local pad_fallbacks = 0
+  --
+  -- A failure here is reported and the item is cut anyway, with the pads as
+  -- they were proposed. Padding is a refinement -- where an edge sits inside
+  -- the silence around a take -- and losing it is worth far less than losing
+  -- the cut. This used to raise, which took the whole run with it.
+  local pad_fallbacks, pad_errors = 0, {}
   for _, g in pairs(by_item) do
     table.sort(g.spans, function(a, b) return (a.start or 0) < (b.start or 0) end)
 
     local take = r.GetActiveTake(g.item)
     local probe, destroy = vo.MakeTakeProbe(take)
     local ok, err = pcall(function()
+      if not probe then error("no audio accessor for this take") end
       -- Only the words this ITEM covers: a source already split across several
       -- items has words belonging to its siblings, and probing outside the take
       -- answers silence, which drags the measured floor down.
@@ -2155,8 +2161,12 @@ local function DoCut()
         { start = g.info.pos, stop = g.info.pos + g.info.length },
         probe, floor, proj_words)
     end)
-    destroy()   -- ALWAYS, including on the error path: the accessor holds the file open
-    if not ok then error(err) end
+    -- ALWAYS, including on the error path: the accessor holds the file open.
+    if destroy then destroy() end
+    if not ok then
+      pad_errors[#pad_errors + 1] = string.format("%s: %s",
+        vo.Basename(g.info.path or "(unknown)"), tostring(err))
+    end
 
     for _, s in ipairs(g.spans) do
       if s.snapped == "pad" then pad_fallbacks = pad_fallbacks + 1 end
@@ -2174,6 +2184,23 @@ local function DoCut()
   end)
 
   state.cut_summary = vo.FormatCutSummary(all_spans, applied, skipped_msgs, failures)
+
+  -- Where the run actually went, stage by stage. Without this a run that cuts
+  -- fewer clips than expected gives no way to tell which stage lost them.
+  local grouped = 0
+  for _ in pairs(by_item) do grouped = grouped + 1 end
+  table.insert(state.cut_summary, 1, {
+    text = string.format(
+      "%d span(s) to cut -> %d resolved to an item on %d item(s) -> %d cut. " ..
+      "%d could not be placed.",
+      #candidates, #candidates - #skipped_msgs, grouped, applied, #skipped_msgs),
+    warn = applied < (#candidates - #skipped_msgs),
+  })
+  for _, msg in ipairs(pad_errors) do
+    state.cut_summary[#state.cut_summary + 1] = {
+      text = "Edge snapping failed, cut with the fixed pads: " .. msg, warn = true }
+  end
+
   if #stale_names > 0 then
     state.cut_summary[#state.cut_summary + 1] = {
       text = string.format(
