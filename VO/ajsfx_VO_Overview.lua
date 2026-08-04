@@ -227,10 +227,15 @@ local state = {
   -- in the same space above the table, and two at once would push it off the
   -- window. "script" opens itself when a script fails to load.
   panel         = nil,        -- "script" | "cut" | "pull" | "sort"
+  -- Whether the tools narrow to the table's selection. Off by default: see
+  -- AffectedRows for why selection makes a poor default scope here.
+  selection_only = false,
   cut_summary   = {},         -- what the last Cut and Name run did
   -- The Cut panel's stage counts, memoised. Worked out from the same code the
   -- run uses, so what it says and what it does cannot drift apart.
   cut_result     = nil,       -- what the last run said, shown in the panel
+  pull_result    = nil,       -- the same, for the Pull panel
+  pull_result_kind = "ok",
   cut_result_kind = "ok",
   cut_count_key = nil,
   cut_counts    = { spans = 0, cuttable = 0, in_range = 0, stale = 0, candidates = 0 },
@@ -1419,12 +1424,36 @@ local function AutoSelectTakes(rows)
     next(locked_line) and ", locked lines skipped" or ""), "ok"
 end
 
--- The rows the tool acts on: the selection if there is one, otherwise every row
--- currently visible. Filters therefore scope the sort when the selection does not.
+-- The rows a tool acts on: every row currently visible, unless the user has
+-- explicitly asked for the selection.
+--
+-- Selection is NOT the scope by default, and that is deliberate. Clicking a row
+-- is how you audition a take -- it moves the cursor and selects the item -- so
+-- by the time you reach for a button there is almost always exactly one row
+-- selected, and a tool that quietly narrowed to it would do a fraction of what
+-- its label says. The filters are the real scoping tool here; the tick boxes
+-- are how you mark individual takes.
 local function AffectedRows()
-  local sel = SelectedRows()
-  if #sel > 0 then return sel, true end
+  if state.selection_only then
+    local sel = SelectedRows()
+    if #sel > 0 then return sel, true end
+  end
   return state.visible, false
+end
+
+-- The "only the selected rows" switch each panel offers, drawn identically in
+-- all of them so the scope rule reads the same wherever it applies.
+local function DrawScopeToggle(id)
+  local changed, on = im.Checkbox(ctx, "Selected rows only##" .. id, state.selection_only)
+  if changed then state.selection_only = on end
+  if im.IsItemHovered(ctx) then
+    local n = #SelectedRows()
+    im.SetTooltip(ctx, string.format(
+      "Off: act on every row the filters are showing (%d).\n" ..
+      "On: act on the rows selected in the table (%d).\n\n" ..
+      "Off by default because clicking a row to listen to it also selects it.",
+      #state.visible, n))
+  end
 end
 
 -- The items Pull and Sort may act on, in timeline order, each carrying the name
@@ -1440,15 +1469,12 @@ end
 -- Scope, narrowest first: the items selected in REAPER, else the items behind
 -- the selected rows, else every item in the project.
 local function TargetItems()
+  -- REAPER's own item selection is NOT consulted: clicking a row to audition
+  -- it selects that row's item, so using it as the scope would silently narrow
+  -- every run to the last take listened to.
   local chosen, scope = {}, "every item in the project"
-
-  local n = r.CountSelectedMediaItems(0)
-  if n > 0 then
-    for i = 0, n - 1 do chosen[r.GetSelectedMediaItem(0, i)] = true end
-    scope = string.format("%d item%s selected in REAPER", n, n == 1 and "" or "s")
-  else
-    local sel = SelectedRows()
-    for _, row in ipairs(sel) do
+  if state.selection_only then
+    for _, row in ipairs(SelectedRows()) do
       if row.item then chosen[row.item] = true end
     end
     if next(chosen) then scope = "the items behind the selected rows" end
@@ -2334,10 +2360,7 @@ local function DrawCutPanel()
   if im.Button(ctx, "Close##cut") then state.panel = nil end
   im.SameLine(ctx)
 
-  local _, from_selection = AffectedRows()
-  im.TextDisabled(ctx, from_selection
-    and "the selected rows only"
-    or  "every row on show — select rows to narrow it")
+  DrawScopeToggle("cut")
 
   -- The pipeline, stage by stage, from the same code the run uses. A run that
   -- does nothing can then be read off rather than guessed at.
@@ -2384,6 +2407,7 @@ local function Pull()
     state.message, state.message_kind = string.format(
       "Nothing to pull. %d item(s) are not on the script; %d name(s) are claimed by two lines.",
       summary.unknown, summary.ambiguous), "error"
+    state.pull_result, state.pull_result_kind = state.message, "error"
     return
   end
 
@@ -2445,6 +2469,7 @@ local function Pull()
     "Pulled %d select, %d alt, %d to review. %d item(s) not on the script.",
     summary.selects, summary.alts, summary.review,
     summary.unknown + summary.ambiguous), "ok"
+  state.pull_result, state.pull_result_kind = state.message, "ok"
   Reload()
 end
 
@@ -2468,13 +2493,19 @@ local function ApplyAltNames()
   -- one press, and each one invalidating the rows still to be named.
   local named = 0
   if #edits > 0 then
+    -- Resolved once for the whole run, against the live project: the rows'
+    -- cached pointers can be stale, and a stale one here writes a name onto
+    -- somebody else's clip.
+    local items = vo.CollectProjectSpans()
     core.Transaction("VO Overview: name alts", function()
       for _, e in ipairs(edits) do
         local row   = rows[e.index]
         local clean = row and vo.SanitizeName(e.name) or ""
         if clean ~= "" then
-          if row.item then
-            local take = r.GetActiveTake(row.item)
+          local item = row.source_path and row.source_start
+                       and vo.ResolveSourceTime(row.source_path, row.source_start, items)
+          if item then
+            local take = r.GetActiveTake(item)
             if take then
               r.GetSetMediaItemTakeInfo_String(take, "P_NAME", clean, true)
             end
@@ -2489,10 +2520,27 @@ local function ApplyAltNames()
     Reload()
   end
 
+  -- Named 0 with nothing skipped means nothing was TICKED, which is the likely
+  -- confusion: the button names alts, and an alt is a row with Keep ticked and
+  -- Sel not.
+  local why = ""
+  if named == 0 and skipped == 0 then
+    local keeps, sels = 0, 0
+    for _, row in ipairs(rows) do
+      if row.user_keep then keeps = keeps + 1 end
+      if row.user_select then sels = sels + 1 end
+    end
+    why = string.format(
+      " No alts in range: %d row(s) shown, %d with Keep ticked, %d with Sel. " ..
+      "An alt is Keep ticked and Sel not.", #rows, keeps, sels)
+  end
+
   state.message, state.message_kind = string.format(
-    "Named %d alt%s.%s", named, named == 1 and "" or "s",
-    skipped > 0 and string.format(" %d already had a name and were left alone.", skipped) or ""),
+    "Named %d alt%s.%s%s", named, named == 1 and "" or "s",
+    skipped > 0 and string.format(" %d already had a name and were left alone.", skipped) or "",
+    why),
     (named > 0) and "ok" or "error"
+  state.pull_result, state.pull_result_kind = state.message, state.message_kind
 end
 
 local function DrawPullPanel()
@@ -2548,6 +2596,8 @@ local function DrawPullPanel()
   im.SameLine(ctx)
   if im.Button(ctx, "Close##pull") then state.panel = nil end
   im.SameLine(ctx)
+  DrawScopeToggle("pull")
+  im.SameLine(ctx)
 
   -- Memoised on the project-state counter and the row selection: PullItems
   -- reads a take name per item, which is a REAPER call per item and has no
@@ -2565,6 +2615,12 @@ local function DrawPullPanel()
     "%d select, %d alt, %d review; %d not on the script%s",
     n.selects, n.alts, n.review, n.unknown + n.ambiguous,
     n.ambiguous > 0 and string.format(" (%d name clashes)", n.ambiguous) or ""))
+
+  -- The window's own message line is below the table; this panel is above it.
+  if state.pull_result and state.pull_result ~= "" then
+    im.TextColored(ctx, state.pull_result_kind == "error" and 0xDD6666FF or 0x66BB66FF,
+                   state.pull_result)
+  end
 
   im.Separator(ctx)
 end
@@ -2793,6 +2849,8 @@ local function DrawLayoutBar()
   end
   im.SameLine(ctx)
   if im.Button(ctx, "Close##sort") then state.panel = nil end
+  im.SameLine(ctx)
+  DrawScopeToggle("sort")
 
   im.Separator(ctx)
 end
