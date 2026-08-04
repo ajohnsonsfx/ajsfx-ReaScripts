@@ -228,6 +228,10 @@ local state = {
   -- window. "script" opens itself when a script fails to load.
   panel         = nil,        -- "script" | "cut" | "pull" | "sort"
   cut_summary   = {},         -- what the last Cut and Name run did
+  -- The Cut panel's stage counts, memoised. Worked out from the same code the
+  -- run uses, so what it says and what it does cannot drift apart.
+  cut_count_key = nil,
+  cut_counts    = { spans = 0, cuttable = 0, in_range = 0, stale = 0, candidates = 0 },
   -- The Pull panel's count line, memoised: working it out reads a take name per
   -- item. Keyed on the project-state counter and the selection size.
   pull_count_key = nil,
@@ -1995,8 +1999,13 @@ local function StaleSources()
   return stale, names
 end
 
-local function DoCut()
-  local cfg = vo.LoadConfig()
+-- What a cut would act on. Shared by the run and by the panel's count line, so
+-- the number shown and the number cut cannot drift apart -- and so a run that
+-- does nothing can be traced to the stage that emptied it.
+--
+-- Returns the spans to cut, every span, the stale source names, and a table of
+-- stage counts for the panel.
+local function CutCandidates()
   local stale_paths, stale_names = StaleSources()
 
   -- Every span from every source, tagged with the path it came from.
@@ -2016,15 +2025,24 @@ local function DoCut()
 
   -- The row carries the user's mark; the span is what gets cut. The flag makes
   -- the crossing here, once, before naming.
+  --
+  -- Rows are indexed by source and start rather than searched per span: with a
+  -- thousand rows and a thousand spans the nested loop is a million string
+  -- comparisons on every count, which is not something a panel can do.
+  local by_start = {}
+  local function start_key(path, start)
+    return tostring(path) .. "|" .. string.format("%.4f", start or 0)
+  end
   for _, row in ipairs(state.overview) do
     if row.source_path and row.source_start ~= nil then
-      for _, s in ipairs(all_spans) do
-        if s.source_path == row.source_path
-           and math.abs((s.start or 0) - row.source_start) < 1e-6 then
-          s.select = row.user_select == true
-          break
-        end
-      end
+      by_start[start_key(row.source_path, row.source_start)] = row
+    end
+  end
+
+  local in_range = {}
+  for _, row in ipairs(AffectedRows()) do
+    if row.source_path and row.source_start ~= nil then
+      in_range[start_key(row.source_path, row.source_start)] = true
     end
   end
 
@@ -2036,31 +2054,43 @@ local function DoCut()
   -- Which rows are in range follows the same rule as every other tool here:
   -- the selected rows if any are selected, otherwise every row on show. So a
   -- filtered table cuts what it is showing, and an untouched one cuts the lot.
-  -- Matched span to row by the same epsilon the mark-crossing above uses, not
-  -- by a rounded key: a span missed on a rounding boundary would silently not
-  -- be cut, which is the one failure mode that would look like the tool simply
-  -- not working.
-  for _, row in ipairs(AffectedRows()) do
-    if row.source_path and row.source_start ~= nil then
-      for _, s in ipairs(all_spans) do
-        if s.source_path == row.source_path
-           and math.abs((s.start or 0) - row.source_start) < 1e-6 then
+  local counts = { spans = #all_spans, cuttable = 0, in_range = 0, stale = 0 }
+  local candidates = {}
+  for _, s in ipairs(all_spans) do
+    local key = start_key(s.source_path, s.start)
+    local row = by_start[key]
+    if row then s.select = row.user_select == true end
+
+    if s.kind == "match" or s.kind == "review" then
+      counts.cuttable = counts.cuttable + 1
+      if in_range[key] then
+        counts.in_range = counts.in_range + 1
+        -- Cutting to word timings the audio no longer matches would put the
+        -- edges in the wrong places, so a stale source is skipped -- per
+        -- source, so one re-recorded file cannot stop the others.
+        if stale_paths[s.source_path] then
+          counts.stale = counts.stale + 1
+        else
           s.in_range = true
-          break
+          candidates[#candidates + 1] = s
         end
       end
     end
   end
+  counts.candidates = #candidates
 
-  local candidates = {}
-  for _, s in ipairs(all_spans) do
-    -- Cutting to word timings the audio no longer matches would put the edges
-    -- in the wrong places, so a stale source is skipped -- per source, so one
-    -- re-recorded file cannot stop the others.
-    if (s.kind == "match" or s.kind == "review")
-       and s.in_range and not stale_paths[s.source_path] then
-      candidates[#candidates + 1] = s
-    end
+  return candidates, all_spans, stale_names, counts
+end
+
+local function DoCut()
+  local cfg = vo.LoadConfig()
+  local candidates, all_spans, stale_names = CutCandidates()
+
+  if #candidates == 0 then
+    state.message, state.message_kind =
+      "Nothing to cut. The line under the button says which stage came up empty.",
+      "error"
+    return
   end
 
   -- Name before converting: vo.AssignNames sorts each asset's takes by `start`
@@ -2175,7 +2205,18 @@ local function DrawCutPanel()
     "afterwards to route the takes onto their tracks.")
   im.Spacing(ctx)
 
-  if im.Button(ctx, "Cut and Name") then pending_action = DoCut end
+  if im.Button(ctx, "Cut and Name") then
+    -- Wrapped: an error in the cut path used to escape into the defer loop,
+    -- which stops the script dead and looks exactly like the button doing
+    -- nothing. Whatever went wrong belongs on screen.
+    pending_action = function()
+      local ok, err = pcall(DoCut)
+      if not ok then
+        state.message, state.message_kind =
+          "Cut failed: " .. tostring(err), "error"
+      end
+    end
+  end
   im.SameLine(ctx)
   if im.Button(ctx, "Close##cut") then state.panel = nil end
   im.SameLine(ctx)
@@ -2184,6 +2225,18 @@ local function DrawCutPanel()
   im.TextDisabled(ctx, from_selection
     and "the selected rows only"
     or  "every row on show — select rows to narrow it")
+
+  -- The pipeline, stage by stage, from the same code the run uses. A run that
+  -- does nothing can then be read off rather than guessed at.
+  local key = table.concat({ tostring(state.scanned_at), tostring(#SelectedRows()) }, "|")
+  if key ~= state.cut_count_key then
+    local _, _, _, counts = CutCandidates()
+    state.cut_count_key, state.cut_counts = key, counts
+  end
+  local c = state.cut_counts
+  im.TextDisabled(ctx, string.format(
+    "%d spans matched, %d cuttable, %d in range, %d skipped as stale  ->  %d to cut",
+    c.spans, c.cuttable, c.in_range, c.stale, c.candidates))
 
   for _, line in ipairs(state.cut_summary or {}) do
     if line.warn then im.TextColored(ctx, 0xDDAA33FF, line.text)
