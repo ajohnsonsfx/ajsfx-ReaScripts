@@ -4840,6 +4840,21 @@ local function track_label(track)
     math.floor(r.GetMediaTrackInfo_Value(track, "IP_TRACKNUMBER")))
 end
 
+-- A track named `name`, nested as a CHILD of `parent`. The depth rule turns on
+-- what the parent's depth WAS, so it is read before the insert.
+--
+-- Pull's destinations are children rather than siblings because a session's
+-- Selects belong to the recording they came out of: collapsed, the recording
+-- and everything cut from it read as one thing.
+function vo.EnsureChildTrack(parent, name)
+  local parent_depth, child_depth =
+    vo.FolderDepthForChild(r.GetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH"))
+  local child = vo.EnsureTrackBelow(parent, name)
+  r.SetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH", parent_depth)
+  r.SetMediaTrackInfo_Value(child, "I_FOLDERDEPTH", child_depth)
+  return child
+end
+
 -- One destination child track per source track, nested under it.
 --
 -- Sorting lays audio out somewhere new every time rather than shuffling it in
@@ -4881,13 +4896,7 @@ function vo.EnsureSortChildTracks(source_tracks)
 
   local dest = {}
   for _, track in ipairs(source_tracks) do
-    -- Read the parent's depth BEFORE inserting: the rule turns on what it was.
-    local parent_depth, child_depth =
-      vo.FolderDepthForChild(r.GetMediaTrackInfo_Value(track, "I_FOLDERDEPTH"))
-    local child = vo.EnsureTrackBelow(track, child_name(track, run))
-    r.SetMediaTrackInfo_Value(track, "I_FOLDERDEPTH", parent_depth)
-    r.SetMediaTrackInfo_Value(child, "I_FOLDERDEPTH", child_depth)
-    dest[track] = child
+    dest[track] = vo.EnsureChildTrack(track, child_name(track, run))
   end
 
   return dest, run
