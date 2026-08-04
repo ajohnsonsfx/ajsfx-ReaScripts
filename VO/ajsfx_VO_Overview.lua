@@ -223,6 +223,14 @@ local state = {
   -- window. "script" opens itself when a script fails to load.
   panel         = nil,        -- "script" | "cut" | "pull" | "sort"
   cut_summary   = {},         -- what the last Cut and Name run did
+  -- The Pull panel's count line, memoised: working it out reads a take name per
+  -- item. Keyed on the project-state counter and the selection size.
+  pull_count_key = nil,
+  pull_count     = { selects = 0, alts = 0, outs = 0, review = 0,
+                     unknown = 0, ambiguous = 0 },
+  -- The Sort panel's count line, memoised for the same reason.
+  layout_count_key = nil,
+  layout_count     = { items = 0, sources = 0, unresolved = 0 },
   appends       = {},         -- vo.SetAppend records, per script line
   dupe_names    = {},         -- vo.DuplicateNames set, for the red highlight
   lines         = {},         -- the merged, resolved script lines
@@ -2272,8 +2280,17 @@ local function DrawPullPanel()
   if im.Button(ctx, "Close##pull") then state.panel = nil end
   im.SameLine(ctx)
 
-  local items, marks = PullItems()
-  local _, n = vo.PlanPull(items, state.lines, marks)
+  -- Memoised on the project-state counter and the row selection: PullItems
+  -- reads a take name per item, which is a REAPER call per item and has no
+  -- business running at frame rate. Both inputs move exactly when the answer
+  -- would change.
+  local key = tostring(state.scanned_at) .. "|" .. tostring(#SelectedRows())
+  if key ~= state.pull_count_key then
+    local items, marks = PullItems()
+    local _, n = vo.PlanPull(items, state.lines, marks)
+    state.pull_count_key, state.pull_count = key, n
+  end
+  local n = state.pull_count
   im.TextDisabled(ctx, string.format(
     "%d select, %d alt, %d out, %d review; %d not on the script%s",
     n.selects, n.alts, n.outs, n.review, n.unknown + n.ambiguous,
@@ -2461,33 +2478,44 @@ local function DrawLayoutBar()
   -- Counted from the rows alone: clustering walks every item in the project and
   -- has no business running at frame rate.
   local rows, from_selection = AffectedRows()
-  local items, sources, item_seen, source_seen = 0, 0, {}, {}
-  -- In script order, an item is only a member if its NAME is on the script, so
-  -- the count has to answer the same question the run will.
-  local index = (state.layout_order == "script") and vo.BuildNameIndex(state.lines) or nil
-  local unresolved = 0
-  for _, row in ipairs(rows) do
-    if row.item and not item_seen[row.item] then
-      item_seen[row.item] = true
-      if index then
-        local take = r.GetActiveTake(row.item)
-        local name = ""
-        if take then
-          local _, got = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
-          name = got or ""
+  -- Memoised on everything that could change the answer: in script order this
+  -- reads a take name per item, which is a REAPER call per item and must not
+  -- run at frame rate.
+  local key = table.concat({ tostring(state.scanned_at), tostring(#rows),
+                             state.layout_order }, "|")
+  if key ~= state.layout_count_key then
+    local items, sources, item_seen, source_seen = 0, 0, {}, {}
+    local index = (state.layout_order == "script")
+                  and vo.BuildNameIndex(state.lines) or nil
+    local unresolved = 0
+    for _, row in ipairs(rows) do
+      if row.item and not item_seen[row.item] then
+        item_seen[row.item] = true
+        if index then
+          local take = r.GetActiveTake(row.item)
+          local name = ""
+          if take then
+            local _, got = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+            name = got or ""
+          end
+          if vo.ResolveItemName(index, name) then items = items + 1
+          else unresolved = unresolved + 1 end
+        else
+          items = items + 1
         end
-        if vo.ResolveItemName(index, name) then items = items + 1
-        else unresolved = unresolved + 1 end
-      else
-        items = items + 1
+      end
+      local path = row.source_path
+      if path and not source_seen[path] then
+        source_seen[path] = true
+        sources = sources + 1
       end
     end
-    local path = row.source_path
-    if path and not source_seen[path] then
-      source_seen[path] = true
-      sources = sources + 1
-    end
+    state.layout_count_key = key
+    state.layout_count = { items = items, sources = sources, unresolved = unresolved }
   end
+  local items      = state.layout_count.items
+  local sources    = state.layout_count.sources
+  local unresolved = state.layout_count.unresolved
   im.SameLine(ctx)
   im.TextDisabled(ctx, string.format("%d item%s from %d recording%s (%s)%s",
     items, items == 1 and "" or "s", sources, sources == 1 and "" or "s",
