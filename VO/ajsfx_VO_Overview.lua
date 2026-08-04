@@ -230,6 +230,8 @@ local state = {
   cut_summary   = {},         -- what the last Cut and Name run did
   -- The Cut panel's stage counts, memoised. Worked out from the same code the
   -- run uses, so what it says and what it does cannot drift apart.
+  cut_result     = nil,       -- what the last run said, shown in the panel
+  cut_result_kind = "ok",
   cut_count_key = nil,
   cut_counts    = { spans = 0, cuttable = 0, in_range = 0, stale = 0, candidates = 0 },
   -- The Pull panel's count line, memoised: working it out reads a take name per
@@ -2087,9 +2089,10 @@ local function DoCut()
   local candidates, all_spans, stale_names = CutCandidates()
 
   if #candidates == 0 then
-    state.message, state.message_kind =
-      "Nothing to cut. The line under the button says which stage came up empty.",
-      "error"
+    state.message = "Nothing to cut. The line under the button says which stage came up empty."
+    state.message_kind = "error"
+    state.cut_result, state.cut_result_kind = state.message, "error"
+    state.cut_summary = {}
     return
   end
 
@@ -2229,6 +2232,39 @@ local function DoCut()
   state.message, state.message_kind =
     string.format("Cut and named %d clip(s). Press Pull to route them.", applied),
     (applied > 0) and "ok" or "error"
+
+  -- The message renders at the bottom of the window, under the table, and the
+  -- panel is at the top -- so on a tall window a run reports into space the
+  -- user is not looking at. Repeated here, where the button is.
+  state.cut_result = state.message
+  state.cut_result_kind = state.message_kind
+
+  -- A run that did not do what it was asked writes the whole report to the
+  -- REAPER console: unmissable, and copy-pasteable when it needs reporting.
+  -- A clean run stays quiet.
+  local expected = #candidates - #skipped_msgs
+  if applied < expected or #failures > 0 or #pad_errors > 0 then
+    local out = { "ajsfx VO — Cut and Name report", string.rep("-", 46) }
+    for _, line in ipairs(state.cut_summary) do out[#out + 1] = line.text end
+    if #skipped_msgs > 0 then
+      out[#out + 1] = ""
+      out[#out + 1] = "Could not be placed:"
+      for i, msg in ipairs(skipped_msgs) do
+        if i > 20 then out[#out + 1] = ("  ...and %d more"):format(#skipped_msgs - 20); break end
+        out[#out + 1] = "  " .. msg
+      end
+    end
+    if #failures > 0 then
+      out[#out + 1] = ""
+      out[#out + 1] = "Failed to cut:"
+      for i, msg in ipairs(failures) do
+        if i > 20 then out[#out + 1] = ("  ...and %d more"):format(#failures - 20); break end
+        out[#out + 1] = "  " .. msg
+      end
+    end
+    r.ShowConsoleMsg(table.concat(out, "\n") .. "\n\n")
+  end
+
   Reload()
 end
 
@@ -2247,8 +2283,9 @@ local function DrawCutPanel()
     pending_action = function()
       local ok, err = pcall(DoCut)
       if not ok then
-        state.message, state.message_kind =
-          "Cut failed: " .. tostring(err), "error"
+        state.message, state.message_kind = "Cut failed: " .. tostring(err), "error"
+        state.cut_result, state.cut_result_kind = state.message, "error"
+        r.ShowConsoleMsg("ajsfx VO — Cut and Name FAILED\n" .. tostring(err) .. "\n\n")
       end
     end
   end
@@ -2272,6 +2309,13 @@ local function DrawCutPanel()
   im.TextDisabled(ctx, string.format(
     "%d spans matched, %d cuttable, %d in range, %d skipped as stale  ->  %d to cut",
     c.spans, c.cuttable, c.in_range, c.stale, c.candidates))
+
+  -- What the last run did, repeated here because the window's own message line
+  -- is below the table and this panel is above it.
+  if state.cut_result and state.cut_result ~= "" then
+    im.TextColored(ctx, state.cut_result_kind == "error" and 0xDD6666FF or 0x66BB66FF,
+                   state.cut_result)
+  end
 
   for _, line in ipairs(state.cut_summary or {}) do
     if line.warn then im.TextColored(ctx, 0xDDAA33FF, line.text)
