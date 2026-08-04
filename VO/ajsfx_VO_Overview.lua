@@ -2276,7 +2276,11 @@ local function DrawCutPanel()
     "afterwards to route the takes onto their tracks.")
   im.Spacing(ctx)
 
-  if im.Button(ctx, "Cut and Name") then
+  -- "##do" is an ID suffix, not part of the label: the toolbar has a button
+  -- reading "Cut and Name" too, and ImGui identifies a widget by its label
+  -- within the window. Two buttons with one ID are ONE widget to ImGui, and
+  -- the click never reaches this one.
+  if im.Button(ctx, "Cut and Name##do") then
     -- Wrapped: an error in the cut path used to escape into the defer loop,
     -- which stops the script dead and looks exactly like the button doing
     -- nothing. Whatever went wrong belongs on screen.
@@ -2502,7 +2506,8 @@ local function DrawPullPanel()
   im.Spacing(ctx)
 
   -- Pull ----------------------------------------------------------------
-  if im.Button(ctx, "Pull") then pending_action = Pull end
+  -- ##do: distinct from the toolbar's "Pull". See DrawCutPanel.
+  if im.Button(ctx, "Pull##do") then pending_action = Pull end
   im.SameLine(ctx)
   if im.Button(ctx, "Close##pull") then state.panel = nil end
   im.SameLine(ctx)
@@ -2699,7 +2704,8 @@ local function DrawLayoutBar()
   if schanged then state.layout_src_gap = sgap; SaveLayoutSettings() end
   im.SameLine(ctx)
 
-  if im.Button(ctx, "Sort") then
+  -- ##do: distinct from the toolbar's "Sort". See DrawCutPanel.
+  if im.Button(ctx, "Sort##do") then
     pending_action = SortOnTimeline
   end
 
