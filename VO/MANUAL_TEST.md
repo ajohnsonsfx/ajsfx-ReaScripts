@@ -470,6 +470,20 @@ Open **ajsfx VO Settings → Speech backend → Download backend & models**.
    the now-first script's lines come first. The arrows are greyed at the ends.
 5. Save, close and reopen the project. The order you left is the order you get.
 
+## Cut and Name (2026-08-04)
+
+1. Click a take's Select cell until it reads **SEL**, then press **Cut and Name**.
+   The take is split out of the recording, named the plain CSV filename, and is
+   STILL on the recording's own track. No new track appeared.
+2. Two takes of one line, one SEL and one ALT. Both are cut, both carry the same
+   plain name. That is expected — Pull is what separates them.
+3. A third take of that line, unmarked, is cut too: it is what Pull puts on Outs.
+4. A line with several takes and none marked SEL: the panel says so and the
+   button is greyed.
+5. Re-transcribe a source in ajsfx VO Sources, then reopen the panel. It refuses
+   until the audio and its transcript agree again.
+6. Undo. One Ctrl+Z puts the recording back as it was.
+
 ## Filters are remembered (2026-08-04)
 
 1. Pick a character, set the status filter, type in the search box, open **Filters**

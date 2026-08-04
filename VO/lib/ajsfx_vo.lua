@@ -4927,22 +4927,23 @@ end
 -- width) are skipped and reported rather than allowed to corrupt the take.
 vo.MIN_SPLIT_LENGTH = 0.001  -- seconds
 
--- Split the session and move each span to its destination track, named. Spans
--- destined for vo.DEST_IN_PLACE (unmatched audio) are left untouched instead.
+-- Split the session into its takes and NAME each one. Spans destined for
+-- vo.DEST_IN_PLACE (unmatched audio) are left untouched instead.
+--
+-- It moves nothing. Where a take goes is Pull's question, and Pull answers it
+-- from the name written here rather than from the match -- which is what lets
+-- it serve a folder of rendered files that was never cut at all.
+--
+-- The name applied is the script's own filename, with no Append and no
+-- override: two takes of one line SHOULD collide at this stage, because which
+-- of them is the delivery is not a question cutting can answer.
+--
 -- Splitting rather than copying is deliberate (SPEC.md §4): with the pieces
--- physically removed it is obvious what has been pulled and what has not — and
--- what stays behind on the source track is precisely what wasn't matched.
+-- physically separated it is obvious what has been cut and what has not.
 -- Caller wraps this in core.Transaction so the whole run is one undo step.
 -- UNVERIFIED outside REAPER — see SPEC.md §10.
 -- Returns: applied count, array of failure strings.
 function vo.ApplyPlan(plan, cfg, source_track)
-  local dest_names = {
-    selects = cfg.track_selects or "Selects",
-    alts    = cfg.track_alts    or "Alts",
-    review  = cfg.track_review  or "Review",
-  }
-
-  local tracks  = {}     -- full track name -> MediaTrack
   local applied = 0
   local failures = {}
 
@@ -4970,25 +4971,15 @@ function vo.ApplyPlan(plan, cfg, source_track)
       local piece = right or item
       r.SplitMediaItem(piece, span.stop)
 
-      local base      = dest_names[span.dest] or dest_names.review
-      local full_name = vo.CharacterTrackName(span.character, base)
-      if not tracks[full_name] then
-        tracks[full_name] = vo.EnsureTrackBelow(source_track, full_name)
+      -- Named where it lies. The plain script filename, not span.name: the
+      -- delivered name carries the Append, and applying that here would decide
+      -- a delivery that nothing has decided yet.
+      local take = r.GetActiveTake(piece)
+      if take then
+        r.GetSetMediaItemTakeInfo_String(take, "P_NAME",
+          span.asset or span.name or "", true)
       end
-
-      if r.MoveMediaItemToTrack(piece, tracks[full_name]) then
-        local take = r.GetActiveTake(piece)
-        if take then
-          r.GetSetMediaItemTakeInfo_String(take, "P_NAME", span.name, true)
-        end
-        if cfg.create_regions and span.dest == "selects" then
-          r.AddProjectMarker2(0, true, span.start, span.stop, span.name, -1, 0)
-        end
-        applied = applied + 1
-      else
-        failures[#failures + 1] =
-          string.format("%s: could not move to %s", span.name or "(unnamed)", full_name)
-      end
+      applied = applied + 1
     end
   end
 

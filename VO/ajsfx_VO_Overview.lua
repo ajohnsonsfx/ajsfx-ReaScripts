@@ -232,7 +232,11 @@ local state = {
   -- reading them produced, and is rebuilt whenever this changes.
   scripts       = {},
   loaded        = { scripts = {}, lines = {} },
-  scripts_open  = false,      -- the Script panel; opens itself when a script fails
+  -- Which inline panel is open, or nil for none. One at a time: they all draw
+  -- in the same space above the table, and two at once would push it off the
+  -- window. "script" opens itself when a script fails to load.
+  panel         = nil,        -- "script" | "cut" | "pull" | "sort"
+  cut_summary   = {},         -- what the last Cut and Name run did
   appends       = {},         -- vo.SetAppend records, per script line
   dupe_names    = {},         -- vo.DuplicateNames set, for the red highlight
   lines         = {},         -- the merged, resolved script lines
@@ -355,7 +359,7 @@ local function LoadScripts()
   if guessed then state.loaded = vo.LoadScripts(state.scripts, ReadFile) end
 
   for _, sc in ipairs(state.loaded.scripts) do
-    if sc.error and sc.error ~= "" then state.scripts_open = true end
+    if sc.error and sc.error ~= "" then state.panel = "script" end
   end
 
   vo.ResolveNames(state.loaded.lines, vo.AppendMap(state.appends))
@@ -647,6 +651,11 @@ end
 -- -----------------------------------------------------------------------
 -- User edits
 -- -----------------------------------------------------------------------
+
+-- Deferred so nothing mutates mid-table: a widget records what to do and the
+-- frame runs it after the table is closed. Declared here, above every panel
+-- and every cell that assigns to it, so they all see the same local.
+local pending_action = nil
 
 -- The project-file entry backing a row, created on demand. Rows are rebuilt
 -- often, so edits are written to the entry (which survives) rather than to
@@ -1730,7 +1739,7 @@ local function DrawScriptPanel()
     end
   end
   im.SameLine(ctx)
-  if im.Button(ctx, "Close##scripts") then state.scripts_open = false end
+  if im.Button(ctx, "Close##scripts") then state.panel = nil end
 
   -- Every row lines its widgets up on the same columns, whatever the filenames
   -- are: the name column is as wide as the longest name in the list, so adding
@@ -1863,6 +1872,239 @@ local function DrawScriptPanel()
   im.Separator(ctx)
 end
 
+-- -----------------------------------------------------------------------
+-- Cut and Name
+--
+-- Splits each take out of its recording and names it the script's own
+-- filename. It moves nothing: where a take goes is Pull's question, and Pull
+-- answers it from the name written here. That is what lets Pull serve a folder
+-- of rendered files this window never cut.
+-- -----------------------------------------------------------------------
+
+-- Why cutting must not run, or "" when it may. Two refusals, both about
+-- acting on something the user has not decided or that is no longer true.
+local function CutGate()
+  local stale = {}
+  for _, path in ipairs(vo.ProjectSourcePaths(state.items) or {}) do
+    if vo.TranscriptState(path) == "stale" then stale[#stale + 1] = vo.Basename(path) end
+  end
+  if #stale > 0 then
+    table.sort(stale)
+    return "Audio changed since it was transcribed — re-transcribe in " ..
+           "ajsfx VO Sources before cutting:\n" .. table.concat(stale, ", ")
+  end
+
+  -- Every LINE with more than one take needs the decision SEL exists to
+  -- record. Keyed by script row, not by filename: a script can name two lines
+  -- with one filename, and keying on the name would let a SEL on one line
+  -- answer for the other.
+  local by_line = {}
+  for _, row in ipairs(state.overview) do
+    if row.status ~= "orphan" and row.status ~= "missing" and row.asset then
+      local key = row.script_row or row.asset
+      local b = by_line[key]
+      if not b then b = { count = 0, selected = false, asset = row.asset }; by_line[key] = b end
+      b.count = b.count + 1
+      if row.user_mark == "select" then b.selected = true end
+    end
+  end
+
+  local any, unresolved, names = false, 0, {}
+  for _, b in pairs(by_line) do
+    if b.selected then any = true end
+    if b.count > 1 and not b.selected then
+      unresolved = unresolved + 1
+      names[#names + 1] = b.asset
+    end
+  end
+
+  if not any then
+    return "Nothing is marked SEL. Click the Select cell on the takes you want cut."
+  end
+  if unresolved > 0 then
+    table.sort(names)
+    return string.format("%d line(s) have several takes and no SEL yet.", unresolved)
+        .. "\n" .. table.concat(names, ", ")
+  end
+  return ""
+end
+
+local function DoCut()
+  local cfg = vo.LoadConfig()
+
+  -- Every span from every source, tagged with the path it came from.
+  local all_spans = {}
+  for _, m in ipairs(state.matches or {}) do
+    for _, s in ipairs(m.spans or {}) do
+      s.source_path = m.path
+      all_spans[#all_spans + 1] = s
+    end
+  end
+
+  -- The row carries the user's mark; the span is what gets cut. The flag makes
+  -- the crossing here, once, before naming.
+  for _, row in ipairs(state.overview) do
+    if row.source_path and row.source_start ~= nil then
+      for _, s in ipairs(all_spans) do
+        if s.source_path == row.source_path
+           and math.abs((s.start or 0) - row.source_start) < 1e-6 then
+          s.select = row.user_mark == "select"
+          break
+        end
+      end
+    end
+  end
+
+  -- Lines the user has decided. EVERY take of such a line is cut, not just the
+  -- SEL: the alts are deliveries too, and the takes marked neither are what
+  -- Pull puts on Outs. A line nobody has decided is cut by nothing here -- the
+  -- gate above already refused the run.
+  local decided = {}
+  for _, row in ipairs(state.overview) do
+    if row.user_mark == "select" and row.asset then
+      decided[row.script_row or row.asset] = true
+    end
+  end
+  local function line_key(s)
+    local l = s.line_idx and (state.lines or {})[s.line_idx]
+    if l and l.asset == s.asset then return l.index or l.row end
+    return s.asset
+  end
+
+  local candidates = {}
+  for _, s in ipairs(all_spans) do
+    if s.kind == "match" then
+      if s.select or (s.asset and decided[line_key(s)]) then
+        candidates[#candidates + 1] = s
+      end
+    elseif s.kind == "review" then
+      candidates[#candidates + 1] = s
+    end
+  end
+
+  -- Name before converting: vo.AssignNames sorts each asset's takes by `start`
+  -- to number them, and source time is the one base every span shares.
+  vo.AssignNames(all_spans, cfg)
+
+  -- Resolve each candidate against the live item that plays it, in project
+  -- time. A span no current item covers any more is dropped and counted rather
+  -- than cut against silence.
+  local skipped_msgs, by_item = {}, {}
+  for _, s in ipairs(candidates) do
+    local item, proj_start, info = vo.ResolveSourceTime(s.source_path, s.start, state.items)
+    if not item then
+      skipped_msgs[#skipped_msgs + 1] = string.format("%s: no item covers %.3fs in %s",
+        s.name or s.asset or "(unnamed)", s.start or 0, vo.Basename(s.source_path))
+    else
+      s.start = proj_start
+      s.stop  = vo.SourceTimeToProject(s.stop, info)
+      local g = by_item[item]
+      if not g then
+        g = { item = item, info = info, spans = {} }
+        by_item[item] = g
+      end
+      g.spans[#g.spans + 1] = s
+    end
+  end
+
+  -- Word timings per source, for the silence probe. Read here rather than kept
+  -- in state: cutting is a button press, not a frame.
+  local words_by_path = {}
+  for _, m in ipairs(state.matches or {}) do
+    local parsed = vo.ReadTranscript(m.path)
+    words_by_path[m.path] = parsed and parsed.words or {}
+  end
+
+  -- Pad outward from the recognised words, snapping to silence where it can be
+  -- measured.
+  local pad_fallbacks = 0
+  for _, g in pairs(by_item) do
+    table.sort(g.spans, function(a, b) return (a.start or 0) < (b.start or 0) end)
+
+    local take = r.GetActiveTake(g.item)
+    local probe, destroy = vo.MakeTakeProbe(take)
+    local ok, err = pcall(function()
+      -- Only the words this ITEM covers: a source already split across several
+      -- items has words belonging to its siblings, and probing outside the take
+      -- answers silence, which drags the measured floor down.
+      local covered = vo.SourceCoverageRanges({ g.info })[1]
+      local proj_words = {}
+      for _, w in ipairs(words_by_path[g.info.path] or {}) do
+        if w.t1 >= covered.from and w.t0 <= covered.to then
+          proj_words[#proj_words + 1] = {
+            t0   = vo.SourceTimeToProject(w.t0, g.info),
+            t1   = vo.SourceTimeToProject(w.t1, g.info),
+            text = w.text,
+          }
+        end
+      end
+
+      local floor = vo.MeasureNoiseFloor(vo.InterWordGaps(proj_words), probe, cfg)
+      vo.ApplyPadding(g.spans, cfg,
+        { start = g.info.pos, stop = g.info.pos + g.info.length },
+        probe, floor, proj_words)
+    end)
+    destroy()   -- ALWAYS, including on the error path: the accessor holds the file open
+    if not ok then error(err) end
+
+    for _, s in ipairs(g.spans) do
+      if s.snapped == "pad" then pad_fallbacks = pad_fallbacks + 1 end
+    end
+  end
+
+  -- One transaction around every split and rename, so the run is one undo step.
+  local applied, failures = 0, {}
+  core.Transaction("VO Overview: cut and name", function()
+    for _, g in pairs(by_item) do
+      local a, f = vo.ApplyPlan(g.spans, cfg, g.info.track)
+      applied = applied + a
+      for _, msg in ipairs(f) do failures[#failures + 1] = msg end
+    end
+  end)
+
+  state.cut_summary = vo.FormatCutSummary(all_spans, applied, skipped_msgs, failures)
+  if pad_fallbacks > 0 then
+    state.cut_summary[#state.cut_summary + 1] = {
+      text = string.format(
+        "%d clip edges fell back to the fixed pad — no silence found in the gap.",
+        pad_fallbacks),
+      warn = true,
+    }
+  end
+  state.message, state.message_kind =
+    string.format("Cut and named %d clip(s). Press Pull to route them.", applied), "ok"
+  Reload()
+end
+
+local function DrawCutPanel()
+  im.Separator(ctx)
+  im.TextWrapped(ctx,
+    "Splits every take of every decided line out of its recording and names it " ..
+    "the script's filename. Nothing moves: press Pull afterwards to route the " ..
+    "takes onto their tracks.")
+  im.Spacing(ctx)
+
+  local blocked = CutGate()
+  if blocked ~= "" then
+    im.TextColored(ctx, 0xDDAA33FF, blocked)
+    im.Spacing(ctx)
+    im.BeginDisabled(ctx, true)
+    im.Button(ctx, "Cut and Name")
+    im.EndDisabled(ctx)
+  elseif im.Button(ctx, "Cut and Name") then
+    pending_action = DoCut
+  end
+  im.SameLine(ctx)
+  if im.Button(ctx, "Close##cut") then state.panel = nil end
+
+  for _, line in ipairs(state.cut_summary or {}) do
+    if line.warn then im.TextColored(ctx, 0xDDAA33FF, line.text)
+    else im.TextDisabled(ctx, line.text) end
+  end
+
+  im.Separator(ctx)
+end
+
 local function DrawFilters()
   -- Every control here writes state.dirty: the filters are stored in the project
   -- file so the table opens the way it was left. The flush is throttled, so a
@@ -1943,8 +2185,6 @@ local function DrawFilters()
                        "read more than once. Locked lines are left alone.")
   end
 end
-
-local pending_action = nil   -- deferred so nothing mutates mid-table
 
 local function Copy(text)
   local set = rawget(im, 'SetClipboardText')
@@ -2951,28 +3191,38 @@ local function loop()
     end
 
     im.SameLine(ctx)
-    if im.Button(ctx, "Script") then state.scripts_open = not state.scripts_open end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, "The script CSVs this project reads, and which column of\n" ..
-                         "each holds the filename, the line and the character.")
+
+    -- One button per panel, the open one held down. Sources and Settings are
+    -- their own windows and open as they always did.
+    local function PanelButton(key, label, tip)
+      local on = state.panel == key
+      if on then
+        im.PushStyleColor(ctx, im.Col_Button, im.GetStyleColor(ctx, im.Col_ButtonActive))
+      end
+      if im.Button(ctx, label) then state.panel = (not on) and key or nil end
+      if on then im.PopStyleColor(ctx) end
+      if im.IsItemHovered(ctx) then im.SetTooltip(ctx, tip) end
+      im.SameLine(ctx)
     end
-    im.SameLine(ctx)
-    -- The other two windows of the set. Overview is where a session is read, so
-    -- it is also where the user reaches for the window that makes the words and
-    -- the window that makes the clips.
+
+    PanelButton("script", "Script",
+      "The script CSVs this project reads, and which column of\n" ..
+      "each holds the filename, the line and the character.")
+
     if im.Button(ctx, "Sources…") then
       local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
       if not ok then state.message, state.message_kind = tostring(why), "error" end
     end
     im.SameLine(ctx)
-    if im.Button(ctx, "Cut…") then
-      local ok, why = vo.LaunchSibling("ajsfx_VO_Cut.lua")
-      if not ok then state.message, state.message_kind = tostring(why), "error" end
-    end
-    im.SameLine(ctx)
+
+    PanelButton("cut", "Cut and Name",
+      "Splits every take of every decided line out of its recording\n" ..
+      "and names it the script's filename. Moves nothing.")
+
     if im.Button(ctx, "Settings") then state.settings_open = true end
 
-    if state.scripts_open then DrawScriptPanel() end
+    if     state.panel == "script" then DrawScriptPanel()
+    elseif state.panel == "cut"    then DrawCutPanel() end
 
     local bad = BadScriptCount()
     if bad > 0 then
@@ -2980,7 +3230,7 @@ local function loop()
         "%d of %d script%s is not usable, so its lines are missing.",
         bad, n_scripts, n_scripts == 1 and "" or "s"))
       im.SameLine(ctx)
-      if im.Button(ctx, "Script##warn") then state.scripts_open = true end
+      if im.Button(ctx, "Script##warn") then state.panel = "script" end
     end
 
     im.Separator(ctx)

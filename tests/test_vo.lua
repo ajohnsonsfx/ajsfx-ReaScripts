@@ -3662,50 +3662,38 @@ test("a zero-length span is skipped and never sweeps the rest of the item", func
   -- stop, exactly what neighbour-clamping produced in the field), then another
   -- normal clip after it.
   local plan = {
-    { start = 10, stop = 20, dest = "selects", name = "A", kind = "match" },
-    { start = 50, stop = 50, dest = "selects", name = "Z", kind = "match" },
-    { start = 60, stop = 70, dest = "selects", name = "B", kind = "match" },
+    { start = 10, stop = 20, dest = "selects", asset = "A", name = "A", kind = "match" },
+    { start = 50, stop = 50, dest = "selects", asset = "Z", name = "Z", kind = "match" },
+    { start = 60, stop = 70, dest = "selects", asset = "B", name = "B", kind = "match" },
   }
   local cfg = { track_selects = "Selects", track_alts = "Alts", track_review = "Review" }
 
   local applied, failures = vo.ApplyPlan(plan, cfg, raw)
 
-  local function track_by_name(nm)
-    for _, t in ipairs(mock.tracks) do if t.name == nm then return t end end
-  end
-  local selects = track_by_name("Selects")
-  assert(selects, "Selects track should have been created")
+  -- Cutting moves nothing and creates no track: where a take goes is Pull's
+  -- question, and it is answered from the name, not from this plan.
+  assert(#mock.tracks == 1, "Cutting must create no tracks, got " .. #mock.tracks)
 
   -- Both real spans are cut; the degenerate one is not.
   assert(applied == 2, "Expected 2 clips applied, got " .. tostring(applied))
 
-  -- No clip on any created track may exceed the longest real span (10s). The
-  -- bug moved the whole 50..100 tail as a single 50s item.
-  for _, t in ipairs(mock.tracks) do
-    if t ~= raw then
-      for _, it in ipairs(t.items or {}) do
-        assert(it.info.D_LENGTH <= 10 + 1e-6, string.format(
-          "clip on %s is %.1fs long — the tail was swept", t.name, it.info.D_LENGTH))
-      end
-    end
-  end
-
-  -- The clip AFTER the degenerate span must exist: proof the tail survived so
-  -- later spans could still be cut.
+  -- No piece may exceed the longest real span (10s) apart from the leftovers
+  -- between them. The bug left the whole 50..100 tail welded as one item, so
+  -- the check that matters is that the piece at 60 exists at its own length.
   local found_b = false
-  for _, it in ipairs(selects.items) do
+  for _, it in ipairs(raw.items) do
     if math.abs(it.info.D_POSITION - 60) < 1e-6 and math.abs(it.info.D_LENGTH - 10) < 1e-6 then
       found_b = true
     end
   end
   assert(found_b, "The clip after the zero-length span was never cut")
 
-  -- The source item's tail (up to 100) is still on Raw.
+  -- Everything is still on Raw, and the tail still reaches 100.
   local raw_end = 0
   for _, it in ipairs(raw.items) do
     raw_end = math.max(raw_end, it.info.D_POSITION + it.info.D_LENGTH)
   end
-  assert(math.abs(raw_end - 100) < 1e-6, "Raw tail was moved away; last end = " .. raw_end)
+  assert(math.abs(raw_end - 100) < 1e-6, "Raw tail was lost; last end = " .. raw_end)
 
   -- The degenerate span is reported, not silently dropped.
   local reported = false
