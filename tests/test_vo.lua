@@ -604,42 +604,69 @@ test("digits pad the number", function()
   assert(vo.FormatAltAppend("_alt{n}", 12, 2) == "_alt12", "no truncation")
 end)
 
-local function alt_row(mark, asset, nth, text)
-  return { user_mark = mark, script = "Ch2", asset = asset,
-           append_nth = nth or 1, append = text }
+local function alt_row(mark, asset, line, override)
+  return { user_mark = mark, script = "Ch2", asset = asset, deliver = asset,
+           script_row = line or 1, name_override = override }
 end
 
 test("alts are numbered per line, from the start value", function()
-  local edits = vo.PlanAltAppends({
-    alt_row("select", "line_042"), alt_row("alt", "line_042"),
-    alt_row("alt", "line_042"),    alt_row("alt", "line_099"),
+  local edits = vo.PlanAltNames({
+    alt_row("select", "line_042", 1), alt_row("alt", "line_042", 1),
+    alt_row("alt", "line_042", 1),    alt_row("alt", "line_099", 2),
   }, { pattern = "_alt{n}", start = 1, digits = 1 })
   assert(#edits == 3, "three alts, got " .. #edits)
-  assert(edits[1].text == "_alt1" and edits[2].text == "_alt2",
+  assert(edits[1].name == "line_042_alt1" and edits[2].name == "line_042_alt2",
     "numbered in timeline order within their line")
-  assert(edits[3].text == "_alt1",
-    "a different line starts again: " .. tostring(edits[3].text))
+  assert(edits[3].name == "line_099_alt1",
+    "a different line starts again: " .. tostring(edits[3].name))
+end)
+
+test("an alt is named per take, so the select keeps its own name", function()
+  -- The bug this replaces: an Append belongs to the line, so writing one for
+  -- the alt renamed the select as well and the two still collided.
+  local rows = {
+    alt_row("select", "line_042", 1), alt_row("alt", "line_042", 1),
+  }
+  local edits = vo.PlanAltNames(rows, { pattern = "_alt{n}", start = 1, digits = 1 })
+  assert(#edits == 1 and edits[1].index == 2,
+    "only the alt is renamed, and by its position in the rows")
+  assert(edits[1].name == "line_042_alt1", "Got " .. tostring(edits[1].name))
+end)
+
+test("an alt of a line that already has an Append keeps it", function()
+  local row = alt_row("alt", "line_042", 1)
+  row.deliver = "line_042_ch2"
+  local edits = vo.PlanAltNames({ row }, { pattern = "_alt{n}", start = 1, digits = 1 })
+  assert(edits[1].name == "line_042_ch2_alt1", "Got " .. tostring(edits[1].name))
+end)
+
+test("two lines sharing a filename number their alts separately", function()
+  local edits = vo.PlanAltNames({
+    alt_row("alt", "dup", 7), alt_row("alt", "dup", 9),
+  }, { pattern = "_alt{n}", start = 1, digits = 1 })
+  assert(edits[1].name == "dup_alt1" and edits[2].name == "dup_alt1",
+    "each line counts its own alts")
 end)
 
 test("the start value moves the first number", function()
-  local edits = vo.PlanAltAppends({ alt_row("alt", "line_042") },
+  local edits = vo.PlanAltNames({ alt_row("alt", "line_042", 1) },
     { pattern = "_alt{n}", start = 2, digits = 1 })
-  assert(edits[1].text == "_alt2", "Got " .. tostring(edits[1].text))
+  assert(edits[1].name == "line_042_alt2", "Got " .. tostring(edits[1].name))
 end)
 
-test("an Append already typed is never overwritten", function()
-  local edits, skipped = vo.PlanAltAppends({
-    alt_row("alt", "line_042", 1, "_pickup"), alt_row("alt", "line_042", 1),
+test("a name already chosen is never overwritten", function()
+  local edits, skipped = vo.PlanAltNames({
+    alt_row("alt", "line_042", 1, "line_042_pickup"), alt_row("alt", "line_042", 1),
   }, { pattern = "_alt{n}", start = 1, digits = 1 })
   assert(#edits == 1, "only the blank one is filled, got " .. #edits)
   assert(skipped == 1, "and the other is counted")
-  assert(edits[1].text == "_alt2",
-    "the skipped alt still consumes its number: " .. tostring(edits[1].text))
+  assert(edits[1].name == "line_042_alt2",
+    "the skipped alt still consumes its number: " .. tostring(edits[1].name))
 end)
 
 test("only alts are touched", function()
-  local edits = vo.PlanAltAppends({
-    alt_row("select", "line_042"), alt_row(nil, "line_042"),
+  local edits = vo.PlanAltNames({
+    alt_row("select", "line_042", 1), alt_row(nil, "line_042", 1),
   }, { pattern = "_alt{n}", start = 1, digits = 1 })
   assert(#edits == 0, "a select and an unmarked take are not alts")
 end)

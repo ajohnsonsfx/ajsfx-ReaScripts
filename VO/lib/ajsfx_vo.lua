@@ -655,32 +655,45 @@ function vo.FormatAltAppend(pattern, n, digits)
   return text .. num
 end
 
--- Fills the Append of every alt that has none. Numbering runs per line, in the
--- order the rows are given, and an alt that ALREADY has an Append still
--- consumes its number -- otherwise typing "_pickup" on the second alt would
--- silently renumber the third.
+-- Gives every alt a delivered name of its own.
+--
+-- It writes a PER-TAKE name, not an Append. An Append belongs to the script
+-- LINE -- `vo.AppendKey` has no take component and `line.deliver` feeds every
+-- take of the line -- so appending "_alt1" for an alt would rename its select
+-- too, and the two would still collide. Two takes of one line can only be told
+-- apart by a name held against the take, which is what `name_override` is.
+--
+-- Numbering runs per line, in the order the rows are given, and an alt that
+-- ALREADY has a name still consumes its number -- otherwise naming the second
+-- alt by hand would silently renumber the third.
 --
 -- It never overwrites: this button fills blanks, it does not impose a
--- convention on work already done. Returns the edits, ready for vo.SetAppend,
--- and the number skipped.
-function vo.PlanAltAppends(rows, opts)
+-- convention on work already done. Returns `{ { index = <index into rows>,
+-- name = <string> }, ... }` and the number skipped.
+function vo.PlanAltNames(rows, opts)
   opts = opts or {}
   local pattern = opts.pattern or "_alt{n}"
   local start   = math.floor(tonumber(opts.start) or 1)
   local digits  = math.floor(tonumber(opts.digits) or 1)
 
   local edits, skipped, seen = {}, 0, {}
-  for _, row in ipairs(rows or {}) do
+  for i, row in ipairs(rows or {}) do
     if row.user_mark == "alt" and row.asset then
-      local key = (row.script or "") .. "\0" .. row.asset
+      -- Keyed by the LINE, so two lines that happen to share a filename number
+      -- their alts separately -- the same reason the cut gate was keyed this
+      -- way before it.
+      local key = tostring(row.script_row or ((row.script or "") .. "\0" .. row.asset))
       local n = (seen[key] or start - 1) + 1
       seen[key] = n
-      if row.append and trim(row.append) ~= "" then
+      if row.name_override and trim(row.name_override) ~= "" then
         skipped = skipped + 1
       else
+        -- Built on the line's DELIVERED name, so an alt of a line that already
+        -- carries an Append keeps it: line_042_ch2 -> line_042_ch2_alt1.
+        local base = row.deliver or row.asset
         edits[#edits + 1] = {
-          script = row.script, asset = row.asset, nth = row.append_nth or 1,
-          text   = vo.FormatAltAppend(pattern, n, digits),
+          index = i,
+          name  = base .. vo.FormatAltAppend(pattern, n, digits),
         }
       end
     end
@@ -3760,7 +3773,7 @@ vo.CONFIG_SCHEMA = {
   { key = "track_alts",         kind = "string", default = "Alts" },
   { key = "track_outs",         kind = "string", default = "Outs" },
   { key = "track_review",       kind = "string", default = "Review" },
-  -- The alt naming convention. Not bounded here: vo.PlanAltAppends floors and
+  -- The alt naming convention. Not bounded here: vo.PlanAltNames floors and
   -- clamps its own inputs, so a hand-edited ExtState cannot break a run.
   { key = "alt_append_pattern", kind = "string", default = "_alt{n}" },
   { key = "alt_append_start",   kind = "number", default = 1 },

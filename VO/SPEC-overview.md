@@ -393,10 +393,20 @@ is half a decision and waits in Review with its group. Destination tracks are
 **children** of the item's current track (`vo.EnsureChildTrack`), so collapsing
 the recording folds everything cut from it away too.
 
-**Auto append alts** fills the Append of every alt that has none, from a pattern
-the user defines (`{n}` marks the number, plus a start value and zero padding).
-An Append already typed is never overwritten — but it still consumes its number,
-or typing one on the second alt would silently renumber the third.
+**Name alts** gives every alt that has none a delivered name of its own, from a
+pattern the user defines (`{n}` marks the number, plus a start value and zero
+padding), built on the line's delivered name — so an alt of a line that already
+carries an Append becomes `line_042_ch2_alt1`.
+
+The name is held against the **take**, as a `name_override`, NOT as an Append.
+An Append belongs to the script line: `vo.AppendKey` has no take component and
+`line.deliver` feeds every take of the line, so appending `_alt1` for an alt
+would rename its select too and the two would still collide. Two takes of one
+line can only be told apart by a name held against the take.
+
+Numbering is per line. A name already chosen is never overwritten — but it still
+consumes its number, or naming the second alt by hand would silently renumber
+the third.
 
 ---
 

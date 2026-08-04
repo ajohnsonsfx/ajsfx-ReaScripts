@@ -2230,24 +2230,51 @@ local function Pull()
   Reload()
 end
 
-local function ApplyAltAppends()
-  local cfg = vo.LoadConfig()
-  local edits, skipped = vo.PlanAltAppends(AffectedRows(), {
+-- Names every alt that has none.
+--
+-- A PER-TAKE name, not an Append: an Append belongs to the script line and
+-- would rename the alt's select along with it, leaving the two still colliding.
+-- See vo.PlanAltNames.
+local function ApplyAltNames()
+  local cfg  = vo.LoadConfig()
+  local rows = AffectedRows()
+  local edits, skipped = vo.PlanAltNames(rows, {
     pattern = cfg.alt_append_pattern,
     start   = cfg.alt_append_start,
     digits  = cfg.alt_append_digits,
   })
-  for _, e in ipairs(edits) do
-    vo.SetAppend(state.appends, e.script, e.asset, e.nth, e.text)
-  end
+
+  -- One transaction for the lot, so a run of forty alts is one undo step
+  -- rather than forty. The entry is written directly rather than through
+  -- Mutate, which rebuilds the whole match on every call -- forty rebuilds for
+  -- one press, and each one invalidating the rows still to be named.
+  local named = 0
   if #edits > 0 then
+    core.Transaction("VO Overview: name alts", function()
+      for _, e in ipairs(edits) do
+        local row   = rows[e.index]
+        local clean = row and vo.SanitizeName(e.name) or ""
+        if clean ~= "" then
+          if row.item then
+            local take = r.GetActiveTake(row.item)
+            if take then
+              r.GetSetMediaItemTakeInfo_String(take, "P_NAME", clean, true)
+            end
+          end
+          EntryFor(row).name_override = clean
+          named = named + 1
+        end
+      end
+    end)
+    r.UpdateArrange()
     state.dirty = true
     Reload()
   end
+
   state.message, state.message_kind = string.format(
-    "Filled %d alt Append(s).%s", #edits,
-    skipped > 0 and string.format(" %d already had one and were left alone.", skipped) or ""),
-    (#edits > 0) and "ok" or "error"
+    "Named %d alt%s.%s", named, named == 1 and "" or "s",
+    skipped > 0 and string.format(" %d already had a name and were left alone.", skipped) or ""),
+    (named > 0) and "ok" or "error"
 end
 
 local function DrawPullPanel()
@@ -2261,7 +2288,7 @@ local function DrawPullPanel()
 
   -- Alt naming ----------------------------------------------------------
   local cfg = vo.LoadConfig()
-  im.Text(ctx, "Auto append alts:")
+  im.Text(ctx, "Name alts:")
   im.SameLine(ctx)
   im.SetNextItemWidth(ctx, 110)
   local changed, pattern = im.InputText(ctx, "pattern##altpat", cfg.alt_append_pattern or "_alt{n}")
@@ -2278,7 +2305,7 @@ local function DrawPullPanel()
   local dchanged, digits = im.InputInt(ctx, "digits##altdig", math.floor(cfg.alt_append_digits or 1))
   if dchanged then cfg.alt_append_digits = math.max(1, math.min(4, digits)); vo.SaveConfig(cfg) end
   im.SameLine(ctx)
-  if im.Button(ctx, "Apply##altapply") then pending_action = ApplyAltAppends end
+  if im.Button(ctx, "Name them##altapply") then pending_action = ApplyAltNames end
   if im.IsItemHovered(ctx) then
     im.SetTooltip(ctx, "Fills the Append of every alt that has none.\n" ..
                        "An Append you typed is never overwritten.")
