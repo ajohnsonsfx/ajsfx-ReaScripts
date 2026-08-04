@@ -2795,7 +2795,7 @@ function vo.SerializeProjectFile(entries, meta)
   for _, e in ipairs(entries or {}) do
     -- Only rows carrying actual user work are written. Without this the file
     -- would grow a line per script line per session and the signal would drown.
-    local has_work = (e.select == true)
+    local has_work = (e.select ~= nil)
                   or (e.status and e.status ~= "")
                   or (e.name_override and e.name_override ~= "")
                   or (e.notes and e.notes ~= "")
@@ -2805,7 +2805,10 @@ function vo.SerializeProjectFile(entries, meta)
         e.asset or "",
         e.source or "",
         e.source_start and string.format("%.3f", e.source_start) or "",
-        e.select and "yes" or "",
+        -- Three states in one field: a select, an alt, or no mark. "yes" is
+        -- what the pre-alts writer emitted and stays the select's spelling, so
+        -- a file written by either version reads the same in both.
+        e.select == "select" and "yes" or (e.select == "alt" and "alt" or ""),
         e.status or "",
         e.name_override or "",
         e.notes or "",
@@ -2815,6 +2818,11 @@ function vo.SerializeProjectFile(entries, meta)
 
   return table.concat(out, "\n") .. "\n"
 end
+
+-- What the Select field may say. Anything else is no mark at all rather than a
+-- mark we cannot honour -- a spreadsheet round-trip that mangles the field must
+-- not silently promote a take to the delivery.
+local SELECT_MARKS = { yes = "select", select = "select", alt = "alt" }
 
 -- Returns the parsed file, or nil plus a reason. Nothing here raises: a project
 -- file mangled by a spreadsheet round-trip must never stop the window opening,
@@ -2905,7 +2913,7 @@ function vo.ParseProjectFile(text)
         asset         = row[2] ~= "" and row[2] or nil,
         source        = row[3] ~= "" and row[3] or nil,
         source_start  = tonumber(row[4] or ""),
-        select        = fold(row[5] or "") == "yes",
+        select        = SELECT_MARKS[fold(row[5] or "")] or nil,
         -- An unrecognised status is dropped rather than carried: it would
         -- otherwise render as an unknown badge with no way to clear it.
         status        = vo.TRACKER_STATUSES[status] and status or nil,
@@ -3125,7 +3133,7 @@ function vo.BuildOverview(input)
       user_status   = t and t.status or nil,
       name_override = t and t.name_override or nil,
       notes         = t and t.notes or nil,
-      user_select   = t and t.select == true or false,
+      user_mark     = t and t.select or nil,
     }
   end
 
@@ -3152,7 +3160,7 @@ function vo.BuildOverview(input)
       -- primary -- which Cut reports as needing a decision.
       local chosen
       for _, row in ipairs(built) do
-        if row.user_select then chosen = row; break end
+        if row.user_mark == "select" then chosen = row; break end
       end
       for _, row in ipairs(built) do
         row.is_primary = (row == chosen)
@@ -3178,7 +3186,7 @@ function vo.BuildOverview(input)
         name_override = t and t.name_override or nil,
         notes         = t and t.notes or nil,
         is_primary    = false,
-        user_select   = t and t.select == true or false,
+        user_mark     = t and t.select or nil,
       }
     end
   end
@@ -3209,7 +3217,7 @@ function vo.ProjectEntriesFromRows(rows)
       source        = row.source_path,
       source_start  = row.source_start,
       asset         = row.asset,
-      select        = row.user_select == true,
+      select        = row.user_mark,
       status        = row.user_status,
       name_override = row.name_override,
       notes         = row.notes,

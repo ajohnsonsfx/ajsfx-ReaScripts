@@ -134,7 +134,10 @@ local COLUMNS = {
   { key = "select",     label = "Select",     width =  60,
     text = function(row)
       if row.status == "missing" or row.status == "orphan" then return "" end
-      return row.user_select and "yes" or "no"
+      -- The filter box matches what the cell says, so the words are the marks
+      -- themselves rather than yes/no: filtering for "alt" finds the alts.
+      return row.user_mark == "select" and "select"
+          or (row.user_mark == "alt" and "alt" or "")
     end },
   { key = "character",  label = "Character",  width =  90,
     text = function(row) return row.character or "" end },
@@ -686,20 +689,31 @@ local function SetAppend(row, text)
   Rebuild()
 end
 
--- Exactly one take of a line may be the select, so turning one ON clears the
--- rest of its group. Without this the project file could hold two selected
--- rows for one filename and BuildOverview would silently pick whichever the
--- build order put first (see vo.BuildOverview's "no first/last fallback").
-local function SetSelect(row, on)
-  if on then
+-- blank -> select -> alt -> blank.
+--
+-- Exactly one take of a line may be the SELECT, so marking one clears the rest
+-- of its group. Without this the project file could hold two selected rows for
+-- one filename and BuildOverview would silently pick whichever the build order
+-- put first (see vo.BuildOverview's "no first/last fallback").
+--
+-- Any number may be ALTS: an alt is an extra delivery, not a competing answer
+-- to the question of which take the delivery is.
+local NEXT_MARK = { [false] = "select", select = "alt", alt = false }
+
+local function SetMark(row, mark)
+  if mark == "select" then
     for _, other in ipairs(state.overview) do
       if other ~= row and other.asset == row.asset and other.status ~= "orphan"
-         and other.user_select then
-        Mutate(other, function(e) e.select = false end)
+         and other.user_mark == "select" then
+        Mutate(other, function(e) e.select = nil end)
       end
     end
   end
-  Mutate(row, function(e) e.select = on end)
+  Mutate(row, function(e) e.select = mark or nil end)
+end
+
+local function CycleMark(row)
+  SetMark(row, NEXT_MARK[row.user_mark or false])
 end
 
 -- Renaming is the one edit that reaches into the project. It is recorded in
@@ -1344,8 +1358,10 @@ local function AutoSelectTakes(rows)
     end
   end
   for _, row in pairs(best) do
-    if not row.user_select then
-      SetSelect(row, true)
+    -- An alt is not an answer to "which take is the delivery", so a line whose
+    -- only mark is an alt still has one to make and this fills it in.
+    if row.user_mark ~= "select" then
+      SetMark(row, "select")
       changed = changed + 1
     end
   end
@@ -2455,12 +2471,19 @@ local function DrawTableBody()
     im.TableSetColumnIndex(ctx, CI.select)
     if row.status ~= "missing" and row.status ~= "orphan" and (row.take_count or 0) > 0 then
       CellWidget("select", row_h)
-      local hit, now = im.Checkbox(ctx, "##sel", row.user_select == true)
-      if hit then pending_action = function() SetSelect(row, now) end end
+      -- A button, not a checkbox: the mark has three states and a checkbox can
+      -- only show two.
+      local mark  = row.user_mark
+      local label = mark == "select" and "SEL" or (mark == "alt" and "ALT" or "--")
+      if im.Button(ctx, label .. "##sel", -1, 0) then
+        pending_action = function() CycleMark(row) end
+      end
       if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, (row.take_count > 1)
-          and "Mark this take as the select."
-          or  "The only take of this line.")
+        im.SetTooltip(ctx,
+          "Click to cycle: unmarked -> SEL -> ALT -> unmarked.\n\n" ..
+          "SEL is the take you are delivering; ALT is delivered as well,\n" ..
+          "under its own name. One SEL per line, any number of ALTs.\n" ..
+          "Everything unmarked is kept but not delivered.")
       end
     end
 

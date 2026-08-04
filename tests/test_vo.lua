@@ -3891,7 +3891,7 @@ end
 test("a full entry survives the round trip", function()
   local out = round_trip({
     { key = "RIVA.wav|1230", source = "D:\\S\\RIVA.wav", source_start = 1.23,
-      asset = "vo_guard_halt_01", select = true, status = "verified",
+      asset = "vo_guard_halt_01", select = "select", status = "verified",
       name_override = "vo_guard_halt_01_alt", notes = "great read" },
   })
   assert(#out.entries == 1, "Expected 1 entry, got " .. #out.entries)
@@ -3900,10 +3900,35 @@ test("a full entry survives the round trip", function()
   assert(e.source == "D:\\S\\RIVA.wav", "source")
   assert(math.abs(e.source_start - 1.23) < 1e-6, "source_start")
   assert(e.asset == "vo_guard_halt_01", "asset")
-  assert(e.select == true, "select")
+  assert(e.select == "select", "select")
   assert(e.status == "verified", "status")
   assert(e.name_override == "vo_guard_halt_01_alt", "name_override")
   assert(e.notes == "great read", "notes")
+end)
+
+test("a select and an alt round-trip as distinct marks", function()
+  local out = round_trip({
+    { key = "A.wav|1000", asset = "line_042", select = "select" },
+    { key = "A.wav|2000", asset = "line_042", select = "alt" },
+    { key = "A.wav|3000", asset = "line_042", notes = "spare" },
+  })
+  assert(out.entries[1].select == "select", "Got " .. tostring(out.entries[1].select))
+  assert(out.entries[2].select == "alt", "Got " .. tostring(out.entries[2].select))
+  assert(out.entries[3].select == nil, "An unmarked take carries no mark")
+end)
+
+test("a file written before alts existed still reads its selects", function()
+  -- The old writer put "yes" in this field. Anything else it could have held
+  -- was never a mark, so it reads as unmarked rather than as an alt.
+  local text = table.concat({
+    "ajsfx VO Project,1", "", PF_HEADER,
+    "A.wav|1000,line_042,D:\\A.wav,1.000,yes,,,",
+    "A.wav|2000,line_042,D:\\A.wav,2.000,,,,x",
+  }, "\n")
+  local out = vo.ParseProjectFile(text)
+  assert(out, "must parse")
+  assert(out.entries[1].select == "select", "yes means select")
+  assert(out.entries[2].select == nil, "empty means unmarked")
 end)
 
 test("the script path and mapping survive the round trip", function()
@@ -4022,10 +4047,10 @@ end)
 test("entries still round-trip alongside the new rows", function()
   local text = vo.SerializeProjectFile(
     { { key = "a.wav|1500", source = "D:/a.wav", source_start = 1.5,
-        asset = "line_1", select = true } },
+        asset = "line_1", select = "select" } },
     { scripts = { { path = "D:/g/Ch2.csv", mapping = {}, enabled = true } } })
   local p = assert(vo.ParseProjectFile(text), "Should parse")
-  assert(#p.entries == 1 and p.entries[1].select == true, "Entry rows must be unharmed")
+  assert(#p.entries == 1 and p.entries[1].select == "select", "Entry rows must be unharmed")
 end)
 
 --------------------------------
@@ -4161,16 +4186,16 @@ end)
 
 test("a select alone counts as user work", function()
   local out = round_trip({
-    { key = "a.wav|0", source = "a.wav", source_start = 0, asset = "x", select = true },
+    { key = "a.wav|0", source = "a.wav", source_start = 0, asset = "x", select = "select" },
   })
   assert(#out.entries == 1, "Expected the selected row to be kept, got " .. #out.entries)
-  assert(out.entries[1].select == true, "Select lost in the round trip")
+  assert(out.entries[1].select == "select", "Select lost in the round trip")
 end)
 
 test("clearing a row's marks removes it from the file", function()
   local out = round_trip({
     { key = "a.wav|0", source = "a.wav", source_start = 0, asset = "x",
-      status = nil, notes = "", name_override = "", select = false },
+      status = nil, notes = "", name_override = "", select = nil },
   })
   assert(#out.entries == 0, "A cleared row must vanish, got " .. #out.entries)
 end)
@@ -4232,7 +4257,7 @@ test("status and select are read case-insensitively", function()
             .. 'a.wav|0,x,a.wav,0.000,YES,VERIFIED,,\n'
   local out = vo.ParseProjectFile(text)
   assert(out.entries[1].status == "verified", "Got " .. tostring(out.entries[1].status))
-  assert(out.entries[1].select == true, "Select should read case-insensitively")
+  assert(out.entries[1].select == "select", "Select should read case-insensitively")
 end)
 
 --------------------------------
@@ -4387,7 +4412,7 @@ test("an explicit select in the project file names the primary", function()
       span(30, 31, "match", "a", "three", 0.9),
     } } },
     entries = { { key = "s.wav|20000", source = "s.wav", source_start = 20,
-                  asset = "a", select = true } },
+                  asset = "a", select = "select" } },
   })
   assert(rows[2].is_primary == true, "The user's chosen take is the select")
   assert(rows[3].is_primary == false, "The last take yields to the user's choice")

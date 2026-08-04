@@ -180,7 +180,7 @@ local function Reload()
   else
     local any_selected = false
     for _, row in ipairs(state.overview) do
-      if row.user_select then any_selected = true; break end
+      if row.user_mark == "select" then any_selected = true; break end
     end
 
     if not any_selected then
@@ -200,7 +200,7 @@ local function Reload()
           local b = by_line[key]
           if not b then b = { count = 0, selected = false, asset = row.asset }; by_line[key] = b end
           b.count = b.count + 1
-          if row.user_select then b.selected = true end
+          if row.user_mark == "select" then b.selected = true end
         end
       end
 
@@ -246,7 +246,7 @@ end
 local function CountSelected()
   local n = 0
   for _, row in ipairs(state.overview) do
-    if row.user_select then n = n + 1 end
+    if row.user_mark == "select" then n = n + 1 end
   end
   return n
 end
@@ -289,7 +289,7 @@ local function DoCut()
            and math.abs((s.start or 0) - row.source_start) < 1e-6
            and (row.source_stop == nil
                 or math.abs((s.stop or 0) - (row.source_stop or 0)) < 1e-6) then
-          s.select = row.user_select == true
+          s.select = row.user_mark == "select"
           break
         end
       end
@@ -301,7 +301,7 @@ local function DoCut()
   -- under one filename would otherwise drag each other's takes onto Alts.
   local selected_lines = {}
   for _, row in ipairs(state.overview) do
-    if row.user_select and row.asset then
+    if row.user_mark == "select" and row.asset then
       selected_lines[row.script_row or row.asset] = true
     end
   end
