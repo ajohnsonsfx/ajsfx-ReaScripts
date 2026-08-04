@@ -4830,18 +4830,39 @@ end
 -- splitting an item leaves each piece pointing at the same source file with an
 -- adjusted D_STARTOFFS, so a source-time coordinate still lands in exactly one
 -- piece's coverage range. Nothing here needs to know whether a cut has happened.
+-- Two passes, and the order matters.
+--
+-- Once a recording has been cut, its items ABUT in source time: one ends at
+-- exactly the source offset where the next begins. A take's start is precisely
+-- that instant, so a single inclusive test matches the item that ENDS there --
+-- the take before the one being asked about. The project time came out right,
+-- because the boundary is the same instant either way, so it looked like the
+-- cursor landing correctly on the wrong item, and only on takes whose padding
+-- had not moved their edge inward.
+--
+-- So: the item that CONTAINS the time wins, upper bound exclusive. Only if no
+-- item contains it does one that merely ends there answer -- which is what
+-- keeps a time at the very end of the last item resolvable at all.
 function vo.ResolveSourceTime(source_path, source_start, items)
   if not source_path or source_path == "" or not source_start then return nil end
-  for _, info in ipairs(items or {}) do
-    if info.path == source_path and not info.skip then
-      local ranges = vo.SourceCoverageRanges({ info })
-      local range  = ranges[1]
-      if range and source_start >= range.from and source_start <= range.to then
-        return info.item, vo.SourceTimeToProject(source_start, info), info
+
+  local function find(inclusive_end)
+    for _, info in ipairs(items or {}) do
+      if info.path == source_path and not info.skip then
+        local range = vo.SourceCoverageRanges({ info })[1]
+        if range and source_start >= range.from
+           and (source_start < range.to
+                or (inclusive_end and source_start <= range.to)) then
+          return info.item, vo.SourceTimeToProject(source_start, info), info
+        end
       end
     end
+    return nil
   end
-  return nil
+
+  local item, proj, info = find(false)
+  if item then return item, proj, info end
+  return find(true)
 end
 
 -- Find a track by name, or create one directly below `track`.

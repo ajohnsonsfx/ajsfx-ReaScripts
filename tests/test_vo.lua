@@ -596,6 +596,48 @@ test("only delivered items are renamed", function()
 end)
 
 --------------------------------
+-- ResolveSourceTime
+--------------------------------
+print("\nResolveSourceTime:")
+
+-- Two items of one recording, abutting in source time the way a cut leaves
+-- them: A covers source 0..10 at project 100, B covers 10..20 at project 110.
+local function cut_items()
+  return {
+    { item = "A", path = "s.wav", pos = 100, length = 10, start_offs = 0,  playrate = 1 },
+    { item = "B", path = "s.wav", pos = 110, length = 10, start_offs = 10, playrate = 1 },
+  }
+end
+
+test("a time inside an item resolves to that item", function()
+  local item = vo.ResolveSourceTime("s.wav", 5, cut_items())
+  assert(item == "A", "Got " .. tostring(item))
+  assert(vo.ResolveSourceTime("s.wav", 15, cut_items()) == "B", "second item")
+end)
+
+test("a time on a boundary belongs to the item that STARTS there", function()
+  -- The bug: an inclusive upper bound matched the item that ENDS at that
+  -- instant, so clicking a take selected the take before it. The project time
+  -- came out right either way, which is what made it look like a selection
+  -- problem rather than a resolution one.
+  local item, proj = vo.ResolveSourceTime("s.wav", 10, cut_items())
+  assert(item == "B", "Got " .. tostring(item))
+  assert(math.abs(proj - 110) < 1e-9, "project time: " .. tostring(proj))
+end)
+
+test("a time at the very end of the last item still resolves", function()
+  -- Nothing starts there, so the fallback pass has to accept the item that
+  -- ends there or the row would resolve to nothing at all.
+  local item = vo.ResolveSourceTime("s.wav", 20, cut_items())
+  assert(item == "B", "Got " .. tostring(item))
+end)
+
+test("a time no item covers resolves to nothing", function()
+  assert(vo.ResolveSourceTime("s.wav", 40, cut_items()) == nil, "past the end")
+  assert(vo.ResolveSourceTime("other.wav", 5, cut_items()) == nil, "another source")
+end)
+
+--------------------------------
 -- IsDestTrackName
 --------------------------------
 print("\nIsDestTrackName:")
