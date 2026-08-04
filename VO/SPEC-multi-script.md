@@ -114,7 +114,7 @@ a single script, which is accepted.
 |---|---|
 | `vo.ScriptLabel(path)` | `D:/game/Chapter2_Script.csv` → `Chapter2_Script`. Basename, extension stripped, `vo.SanitizeName` applied. Returns `""` for an empty path. |
 | `vo.AppendKey(script_label, asset, nth)` | The stable per-line key, `label \| asset \| nth`. Components are already sanitized or CSV-quoted at the storage layer. |
-| `vo.MergeScriptLines(scripts)` | Takes `{ { label=, lines={…}, enabled= }, … }`, returns one flat ordered list: script order, then row order within each script. Disabled scripts contribute nothing. Each line gains `script` and an `append_key`. **No filename is modified.** |
+| `vo.MergeScriptLines(scripts)` | Takes `{ { label=, lines={…}, enabled= }, … }`, returns one flat ordered list: script order, then row order within each script. Disabled scripts contribute nothing. Each line gains `script`, an `append_key`, and `index` — its position across the whole merged list. `index`, not `row`, is what identifies a line and orders it: `row` counts within one CSV, so two scripts both have a row 5. `script_row` on an overview row carries `index`, which is what Reorder on the timeline, Find candidates and ajsfx VO Cut's grouping all read. **No filename is modified.** |
 | `vo.AppendMap(append_rows)` | Folds the append array into `{ [AppendKey(…)] = text }`. |
 | `vo.SetAppend(append_rows, script, asset, nth, text)` | The one mutator: adds, updates, or (on empty text) removes a record. Returns the array. |
 | `vo.ResolveNames(lines, appends)` | Attaches `deliver = asset .. (appends[append_key] or "")` to every line, where `appends` is the map from `AppendMap`. An all-whitespace Append counts as empty. |
@@ -230,10 +230,10 @@ it is a sibling — the pattern the Settings and Find-candidates windows already
 itself when a script fails to map, the way `mapping_open` does today.
 
 ```
-Scripts                                              [Add script…]
-☑  Chapter2_Script.csv    Filename[▾] Line text[▾] Character[▾]   [Remove]
-☑  Chapter5_Script.csv    Filename[▾] Line text[▾] Character[▾]   [Remove]
-☐  Pickups.csv            ⚠ Filename column not mapped            [Remove]
+Scripts                                                  [Add script…]
+▲▼ ☑  Chapter2_Script.csv  Filename[▾] Line text[▾] Character[▾]  [Remove]
+▲▼ ☑  Chapter5_Script.csv  Filename[▾] Line text[▾] Character[▾]  [Remove]
+▲▼ ☐  Pickups.csv          ⚠ Filename column not mapped           [Remove]
 ```
 
 - **Enabled** checkbox: a disabled script stays in the list and in the project file but
@@ -243,9 +243,19 @@ Scripts                                              [Add script…]
   first load via the existing `vo.AutoDetectMapping`, overridable. Character offers `(none)`.
 - **Per-row error** replaces the combos when the file is unreadable, empty, or its header is
   rejected.
-- **[Add script…]** opens `GetUserFileNameForRead` starting in the project's folder (the
-  existing behaviour), and refuses a path already in the list with a message.
+- **[Add script…]** opens a file browser starting in the project's folder, and refuses any
+  path already in the list with a message naming every file it skipped. Several CSVs may be
+  chosen at once where `js_ReaScriptAPI` is installed — it is the only browser REAPER offers
+  that returns a multiple selection; without it the stock single-file
+  `GetUserFileNameForRead` is used instead.
+- **Alignment**: every row places its combos and **[Remove]** on the same columns, sized to
+  the longest name in the list, so adding a script cannot shift another script's widgets.
 - **[Remove]** drops the script; its Appends are kept (§5.2).
+- **[▲] [▼]** move a script up or down the list. The list order IS the line order: lines are
+  merged script-then-row (`vo.LoadScripts`), so the first script's lines all precede the
+  second's — in the `#` column, in an unsorted table, and in everything downstream that walks
+  lines in order. The order is what the project file's `Script` rows are written in, so it
+  survives a reload. The arrows are disabled at the ends of the list.
 
 ### 6.3 The Append column
 

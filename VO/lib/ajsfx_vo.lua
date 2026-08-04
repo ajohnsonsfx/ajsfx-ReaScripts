@@ -434,6 +434,11 @@ function vo.MergeScriptLines(scripts)
         line.append_nth = n
         line.append_key = vo.AppendKey(sc.label, l.asset, n)
         out[#out + 1] = line
+        -- Position across the WHOLE list, which `row` cannot be: `row` counts
+        -- within one CSV, so two scripts both have a row 5 and anything keyed on
+        -- it would read them as one line. This is what "script order" means with
+        -- more than one script, and the script list's order is what sets it.
+        line.index      = #out
       end
     end
   end
@@ -2697,6 +2702,31 @@ function vo.SerializeProjectFile(entries, meta)
     end
   end
 
+  -- How the table was left: which filters were on, what was searched for, how it
+  -- was sorted. Not a decision about the AUDIO like everything above, but it is
+  -- a decision about THIS project -- a character filter names this project's
+  -- characters -- so it belongs beside them rather than in the global ExtState
+  -- that holds column widths. A reader that predates these rows skips them.
+  local v = meta.view
+  if v then
+    local function row(key, ...) out[#out + 1] = vo.FormatCSVRow({ "View", key, ... }) end
+    if v.status and v.status ~= "" and v.status ~= "all" then row("status", v.status) end
+    if v.character and v.character ~= ""                 then row("character", v.character) end
+    if v.search and v.search ~= ""                       then row("search", v.search) end
+    if v.filter_row                                      then row("filter_row", "yes") end
+    -- The SORT is deliberately not here. ImGui owns the header clicks and keeps
+    -- the sort spec in its own ini alongside the column widths; storing it here
+    -- too would give it two owners, and ImGui's would win on the first frame.
+    -- Sorted, so a file that is otherwise unchanged does not churn its diff on
+    -- every save just because a table iterated in a different order.
+    local keys = {}
+    for key, needle in pairs(v.col_filters or {}) do
+      if needle and needle ~= "" then keys[#keys + 1] = key end
+    end
+    table.sort(keys)
+    for _, key in ipairs(keys) do row("column", key, v.col_filters[key]) end
+  end
+
   local rest = {
     "",
     vo.FormatCSVRow(vo.PROJECT_HEADER),
@@ -2746,7 +2776,7 @@ function vo.ParseProjectFile(text)
   end
 
   local parsed = { version = version, scripts = {}, appends = {},
-                   entries = {}, pins = {} }
+                   entries = {}, pins = {}, view = { col_filters = {} } }
   -- The pre-multi-script format, folded in below only if no Script row appears.
   local legacy_path, legacy_mapping = nil, nil
 
@@ -2773,6 +2803,15 @@ function vo.ParseProjectFile(text)
       if asset ~= "" and nth and text ~= "" then
         parsed.appends[#parsed.appends + 1] =
           { script = script, asset = asset, nth = math.floor(nth), text = text }
+      end
+    elseif key == "View" then
+      local what, a, b = rows[i][2] or "", rows[i][3] or "", rows[i][4] or ""
+      if     what == "status"     then parsed.view.status     = a ~= "" and a or nil
+      elseif what == "character"  then parsed.view.character  = a ~= "" and a or nil
+      elseif what == "search"     then parsed.view.search     = a ~= "" and a or nil
+      elseif what == "filter_row" then parsed.view.filter_row = a ~= ""
+      elseif what == "column" and a ~= "" and b ~= "" then
+        parsed.view.col_filters[a] = b
       end
     elseif key == "Pin" then
       local asset, source = rows[i][2] or "", rows[i][3] or ""
@@ -3023,7 +3062,7 @@ function vo.BuildOverview(input)
       take_index    = take_index,
       take_count    = take_count,
       name          = s.name,
-      script_row    = line and line.row or nil,
+      script_row    = line and (line.index or line.row) or nil,
       user_status   = t and t.status or nil,
       name_override = t and t.name_override or nil,
       notes         = t and t.notes or nil,
@@ -3075,7 +3114,7 @@ function vo.BuildOverview(input)
         character     = line.speaker,
         line_text     = line.text,
         take_count    = 0,
-        script_row    = line.row,
+        script_row    = line.index or line.row,
         user_status   = t and t.status or nil,
         name_override = t and t.name_override or nil,
         notes         = t and t.notes or nil,

@@ -456,6 +456,33 @@ Open **ajsfx VO Settings → Speech backend → Download backend & models**.
 11. Run **ajsfx VO Cut**. The clips carry the appended names, and a script that
     failed to load is reported in the Cut window too.
 
+## The script list: layout, multi-add, order (2026-08-04)
+
+1. With two scripts whose names differ a lot in length, the column pickers and
+   **Remove** of both rows sit on the same columns — the longer name does not push
+   its own row's widgets right of the other's.
+2. Press **Add script…** with js_ReaScriptAPI installed and select two CSVs at once.
+   Both are added, one reload. Without the extension the dialog takes one file, as
+   before.
+3. Select two CSVs where one is already listed. The new one is added; the message
+   names only the one skipped.
+4. Press **▼** on the first script. It moves down, and the `#` column renumbers so
+   the now-first script's lines come first. The arrows are greyed at the ends.
+5. Save, close and reopen the project. The order you left is the order you get.
+
+## Filters are remembered (2026-08-04)
+
+1. Pick a character, set the status filter, type in the search box, open **Filters**
+   and type in a column box. Close the window and reopen it: everything is as you
+   left it, and the table shows the same rows.
+2. Reopen with **Filters** having been off. The filter row is still off, and any
+   needles you had typed are still there when you switch it back on.
+3. With a character filter set, remove the script (or unmap its Character column)
+   and reopen. The filter is dropped and the full table shows — not an empty one.
+4. Open a *different* project. Its own filters apply; this project's do not follow.
+5. Open the project file in a text editor. `View` rows appear only for what is
+   actually set; clearing every filter removes them again.
+
 ---
 
 ## Recording results

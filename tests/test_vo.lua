@@ -320,6 +320,39 @@ test("lines come out in script order then row order", function()
     "Order is script-then-row")
 end)
 
+test("each line is numbered across the whole list, not within its own script", function()
+  local merged = vo.MergeScriptLines({
+    script("Ch2", true, { "a", "b" }),
+    script("Ch5", true, { "c", "d" }),
+  })
+  for i, l in ipairs(merged) do
+    assert(l.index == i, "Line " .. i .. " has index " .. tostring(l.index))
+  end
+  -- Both scripts have a row 2; only the merged index tells the two apart, which
+  -- is what "which line comes first" means once a project reads several scripts.
+  assert(merged[2].row == merged[4].row, "The fixture's rows must collide")
+  assert(merged[2].index ~= merged[4].index, "Merged indices must not collide")
+end)
+
+test("reordering the script list renumbers the lines", function()
+  local a, b = script("Ch2", true, { "a" }), script("Ch5", true, { "c" })
+  assert(vo.MergeScriptLines({ a, b })[1].asset == "a", "Ch2 leads as given")
+  local swapped = vo.MergeScriptLines({ b, a })
+  assert(swapped[1].asset == "c" and swapped[1].index == 1,
+    "The list's order is the line order")
+  assert(swapped[2].asset == "a" and swapped[2].index == 2, "…and it renumbers")
+end)
+
+test("a disabled script leaves no gap in the numbering", function()
+  local merged = vo.MergeScriptLines({
+    script("Ch2", true,  { "a" }),
+    script("Ch5", false, { "c" }),
+    script("Ch7", true,  { "d" }),
+  })
+  assert(#merged == 2 and merged[2].index == 2,
+    "Numbering counts the lines that are there, not the ones switched off")
+end)
+
 test("each line knows which script it came from", function()
   local merged = vo.MergeScriptLines({
     script("Ch2", true, { "a" }),
@@ -3808,6 +3841,40 @@ test("the script path and mapping survive the round trip", function()
   assert(sc.mapping.asset == "Filename", "mapping asset")
   assert(sc.mapping.text == "Line Text", "mapping text")
   assert(sc.mapping.speaker == "Character", "mapping speaker")
+end)
+
+test("the filters survive the round trip", function()
+  local out = round_trip({}, { scripts = {}, view = {
+    status = "review", character = "Meris", search = "halt", filter_row = true,
+    col_filters = { asset = "guard", line_text = "halt, now" },
+  } })
+  local v = out.view
+  assert(v.status == "review", "status: " .. tostring(v.status))
+  assert(v.character == "Meris", "character: " .. tostring(v.character))
+  assert(v.search == "halt", "search: " .. tostring(v.search))
+  assert(v.filter_row == true, "filter_row")
+  assert(v.col_filters.asset == "guard", "column filter")
+  assert(v.col_filters.line_text == "halt, now", "a filter containing a comma")
+end)
+
+test("a character whose name is a CSV nightmare survives", function()
+  local out = round_trip({}, { scripts = {},
+    view = { character = 'MERIS, "the fixer"' } })
+  assert(out.view.character == 'MERIS, "the fixer"',
+    "Got " .. tostring(out.view.character))
+end)
+
+test("a view with nothing filtered writes no View rows", function()
+  local text = vo.SerializeProjectFile({}, { scripts = {}, view = {
+    status = "all", search = "", filter_row = false, col_filters = { asset = "" } } })
+  assert(not text:find("View", 1, true), "An unfiltered table must add nothing:\n" .. text)
+end)
+
+test("a project file with no View rows loads with no filters", function()
+  local out = round_trip({})
+  assert(out.view, "view must always be present, even empty")
+  assert(out.view.status == nil and out.view.character == nil, "no stored filters")
+  assert(next(out.view.col_filters) == nil, "no stored column filters")
 end)
 
 test("a script CSV path containing a comma survives", function()

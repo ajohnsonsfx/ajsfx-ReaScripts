@@ -73,6 +73,19 @@ would grow a line per script line per session and the signal would drown.
 Clearing a row's marks removes it from the file. See `VO/SPEC.md` §4.2 for the
 full format, which this window owns.
 
+`View` rows in the preamble hold how the table was last left: the status filter,
+the character filter, the search box, whether the per-column filter row is
+showing, and each column's filter needle. Only what is actually set is written,
+so an unfiltered table adds nothing to the file. They live here rather than in
+the global ExtState that holds the appearance settings because a character
+filter names *this project's* characters. A restored filter naming a status or
+column this version no longer has is dropped on load, and a restored character
+that matches no row — the script changed, or its Character column is no longer
+mapped — is dropped the first time there are rows to check it against, so the
+table can never open empty with no visible reason. The **sort** is not stored
+here: ImGui owns the header clicks and keeps the sort spec in its own ini,
+beside the column widths (§9).
+
 `vo.ParseProjectFile` never raises. A file mangled by a spreadsheet round-trip
 returns `nil, reason`, and Overview then **refuses to save** rather than
 overwriting whatever the user still has in there, and says so in the window.
