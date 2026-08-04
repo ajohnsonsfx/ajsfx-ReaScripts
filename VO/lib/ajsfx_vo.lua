@@ -496,6 +496,65 @@ function vo.ResolveNames(lines, appends)
   return lines
 end
 
+--------------------------------
+-- Pure layer: name resolution
+--------------------------------
+
+-- What identifies an item is its NAME, not the transcript. Two cases need
+-- serving with one mechanism: takes this session cut out of a long recording,
+-- and rendered files delivered by someone else with no transcript at all. Both
+-- carry the script's filename, so both resolve the same way.
+
+-- A file extension is a delivery detail, not part of the name. Only a SHORT
+-- ALPHABETIC tail counts as one: "line_042_v1.2" ends in a number, which is
+-- part of what the file is called, and stripping it would merge two deliveries.
+function vo.NormalizeItemName(name)
+  local s = trim(tostring(name or "")):lower()
+  return (s:gsub("%.(%a%a?%a?%a?)$", ""))
+end
+
+-- Two keys per line: the script's own filename, and the DELIVERED name (that
+-- filename plus its Append, or the user's override). The delivered name is one
+-- this tool wrote, so recognising it is reading our own output back, not a
+-- guess -- it is what lets a second Pull see what the first one renamed.
+--
+-- A key two lines claim is deliberately POISONED rather than assigned to the
+-- first: that clash is what the Append column exists to fix, and picking one
+-- would put one line's audio under the other's name.
+function vo.BuildNameIndex(lines)
+  local index = {}
+  local function add(key, line_index)
+    if key == "" then return end
+    if index[key] == nil then
+      index[key] = line_index
+    elseif index[key] ~= line_index then
+      index[key] = false           -- false means "claimed twice"
+    end
+  end
+
+  for i, l in ipairs(lines or {}) do
+    local at = l.index or i
+    add(vo.NormalizeItemName(l.asset), at)
+    if l.deliver and l.deliver ~= l.asset then
+      add(vo.NormalizeItemName(l.deliver), at)
+    end
+  end
+  return index
+end
+
+-- Returns the line index, or nil plus "unknown" / "ambiguous". An item that
+-- resolves to nothing is never touched by Pull or Sort -- an uncut recording
+-- carries the recording's name, which is not a script filename, and that is
+-- what keeps both tools off audio they were not asked to move.
+function vo.ResolveItemName(index, name)
+  local key = vo.NormalizeItemName(name)
+  if key == "" then return nil, "unknown" end
+  local at = (index or {})[key]
+  if at == nil then return nil, "unknown" end
+  if at == false then return nil, "ambiguous" end
+  return at
+end
+
 -- The whole script side of a project, loaded in one call. Both ajsfx VO Overview
 -- and ajsfx VO Cut used to keep their own near-identical copy of this; they now
 -- share it, so a script that loads in one window cannot fail to load in the

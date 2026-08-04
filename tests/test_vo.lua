@@ -413,6 +413,78 @@ test("enabled defaults to true when the field is absent", function()
 end)
 
 --------------------------------
+-- Name resolution
+--------------------------------
+print("\nResolveItemName:")
+
+local function name_lines(...)
+  local lines = {}
+  for i, a in ipairs({...}) do
+    lines[i] = { asset = a, deliver = a, index = i, text = "line " .. a }
+  end
+  return lines
+end
+
+test("case, padding and extension are not part of a name", function()
+  assert(vo.NormalizeItemName("Line_042.wav") == "line_042",
+    "Got " .. vo.NormalizeItemName("Line_042.wav"))
+  assert(vo.NormalizeItemName("  line_042  ") == "line_042", "whitespace")
+  assert(vo.NormalizeItemName("line_042") == "line_042", "already clean")
+end)
+
+test("only a trailing extension is removed, never part of the name", function()
+  -- A filename may legitimately contain dots; only the last short suffix goes.
+  assert(vo.NormalizeItemName("vo.guard.halt.wav") == "vo.guard.halt",
+    "Got " .. vo.NormalizeItemName("vo.guard.halt.wav"))
+  assert(vo.NormalizeItemName("line_042_v1.2") == "line_042_v1.2",
+    "A numeric tail is not an extension: " .. vo.NormalizeItemName("line_042_v1.2"))
+end)
+
+test("an item resolves to the line that names it", function()
+  local idx = vo.BuildNameIndex(name_lines("line_041", "line_042"))
+  assert(vo.ResolveItemName(idx, "line_042.WAV") == 2, "should resolve to line 2")
+  assert(vo.ResolveItemName(idx, "line_041") == 1, "should resolve to line 1")
+end)
+
+test("an item resolves through the delivered name too", function()
+  -- What Pull renamed on a previous run must still be recognisable, or a second
+  -- Pull would see its own output as unknown audio.
+  local lines = name_lines("line_042")
+  lines[1].deliver = "line_042_ch2"
+  local idx = vo.BuildNameIndex(lines)
+  assert(vo.ResolveItemName(idx, "line_042_ch2") == 1, "delivered name")
+  assert(vo.ResolveItemName(idx, "line_042") == 1, "plain name still works")
+end)
+
+test("a name no line claims resolves to nothing, and says why", function()
+  local idx = vo.BuildNameIndex(name_lines("line_042"))
+  local hit, why = vo.ResolveItemName(idx, "RIVA_session_take3")
+  assert(hit == nil, "must not resolve")
+  assert(why == "unknown", "Got " .. tostring(why))
+end)
+
+test("a name two lines claim resolves to nothing rather than guessing", function()
+  local idx = vo.BuildNameIndex(name_lines("line_042", "line_042"))
+  local hit, why = vo.ResolveItemName(idx, "line_042")
+  assert(hit == nil, "an ambiguous name must not pick one")
+  assert(why == "ambiguous", "Got " .. tostring(why))
+end)
+
+test("a line whose Append separates it from its twin resolves again", function()
+  local lines = name_lines("line_042", "line_042")
+  lines[2].deliver = "line_042_ch2"
+  local idx = vo.BuildNameIndex(lines)
+  assert(vo.ResolveItemName(idx, "line_042_ch2") == 2, "the appended one is unambiguous")
+  assert(vo.ResolveItemName(idx, "line_042") == nil, "the bare name is still shared")
+end)
+
+test("an empty or missing name resolves to nothing", function()
+  local idx = vo.BuildNameIndex(name_lines("line_042"))
+  assert(vo.ResolveItemName(idx, "") == nil, "empty")
+  assert(vo.ResolveItemName(idx, nil) == nil, "nil")
+end)
+
+--------------------------------
 -- AppendMap / SetAppend / ResolveNames
 --------------------------------
 print("\nAppendMap and SetAppend:")
