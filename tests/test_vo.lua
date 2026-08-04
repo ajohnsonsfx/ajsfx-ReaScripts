@@ -485,6 +485,90 @@ test("an empty or missing name resolves to nothing", function()
 end)
 
 --------------------------------
+-- PlanPull
+--------------------------------
+print("\nPlanPull:")
+
+local function pull_items(...)
+  local items = {}
+  for i, n in ipairs({...}) do items[i] = { id = i, name = n } end
+  return items
+end
+
+local function dest_of(moves, id)
+  for _, m in ipairs(moves) do if m.id == id then return m.dest end end
+  return nil
+end
+
+test("one item for a line is the delivery without being marked", function()
+  -- One take is not a decision. Requiring a mark here would make Pull useless
+  -- on a folder of rendered files, which is half of what it is for.
+  local moves, n = vo.PlanPull(pull_items("line_042"), name_lines("line_042"), {})
+  assert(#moves == 1 and moves[1].dest == "selects", "Got " .. tostring(moves[1].dest))
+  assert(moves[1].rename == "line_042", "renamed to the delivered name")
+  assert(n.selects == 1, "counted")
+end)
+
+test("a select takes the delivery and the rest go to outs", function()
+  local moves = vo.PlanPull(pull_items("line_042", "line_042", "line_042"),
+                            name_lines("line_042"), { [2] = "select" })
+  assert(dest_of(moves, 2) == "selects", "the marked one delivers")
+  assert(dest_of(moves, 1) == "outs" and dest_of(moves, 3) == "outs",
+    "the rest are kept, not delivered")
+end)
+
+test("an alt is delivered alongside the select", function()
+  local moves = vo.PlanPull(pull_items("line_042", "line_042", "line_042"),
+                            name_lines("line_042"), { [1] = "select", [2] = "alt" })
+  assert(dest_of(moves, 1) == "selects", "select")
+  assert(dest_of(moves, 2) == "alts", "alt")
+  assert(dest_of(moves, 3) == "outs", "unmarked")
+end)
+
+test("several takes with nothing marked are a decision, not a guess", function()
+  local moves, n = vo.PlanPull(pull_items("line_042", "line_042"),
+                               name_lines("line_042"), {})
+  assert(dest_of(moves, 1) == "review" and dest_of(moves, 2) == "review",
+    "both go to review")
+  assert(n.review == 2, "counted")
+end)
+
+test("an alt with no select is half a decision and goes to review", function()
+  local moves = vo.PlanPull(pull_items("line_042", "line_042"),
+                            name_lines("line_042"), { [1] = "alt" })
+  assert(dest_of(moves, 1) == "review" and dest_of(moves, 2) == "review",
+    "an alt does not answer which take is the delivery")
+end)
+
+test("an item no line claims is left entirely alone", function()
+  local moves, n = vo.PlanPull(pull_items("RIVA_session"), name_lines("line_042"), {})
+  assert(#moves == 0, "nothing to move")
+  assert(n.unknown == 1, "but it is counted, so an empty run is never silent")
+end)
+
+test("an ambiguous name is counted apart from an unknown one", function()
+  local moves, n = vo.PlanPull(pull_items("line_042"),
+                               name_lines("line_042", "line_042"), {})
+  assert(#moves == 0, "nothing moves")
+  assert(n.ambiguous == 1 and n.unknown == 0, "the user can fix an ambiguity")
+end)
+
+test("only delivered items are renamed", function()
+  local lines = name_lines("line_042")
+  lines[1].deliver = "line_042_ch2"
+  local moves = vo.PlanPull(pull_items("line_042", "line_042"), lines,
+                            { [1] = "select" })
+  assert(dest_of(moves, 1) == "selects", "select")
+  for _, m in ipairs(moves) do
+    if m.dest == "selects" then
+      assert(m.rename == "line_042_ch2", "Got " .. tostring(m.rename))
+    else
+      assert(m.rename == nil, "a take that is not delivered keeps its name")
+    end
+  end
+end)
+
+--------------------------------
 -- AppendMap / SetAppend / ResolveNames
 --------------------------------
 print("\nAppendMap and SetAppend:")

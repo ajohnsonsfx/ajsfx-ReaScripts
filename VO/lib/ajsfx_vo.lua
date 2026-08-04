@@ -555,6 +555,86 @@ function vo.ResolveItemName(index, name)
   return at
 end
 
+-- Where each item goes, as a pure function of its NAME and its mark. Two of the
+-- four destinations are delivered (selects, alts) and two are not (outs,
+-- review) -- that is the distinction this exists to make.
+--
+-- `items` are { id, name } in timeline order; `marks` maps an item id to
+-- "select" or "alt". An item whose name resolves to nothing produces no move at
+-- all: not moved, not renamed, not an error. It is counted so a run that does
+-- nothing can say why.
+function vo.PlanPull(items, lines, marks)
+  marks = marks or {}
+  local index = vo.BuildNameIndex(lines)
+
+  local groups, order = {}, {}
+  local summary = { selects = 0, alts = 0, outs = 0, review = 0,
+                    unknown = 0, ambiguous = 0 }
+
+  for _, item in ipairs(items or {}) do
+    local at, why = vo.ResolveItemName(index, item.name)
+    if at then
+      if not groups[at] then
+        groups[at] = {}
+        order[#order + 1] = at
+      end
+      local g = groups[at]
+      g[#g + 1] = item
+    else
+      local bucket = (why == "ambiguous") and "ambiguous" or "unknown"
+      summary[bucket] = summary[bucket] + 1
+    end
+  end
+
+  local moves = {}
+  for _, at in ipairs(order) do
+    local group   = groups[at]
+    local line    = lines[at] or {}
+    local deliver = line.deliver or line.asset
+
+    local has_select = false
+    for _, item in ipairs(group) do
+      if marks[item.id] == "select" then has_select = true; break end
+    end
+
+    -- One take is not a decision, so a lone item delivers whether or not it is
+    -- marked -- a folder of rendered files carries no marks at all. Several
+    -- takes with nothing marked ARE a decision, and an alt without a select is
+    -- only half of one, so the whole group waits in review.
+    if #group == 1 then
+      moves[#moves + 1] = { id = group[1].id, line = at,
+                            dest = "selects", rename = deliver }
+      summary.selects = summary.selects + 1
+    elseif not has_select then
+      for _, item in ipairs(group) do
+        moves[#moves + 1] = { id = item.id, line = at, dest = "review" }
+        summary.review = summary.review + 1
+      end
+    else
+      for _, item in ipairs(group) do
+        local mark = marks[item.id]
+        if mark == "select" then
+          moves[#moves + 1] = { id = item.id, line = at,
+                                dest = "selects", rename = deliver }
+          summary.selects = summary.selects + 1
+        elseif mark == "alt" then
+          -- The same delivered name as the select: an alt whose Append the user
+          -- has not typed yet SHOULD clash, and the red warning in Overview is
+          -- what says so. Nothing is uniqued behind their back.
+          moves[#moves + 1] = { id = item.id, line = at,
+                                dest = "alts", rename = deliver }
+          summary.alts = summary.alts + 1
+        else
+          moves[#moves + 1] = { id = item.id, line = at, dest = "outs" }
+          summary.outs = summary.outs + 1
+        end
+      end
+    end
+  end
+
+  return moves, summary
+end
+
 -- The whole script side of a project, loaded in one call. Both ajsfx VO Overview
 -- and ajsfx VO Cut used to keep their own near-identical copy of this; they now
 -- share it, so a script that loads in one window cannot fail to load in the
