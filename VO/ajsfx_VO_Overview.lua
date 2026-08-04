@@ -3145,6 +3145,17 @@ local function DrawTableBody()
       -- Nothing to rename: there is no take at all.
       CellText(row, "item_name", CI.item_name, row_h, shown, "disabled")
       TooltipEvenWhenDisabled("This line has no take yet, so there is no item to name.")
+    elseif not row.item then
+      -- Matched audio whose item this project does not have -- the source is
+      -- not loaded, or the span falls outside what the loaded item covers.
+      -- Without this the cell falls back to the DELIVERED name and reads as an
+      -- item that exists under that name, when nothing has been cut at all.
+      CellText(row, "item_name", CI.item_name, row_h, "(no item)", "disabled")
+      TooltipEvenWhenDisabled(
+        "This take matched the transcript, but no item in this project plays\n" ..
+        "that stretch of " .. vo.Basename(row.source_path or "the source") .. ".\n\n" ..
+        "Either the recording is not in the project, or the item has been\n" ..
+        "trimmed past this point. Cut and Name will skip it and say so.")
     else
       PushFilledField("item_name", row_h)
       local fchanged, fname = im.InputText(ctx, "##fn", shown,
