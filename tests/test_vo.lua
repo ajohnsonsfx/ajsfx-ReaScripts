@@ -5329,6 +5329,50 @@ test("each leftover flags at most one take", function()
   assert(#flags == 1 and flags[1].take == "near")
 end)
 
+test("plain room is the distance to the first audio", function()
+  -- 5 windows of silence then speech: 50ms of room at 10ms windows.
+  local prof = { -60, -60, -60, -60, -60, -20, -10 }
+  assert(math.abs(vo.EffectiveRoom(prof, 0.010) - 0.050) < 1e-9)
+end)
+
+test("an all-silent profile is all room", function()
+  assert(math.abs(vo.EffectiveRoom({ -60, -60, -60 }, 0.010) - 0.030) < 1e-9)
+end)
+
+test("a truncated neighbour word at the edge is seen through", function()
+  -- Edge-hot blip (3 windows), 50 windows of silence, then real speech:
+  -- the room runs through the blip and the dead air.
+  local prof = { -8, -12, -20 }
+  for _ = 1, 50 do prof[#prof + 1] = -55 end
+  prof[#prof + 1] = -15
+  local room = vo.EffectiveRoom(prof, 0.010)
+  assert(math.abs(room - 0.530) < 1e-9, "Expected 530ms, got " .. room)
+end)
+
+test("a completed final word near the edge is NOT bleed", function()
+  -- One quiet window at the edge, then audio: the word finished inside the
+  -- item. Even with a long pause behind it, the plain answer stands.
+  local prof = { -60, -20, -18, -25 }
+  for _ = 1, 50 do prof[#prof + 1] = -55 end
+  prof[#prof + 1] = -15
+  assert(math.abs(vo.EffectiveRoom(prof, 0.010) - 0.010) < 1e-9)
+end)
+
+test("a long edge-touching run is content, not a blip", function()
+  -- Hot at the edge for 500ms: that is the item's own speech.
+  local prof = {}
+  for _ = 1, 50 do prof[#prof + 1] = -15 end
+  for _ = 1, 60 do prof[#prof + 1] = -55 end
+  prof[#prof + 1] = -20
+  assert(vo.EffectiveRoom(prof, 0.010) == 0)
+end)
+
+test("a blip with no real audio behind it keeps the plain answer", function()
+  local prof = { -10, -10 }
+  for _ = 1, 60 do prof[#prof + 1] = -55 end
+  assert(vo.EffectiveRoom(prof, 0.010) == 0, "the blip IS the only content")
+end)
+
 test("loose edges are planned in to the standard room", function()
   local edits = vo.PlanTighten({
     { name = "loose_head", head_room = 0.500, tail_room = 0.100 },

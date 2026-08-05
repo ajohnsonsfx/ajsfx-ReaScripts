@@ -1204,20 +1204,26 @@ local function TightenItems()
         or math.abs(r.GetMediaItemInfo_Value(item, "D_FADEOUTLEN") - fade_out) > 0.002
       local probe, destroy = vo.MakeTakeProbe(take)
       if probe then
+        -- One full profile, read from both ends. EffectiveRoom sees through
+        -- a neighbour take's onset clamped inside the edge (speech, dead
+        -- air, foreign blip) where a first-hot-window scan calls it tight.
         local step = 0.010
-        local head, tail
-        for k = 0, math.floor(len / step) do
-          local db = probe(pos + k * step, math.min(pos + (k + 1) * step, pos + len))
-          if db and db > TIGHTEN_FLOOR_DB then head = k * step break end
-        end
-        for k = 0, math.floor(len / step) do
-          local db = probe(math.max(pos, pos + len - (k + 1) * step), pos + len - k * step)
-          if db and db > TIGHTEN_FLOOR_DB then tail = k * step break end
+        local windows = {}
+        for k = 0, math.floor(len / step) - 1 do
+          windows[#windows + 1] =
+            probe(pos + k * step, math.min(pos + (k + 1) * step, pos + len))
+            or -150.0
         end
         destroy()
-        if head and tail then
+        if #windows > 0 then
+          local from_end = {}
+          for k = #windows, 1, -1 do from_end[#from_end + 1] = windows[k] end
+          local ropts = { floor_db = TIGHTEN_FLOOR_DB }
           measured[#measured + 1] = {
-            name = nm, head_room = head, tail_room = tail, user_touched = touched,
+            name = nm,
+            head_room = vo.EffectiveRoom(windows, step, ropts),
+            tail_room = vo.EffectiveRoom(from_end, step, ropts),
+            user_touched = touched,
           }
           by_name[nm] = item
         end

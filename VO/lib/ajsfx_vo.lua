@@ -628,6 +628,51 @@ function vo.FlagClippedHeads(leftovers, takes, gap)
   return flags
 end
 
+-- How much of an item's edge is really room, seen from one end. `db_windows`
+-- is a peak-dB profile walking INWARD from that edge, one window per `step`
+-- seconds. The subtlety this exists for: a cut whose edge was clamped to the
+-- neighbouring word's timestamp puts the NEIGHBOUR take's onset (or decay)
+-- inside the item -- a short, edge-touching run of audio with a long stretch
+-- of silence behind it. A plain first-hot-window scan reads that as "tight"
+-- while the listener hears speech, dead air, then a foreign blip. A hot run
+-- at the edge no longer than `blip_max`, separated from the item's own audio
+-- by at least `gap_min` of silence, is counted as room right through it.
+function vo.EffectiveRoom(db_windows, step, opts)
+  opts = opts or {}
+  local floor_db = opts.floor_db or -45.0
+  local blip_max = opts.blip_max or 0.350
+  local gap_min  = opts.gap_min  or 0.400
+  local first_hot
+  for i, db in ipairs(db_windows or {}) do
+    if db > floor_db then first_hot = i break end
+  end
+  if not first_hot then return #(db_windows or {}) * step end
+  local room = (first_hot - 1) * step
+  -- The blip branch fires only when the very edge window is hot: a clamped
+  -- neighbour word is TRUNCATED by the edge, so it rings right at it. The
+  -- item's own final word -- however close -- has completed, and its decay
+  -- leaves at least a breath of quiet at the edge. That quiet is what keeps
+  -- a short real word behind a long pause from being read as bleed.
+  if first_hot > 1 then return room end
+  local run_end = first_hot
+  while run_end < #db_windows and db_windows[run_end + 1] > floor_db do
+    run_end = run_end + 1
+  end
+  local gap_end = run_end
+  while gap_end < #db_windows and db_windows[gap_end + 1] <= floor_db do
+    gap_end = gap_end + 1
+  end
+  local run_len = (run_end - first_hot + 1) * step
+  local gap_len = (gap_end - run_end) * step
+  -- Only a blip, only with real silence behind it, and only when the item's
+  -- own audio actually exists further in -- otherwise the edge audio IS the
+  -- content and the honest answer is the plain scan's.
+  if run_len <= blip_max and gap_len >= gap_min and gap_end < #db_windows then
+    return gap_end * step
+  end
+  return room
+end
+
 -- The finishing pass, planned from measurements. Each entry of `measured`
 -- says how far an item's edges sit from its audio ({name, head_room,
 -- tail_room, user_touched}); anything looser than room + slack is pulled
