@@ -746,18 +746,47 @@ local function Rebuild()
       end
     end
   end
+  local function adopt(row, item)
+    row.item = item
+    row.item_by_name = true
+    local take = r.GetActiveTake(item)
+    if take then
+      local _, nm = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+      row.take_name = (nm ~= "") and nm or nil
+    end
+  end
   for _, row in ipairs(state.overview) do
-    if not row.item and row.status ~= "missing" then
+    if not row.item then
       local key = vo.NormalizeItemName(row.deliver or row.asset or "")
       local list = key ~= "" and pool[key] or nil
       if list and #list > 0 then
-        row.item = table.remove(list, 1)
-        row.item_by_name = true
-        local take = r.GetActiveTake(row.item)
-        if take then
-          local _, nm = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
-          row.take_name = (nm ~= "") and nm or nil
+        adopt(row, table.remove(list, 1))
+        -- A Missing line that just gained a named item is not missing: this
+        -- is the rendered-file / hand-comped case, real audio with no span.
+        if row.status == "missing" then row.status = "recorded" end
+      end
+    end
+  end
+
+  -- Whatever is STILL in the pool has more items than its line has rows --
+  -- a take added by hand (comped, rendered, renamed chatter). Real audio
+  -- the table must show: it gets a row of its own beside its line.
+  for key, list in pairs(pool) do
+    for _, extra_item in ipairs(list) do
+      local at, template = nil, nil
+      for i, row in ipairs(state.overview) do
+        if vo.NormalizeItemName(row.deliver or row.asset or "") == key then
+          at, template = i, row
         end
+      end
+      if template then
+        local row = vo.ShallowCopy(template)
+        adopt(row, extra_item)
+        row.status = "recorded"
+        row.source_path, row.source_start, row.source_stop = nil, nil, nil
+        row.take_index = (template.take_count or 1) + 1
+        row.take_count = row.take_index
+        table.insert(state.overview, at + 1, row)
       end
     end
   end
