@@ -1479,6 +1479,47 @@ local function AutoSelectTakes(rows)
     next(locked_line) and ", locked lines skipped" or ""), "ok"
 end
 
+-- "This item is that line", stated rather than derived.
+--
+-- The item's NAME is the assignment -- it is what Pull, Sort and the Got column
+-- all read -- so saying so is renaming, and nothing needs to be stored, pinned
+-- or kept in sync. It acts on REAPER's own item selection because that is what
+-- you already have in your hand after cutting or comping something.
+--
+-- Several items at once become the line and its alts, numbered with the same
+-- pattern the Pull panel uses, so comping four takes of a line and assigning
+-- them in one go gives line_042, line_042_alt1, line_042_alt2, line_042_alt3.
+local function AssignSelectedItems(row, base_name)
+  local n = r.CountSelectedMediaItems(0)
+  if n == 0 or not base_name or base_name == "" then return end
+
+  local cfg = vo.LoadConfig()
+  local named = 0
+  core.Transaction("VO Overview: assign items to line", function()
+    for i = 0, n - 1 do
+      local item = r.GetSelectedMediaItem(0, i)
+      local take = item and r.GetActiveTake(item)
+      if take then
+        local name = base_name
+        if i > 0 then
+          name = base_name .. vo.FormatAltAppend(
+            cfg.alt_append_pattern,
+            math.floor(cfg.alt_append_start or 1) + (i - 1),
+            math.floor(cfg.alt_append_digits or 1))
+        end
+        r.GetSetMediaItemTakeInfo_String(take, "P_NAME", vo.SanitizeName(name), true)
+        named = named + 1
+      end
+    end
+  end)
+  r.UpdateArrange()
+
+  state.message, state.message_kind = string.format(
+    "Named %d item%s for %s.%s", named, named == 1 and "" or "s", base_name,
+    named > 1 and " The first is the line; the rest are its alts." or ""), "ok"
+  Reload()
+end
+
 -- The rows a tool acts on: every row currently visible, unless the user has
 -- explicitly asked for the selection.
 --
@@ -3272,6 +3313,32 @@ local function DrawTableBody()
       if im.IsItemHovered(ctx) then
         im.SetTooltip(ctx, "Every place in the transcripts this line could sit,\n" ..
                            "with what is around it. Looks only -- changes nothing.")
+      end
+
+      im.Separator(ctx)
+
+      -- Assigning is naming. An item named for a line IS that line's take --
+      -- that is what every tool here reads -- so "this item is for that line"
+      -- needs no pin, no stored mapping and no time selection. It uses what is
+      -- already selected in REAPER, which is what you have in your hand after
+      -- cutting or comping something.
+      local n_sel = r.CountSelectedMediaItems(0)
+      local can_assign = (#targets == 1) and n_sel > 0
+                         and row.asset and row.asset ~= ""
+      local assign_label = (n_sel > 1)
+        and string.format("Assign %d selected items to this line", n_sel)
+        or  "Assign selected item to this line"
+      if im.MenuItem(ctx, assign_label, nil, nil, can_assign) then
+        local target, name = row, (row.deliver or row.asset)
+        pending_action = function() AssignSelectedItems(target, name) end
+      end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, n_sel > 0
+          and ("Names the item(s) selected in REAPER \"" ..
+               tostring(row.deliver or row.asset) .. "\".\n\n" ..
+               "Several at once are numbered with the alt pattern, so the\n" ..
+               "first is the line and the rest are its alts.")
+          or  "Select the item in REAPER first.")
       end
 
       im.Separator(ctx)
