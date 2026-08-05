@@ -570,13 +570,83 @@ end
 --   missing    how many have none
 --   extra      names in the project that resolve to no line, deduplicated
 --   ambiguous  names claimed by two lines, which no name can distinguish
-function vo.CheckCoverage(items, lines)
+-- The alt suffix as a Lua matcher: the pattern's literal parts escaped, {n}
+-- standing for the number. "_alt{n}" -> a name ending "_alt3" strips to its
+-- base. Returns nil when the name carries no such suffix.
+function vo.StripAltSuffix(name, pattern)
+  if type(name) ~= "string" or type(pattern) ~= "string"
+     or pattern == "" or not pattern:find("{n}", 1, true) then
+    return nil
+  end
+  local escaped = pattern:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")
+  local matcher = "^(.-)" .. escaped:gsub("{n}", "%%d+") .. "$"
+  local base = name:match(matcher)
+  if base and base ~= "" then return base end
+  return nil
+end
+
+-- Appends whose (script, asset, nth) no loaded line answers to. An Append
+-- detaches SILENTLY when a script file is renamed, re-exported with rows
+-- shifted, or removed -- the record survives in the project file, applies to
+-- nothing, and the clash it used to clear comes back on the next cut. This is
+-- what lets the window say so instead.
+function vo.OrphanAppends(appends, lines)
+  local live = {}
+  for _, l in ipairs(lines or {}) do
+    live[vo.AppendKey(l.script, l.asset, l.append_nth)] = true
+  end
+  local orphans = {}
+  for _, a in ipairs(appends or {}) do
+    if a.text and a.text ~= ""
+       and not live[vo.AppendKey(a.script, a.asset, a.nth)] then
+      orphans[#orphans + 1] = a
+    end
+  end
+  return orphans
+end
+
+-- Matched/review spans of zero (or negative) width are matcher artifacts --
+-- whisper hands every token expanded from one word the same timestamps, and a
+-- word at the very end of a file can carry t0 == t1. Cutting one produces a
+-- millisecond sliver wearing a line's name. Dropped here, counted for the
+-- report; unmatched spans are left alone (nothing cuts them anyway).
+function vo.DropDegenerateSpans(spans)
+  local kept, dropped = {}, 0
+  for _, s in ipairs(spans or {}) do
+    local cuttable = s.kind == "match" or s.kind == "review"
+    if cuttable and (s.stop or 0) - (s.start or 0) <= 0 then
+      dropped = dropped + 1
+    else
+      kept[#kept + 1] = s
+    end
+  end
+  return kept, dropped
+end
+
+-- opts.source_names: set of vo.NormalizeItemName-ed source filenames. An item
+-- still wearing its recording's own name is the uncut remainder of a session,
+-- not a stray -- counting it as "not on the script" keeps one permanent
+-- warning on screen, which teaches the user to ignore the only warning that
+-- matters. opts.alt_pattern: the Pull panel's alt pattern, so a name the tool
+-- itself wrote ("line_alt2") counts as a take of its line.
+function vo.CheckCoverage(items, lines, opts)
+  opts = opts or {}
   local index = vo.BuildNameIndex(lines)
   local by_line, extra_seen, extra, ambiguous = {}, {}, {}, 0
 
   for _, it in ipairs(items or {}) do
     local at, why = vo.ResolveItemName(index, it.name)
-    if at then
+    if not at and why ~= "ambiguous" and opts.alt_pattern then
+      local base = vo.StripAltSuffix(it.name, opts.alt_pattern)
+      if base then at, why = vo.ResolveItemName(index, base) end
+    end
+    if not at and why ~= "ambiguous" and opts.source_names
+       and opts.source_names[vo.NormalizeItemName(it.name)] then
+      -- Skip entirely: neither delivered nor extra.
+      at, why = nil, "source"
+    end
+    if why == "source" then -- luacheck: ignore
+    elseif at then
       local rec = by_line[at]
       if not rec then rec = { count = 0, tracks = {} }; by_line[at] = rec end
       rec.count = rec.count + 1
@@ -2192,7 +2262,12 @@ function vo.RefreshSpanDeliveries(spans, lines)
         li = first_row_using[s.asset]
       end
       local line = li and lines[li] or nil
-      if line then s.deliver = line.deliver end
+      if line then
+        s.deliver = line.deliver
+        -- Same staleness family as deliver: any line-derived field cached on a
+        -- memoised span re-copies here, in the one place, or it drifts.
+        if line.speaker and line.speaker ~= "" then s.character = line.speaker end
+      end
     end
   end
   return spans
@@ -2587,7 +2662,9 @@ function vo.BuildMatch(transcripts, lines, cfg, pins)
       end
     end
 
-    out[#out + 1] = { path = t.path, spans = plan, unresolved = unresolved }
+    local kept, dropped = vo.DropDegenerateSpans(plan)
+    out[#out + 1] = { path = t.path, spans = kept, unresolved = unresolved,
+                      degenerate_dropped = dropped }
   end
 
   return out

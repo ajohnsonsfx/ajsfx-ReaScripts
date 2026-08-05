@@ -376,6 +376,19 @@ local function ProjectPath()
   return path
 end
 
+-- Whole file to a temp name, then renamed into place, so a crash mid-write
+-- leaves either the old file or the new one -- never a truncated one that
+-- trips the parse-failed lockout and blocks saving until hand-repair.
+local function WriteFileAtomic(path, text)
+  local tmp = path .. ".tmp"
+  local f = io.open(tmp, "wb")
+  if not f then return false end
+  f:write(text)
+  f:close()
+  os.remove(path)
+  return os.rename(tmp, path) == true
+end
+
 -- -----------------------------------------------------------------------
 -- The script side
 -- -----------------------------------------------------------------------
@@ -408,6 +421,12 @@ local function LoadScripts()
   end
 
   vo.ResolveNames(state.loaded.lines, vo.AppendMap(state.appends))
+
+  -- An Append that no loaded line answers to detaches silently -- a renamed
+  -- or re-exported script CSV is enough -- and the clash it used to clear
+  -- comes back on the next cut. Surfaced, not repaired: which line it should
+  -- attach to is the user's call.
+  state.orphan_appends = vo.OrphanAppends(state.appends, state.loaded.lines)
 end
 
 -- The script lines this project expects, after skip tokens and with every
@@ -433,6 +452,12 @@ end
 local function LoadProjectFile()
   state.entries, state.project_error, state.parse_failed = {}, "", false
   state.scripts, state.appends, state.pins = {}, {}, {}
+  -- Everything below describes the PREVIOUS project. A message like "Pulled 27
+  -- select" surviving a tab switch reads as a claim about the new project.
+  state.message, state.message_kind = nil, nil
+  state.cut_result, state.cut_result_kind, state.cut_summary = nil, nil, nil
+  state.pull_result, state.pull_result_kind = nil, nil
+  state.name_baseline, state.name_drift = nil, {}
 
   local proj_handle, proj = CurrentProject()
   -- Which tab this state was loaded from, so the frame loop can notice the
@@ -496,7 +521,7 @@ local function SaveProjectFile()
   end
   state.project_path = path
 
-  local ok = WriteFile(path, vo.SerializeProjectFile(
+  local ok = WriteFileAtomic(path, vo.SerializeProjectFile(
     vo.ProjectEntriesFromRows(state.overview),
     { scripts = state.scripts, appends = state.appends, pins = state.pins,
       view = {
@@ -686,7 +711,42 @@ local function Rebuild()
       named_items[#named_items + 1] = { name = name, track = track, item = info.item }
     end
   end
-  state.check = vo.CheckCoverage(named_items, state.lines)
+  -- Items still wearing their recording's own filename are uncut remainders,
+  -- not strays; names the tool's own alt pattern wrote count as takes of
+  -- their line. Without both, "names not on the script" never reads zero and
+  -- the warning that matters drowns.
+  local source_names = {}
+  for _, info in ipairs(state.items or {}) do
+    if info.path and info.path ~= "" then
+      source_names[vo.NormalizeItemName(vo.Basename(info.path))] = true
+    end
+  end
+  state.check = vo.CheckCoverage(named_items, state.lines, {
+    source_names = source_names,
+    alt_pattern  = cfg.alt_append_pattern,
+  })
+
+  -- Out-of-band rename detection: the name IS the assignment, and anything --
+  -- F2, a batch renamer, another script -- can move it silently. The baseline
+  -- re-arms whenever this window renames things itself, so what is reported
+  -- is only what happened OUTSIDE it.
+  local names_now = {}
+  for _, ni in ipairs(named_items) do
+    local ok, guid = r.GetSetMediaItemInfo_String(ni.item, "GUID", "", false)
+    if ok and guid ~= "" then names_now[guid] = ni.name end
+  end
+  if state.name_baseline then
+    local drift = {}
+    for guid, old in pairs(state.name_baseline) do
+      local new = names_now[guid]
+      if new and new ~= old then
+        drift[#drift + 1] = string.format("%s -> %s", old, new)
+      end
+    end
+    state.name_drift = drift
+  else
+    state.name_baseline, state.name_drift = names_now, {}
+  end
 
   -- Row keys are NOT unique. A script line with no audio yet keys as
   -- "|<asset>", so a whole character's un-recorded lines collapse onto one key
@@ -868,6 +928,7 @@ local function Rename(row, name)
     r.UpdateArrange()
   end
 
+  state.name_baseline = nil
   Mutate(row, function(e) e.name_override = clean end)
   state.message, state.message_kind = "Renamed to " .. clean .. ".", "ok"
 end
@@ -890,6 +951,7 @@ local function ResetName(row)
     r.UpdateArrange()
   end
 
+  state.name_baseline = nil
   Mutate(row, function(e) e.name_override = nil end)
   state.message, state.message_kind = "Reset to " .. clean .. ".", "ok"
 end
@@ -1530,6 +1592,7 @@ end
 local function AssignSelectedItems(row, base_name)
   local n = r.CountSelectedMediaItems(0)
   if n == 0 or not base_name or base_name == "" then return end
+  state.name_baseline = nil
 
   local cfg = vo.LoadConfig()
   local named = 0
@@ -1720,6 +1783,7 @@ local function FormatSpan(seconds)
 end
 
 local function SortOnTimeline()
+  Reload()
   local clusters, locked, unresolved = BuildSortClusters()
   if #clusters == 0 then
     state.message, state.message_kind =
@@ -2286,6 +2350,10 @@ local function CutCandidates()
 end
 
 local function DoCut()
+  -- A fresh look first: the per-frame rescan is throttled, and cutting
+  -- against items collected seconds ago is how stale pointers get split.
+  Reload()
+  state.name_baseline = nil
   local cfg = vo.LoadConfig()
   local candidates, all_spans, stale_names = CutCandidates()
 
@@ -2524,6 +2592,16 @@ local function DrawCutPanel()
     "%d spans matched, %d cuttable, %d in range, %d skipped as stale  ->  %d to cut",
     c.spans, c.cuttable, c.in_range, c.stale, c.candidates))
 
+  -- Before the first cut is the moment this is fixable for free: afterwards
+  -- the takes of both lines share a name until the Appends land and a re-cut
+  -- renames them.
+  if #(state.dupe_assets or {}) > 0 then
+    im.TextColored(ctx, 0xDDAA33FF, string.format(
+      "%d delivered name(s) are claimed by two script lines. Set an Append " ..
+      "on each first, or their takes will be cut under one shared name.",
+      #state.dupe_assets))
+  end
+
   -- What the last run did, repeated here because the window's own message line
   -- is below the table and this panel is above it.
   if state.cut_result and state.cut_result ~= "" then
@@ -2550,6 +2628,8 @@ end
 
 
 local function Pull()
+  Reload()
+  state.name_baseline = nil
   local items, marks = TargetItems()
   local moves, summary = vo.PlanPull(items, state.lines, marks)
 
@@ -2629,6 +2709,8 @@ end
 -- would rename the alt's select along with it, leaving the two still colliding.
 -- See vo.PlanAltNames.
 local function ApplyAltNames()
+  Reload()
+  state.name_baseline = nil
   local cfg  = vo.LoadConfig()
   local rows = AffectedRows()
   local edits, skipped = vo.PlanAltNames(rows, {
@@ -3746,6 +3828,40 @@ local function DrawSummary()
     im.TextColored(ctx, 0xDDAA33FF,
       string.format("%d item(s) named for two lines at once", c.ambiguous))
   end
+  if #(state.name_drift or {}) > 0 then
+    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
+    im.TextColored(ctx, 0xDDAA33FF,
+      string.format("%d name(s) changed outside this window", #state.name_drift))
+    if im.IsItemHovered(ctx) then
+      local list = {}
+      for i, d in ipairs(state.name_drift) do
+        if i > 20 then list[#list + 1] = ("...and %d more"):format(#state.name_drift - 20); break end
+        list[#list + 1] = d
+      end
+      im.SetTooltip(ctx,
+        "The name on an item IS its assignment, and these moved without\n" ..
+        "this window doing it (F2, a batch renamer, another script):\n\n" ..
+        table.concat(list, "\n"))
+    end
+  end
+  if #(state.orphan_appends or {}) > 0 then
+    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
+    im.TextColored(ctx, 0xDD6666FF,
+      string.format("%d Append(s) match no loaded line", #state.orphan_appends))
+    if im.IsItemHovered(ctx) then
+      local list = {}
+      for i, a in ipairs(state.orphan_appends) do
+        if i > 20 then list[#list + 1] = ("...and %d more"):format(#state.orphan_appends - 20); break end
+        list[#list + 1] = string.format("%s: %s (#%d) %s",
+          a.script or "?", a.asset or "?", a.nth or 1, a.text or "")
+      end
+      im.SetTooltip(ctx,
+        "An Append is keyed to its script's filename and the line's position\n" ..
+        "in it. Renaming, re-exporting or removing the CSV detaches these --\n" ..
+        "and the name clash they used to clear comes back on the next cut:\n\n" ..
+        table.concat(list, "\n"))
+    end
+  end
 
   im.Spacing(ctx)
   im.TextDisabled(ctx, string.format("%d of %d lines recorded", n.delivered or 0, n.lines or 0))
@@ -3990,6 +4106,15 @@ local function RemoteStatus()
   parts[#parts + 1] = string.format("scripts=%d", #(state.scripts or {}))
   parts[#parts + 1] = string.format("selection_only=%s",
     state.selection_only and "1" or "0")
+  if #(state.dupe_assets or {}) > 0 then
+    parts[#parts + 1] = string.format("dupes=%d", #state.dupe_assets)
+  end
+  if #(state.orphan_appends or {}) > 0 then
+    parts[#parts + 1] = string.format("orphan_appends=%d", #state.orphan_appends)
+  end
+  if #(state.name_drift or {}) > 0 then
+    parts[#parts + 1] = string.format("renamed_outside=%d", #state.name_drift)
+  end
   if state.message and state.message ~= "" then
     parts[#parts + 1] = "last: " .. state.message
   end
@@ -4091,6 +4216,21 @@ LoadProjectFile()
 LoadLayoutSettings()
 LoadViewSettings()
 Reload()
+
+-- The action reads as ON while the window runs, and re-running it terminates
+-- the instance (REAPER's default for a running ReaScript) -- so the toolbar
+-- button behaves as a toggle instead of appearing to do nothing.
+do
+  local _, _, section_id, cmd_id = r.get_action_context()
+  if cmd_id and cmd_id ~= 0 then
+    r.SetToggleCommandState(section_id, cmd_id, 1)
+    r.RefreshToolbar2(section_id, cmd_id)
+    r.atexit(function()
+      r.SetToggleCommandState(section_id, cmd_id, 0)
+      r.RefreshToolbar2(section_id, cmd_id)
+    end)
+  end
+end
 
 local function loop()
   if not (ctx and im.ValidatePtr(ctx, 'ImGui_Context*')) then

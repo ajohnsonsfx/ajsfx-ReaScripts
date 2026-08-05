@@ -5201,6 +5201,89 @@ test("a missing depth is read as a plain track", function()
 end)
 
 --------------------------------
+-- StripAltSuffix / OrphanAppends / DropDegenerateSpans
+--------------------------------
+print("\nRobustness helpers:")
+
+test("an alt-patterned name strips to its base", function()
+  assert(vo.StripAltSuffix("line_042_alt3", "_alt{n}") == "line_042")
+  assert(vo.StripAltSuffix("line_042_alt12", "_alt{n}") == "line_042")
+end)
+
+test("a name without the suffix, or a bad pattern, strips to nothing", function()
+  assert(vo.StripAltSuffix("line_042", "_alt{n}") == nil)
+  assert(vo.StripAltSuffix("line_042_alt3", "") == nil)
+  assert(vo.StripAltSuffix("line_042_alt3", "_take") == nil, "no {n} marker")
+  assert(vo.StripAltSuffix("_alt3", "_alt{n}") == nil, "an empty base is no base")
+end)
+
+test("a pattern with magic characters is matched literally", function()
+  assert(vo.StripAltSuffix("line-take(2)", "-take({n})") == "line")
+end)
+
+test("an append whose line vanished is reported as an orphan", function()
+  local lines = { { script = "S", asset = "a", append_nth = 1 } }
+  local appends = {
+    { script = "S", asset = "a", nth = 1, text = "_x" },   -- attached
+    { script = "S", asset = "b", nth = 1, text = "_y" },   -- line gone
+    { script = "T", asset = "a", nth = 1, text = "_z" },   -- script renamed
+  }
+  local orphans = vo.OrphanAppends(appends, lines)
+  assert(#orphans == 2, "Expected 2 orphans, got " .. #orphans)
+  assert(orphans[1].asset == "b" and orphans[2].script == "T")
+end)
+
+test("zero-width matched spans are dropped and counted", function()
+  local spans = {
+    { kind = "match", start = 1, stop = 2 },
+    { kind = "match", start = 5, stop = 5 },       -- the EOF artifact
+    { kind = "review", start = 7, stop = 6.5 },    -- negative is no better
+    { kind = "unmatched", start = 9, stop = 9 },   -- not cuttable, left alone
+  }
+  local kept, dropped = vo.DropDegenerateSpans(spans)
+  assert(#kept == 2, "Expected 2 kept, got " .. #kept)
+  assert(dropped == 2, "Expected 2 dropped, got " .. dropped)
+  assert(kept[2].kind == "unmatched", "The unmatched span survives")
+end)
+
+--------------------------------
+-- CheckCoverage options
+--------------------------------
+print("\nCheckCoverage options:")
+
+test("an item wearing its recording's name is neither delivered nor extra", function()
+  local lines = { { asset = "line_a" } }
+  local items = {
+    { name = "line_a", track = "T" },
+    { name = "session_take1.wav", track = "T" },
+  }
+  local c = vo.CheckCoverage(items, lines, {
+    source_names = { [vo.NormalizeItemName("session_take1.wav")] = true },
+  })
+  assert(c.delivered == 1, "Got " .. c.delivered)
+  assert(#c.extra == 0, "The recording's own name is not a stray: " ..
+    table.concat(c.extra, ", "))
+end)
+
+test("an alt-patterned name counts as a take of its line", function()
+  local lines = { { asset = "line_a" } }
+  local items = {
+    { name = "line_a", track = "T" },
+    { name = "line_a_alt1", track = "T" },
+  }
+  local c = vo.CheckCoverage(items, lines, { alt_pattern = "_alt{n}" })
+  assert(c.by_line[1] and c.by_line[1].count == 2,
+    "Expected both takes counted, got " .. tostring(c.by_line[1] and c.by_line[1].count))
+  assert(#c.extra == 0, "The tool's own alt name is not a stray")
+end)
+
+test("without options the old behaviour stands", function()
+  local lines = { { asset = "line_a" } }
+  local c = vo.CheckCoverage({ { name = "stray", track = "T" } }, lines)
+  assert(#c.extra == 1 and c.extra[1] == "stray")
+end)
+
+--------------------------------
 -- ResolveSourceSpanForCut
 --------------------------------
 print("\nResolveSourceSpanForCut:")
