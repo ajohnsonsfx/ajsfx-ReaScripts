@@ -1036,6 +1036,60 @@ local function MakeSelect(row)
     base, old_sel and (" -- the previous one is " .. alt_name) or ""), "ok"
 end
 
+-- Name-driven filing, the inverse of Assign: there the row names the item,
+-- here the item's OWN name places it. Rename a take to what it should be --
+-- plain delivered name or an alt-patterned one -- select it, press Place:
+-- it lands on the right track and the sheet follows on the rebuild.
+local function PlaceSelectedItems()
+  local n = r.CountSelectedMediaItems(0)
+  if n == 0 then
+    state.message, state.message_kind = "Select the item(s) in REAPER first.", "error"
+    return
+  end
+  local cfg = vo.LoadConfig()
+  local index = vo.BuildNameIndex(state.lines or {})
+  local function track_named(name)
+    for i = 0, r.CountTracks(0) - 1 do
+      local t = r.GetTrack(0, i)
+      local _, nm2 = r.GetSetMediaTrackInfo_String(t, "P_NAME", "", false)
+      if nm2 == name then return t end
+    end
+    return nil
+  end
+  local t_sel = track_named(cfg.track_selects or "Selects")
+  local t_alt = track_named(cfg.track_alts or "Alts")
+
+  local placed, skipped = 0, {}
+  state.name_baseline = nil
+  core.Transaction("VO Overview: place selected by name", function()
+    for i = 0, n - 1 do
+      local item = r.GetSelectedMediaItem(0, i)
+      local tk = item and r.GetActiveTake(item)
+      if tk then
+        local _, nm = r.GetSetMediaItemTakeInfo_String(tk, "P_NAME", "", false)
+        local stem = vo.StripAltSuffix(nm, cfg.alt_append_pattern)
+        local at, why = vo.ResolveItemName(index, stem or nm)
+        if at then
+          local dest = stem and t_alt or t_sel
+          if dest and r.GetMediaItem_Track(item) ~= dest then
+            r.MoveMediaItemToTrack(item, dest)
+          end
+          placed = placed + 1
+        else
+          skipped[#skipped + 1] = string.format("%s (%s)", nm,
+            why == "ambiguous" and "claimed by two lines" or "not on the script")
+        end
+      end
+    end
+    r.UpdateArrange()
+  end)
+  Rebuild()
+  state.message, state.message_kind = string.format("Placed %d item(s) by name.%s",
+    placed, (#skipped > 0)
+      and (" Skipped: " .. table.concat(skipped, ", ")) or ""),
+    (#skipped > 0) and "error" or "ok"
+end
+
 -- -----------------------------------------------------------------------
 -- Selection
 --
@@ -3152,6 +3206,15 @@ local function DrawFilters()
     im.SetTooltip(ctx, "Which take to mark as the select on a line that was\n" ..
                        "read more than once. Locked lines are left alone.")
   end
+
+  im.SameLine(ctx)
+  if im.Button(ctx, "Place") then pending_action = PlaceSelectedItems end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx,
+      "File the item(s) selected in REAPER where their NAME says they\n" ..
+      "belong: a plain delivered name goes to Selects, an alt-patterned\n" ..
+      "one to Alts. Rename first, press this, the sheet follows.")
+  end
 end
 
 local function Copy(text)
@@ -4404,6 +4467,9 @@ local function RunRemoteCommand(command)
       end
     end
     return #out .. " span(s)\n" .. table.concat(out, "\n")
+  elseif verb == "place" then
+    PlaceSelectedItems()
+    return state.message or "place ran"
   elseif verb == "make_select" then
     -- Promote the take currently named `rest` to its line's Select.
     for _, row in ipairs(state.overview or {}) do
