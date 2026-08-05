@@ -1236,8 +1236,26 @@ vo.DEFAULTS = {
   -- structurally impossible for a clip to contain a syllable of the next line.
   snap_boundaries   = true,
   snap_min_silence  = 0.060, -- seconds below the floor needed to place a boundary
+  -- How far either side of a CHAINED word boundary to look for the dip that
+  -- really divides two words. Whisper marks the join a hair late, so cutting on
+  -- the mark can split an onset between both clips; the quietest window inside
+  -- this reach belongs to neither. See vo.QuietestBoundary.
+  --
+  -- OFF by default (0 disables it), and deliberately so. The mechanism is real
+  -- -- one take rendered "Look." where the source says "Book." -- but three
+  -- attempts at placing that boundary each fixed one side of the join and cost
+  -- the other, and the only instrument available to judge them (whispering
+  -- half-second clips) is too noisy to settle it: the same fragment came back
+  -- "Book.", "Boo." and "6." across runs. Turning this on changes every cut in
+  -- every session, so it waits for a verification method that can tell a
+  -- clipped syllable from a recogniser having a bad day.
+  chained_boundary_reach = 0,
   snap_floor_offset = 6.0,   -- dB above the measured noise floor
   snap_floor_window = 0.500, -- seconds of the quietest gap used to measure it
+  -- Which gap sets the floor, as a fraction of the gaps sorted quietest-first.
+  -- Not the minimum: one near-silent patch left by noise reduction would put
+  -- the floor below the file's own room tone, and every silence test then fails.
+  snap_floor_percentile = 0.25,
 
   -- With snapping on, edges sit at a FIXED distance from the measured speech
   -- bounds -- every clip gets the same head and tail room, clamped by the
@@ -2139,7 +2157,7 @@ function vo.MeasureNoiseFloor(gaps, probe, cfg)
   if not probe then return nil end
   local window  = vo.Opt(cfg, "snap_floor_window")
   local minimum = vo.Opt(cfg, "snap_min_silence")
-  local quietest = nil
+  local levels  = {}
 
   for _, g in ipairs(gaps or {}) do
     local span = g.to - g.from
@@ -2152,12 +2170,21 @@ function vo.MeasureNoiseFloor(gaps, probe, cfg)
       local w   = math.min(window, span)
       local mid = (g.from + g.to) / 2
       local db  = probe(mid - w / 2, mid + w / 2)
-      if db and (not quietest or db < quietest) then quietest = db end
+      if db then levels[#levels + 1] = db end
     end
   end
 
-  if not quietest then return nil end
-  return quietest + vo.Opt(cfg, "snap_floor_offset")
+  if #levels == 0 then return nil end
+
+  -- A LOW PERCENTILE, not the minimum. Noise reduction leaves patches of a
+  -- cleaned recording at near-digital silence, and taking the quietest of them
+  -- set a floor the rest of the file could never meet -- measured -75dB against
+  -- its own room tone of about -67, so every silence test failed, snapping fell
+  -- back to fixed pads everywhere, and no edge could tell room from speech.
+  -- The percentile sits under the room tone without chasing an outlier down.
+  table.sort(levels)
+  local at = math.max(1, math.ceil(vo.Opt(cfg, "snap_floor_percentile") * #levels))
+  return levels[math.min(at, #levels)] + vo.Opt(cfg, "snap_floor_offset")
 end
 
 -- The first and last moment inside [from, to] that is louder than the floor.
@@ -2197,6 +2224,41 @@ function vo.FindSpeechBounds(from, to, floor_db, probe, cfg)
     n = n + 1
   end
   return first, last
+end
+
+-- Where to divide two words whose timestamps TOUCH.
+--
+-- Whisper chains word times -- a word's end is simply the next word's start --
+-- so a boundary between two takes is routinely one instant with no gap in it.
+-- That instant is not where the sound divides: the mark lands a hair late and
+-- the following word's onset begins before it. Cutting there leaves the first
+-- clip holding a fragment of the next word's attack and the second clip
+-- decapitated ("Book." rendered as "Look.").
+--
+-- A fixed offset cannot settle it -- both clips want the same milliseconds --
+-- so the audio is asked instead: the quietest window within `reach` of the mark
+-- is the dip BETWEEN the words, and that is the boundary. Relative, so it needs
+-- no absolute floor, which is what lets it work on a recording whose floor
+-- measurement is wrong.
+--
+-- Both neighbours run this on the same mark and so agree exactly, which is what
+-- stops either of them holding a piece of the other.
+-- Returns: the boundary time, or nil with no probe.
+function vo.QuietestBoundary(mark, reach, step, probe)
+  if not probe or not mark or (reach or 0) <= 0 or (step or 0) <= 0 then return nil end
+  local n = math.floor(reach / step)
+  local best, best_db
+  -- Outward from the mark, so an exact tie -- a run of digital silence, say --
+  -- keeps the boundary as near the transcript's own answer as it can.
+  for d = 0, n do
+    local ks = (d == 0) and { 0 } or { -d, d }
+    for _, k in ipairs(ks) do
+      local at = mark + k * step
+      local db = probe(at - step / 2, at + step / 2)
+      if db and (not best_db or db < best_db - 1e-9) then best, best_db = at, db end
+    end
+  end
+  return best
 end
 
 -- Place one boundary between a word edge and a hard limit.
@@ -2297,15 +2359,70 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
       -- With the word bound in place that is structurally impossible, whatever
       -- the amplitude does inside the window. Raw boundaries throughout: a
       -- neighbour's already-padded edge describes a decision, not where audio is.
-      local start_limit = at_start - pre
-      if spans[i - 1] then start_limit = math.max(start_limit, spans[i - 1].raw_stop) end
-      local wb = word_end_before(words, s.raw_start)
-      if wb then start_limit = math.max(start_limit, wb) end
+      -- The word bound is a timestamp, not a measurement, and whisper CHAINS
+      -- them: the previous word ends exactly where this one starts, so on a
+      -- chained transcript the clamp collapses onto the word and the clip is
+      -- cut with nothing to spare. That is worst for exactly the onsets most
+      -- at risk -- s, f, th, a breath -- which begin before whisper's mark and
+      -- sit below the floor, invisible to both the snap and the clamp.
+      --
+      -- So where the bound has collapsed, the AUDIO places it instead: the
+      -- quietest window near the mark is the dip between the two words. A fixed
+      -- offset was tried first and is not enough -- moving the shared edge 30ms
+      -- earlier saved the later take's "B" and left the same attack in the
+      -- earlier take's tail ("I only win a little." became "I only win, little
+      -- boy."). Both clips want those milliseconds; only the dip belongs to
+      -- neither. Bounded by the pad so it can never travel far.
+      local function settle(mark, hard, dir)
+        local reach = math.min(vo.Opt(cfg, "chained_boundary_reach"),
+                               math.abs(hard - mark))
+        local at = vo.QuietestBoundary(mark, reach, 0.010, probe)
+        if not at then return mark end
+        -- Never past the pad, in either direction.
+        if dir < 0 then return math.max(at, hard) end
+        return math.min(at, hard)
+      end
 
-      local stop_limit = at_stop + post
-      if spans[i + 1] then stop_limit = math.min(stop_limit, spans[i + 1].raw_start) end
+      -- ONLY where the bound has collapsed onto the take's own edge. A word
+      -- ending well before this one starts describes a real pause, and that
+      -- boundary is meaningful evidence -- nothing may reach past it. A word
+      -- ending at the very instant this one begins describes nothing at all;
+      -- it is whisper's chaining, and it is the case that clips syllables.
+      local function collapsed(bound, edge)
+        return bound ~= nil and math.abs(bound - edge) <= 1e-3
+      end
+
+      -- The neighbouring SPAN's edge bounds this one only where it is a real
+      -- boundary. Chained word times make two takes share an instant exactly,
+      -- and clamping to that collapses the reach to nothing -- the same trap as
+      -- the word bound below. Overlap is prevented after the loop regardless.
+      local start_hard = at_start - pre
+      local prev_edge = spans[i - 1] and spans[i - 1].raw_stop
+      if prev_edge and math.abs(prev_edge - s.raw_start) > 1e-3 then
+        start_hard = math.max(start_hard, prev_edge)
+      end
+      local start_limit = start_hard
+      local wb = word_end_before(words, s.raw_start)
+      if wb then
+        start_limit = math.max(start_limit, wb)
+        if collapsed(wb, s.raw_start) then
+          start_limit = settle(start_limit, start_hard, -1)
+        end
+      end
+
+      local stop_hard = at_stop + post
+      local next_edge = spans[i + 1] and spans[i + 1].raw_start
+      if next_edge and math.abs(next_edge - s.raw_stop) > 1e-3 then
+        stop_hard = math.min(stop_hard, next_edge)
+      end
+      local stop_limit = stop_hard
       local wa = word_start_after(words, s.raw_stop)
-      if wa then stop_limit = math.min(stop_limit, wa) end
+      if wa then
+        stop_limit = math.min(stop_limit, wa)
+        if collapsed(wa, s.raw_stop) then
+          stop_limit = settle(stop_limit, stop_hard, 1)
+        end
+      end
 
       -- A fixed distance from the SPEECH, not wherever the probe first
       -- crossed the floor: the crossing point depends on room tone and
@@ -2356,9 +2473,21 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
   for i = 2, #spans do
     local prev, cur = spans[i - 1], spans[i]
     if cur.start < prev.stop then
+      -- Colliding neighbours meet at the midpoint of their ORIGINAL gap, which
+      -- keeps the result independent of the order spans were selected in.
       local mid = (prev.raw_stop + cur.raw_start) / 2
-      if prev.stop > mid then prev.stop, prev.clamped = mid, true end
-      if cur.start < mid then cur.start, cur.clamped = mid, true end
+      -- Unless there was no gap. Whisper chains word times, so two takes can
+      -- share an edge exactly -- and then "the midpoint" is that one instant,
+      -- which hands back every millimetre of head room the take just won and
+      -- leaves it cut on its own first syllable. A zero-width boundary is not
+      -- evidence of anything; an onset belongs to the word that FOLLOWS it, so
+      -- the later take's head wins and the earlier take's tail yields to it.
+      if math.abs(cur.raw_start - prev.raw_stop) <= 1e-3 then
+        prev.stop, prev.clamped = cur.start, true
+      else
+        if prev.stop > mid then prev.stop, prev.clamped = mid, true end
+        if cur.start < mid then cur.start, cur.clamped = mid, true end
+      end
     end
   end
 
@@ -4093,8 +4222,12 @@ vo.CONFIG_SCHEMA = {
 
   { key = "snap_boundaries",    kind = "bool",   default = vo.DEFAULTS.snap_boundaries },
   { key = "snap_min_silence",   kind = "number", default = vo.DEFAULTS.snap_min_silence },
+  { key = "chained_boundary_reach", kind = "number",
+    default = vo.DEFAULTS.chained_boundary_reach },
   { key = "snap_floor_offset",  kind = "number", default = vo.DEFAULTS.snap_floor_offset },
   { key = "snap_floor_window",  kind = "number", default = vo.DEFAULTS.snap_floor_window },
+  { key = "snap_floor_percentile", kind = "number",
+    default = vo.DEFAULTS.snap_floor_percentile },
 
   { key = "track_selects",      kind = "string", default = "Selects" },
   { key = "track_alts",         kind = "string", default = "Alts" },
@@ -5240,26 +5373,68 @@ end
 -- truncated take -- cutting, above all -- check that flag; navigation does not
 -- care, because taking the user near a take beats taking them nowhere.
 function vo.ResolveSourceSpan(source_path, source_start, source_stop, items)
-  local item, proj, info = vo.ResolveSourceTime(source_path, source_start, items)
-  if item then return item, proj, info, "full" end
+  -- With no span to weigh, the instant is all there is to ask.
+  if not source_stop or not source_start or source_stop <= source_start then
+    local item, proj, info = vo.ResolveSourceTime(source_path, source_start, items)
+    if item then return item, proj, info, "full" end
+    return nil
+  end
 
-  if not source_stop or not source_start or source_stop <= source_start then return nil end
-
-  local best, best_overlap = nil, 0
+  -- MAJORITY, never the start instant. The instant has two ways to lie after a
+  -- cut, and both were live faults:
+  --
+  --   * padding leaves a GAP between takes, so a take's recognised start can
+  --     touch the END of the take before it -- and the mark, the audition and
+  --     the row all landed one take early;
+  --   * the recording track still carries the unnamed remainders between
+  --     takes, and one of those can CONTAIN the start instant while holding a
+  --     few milliseconds of the take -- the row then points at a fragment and
+  --     the line's Sel never reaches Selects at all.
+  --
+  -- The measure is how much of the ITEM is this take, not how much of the take
+  -- the item holds. Both are needed, and only this one settles both faults: a
+  -- leftover holding a sliver of the take is mostly other things, while the
+  -- clip cut for the take is entirely the take. Ranking by the take's side
+  -- instead loses the reverse case -- whisper inflates a final word's end into
+  -- the pause after it, so a span can be LONGER than its own clip, and the
+  -- leftover that follows then holds more of the span than the clip does.
+  -- Absolute overlap breaks ties, which is what decides between two items that
+  -- are each wholly inside the take.
+  local best, best_share, best_overlap = nil, -1, 0
   for _, cand in ipairs(items or {}) do
     if cand.path == source_path and not cand.skip then
       local range = vo.SourceCoverageRanges({ cand })[1]
       if range then
-        local from = math.max(source_start, range.from)
-        local to   = math.min(source_stop,  range.to)
-        if to - from > best_overlap then best, best_overlap = { cand, from }, to - from end
+        local from    = math.max(source_start, range.from)
+        local to      = math.min(source_stop,  range.to)
+        local overlap = to - from
+        if overlap > 0 then
+          local length = range.to - range.from
+          local share  = (length > 0) and (overlap / length) or 0
+          if share > best_share + 1e-9
+             or (math.abs(share - best_share) <= 1e-9 and overlap > best_overlap) then
+            best, best_share, best_overlap = { cand, from, range }, share, overlap
+          end
+        end
       end
     end
   end
 
-  if not best then return nil end
-  local cand, from = best[1], best[2]
-  return cand.item, vo.SourceTimeToProject(from, cand), cand, "partial"
+  -- Nothing holds any of it: an item that at least touches the start beats no
+  -- answer at all, which is what keeps a time at the very end of the last item
+  -- resolvable.
+  if not best then
+    local item, proj, info = vo.ResolveSourceTime(source_path, source_start, items)
+    if item then return item, proj, info, "full" end
+    return nil
+  end
+
+  local cand, from, range = best[1], best[2], best[3]
+  -- "full" means the take's own start is really in there; "partial" is a best
+  -- effort over what is left of it. Cutting checks this, navigation does not.
+  local full = source_start >= range.from and source_start < range.to
+  return cand.item, vo.SourceTimeToProject(from, cand), cand,
+         full and "full" or "partial"
 end
 
 -- Find a track by name, or create one directly below `track`.

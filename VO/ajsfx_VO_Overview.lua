@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.13
--- @changelog Cutting and routing were one operation; they are now three, and they live in ajsfx VO Overview beside the table they act on -- the separate "ajsfx VO Cut" window is gone, so reinstall from ReaPack to clear it. The workflow is: Cut and Name, then Pull, then listen and tick, then Pull again. "Cut and Name" splits every take the match found out of its recording and names it the script's own filename. It moves nothing and decides nothing, so it no longer refuses to run because some line is undecided -- slicing the recording is the first step of the job and has to happen before there is anything to decide about. With nothing selected it works on every row on show. The only thing it skips is a recording whose audio has changed since it was transcribed, and that is skipped per file rather than stopping the run. "Pull" moves items onto Selects, Alts and Review tracks, which are now CHILDREN of the recording they came from rather than siblings, so collapsing the recording folds the whole session away with it. On a fresh session nothing is ticked, so the first Pull puts everything on Review -- that is the pile you work through. "Sort" lays them out on the timeline as before. The important change is how Pull and Sort decide what an item is: they read the NAME it carries and look that up in the script, and never consult the transcript at all. A folder of rendered wav files someone else delivered -- no transcripts, never cut here -- now pulls and sorts exactly as well as a session you cut yourself. It also means neither tool can touch audio it was not asked to: an uncut recording carries the recording's name, which is not a script filename, so it resolves to nothing and is left where it is, and the count line says how many were left. A name two script lines both claim resolves to nothing rather than to the first of them. The Select column is now two independent checkboxes, Sel and Keep. Sel is the take you are delivering, one per line. Keep is a read worth keeping, any number per line, and Pull delivers a kept take that is not the Sel as an alt. Ticking Keep steals nothing from anybody -- the single cycling mark this replaces made you pass through Sel to reach Alt, which took the select off whichever take already had it. Sel's exclusivity is now keyed by SCRIPT ROW rather than by filename, so two CSV rows that ask for the same filename are two lines again and ticking one no longer unticks the other; they were separate rows in the script and they stay separate here. An alt needs a filename of its own, so "Name alts" in the Pull panel gives every alt that has none one, built on the line's delivered name -- the pattern, the first number and the zero padding are all yours to set, {n} marks where the number goes, and a preview shows the result before you press it. The name is held against the take, so the select keeps the plain delivery. A name you chose is never overwritten. The "use alts track" toggle is gone, and so are the six filter presets -- the Status column's own filter box already matches Recorded, Review, Missing, Orphan and Flagged, and Lock covers verified. The toolbar is one row of six: Script, Sources, Cut and Name, Pull, Sort, Settings, with one panel open at a time.
+-- @version 0.14
+-- @changelog A line's Sel could sit on the wrong take, and both takes were then delivered under the same filename. Cut pulls every take's edges in to the silence around it, so takes are separated by a gap rather than abutting -- and a take's recognised start sits inside that gap, touching the END of the take before it. Resolving that instant answered with the neighbour, so the mark, the audition and the item the row pointed at were all one take early on any line read more than once, and Pull then sent both to Selects wearing the same name. The start instant no longer decides at all; the item most fully OCCUPIED by the take does. That one measure settles three ways the instant could lie: the take before it, which merely ends where this one starts; an unnamed remainder that contains the start but holds a sliver of the take; and -- because whisper inflates a final word's end into the pause after it, making a span longer than its own clip -- the remainder that FOLLOWS, which could hold more of the span than the clip did. A leftover is mostly other things; a clip cut for the take is entirely the take. A time past the last item still resolves as it did. The noise floor is also measured differently: it was the quietest gap in the whole recording plus the offset, and a cleaned file has patches the noise reduction took to near-silence, so one of those set a floor the rest of the file could never meet -- -75dB against its own room tone of about -67. Every "is this window quiet?" test then failed, and snapping silently degraded to fixed pads for the entire session. It is now the 25th percentile of the gaps rather than the minimum, which sits under the room tone without chasing an outlier down. On the session that prompted this the floor moved from -75.1dB to -50.5dB. Two more routing faults are fixed with it. A row synthesised for an item the spans did not claim -- the rendered-file and hand-comped case -- was copied from another row of the same line, and copied its TICKS with it: whenever the template happened to be the line's Sel, every adopted item was born ticked, and Pull sent them all to Selects under the one delivered name. Such a row now starts undecided, and carries a key of its own so a tick put on it later is stored against that take instead of overwriting the take it was copied from. Separately, a row could resolve to one of the unnamed remainders left on the recording track rather than to its own clip, because the remainder happened to contain the take's start instant while holding a few milliseconds of it -- so the line's Sel silently never reached Selects. On the session that prompted this, 44 lines had two or three items on Selects wearing the same filename; after both fixes, 140 items and 140 distinct names. Finally, the remote seam gains a `rows` command: it dumps the sheet as the window actually holds it -- mark, take number, source time and resolved item, filtered by asset. Diagnosing either fault from outside meant rebuilding the sheet through the pure layer and comparing, which answers a different question the moment the two disagree; that disagreement WAS both bugs.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -786,6 +786,22 @@ local function Rebuild()
         row.source_path, row.source_start, row.source_stop = nil, nil, nil
         row.take_index = (template.take_count or 1) + 1
         row.take_count = row.take_index
+
+        -- The copy takes the line's SHAPE, never the template's DECISIONS.
+        -- Copying the marks meant that whenever the template happened to be the
+        -- line's Sel, every adopted item was born ticked -- and Pull, reading
+        -- the mark, sent them all to Selects under the one delivered name. Two
+        -- items cannot both be the delivery; this row is an unidentified take
+        -- until somebody says otherwise.
+        row.user_select, row.user_keep, row.is_primary = false, false, false
+        row.user_status, row.name_override, row.notes = nil, nil, nil
+
+        -- And its own key, keyed to the ITEM, so a tick put on it later is
+        -- stored against this take rather than written over the one it was
+        -- copied from. A row with no span cannot be keyed by source time.
+        local got, guid = r.GetSetMediaItemInfo_String(extra_item, "GUID", "", false)
+        if got and guid ~= "" then row.key = "|" .. (row.asset or "") .. "|" .. guid end
+
         table.insert(state.overview, at + 1, row)
       end
     end
@@ -4663,7 +4679,7 @@ local REMOTE_SECTION = "ajsfx_vo_remote"
 local REMOTE_HELP =
   "status | rematch | cut | pull | name_alts | sort script|record | " ..
   "set selection_only 0|1 | dupes | append script|asset|nth|text | " ..
-  "spans <needle> | missing | boundaries | verify | " ..
+  "rows [needle] | spans <needle> | missing | boundaries | verify | " ..
   "make_select <takename> | place | tighten"
 
 local function RemoteStatus()
@@ -4719,6 +4735,62 @@ local function RunRemoteCommand(command)
       return "selection_only=" .. (state.selection_only and "1" or "0")
     end
     return "unknown setting: " .. tostring(key) .. ". Commands: " .. REMOTE_HELP
+  elseif verb == "rows" then
+    -- The sheet, as the window actually holds it: one line per row, with the
+    -- mark, the take number and the item it resolved to.
+    --
+    -- Exists because diagnosing a routing fault from outside meant rebuilding
+    -- the sheet through the pure layer and comparing -- which answers a
+    -- DIFFERENT question the moment the two disagree, and that disagreement was
+    -- the bug both times. A window that can state its own contents is one call
+    -- instead of an afternoon. `rest` filters by asset; bare `rows` counts.
+    local shown, sel, keep, no_item, sel_no_item, undelivered, out =
+      0, 0, 0, 0, 0, 0, {}
+    for _, row in ipairs(state.overview or {}) do
+      local asset = row.asset or ""
+      if rest == "" or asset:find(rest, 1, true) then
+        shown = shown + 1
+        if row.user_select then sel = sel + 1 end
+        if row.user_keep then keep = keep + 1 end
+        if not row.item then
+          no_item = no_item + 1
+          -- The number that matters on its own: a Sel with no item is a line
+          -- that says it has been decided and has no audio to deliver.
+          if row.user_select then sel_no_item = sel_no_item + 1 end
+        elseif row.user_select then
+          -- And the number nothing was watching: a line ticked for delivery
+          -- whose audio is NOT on the Selects track. Two lines sat like that
+          -- through three passes of this session, silent, because every check
+          -- there was looked for duplicates -- a loud symptom -- and nothing
+          -- compared the ticks against what actually landed.
+          local tr = r.GetMediaItem_Track(row.item)
+          local tname = ""
+          if tr then _, tname = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false) end
+          if tname ~= (vo.LoadConfig().track_selects or "Selects") then
+            undelivered = undelivered + 1
+          end
+        end
+        if rest ~= "" and #out < 60 then
+          local track = ""
+          if row.item then
+            local tr = r.GetMediaItem_Track(row.item)
+            if tr then _, track = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false) end
+          end
+          out[#out + 1] = string.format("%s take %s/%s %s%s%s src=%.3f item=%s %s",
+            asset, tostring(row.take_index or 0), tostring(row.take_count or 0),
+            row.status or "?",
+            row.user_select and " SEL" or "", row.user_keep and " KEEP" or "",
+            row.source_start or -1,
+            row.item and "yes" or "NONE", track)
+        end
+      end
+    end
+    local head = string.format(
+      "%d row(s), %d Sel, %d Keep, %d with no item (%d of them Sel), %d Sel not on Selects",
+      shown, sel, keep, no_item, sel_no_item, undelivered)
+    if #out == 0 then return head end
+    return head .. "\n" .. table.concat(out, "\n")
+
   elseif verb == "spans" then
     -- Raw memoised span table for any asset containing `rest`, with source
     -- times and lengths. Diagnostic: this is the exact input Cut works from.

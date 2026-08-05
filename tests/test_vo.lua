@@ -666,6 +666,57 @@ test("the item holding MOST of the take wins", function()
   assert(item == "B", "Got " .. tostring(item))
 end)
 
+test("a take whose start fell in the gap between cuts finds its own item", function()
+  -- What Cut actually leaves: padding and snapping pull each take's edges in to
+  -- the silence around it, so consecutive takes do NOT abut -- there is a gap,
+  -- and a take's raw word start sits inside it, touching the END of the take
+  -- BEFORE. Resolving that instant answered with the previous take, which is
+  -- how a line's Sel mark landed one take early and two items went to Selects
+  -- wearing the same delivered name.
+  local items = {
+    { item = "A", path = "s.wav", pos = 100, length = 1.89, start_offs = 139.54, playrate = 1 },
+    { item = "B", path = "s.wav", pos = 102, length = 1.92, start_offs = 141.58, playrate = 1 },
+    { item = "C", path = "s.wav", pos = 104, length = 1.41, start_offs = 143.68, playrate = 1 },
+  }
+  -- 143.50 is where B ends, and where C's take was recognised as starting.
+  local item, proj, _, coverage = vo.ResolveSourceSpan("s.wav", 143.50, 145.04, items)
+  assert(item == "C", "Got " .. tostring(item))
+  assert(coverage == "partial", "coverage: " .. tostring(coverage))
+  assert(math.abs(proj - 104) < 1e-9,
+    "lands on the first covered moment: " .. tostring(proj))
+end)
+
+test("a sliver of leftover does not outrank the clip holding the take", function()
+  -- After a cut the recording track still carries the unnamed remainders
+  -- between takes. One of them can CONTAIN a take's start instant -- the take
+  -- was padded inward, so its own clip begins a few milliseconds later -- and
+  -- an instant lookup then answers with the leftover. The row points at a
+  -- fragment, Pull sees no delivered clip for it, and the line's Sel silently
+  -- never reaches Selects. Whichever item holds most of the take wins.
+  local items = {
+    { item = "leftover", path = "s.wav", pos = 100, length = 0.11, start_offs = 518.83, playrate = 1 },
+    { item = "clip",     path = "s.wav", pos = 200, length = 2.06, start_offs = 518.94, playrate = 1 },
+  }
+  local item = vo.ResolveSourceSpan("s.wav", 518.90, 521.00, items)
+  assert(item == "clip", "Got " .. tostring(item))
+end)
+
+test("a take's own clip outranks a longer leftover beside it", function()
+  -- The other half of the same problem. Whisper inflates a final word's end
+  -- into the pause after it, so a take's SPAN can be longer than the clip cut
+  -- for it -- here the span runs 373.37..375.26 while its clip ends at 374.24.
+  -- Ranked by how much of the span each item holds, the leftover that follows
+  -- (1.02s) beat the clip itself (0.87s), and the line's Sel stayed on Review.
+  -- What separates them is how much of the ITEM is this take: the clip is
+  -- entirely this take, the leftover only partly.
+  local items = {
+    { item = "clip",     path = "s.wav", pos = 100, length = 0.87, start_offs = 373.37, playrate = 1 },
+    { item = "leftover", path = "s.wav", pos = 200, length = 2.02, start_offs = 374.24, playrate = 1 },
+  }
+  local item = vo.ResolveSourceSpan("s.wav", 373.37, 375.26, items)
+  assert(item == "clip", "Got " .. tostring(item))
+end)
+
 test("a take with nothing left of it resolves to nothing", function()
   local items = { { item = "B", path = "s.wav", pos = 100, length = 5,
                     start_offs = 40, playrate = 1 } }
@@ -2053,6 +2104,23 @@ test("the floor is the quietest measurable gap plus the offset", function()
   assert(floor and math.abs(floor - (-64.0)) < 1e-9, "Floor: " .. tostring(floor))
 end)
 
+test("one freakishly quiet gap does not set the floor for the whole file", function()
+  -- The floor used to be the MINIMUM gap level. A cleaned recording has patches
+  -- the noise reduction took down to near-digital-silence, and one of those set
+  -- a floor the rest of the file could never meet: measured -75dB against room
+  -- tone of about -67, so every "is this window quiet?" test failed, snapping
+  -- degraded to fixed pads for all 401 clips, and nothing could tell room from
+  -- speech. A low percentile is under the room tone without chasing outliers.
+  local levels = { -90, -60, -60, -60, -60, -60, -60, -60, -60, -60 }
+  local gaps = {}
+  for i = 1, #levels do gaps[i] = { from = i * 10, to = i * 10 + 1 } end
+  local probe = function(t0, _) return levels[math.floor(t0 / 10)] end
+  local floor = vo.MeasureNoiseFloor(gaps, probe,
+                                     { snap_floor_offset = 6.0, snap_min_silence = 0.06 })
+  assert(floor and math.abs(floor - (-54.0)) < 1e-9,
+    "the outlier dragged the floor down to " .. tostring(floor))
+end)
+
 test("a gap shorter than snap_min_silence is ignored", function()
   local floor = vo.MeasureNoiseFloor({ { from = 0, to = 0.01 } },
                                      function() return -70 end,
@@ -2314,6 +2382,92 @@ test("whisper's contiguous word times no longer weld the takes together", functi
     string.format("take 1: %.3f..%.3f", spans[1].start, spans[1].stop))
   assert(spans[2].start > 13.2 and spans[2].stop < 14.9,
     string.format("take 2: %.3f..%.3f", spans[2].start, spans[2].stop))
+end)
+
+test("two takes sharing an instant meet in the dip, not on the mark", function()
+  -- The whole point, stated as the property that matters: neither clip may end
+  -- up holding a piece of the other's word. Whisper marks the join at 10.00;
+  -- the real quiet between the words is at 9.97, and the second word's onset
+  -- has already begun by 9.98. Cutting on the mark gave clip 1 that onset and
+  -- clip 2 a decapitated word -- "Book." rendered as "Look."
+  local spans = { pad_span(7.0, 10.0), pad_span(10.0, 12.0) }
+  local words = { { t0 = 7.0, t1 = 10.0 }, { t0 = 10.0, t1 = 12.0 } }
+  local probe = function(t0, t1)
+    -- Quiet only in a narrow dip around 9.97; speech either side of it.
+    if t0 >= 9.960 and t1 <= 9.985 then return -80 end
+    return -10
+  end
+  vo.ApplyPadding(spans, { pre_pad = 0.15, post_pad = 0.25, snap_min_silence = 0.06,
+                           chained_boundary_reach = 0.050 }, nil, probe, -60, words)
+  assert(near(spans[1].stop, spans[2].start),
+    string.format("the takes disagree about the join: %.3f then %.3f",
+                  spans[1].stop, spans[2].start))
+  assert(spans[2].start < 10.0 - 1e-9,
+    "clip 2 is still cut on the mark: " .. spans[2].start)
+  assert(math.abs(spans[2].start - 9.97) < 0.011,
+    "the join did not land in the dip: " .. spans[2].start)
+end)
+
+test("the dip search is off by default, so cuts do not move behind your back", function()
+  -- The mechanism is real but unverified (see chained_boundary_reach). Until it
+  -- is settled, the DEFAULT config must place a chained boundary exactly where
+  -- it always did -- this is the test that stops it shipping by accident.
+  local spans = { pad_span(7.0, 10.0), pad_span(10.0, 12.0) }
+  local words = { { t0 = 7.0, t1 = 10.0 }, { t0 = 10.0, t1 = 12.0 } }
+  local probe = function(t0, t1)
+    if t0 >= 9.960 and t1 <= 9.985 then return -80 end
+    return -10
+  end
+  local cfg = { pre_pad = 0.15, post_pad = 0.25, snap_min_silence = 0.06,
+                chained_boundary_reach = vo.DEFAULTS.chained_boundary_reach }
+  vo.ApplyPadding(spans, cfg, nil, probe, -60, words)
+  assert(near(spans[2].start, 10.0), "the default moved the join: " .. spans[2].start)
+end)
+
+test("with no probe a chained boundary is left exactly where it was", function()
+  local spans = { pad_span(7.0, 10.0), pad_span(10.0, 12.0) }
+  vo.ApplyPadding(spans, { pre_pad = 0.15, post_pad = 0.25 })
+  assert(near(spans[2].start, 10.0 - 0.15), "start: " .. spans[2].start)
+end)
+
+test("a chained bound moves off the word when there is quiet to move into", function()
+  -- Whisper chains word times, so the bound sits on the take's own first word
+  -- and the clip is cut with nothing to spare -- worst for a soft onset (s, f,
+  -- th, a breath), which begins before the mark. Quiet behind the mark is the
+  -- dip, so the boundary belongs there and the onset stays with its word.
+  local spans = { pad_span(10.0, 13.0) }
+  local words = { { t0 = 7.0, t1 = 10.0 }, { t0 = 10.0, t1 = 13.0 } }
+  local probe = function(t0, t1) if t1 > 10.0 and t0 < 11.5 then return -10 end return -80 end
+  vo.ApplyPadding(spans, { pre_pad = 0.3, post_pad = 0.3, snap_min_silence = 0.1,
+                           chained_boundary_reach = 0.050 }, nil, probe, -60, words)
+  assert(spans[1].start < 10.0 - 1e-9,
+    "no room left for the onset: " .. spans[1].start)
+end)
+
+test("uniform audio offers no dip, so the boundary is left alone", function()
+  -- Two takes welded by continuous sound: there is no quieter moment to prefer
+  -- and nothing to learn, so the mark stands. Guessing a fixed distance here is
+  -- what put one take's onset into the other take's tail.
+  local spans = { pad_span(31.87, 34.87), pad_span(34.87, 35.44) }
+  local words = { { t0 = 31.87, t1 = 34.87 }, { t0 = 34.87, t1 = 35.44 } }
+  local probe = function() return -10 end
+  vo.ApplyPadding(spans, { pre_pad = 0.15, post_pad = 0.25, snap_min_silence = 0.06,
+                           chained_boundary_reach = 0.050 }, nil, probe, -60, words)
+  assert(near(spans[2].start, 34.87), "the boundary wandered: " .. spans[2].start)
+  assert(spans[1].stop <= spans[2].start + 1e-9,
+    "the takes overlap: " .. spans[1].stop .. " then " .. spans[2].start)
+end)
+
+test("the give never crosses the neighbouring take's own edge", function()
+  -- The bound that has to hold: a real neighbouring SPAN is a decision about
+  -- where another take begins, and no amount of give may cross it.
+  local spans = { pad_span(9.0, 9.99), pad_span(10.0, 13.0) }
+  local words = { { t0 = 9.0, t1 = 9.99 }, { t0 = 10.0, t1 = 13.0 } }
+  local probe = function(t0, t1) if t1 > 9.0 and t0 < 11.5 then return -10 end return -80 end
+  vo.ApplyPadding(spans, { pre_pad = 0.3, post_pad = 0.3, snap_min_silence = 0.1,
+                           min_edge_room = 0.030 }, nil, probe, -60, words)
+  assert(spans[2].start >= 9.99 - 1e-9,
+    "crossed into the take before it: " .. spans[2].start)
 end)
 
 test("a take whose words are already tight gets the same fixed room", function()
