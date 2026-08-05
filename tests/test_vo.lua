@@ -5167,6 +5167,38 @@ test("a missing depth is read as a plain track", function()
 end)
 
 --------------------------------
+-- EnsureChildTrack
+--------------------------------
+print("\nEnsureChildTrack:")
+
+test("a new child opens the folder and closes it", function()
+  mock.reset()
+  local parent = { info = { I_FOLDERDEPTH = 0 }, items = {}, name = "rec" }
+  mock.tracks = { parent }
+  local child = vo.EnsureChildTrack(parent, "Guard_Review")
+  assert(parent.info.I_FOLDERDEPTH == 1, "Parent becomes a folder")
+  assert(child.info.I_FOLDERDEPTH == -1, "The only child closes it")
+  assert(child.name == "Guard_Review", "Named on creation")
+end)
+
+test("ensuring an existing child does not disturb the folder shape", function()
+  -- The second Pull of a session: every destination already exists. The track
+  -- that closes the recording's folder must keep its -1, or the folder swallows
+  -- whatever the user adds below it later.
+  mock.reset()
+  local parent = { info = { I_FOLDERDEPTH = 1 },  items = {}, name = "rec" }
+  local review = { info = { I_FOLDERDEPTH = 0 },  items = {}, name = "Guard_Review" }
+  local closer = { info = { I_FOLDERDEPTH = -1 }, items = {}, name = "Hero_Selects" }
+  mock.tracks = { parent, review, closer }
+
+  local got = vo.EnsureChildTrack(parent, "Hero_Selects")
+  assert(got == closer, "The existing track is reused")
+  assert(closer.info.I_FOLDERDEPTH == -1,
+    "The closing child kept its depth, got " .. tostring(closer.info.I_FOLDERDEPTH))
+  assert(#mock.tracks == 3, "No track was created")
+end)
+
+--------------------------------
 -- PlanTimelineLayout
 --------------------------------
 print("\nPlanTimelineLayout:")

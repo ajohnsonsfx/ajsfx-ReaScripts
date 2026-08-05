@@ -4953,11 +4953,13 @@ function vo.ResolveSourceSpan(source_path, source_start, source_stop, items)
 end
 
 -- Find a track by name, or create one directly below `track`.
+-- Returns the track and whether this call created it, so a caller that shapes
+-- folder depths can leave an already-placed track's depth alone.
 function vo.EnsureTrackBelow(track, name)
   for i = 0, r.CountTracks(0) - 1 do
     local candidate = r.GetTrack(0, i)
     local _, existing = r.GetSetMediaTrackInfo_String(candidate, "P_NAME", "", false)
-    if existing == name then return candidate end
+    if existing == name then return candidate, false end
   end
 
   -- IP_TRACKNUMBER is 1-based, so it is already the 0-based index *after* this
@@ -4966,7 +4968,7 @@ function vo.EnsureTrackBelow(track, name)
   r.InsertTrackAtIndex(insert_at, true)
   local created = r.GetTrack(0, insert_at)
   r.GetSetMediaTrackInfo_String(created, "P_NAME", name, true)
-  return created
+  return created, true
 end
 
 -- The name a track answers to, falling back to its number when it has none.
@@ -4986,9 +4988,15 @@ end
 function vo.EnsureChildTrack(parent, name)
   local parent_depth, child_depth =
     vo.FolderDepthForChild(r.GetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH"))
-  local child = vo.EnsureTrackBelow(parent, name)
-  r.SetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH", parent_depth)
-  r.SetMediaTrackInfo_Value(child, "I_FOLDERDEPTH", child_depth)
+  local child, created = vo.EnsureTrackBelow(parent, name)
+  -- Depths are shaped only on creation. An existing child already sits inside
+  -- the folder, and rewriting its depth from the PARENT's current depth would
+  -- hand the track that closes the folder a 0 — leaving the folder open to
+  -- swallow whatever gets added below it.
+  if created then
+    r.SetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH", parent_depth)
+    r.SetMediaTrackInfo_Value(child, "I_FOLDERDEPTH", child_depth)
+  end
   return child
 end
 

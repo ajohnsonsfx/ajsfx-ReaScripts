@@ -363,9 +363,17 @@ local function WriteFile(path, text)
   return true
 end
 
+-- The active tab's project handle and file path. The handle is what tells a
+-- TAB SWITCH (different project) apart from a SAVE-AS (same project, new
+-- path); the two need opposite handling below.
+local function CurrentProject()
+  local proj, path = r.EnumProjects(-1, "")
+  return proj, path or ""
+end
+
 local function ProjectPath()
-  local _, path = r.EnumProjects(-1, "")
-  return path or ""
+  local _, path = CurrentProject()
+  return path
 end
 
 -- -----------------------------------------------------------------------
@@ -426,7 +434,10 @@ local function LoadProjectFile()
   state.entries, state.project_error, state.parse_failed = {}, "", false
   state.scripts, state.appends, state.pins = {}, {}, {}
 
-  local proj = ProjectPath()
+  local proj_handle, proj = CurrentProject()
+  -- Which tab this state was loaded from, so the frame loop can notice the
+  -- user landing on a different one.
+  state.tab_proj, state.tab_path = proj_handle, proj
   state.project_path = (proj ~= "") and vo.ProjectFilePath(proj) or nil
   if not state.project_path then return end
 
@@ -472,7 +483,11 @@ local function SaveProjectFile()
     return false
   end
 
-  local path = vo.ProjectFilePath(ProjectPath())
+  -- The path the state was LOADED from, not the active tab's: a flush that
+  -- fires just after a tab switch must land in the project the marks belong
+  -- to. Deriving fresh is only for a project that was unsaved at load time
+  -- and has been saved since.
+  local path = state.project_path or vo.ProjectFilePath(ProjectPath())
   if not path then
     state.message, state.message_kind =
       "Save the project before marking anything — the VO project file lives beside it.",
@@ -707,6 +722,29 @@ local function MaybeRescan()
      and (r.time_precise() - state.last_rescan) < RELOAD_THROTTLE then
     return
   end
+  Reload()
+end
+
+-- The window follows the ACTIVE project tab. Everything in `state` -- entries,
+-- scripts, appends, filters, the sidecar path -- belongs to the project it was
+-- loaded from, so landing on a different tab flushes what is pending to that
+-- project's own file and reloads from the new tab's. A save-as is the same
+-- project under a new name (same handle, new path): the state is kept and the
+-- sidecar path moves with the project instead.
+local function MaybeFollowProject()
+  local proj, path = CurrentProject()
+  if proj == state.tab_proj and path == state.tab_path then return end
+
+  if proj == state.tab_proj then
+    state.tab_path = path
+    state.project_path = (path ~= "") and vo.ProjectFilePath(path) or nil
+    -- Rewrite at the new location so the sidecar exists beside the new file.
+    state.dirty = state.dirty or (state.project_path ~= nil)
+    return
+  end
+
+  FlushProjectFile(true)
+  LoadProjectFile()
   Reload()
 end
 
@@ -3933,6 +3971,10 @@ local function loop()
   -- Between frames, before Begin: attaching during a frame is not guaranteed to
   -- take effect for that frame.
   EnsureFonts()
+
+  -- Project switches are handled before the rescan so a rescan can never
+  -- rebuild the old project's rows against the new project's items.
+  MaybeFollowProject()
 
   -- MaybeRescan is throttled internally; keep drawing every frame regardless.
   MaybeRescan()
