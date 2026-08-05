@@ -2723,12 +2723,32 @@ local function Pull()
 
   core.Transaction("VO Overview: pull", function()
     local tracks = {}
+
+    -- The trio reads Selects / Alts / Review top to bottom. EnsureChildTrack
+    -- inserts directly below the parent, so they are created in REVERSE --
+    -- each new one pushes the earlier ones down.
+    local seen_parents = {}
+    for _, move in ipairs(moves) do
+      local parent = RecordingTrackOf(move.id)
+      if parent and not seen_parents[parent] then
+        seen_parents[parent] = true
+        for _, cat in ipairs({ "review", "alts", "selects" }) do
+          tracks[tostring(parent) .. "|" .. base[cat]] =
+            vo.EnsureChildTrack(parent, base[cat])
+        end
+      end
+    end
+
     for _, move in ipairs(moves) do
       local item   = move.id
       -- Read the track INSIDE the loop: an earlier move may already have taken
       -- this item off the one it started on.
       local parent = RecordingTrackOf(item)
-      local name   = vo.CharacterTrackName(by_id[item].character, base[move.dest])
+      -- Plain Selects / Alts / Review, no character prefix: a recording is
+      -- one performer's session, so its children need no telling apart --
+      -- two characters never share a source track, and the separation that
+      -- matters is already the per-recording nesting.
+      local name   = base[move.dest]
       local key    = tostring(parent) .. "|" .. name
       if not tracks[key] then tracks[key] = vo.EnsureChildTrack(parent, name) end
 
