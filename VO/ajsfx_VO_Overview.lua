@@ -1248,12 +1248,13 @@ local function FollowTimelineSelection()
   state.timeline_sig = sig
 
   local n = r.CountSelectedMediaItems(0)
-  if n == 0 or n > 200 then return end
   local selected = {}
   for i = 0, n - 1 do selected[r.GetSelectedMediaItem(0, i)] = true end
 
-  -- Rows resolve their items on rebuild; a pointer gone stale simply misses,
-  -- and missing leaves the table alone -- never a wrong row lit.
+  -- The MIRROR, not a hint: the table's selection becomes exactly the rows of
+  -- the selected items -- and deselecting everything in the arrange view
+  -- deselects here too. Rows resolve their items on rebuild; a pointer gone
+  -- stale simply misses, which under-selects rather than lighting a wrong row.
   local found, first = {}, nil
   for _, row in ipairs(state.visible or {}) do
     if row.item and selected[row.item] then
@@ -1261,12 +1262,13 @@ local function FollowTimelineSelection()
       first = first or row.uid
     end
   end
-  if not first then return end   -- the selection is not takes this table shows
 
-  state.selection  = found
-  state.focus_key  = first
-  state.anchor_key = first
-  state.scroll_to_uid = first
+  state.selection = found
+  if first then
+    state.focus_key  = first
+    state.anchor_key = first
+    state.scroll_to_uid = first
+  end
 end
 
 -- Push the row selection out to the project. The edit cursor follows the FOCUS
