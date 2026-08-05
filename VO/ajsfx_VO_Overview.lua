@@ -1537,21 +1537,6 @@ local function AffectedRows()
   return state.visible, false
 end
 
--- The "only the selected rows" switch each panel offers, drawn identically in
--- all of them so the scope rule reads the same wherever it applies.
-local function DrawScopeToggle(id)
-  local changed, on = im.Checkbox(ctx, "Selected rows only##" .. id, state.selection_only)
-  if changed then state.selection_only = on end
-  if im.IsItemHovered(ctx) then
-    local n = #SelectedRows()
-    im.SetTooltip(ctx, string.format(
-      "Off: act on every row the filters are showing (%d).\n" ..
-      "On: act on the rows selected in the table (%d).\n\n" ..
-      "Off by default because clicking a row to listen to it also selects it.",
-      #state.visible, n))
-  end
-end
-
 -- The items Pull and Sort may act on, in timeline order, each carrying the name
 -- REAPER has for it right now.
 --
@@ -1807,6 +1792,25 @@ local function NewContext()
 end
 
 local ctx = NewContext()
+
+-- The "only the selected rows" switch each panel offers, drawn identically in
+-- all of them so the scope rule reads the same wherever it applies.
+--
+-- Defined HERE, below the context, not up with AffectedRows where it logically
+-- belongs: everything above this line runs before `ctx` exists, so a drawing
+-- helper placed there would pass a nil context to ImGui and take the frame
+-- down with it -- which is exactly what it did.
+local function DrawScopeToggle(id)
+  local changed, on = im.Checkbox(ctx, "Selected rows only##" .. id, state.selection_only)
+  if changed then state.selection_only = on end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, string.format(
+      "Off: act on every row the filters are showing (%d).\n" ..
+      "On: act on the rows selected in the table (%d).\n\n" ..
+      "Off by default because clicking a row to listen to it also selects it.",
+      #state.visible, #SelectedRows()))
+  end
+end
 
 -- -----------------------------------------------------------------------
 -- Fonts
