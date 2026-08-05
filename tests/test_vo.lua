@@ -673,6 +673,74 @@ test("a take with nothing left of it resolves to nothing", function()
 end)
 
 --------------------------------
+-- CheckCoverage
+--------------------------------
+print("\nCheckCoverage:")
+
+local function proj_items(...)
+  local out = {}
+  for i, pair in ipairs({...}) do
+    out[i] = { name = pair[1], track = pair[2] }
+  end
+  return out
+end
+
+test("a line with an item named for it is delivered", function()
+  local rep = vo.CheckCoverage(
+    proj_items({ "line_041", "MERIS_Selects" }, { "line_042", "MERIS_Selects" }),
+    name_lines("line_041", "line_042", "line_099"))
+  assert(rep.delivered == 2, "delivered: " .. rep.delivered)
+  assert(rep.missing == 1, "missing: " .. rep.missing)
+  assert(rep.by_line[1].count == 1, "line 1")
+  assert(rep.by_line[3] == nil, "line 3 has nothing")
+end)
+
+test("it counts takes per line and says which tracks they are on", function()
+  local rep = vo.CheckCoverage(
+    proj_items({ "line_042", "MERIS_Selects" },
+               { "line_042", "MERIS_Review" },
+               { "line_042", "MERIS_Review" }),
+    name_lines("line_042"))
+  local rec = rep.by_line[1]
+  assert(rec.count == 3, "count: " .. rec.count)
+  assert(rec.tracks["MERIS_Selects"] == 1 and rec.tracks["MERIS_Review"] == 2,
+    "tracks were not counted separately")
+end)
+
+test("a name the script does not have is reported once, not per take", function()
+  local rep = vo.CheckCoverage(
+    proj_items({ "line_042_alt3", "MERIS_Alts" }, { "line_042_alt3", "MERIS_Alts" },
+               { "chatter", "raw" }),
+    name_lines("line_042"))
+  assert(#rep.extra == 2, "extra: " .. #rep.extra)
+  assert(rep.extra[1] == "chatter" and rep.extra[2] == "line_042_alt3",
+    "sorted, and deduplicated")
+end)
+
+test("an item named for a line's delivered name counts for that line", function()
+  -- What Pull renamed must read as delivered, or the check would report every
+  -- appended line as missing the moment it was pulled.
+  local lines = name_lines("line_042")
+  lines[1].deliver = "line_042_ch2"
+  local rep = vo.CheckCoverage(proj_items({ "line_042_ch2", "MERIS_Selects" }), lines)
+  assert(rep.delivered == 1 and #rep.extra == 0, "the delivered name is the line's")
+end)
+
+test("a name two lines claim is counted apart, not credited to either", function()
+  local rep = vo.CheckCoverage(proj_items({ "dup", "raw" }),
+                               name_lines("dup", "dup"))
+  assert(rep.ambiguous == 1, "ambiguous: " .. rep.ambiguous)
+  assert(rep.delivered == 0, "neither line may claim it")
+  assert(#rep.extra == 0, "and it is not extra either -- it is a clash to fix")
+end)
+
+test("an empty project reports every line missing and nothing extra", function()
+  local rep = vo.CheckCoverage({}, name_lines("a", "b"))
+  assert(rep.delivered == 0 and rep.missing == 2, "nothing delivered")
+  assert(#rep.extra == 0, "nothing extra")
+end)
+
+--------------------------------
 -- IsDestTrackName
 --------------------------------
 print("\nIsDestTrackName:")

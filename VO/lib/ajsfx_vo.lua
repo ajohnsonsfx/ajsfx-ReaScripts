@@ -555,6 +555,56 @@ function vo.ResolveItemName(index, name)
   return at
 end
 
+-- "Have I got everything?" -- answered from the project's ITEM NAMES and the
+-- script, and from nothing else.
+--
+-- No transcript, no match, no stored mapping. It re-reads the truth every time
+-- it is asked, so it cannot drift out of sync with the project: the item's name
+-- IS the assignment, and this only reports what those names say. An answer it
+-- gives is wrong only if the names are wrong, which is a thing you can see.
+--
+-- `items` are { name = <take name>, track = <track name> }.
+-- Returns:
+--   by_line[line_index] = { count = n, tracks = { [track name] = n } }
+--   delivered  how many script lines have at least one item named for them
+--   missing    how many have none
+--   extra      names in the project that resolve to no line, deduplicated
+--   ambiguous  names claimed by two lines, which no name can distinguish
+function vo.CheckCoverage(items, lines)
+  local index = vo.BuildNameIndex(lines)
+  local by_line, extra_seen, extra, ambiguous = {}, {}, {}, 0
+
+  for _, it in ipairs(items or {}) do
+    local at, why = vo.ResolveItemName(index, it.name)
+    if at then
+      local rec = by_line[at]
+      if not rec then rec = { count = 0, tracks = {} }; by_line[at] = rec end
+      rec.count = rec.count + 1
+      local track = it.track or ""
+      rec.tracks[track] = (rec.tracks[track] or 0) + 1
+    elseif why == "ambiguous" then
+      ambiguous = ambiguous + 1
+    else
+      -- Deduplicated: three takes of a name the script does not have is one
+      -- thing to look at, not three.
+      local key = vo.NormalizeItemName(it.name)
+      if key ~= "" and not extra_seen[key] then
+        extra_seen[key] = true
+        extra[#extra + 1] = it.name
+      end
+    end
+  end
+
+  local delivered, missing = 0, 0
+  for i = 1, #(lines or {}) do
+    if by_line[i] then delivered = delivered + 1 else missing = missing + 1 end
+  end
+
+  table.sort(extra)
+  return { by_line = by_line, delivered = delivered, missing = missing,
+           extra = extra, ambiguous = ambiguous }
+end
+
 -- Where each item goes, as a pure function of its NAME and its two ticks.
 -- Selects and Alts are DELIVERED; Review is everything else -- undecided,
 -- unwanted, or simply not listened to yet.
