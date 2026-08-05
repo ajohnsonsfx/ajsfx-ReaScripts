@@ -4308,6 +4308,73 @@ local function RunRemoteCommand(command)
       end
     end
     return #out .. " span(s)\n" .. table.concat(out, "\n")
+  elseif verb == "verify" then
+    -- Dialogue check on every delivered item: the words the transcript holds
+    -- inside the item's source range, against the text of the line its NAME
+    -- claims. No whisper run -- the transcript already knows what was said
+    -- where. Catches wrong names, boundary word loss and mis-assigned takes.
+    local index = vo.BuildNameIndex(state.lines or {})
+    local cfg2 = vo.LoadConfig()
+    local words_cache = {}
+    local flagged, checked = {}, 0
+    for ti = 0, r.CountTracks(0) - 1 do
+      local tr = r.GetTrack(0, ti)
+      for ii = 0, r.CountTrackMediaItems(tr) - 1 do
+        local it = r.GetTrackMediaItem(tr, ii)
+        local tk = r.GetActiveTake(it)
+        if tk then
+          local _, nm = r.GetSetMediaItemTakeInfo_String(tk, "P_NAME", "", false)
+          if nm ~= "" and not nm:find("%.wav$") then
+            local base = vo.StripAltSuffix(nm, cfg2.alt_append_pattern) or nm
+            local at = vo.ResolveItemName(index, base)
+            local line = at and (state.lines or {})[at]
+            if line and line.text and line.text ~= "" then
+              local src = r.GetMediaItemTake_Source(tk)
+              local path = src and r.GetMediaSourceFileName(src, "")
+              if path and path ~= "" then
+                if words_cache[path] == nil then
+                  local parsed = vo.ReadTranscript(path)
+                  words_cache[path] = parsed and parsed.words or false
+                end
+                local words = words_cache[path]
+                if words then
+                  checked = checked + 1
+                  local offs = r.GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS")
+                  local len  = r.GetMediaItemInfo_Value(it, "D_LENGTH")
+                  local rate = r.GetMediaItemTakeInfo_Value(tk, "D_PLAYRATE")
+                  if rate <= 0 then rate = 1 end
+                  local a, b = offs, offs + len * rate
+                  local heard = {}
+                  for _, w in ipairs(words) do
+                    if w.t0 < b and w.t1 > a then heard[#heard + 1] = w.text end
+                  end
+                  local want = vo.Tokenize(vo.Normalize(line.text))
+                  local got  = vo.Tokenize(vo.Normalize(table.concat(heard, " ")))
+                  local got_set, hits = {}, 0
+                  for _, t in ipairs(got) do got_set[t] = (got_set[t] or 0) + 1 end
+                  for _, t in ipairs(want) do
+                    if (got_set[t] or 0) > 0 then
+                      got_set[t] = got_set[t] - 1
+                      hits = hits + 1
+                    end
+                  end
+                  local score = (#want > 0) and hits / #want or 1
+                  if score < 0.8 then
+                    flagged[#flagged + 1] = string.format(
+                      "%s: %d%% of the line's words heard (said: %s)",
+                      nm, math.floor(score * 100 + 0.5),
+                      table.concat(heard, " "):sub(1, 70))
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+    return string.format("%d item(s) verified, %d flagged%s%s",
+      checked, #flagged, (#flagged > 0) and "\n" or "",
+      table.concat(flagged, "\n"))
   elseif verb == "missing" then
     -- Why is a line absent? Three different answers hide under "missing":
     -- never read (no match anywhere), read but the audio is not in the
