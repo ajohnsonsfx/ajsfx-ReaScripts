@@ -4662,7 +4662,9 @@ end
 local REMOTE_SECTION = "ajsfx_vo_remote"
 local REMOTE_HELP =
   "status | rematch | cut | pull | name_alts | sort script|record | " ..
-  "set selection_only 0|1 | dupes | append script|asset|nth|text"
+  "set selection_only 0|1 | dupes | append script|asset|nth|text | " ..
+  "spans <needle> | missing | boundaries | verify | " ..
+  "make_select <takename> | place | tighten"
 
 local function RemoteStatus()
   local c, parts = state.check or {}, {}
