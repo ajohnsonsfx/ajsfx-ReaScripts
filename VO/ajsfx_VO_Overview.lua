@@ -3953,6 +3953,91 @@ local function DrawSettingsWindow()
 end
 
 -- -----------------------------------------------------------------------
+-- Remote control
+-- -----------------------------------------------------------------------
+--
+-- A headless seam over the same handlers the buttons call, so the window can
+-- be driven from another script -- tests, batch jobs, an automation bridge --
+-- without a single click. Write a command, poll the serial, read the result:
+--
+--   reaper.SetExtState("ajsfx_vo_remote", "command", "cut", false)
+--   -- "serial" bumps when the command has run; "result" holds the outcome.
+--
+-- The seam is these three keys and the command names; everything behind it is
+-- the button handlers unchanged, so remote runs exercise the same code the
+-- panels do -- including their guards and their status strings.
+
+local REMOTE_SECTION = "ajsfx_vo_remote"
+local REMOTE_HELP =
+  "status | rematch | cut | pull | name_alts | sort script|record | " ..
+  "set selection_only 0|1"
+
+local function RemoteStatus()
+  local c, parts = state.check or {}, {}
+  parts[#parts + 1] = string.format("%d of %d lines in the project",
+    c.delivered or 0, #(state.lines or {}))
+  parts[#parts + 1] = string.format("missing=%d", c.missing or 0)
+  parts[#parts + 1] = string.format("extra=%d", #(c.extra or {}))
+  parts[#parts + 1] = string.format("rows=%d", #(state.overview or {}))
+  parts[#parts + 1] = string.format("scripts=%d", #(state.scripts or {}))
+  parts[#parts + 1] = string.format("selection_only=%s",
+    state.selection_only and "1" or "0")
+  if state.message and state.message ~= "" then
+    parts[#parts + 1] = "last: " .. state.message
+  end
+  return table.concat(parts, " | ")
+end
+
+local function RunRemoteCommand(command)
+  local verb, rest = command:match("^(%S+)%s*(.*)$")
+
+  if verb == "status" then
+    return RemoteStatus()
+  elseif verb == "rematch" then
+    Rematch()
+    return "rematched: " .. RemoteStatus()
+  elseif verb == "cut" then
+    DoCut()
+    return state.cut_result or "cut ran with no result string"
+  elseif verb == "pull" then
+    Pull()
+    return state.pull_result or "pull ran with no result string"
+  elseif verb == "name_alts" then
+    ApplyAltNames()
+    return state.pull_result or state.message or "name_alts ran"
+  elseif verb == "sort" then
+    if rest == "script" or rest == "record" then state.layout_order = rest end
+    SortOnTimeline()
+    return state.message or "sort ran"
+  elseif verb == "set" then
+    local key, value = rest:match("^(%S+)%s+(%S+)$")
+    if key == "selection_only" then
+      state.selection_only = (value == "1")
+      return "selection_only=" .. (state.selection_only and "1" or "0")
+    end
+    return "unknown setting: " .. tostring(key) .. ". Commands: " .. REMOTE_HELP
+  end
+
+  return "unknown command: " .. tostring(verb) .. ". Commands: " .. REMOTE_HELP
+end
+
+local remote_serial = 0
+
+local function PollRemote()
+  local command = r.GetExtState(REMOTE_SECTION, "command")
+  if command == "" then return end
+  -- Cleared BEFORE running, so a command that errors cannot wedge the loop
+  -- into retrying it every frame.
+  r.DeleteExtState(REMOTE_SECTION, "command", false)
+
+  local ok, result = pcall(RunRemoteCommand, command)
+  remote_serial = remote_serial + 1
+  r.SetExtState(REMOTE_SECTION, "result",
+    ok and tostring(result) or ("ERROR: " .. tostring(result)), false)
+  r.SetExtState(REMOTE_SECTION, "serial", tostring(remote_serial), false)
+end
+
+-- -----------------------------------------------------------------------
 -- Startup and loop
 -- -----------------------------------------------------------------------
 
@@ -3978,6 +4063,9 @@ local function loop()
 
   -- MaybeRescan is throttled internally; keep drawing every frame regardless.
   MaybeRescan()
+
+  -- After the rescan, so a remote command always acts on current rows.
+  PollRemote()
 
   FlushProjectFile(false)
   ApplyFilters()
