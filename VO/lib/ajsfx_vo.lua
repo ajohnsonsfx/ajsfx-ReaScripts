@@ -1156,6 +1156,11 @@ vo.DEFAULTS = {
   cut_fade_in  = 0.010, -- seconds
   cut_fade_out = 0.050, -- seconds
 
+  -- A leftover on the recording track shorter than this is deleted at Pull
+  -- regardless of content: a half-second scrap is not usable audio even when
+  -- it holds a syllable.
+  pull_min_leftover = 1.0, -- seconds
+
   -- Per-session toggles (see SPEC.md §4). Defaults cut and name every take
   -- identically, leaving the user to audition and delete.
   use_alts_track   = false,

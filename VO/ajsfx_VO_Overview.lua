@@ -2769,6 +2769,10 @@ local function Pull()
           if nm2 == "" or nm2:find("%.wav$") then
             local pos2 = r.GetMediaItemInfo_Value(it2, "D_POSITION")
             local len2 = r.GetMediaItemInfo_Value(it2, "D_LENGTH")
+            -- Too short to be usable audio, whatever is in it.
+            if len2 < vo.Opt(cfg, "pull_min_leftover") then
+              doomed[#doomed + 1] = it2
+            else
             local probe, destroy = vo.MakeTakeProbe(tk2)
             if probe then
               local lo, hi = math.huge, -math.huge
@@ -2787,6 +2791,7 @@ local function Pull()
               if hi > -math.huge and (hi - lo) < 12.0 and hi < -35.0 then
                 doomed[#doomed + 1] = it2
               end
+            end
             end
           end
         end
