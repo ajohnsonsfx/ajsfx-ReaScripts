@@ -3999,6 +3999,18 @@ test("a take is named the line's delivered name, not the bare filename", functio
   assert(names["shared_greeting"], "The greeting line's take carries its Append")
   assert(names["shared_death"],    "The death line's take carries its Append")
   assert(not names["shared"], "No take may carry the ambiguous bare name")
+
+  -- Every cut clip carries the protective fades: short in, longer out.
+  local faded = 0
+  for _, it in ipairs(raw.items) do
+    if it.take and it.take.name and it.take.name:find("^shared_") then
+      assert((it.info.D_FADEINLEN or 0) > 0, "cut clip missing fade-in")
+      assert((it.info.D_FADEOUTLEN or 0) > (it.info.D_FADEINLEN or 0),
+        "fade-out should be longer than fade-in")
+      faded = faded + 1
+    end
+  end
+  assert(faded == 2, "expected both clips faded, got " .. faded)
 end)
 
 test("an unmatched span is neither split nor moved", function()

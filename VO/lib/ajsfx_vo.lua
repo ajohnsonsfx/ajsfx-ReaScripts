@@ -1151,6 +1151,11 @@ vo.DEFAULTS = {
   snap_head_room = 0.060, -- seconds of room before the measured speech onset
   snap_tail_room = 0.150, -- seconds of room after the measured speech end
 
+  -- Every cut clip gets a short protective fade: shorter in, longer out,
+  -- both well inside the head/tail room so they live in silence.
+  cut_fade_in  = 0.010, -- seconds
+  cut_fade_out = 0.050, -- seconds
+
   -- Per-session toggles (see SPEC.md §4). Defaults cut and name every take
   -- identically, leaving the user to audition and delete.
   use_alts_track   = false,
@@ -5282,6 +5287,9 @@ vo.MIN_SPLIT_LENGTH = 0.001  -- seconds
 function vo.ApplyPlan(plan, source_track)
   local applied = 0
   local failures = {}
+  local cfg = vo.LoadConfig()
+  local fade_in  = vo.Opt(cfg, "cut_fade_in")
+  local fade_out = vo.Opt(cfg, "cut_fade_out")
 
   for _, span in ipairs(plan) do
     local length = (span.stop or 0) - (span.start or 0)
@@ -5319,6 +5327,14 @@ function vo.ApplyPlan(plan, source_track)
       if take then
         r.GetSetMediaItemTakeInfo_String(take, "P_NAME",
           span.deliver or span.asset or span.name or "", true)
+      end
+      -- Protective fades, shorter in than out, sitting inside the head/tail
+      -- room the boundary placement just guaranteed.
+      if fade_in  and fade_in  > 0 then
+        r.SetMediaItemInfo_Value(piece, "D_FADEINLEN", fade_in)
+      end
+      if fade_out and fade_out > 0 then
+        r.SetMediaItemInfo_Value(piece, "D_FADEOUTLEN", fade_out)
       end
       applied = applied + 1
     end
