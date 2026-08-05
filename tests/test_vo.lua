@@ -2257,13 +2257,16 @@ test("without a probe the fixed pads are applied exactly as before", function()
   assert(spans[1].snapped == nil, "snapped should not be set without a probe")
 end)
 
-test("with a probe the boundary lands in silence inside the pad", function()
+test("with a probe the edges sit a FIXED room from the speech", function()
+  -- Consistency is the contract: every clip gets snap_head_room before its
+  -- measured onset and snap_tail_room after its end -- not wherever the probe
+  -- happened to cross the floor, which gave 0..1760ms across one session.
   local spans = { pad_span(2.0, 3.0) }
   local probe = function(t0, t1) if t1 > 2.0 and t0 < 3.0 then return -10 end return -80 end
   vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.05 },
                   nil, probe, -60)
-  assert(near(spans[1].start, 1.95), "start: " .. spans[1].start)
-  assert(near(spans[1].stop,  3.05), "stop: " .. spans[1].stop)
+  assert(near(spans[1].start, 2.0 - 0.060), "start: " .. spans[1].start)
+  assert(near(spans[1].stop,  3.0 + 0.150), "stop: " .. spans[1].stop)
   assert(spans[1].snapped == "silence", "snapped: " .. tostring(spans[1].snapped))
 end)
 
@@ -2313,15 +2316,15 @@ test("whisper's contiguous word times no longer weld the takes together", functi
     string.format("take 2: %.3f..%.3f", spans[2].start, spans[2].stop))
 end)
 
-test("a take whose words are already tight is padded exactly as before", function()
-  -- The good case must not regress: speech fills the span, so there is nothing
-  -- to trim in and the edges travel outward into the pad as they always did.
+test("a take whose words are already tight gets the same fixed room", function()
+  -- Speech fills the span, so the bounds equal the raw span -- and the room
+  -- applied around them is identical to every other clip's.
   local spans = { pad_span(2.0, 3.0) }
   local probe = function(t0, t1) if t1 > 2.0 and t0 < 3.0 then return -10 end return -80 end
   vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.05 },
                   nil, probe, -60)
-  assert(near(spans[1].start, 1.95), "start: " .. spans[1].start)
-  assert(near(spans[1].stop,  3.05), "stop: " .. spans[1].stop)
+  assert(near(spans[1].start, 2.0 - 0.060), "start: " .. spans[1].start)
+  assert(near(spans[1].stop,  3.0 + 0.150), "stop: " .. spans[1].stop)
 end)
 
 test("a boundary never crosses into the neighbouring take's audio", function()
@@ -2372,19 +2375,50 @@ test("the span's own words do not bound its edges", function()
   assert(spans[1].stop  > 3.0, "stop did not move: " .. spans[1].stop)
 end)
 
-test("without words the pad is still the only limit", function()
+test("without words the fixed room still applies from the raw span", function()
+  -- Silence throughout: no speech to measure, so the raw word times stand in
+  -- for the bounds and the room is applied around THEM.
   local spans = { pad_span(2.0, 3.0) }
   vo.ApplyPadding(spans, { pre_pad = 0.4, post_pad = 0.4, snap_min_silence = 0.02 },
                   nil, function() return -80 end, -60)
-  assert(near(spans[1].start, 1.98), "start: " .. spans[1].start)
+  assert(near(spans[1].start, 2.0 - 0.060), "start: " .. spans[1].start)
+  assert(spans[1].snapped == "pad", "unmeasured bounds must not claim silence")
 end)
 
-test("no silence found is reported as pad, not silence", function()
+test("a breath welded to the first word travels with its take", function()
+  -- A "ha" at 1.7..2.0, contiguous with speech at 2.0..3.0 -- a noise, not a
+  -- word, so no timestamp covers it. The head walks back through the sound
+  -- and the room lands before the breath, not inside it.
+  local spans = { pad_span(2.0, 3.0) }
+  local probe = function(t0, t1) if t1 > 1.7 and t0 < 3.0 then return -10 end return -80 end
+  vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.05 },
+                  nil, probe, -60)
+  assert(spans[1].start < 1.70, "the breath was cut off: " .. spans[1].start)
+  assert(spans[1].start > 1.50, "the head ran away: " .. spans[1].start)
+end)
+
+test("the walk through sound never crosses the neighbour limit", function()
+  -- Loud all the way back to the previous word: the extension stops at the
+  -- limit, it does not eat the neighbour.
+  local spans = { pad_span(2.0, 3.0) }
+  local words = {
+    { t0 = 1.0, t1 = 1.5, text = "prev" },
+    { t0 = 2.0, t1 = 3.0, text = "chosen" },
+  }
+  local probe = function() return -10 end
+  vo.ApplyPadding(spans, { pre_pad = 2.0, post_pad = 0.5, snap_min_silence = 0.05 },
+                  nil, probe, -60, words)
+  assert(spans[1].start >= 1.5 - 1e-9,
+    "the extension crossed the previous word: " .. spans[1].start)
+end)
+
+test("loud room at the placed edge is reported as pad, not silence", function()
+  -- The flag is a verified claim: an edge sitting in audio that never drops
+  -- below the floor must say so, so the run can name the clips to listen to.
   local spans = { pad_span(2.0, 3.0) }
   vo.ApplyPadding(spans, { pre_pad = 0.2, post_pad = 0.2, snap_min_silence = 0.05 },
                   nil, function() return -10 end, -60)
   assert(spans[1].snapped == "pad", "snapped: " .. tostring(spans[1].snapped))
-  assert(near(spans[1].stop, 3.2), "stop should fall back to the pad: " .. spans[1].stop)
 end)
 
 test("snap_boundaries = false ignores the probe entirely", function()

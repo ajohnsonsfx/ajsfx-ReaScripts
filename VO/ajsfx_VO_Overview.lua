@@ -4276,9 +4276,9 @@ local function RunRemoteCommand(command)
               local probe, destroy = vo.MakeTakeProbe(take)
               local db = nil
               if probe then
-                -- Take-relative time: the accessor's zero is the item's start.
-                local rel = (edge_src - offs) / rate
-                local p0 = math.max(0, math.min(rel - 0.03, len - 0.06))
+                -- Project time throughout: the probe converts internally.
+                local edge_proj = pos + (edge_src - offs) / rate
+                local p0 = math.max(pos, math.min(edge_proj - 0.03, pos + len - 0.06))
                 db = probe(p0, p0 + 0.06)
               end
               if destroy then destroy() end

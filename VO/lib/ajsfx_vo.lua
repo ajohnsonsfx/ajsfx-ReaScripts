@@ -1143,6 +1143,14 @@ vo.DEFAULTS = {
   snap_floor_offset = 6.0,   -- dB above the measured noise floor
   snap_floor_window = 0.500, -- seconds of the quietest gap used to measure it
 
+  -- With snapping on, edges sit at a FIXED distance from the measured speech
+  -- bounds -- every clip gets the same head and tail room, clamped by the
+  -- neighbouring word and by pre/post_pad. Placing the edge wherever the
+  -- probe first crossed the floor gave 0ms on clean silence and the full pad
+  -- on uneven room tone: 0-1760ms of head room across one session.
+  snap_head_room = 0.060, -- seconds of room before the measured speech onset
+  snap_tail_room = 0.150, -- seconds of room after the measured speech end
+
   -- Per-session toggles (see SPEC.md §4). Defaults cut and name every take
   -- identically, leaving the user to audition and delete.
   use_alts_track   = false,
@@ -2180,10 +2188,46 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
       local wa = word_start_after(words, s.raw_stop)
       if wa then stop_limit = math.min(stop_limit, wa) end
 
-      local a, how_a = vo.SnapBoundary(at_start, start_limit, -1, floor_db, probe, cfg)
-      local b, how_b = vo.SnapBoundary(at_stop,  stop_limit,   1, floor_db, probe, cfg)
-      s.start, s.stop = a, b
-      s.snapped = (how_a == "silence" and how_b == "silence") and "silence" or "pad"
+      -- A fixed distance from the SPEECH, not wherever the probe first
+      -- crossed the floor: the crossing point depends on room tone and
+      -- breaths, which handed one session anywhere from 0 to 1760ms of head
+      -- room. Speech bounds are the measurement; the room around them is a
+      -- constant, clamped by the neighbouring word and the pad maximums.
+      -- A breath or a "ha" welded to the take's first word is part of the
+      -- take, but whisper does not transcribe it, so the word time starts
+      -- after it. Walk outward through CONTIGUOUS sound until real silence,
+      -- bounded by the neighbour limits -- so a leading noise is captured,
+      -- and a neighbouring word can never be.
+      local function extend_through_sound(t, limit, dir)
+        local step = 0.02
+        while (dir < 0 and t - step >= limit) or (dir > 0 and t + step <= limit) do
+          local w0 = (dir < 0) and (t - step) or t
+          local db = probe(w0, w0 + step)
+          if not db or db <= floor_db then break end
+          t = t + dir * step
+        end
+        return t
+      end
+      at_start = extend_through_sound(at_start, start_limit, -1)
+      at_stop  = extend_through_sound(at_stop,  stop_limit,  1)
+
+      local head = math.min(pre,  vo.Opt(cfg, "snap_head_room"))
+      local tail = math.min(post, vo.Opt(cfg, "snap_tail_room"))
+      s.start = math.max(start_limit, at_start - head)
+      s.stop  = math.min(stop_limit,  at_stop  + tail)
+      -- "silence" is a verified claim: speech was measured on both ends AND
+      -- the room the edges sit in actually reads quiet. Loud room tone or an
+      -- unmeasurable floor reports "pad" so the run can say which clips to
+      -- listen to.
+      local function edge_quiet(x0, x1)
+        if x1 - x0 < 1e-6 then return true end
+        local db = probe(x0, x1)
+        return db ~= nil and db <= floor_db
+      end
+      s.snapped = (sp0 and sp1
+                   and edge_quiet(s.start, math.min(at_start, s.start + 0.05))
+                   and edge_quiet(math.max(at_stop, s.stop - 0.05), s.stop))
+                  and "silence" or "pad"
     else
       s.start = s.raw_start - pre
       s.stop  = s.raw_stop + post
@@ -4782,7 +4826,17 @@ function vo.MakeTakeProbe(take)
                  r.GetMediaSourceNumChannels(source) or 1
   if not chans or chans < 1 then chans = 1 end
 
+  -- The accessor's clock starts at the take's own start, but every caller
+  -- reasons in PROJECT time -- word timings, span edges, gaps. Converting
+  -- HERE is what makes that true for an item anywhere on the timeline: with
+  -- the shift missing, a session whose recording sat at 10:00 handed every
+  -- probe a time outside the accessor, got nil, and silently lost the noise
+  -- floor -- and with it the whole boundary snap.
+  local item = r.GetMediaItemTake_Item and r.GetMediaItemTake_Item(take)
+  local item_pos = item and r.GetMediaItemInfo_Value(item, "D_POSITION") or 0
+
   local function probe(t0, t1)
+    t0, t1 = t0 - item_pos, t1 - item_pos
     local n = math.floor((t1 - t0) * rate)
     if n < 1 then return nil end
     -- Cap the read so a pathological window cannot allocate without bound.
