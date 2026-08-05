@@ -576,6 +576,36 @@ no match, no stored mapping — so these checks are about names, not matching.
 5. Open the project file in a text editor. `View` rows appear only for what is
    actually set; clearing every filter removes them again.
 
+## The table follows the timeline (2026-08-04)
+
+1. With takes cut and the window open, click a take in the ARRANGE view. Its
+   row lights in the table and scrolls into view. The edit cursor does NOT
+   move — you clicked the timeline, the timeline is where you are.
+2. Ctrl-click a second take on another track. Both rows are lit.
+3. Click a row in the TABLE. The item selects in the arrange view as before,
+   and the table does not fight itself (no scroll bounce on the next frame).
+4. Select an item the table has no row for (a remainder chunk). The table
+   selection is left exactly as it was.
+5. Scroll the table away from the followed row. It stays where you scrolled —
+   the follow is consumed once, not reasserted per frame.
+
+## Drift and orphan warnings (2026-08-04)
+
+1. Rename a cut take in REAPER with F2. The header gains
+   "1 name(s) changed outside this window"; hovering lists old -> new.
+   Rename it back — the entry stays (it re-arms only when THIS window
+   renames something, or on Refresh of a fresh project load).
+2. Cut and Name: the counter does not fire for the tool's own renames.
+3. Hand-edit the project `_vo.csv`: change an Append row's script name to one
+   that is not loaded. Reopen — the header shows a red
+   "1 Append(s) match no loaded line" naming it.
+4. A fresh uncut project shows "0 of N" with NO "name(s) not on the script" —
+   the recording's own item no longer counts as a stray.
+5. Name alts, then check the header: `_alt` names count as takes of their
+   line, not as strays.
+6. Open the Cut and Name panel on a project with two lines sharing a filename
+   and no Appends: the panel warns before the cut, in amber.
+
 ---
 
 ## Recording results

@@ -1221,6 +1221,54 @@ local function ShowCandidate(hit)
   r.UpdateArrange()
 end
 
+-- The project selection as a cheap signature, so a frame can ask "did it
+-- change since I last looked" without walking every item.
+local function TimelineSelSignature()
+  local n = r.CountSelectedMediaItems(0)
+  local parts = { tostring(n) }
+  for i = 0, math.min(n, 8) - 1 do
+    parts[#parts + 1] = tostring(r.GetSelectedMediaItem(0, i))
+  end
+  return table.concat(parts, "|")
+end
+
+-- Timeline -> table, the reverse of ClickRow. During a listening pass the
+-- user drives from the ARRANGE view -- click a take, play it -- and without
+-- this the table sits wherever it was, so they are hearing a line with no
+-- idea which script row it is. When the project selection changes on its own,
+-- the rows whose items are selected light up and the first scrolls into view.
+--
+-- The edit cursor is deliberately NOT moved: the user is already where they
+-- want to be, and seeking under their playback is the tool fighting them.
+-- Table-driven clicks do not bounce back through here: SyncProjectSelection
+-- refreshes the signature after it writes the project selection.
+local function FollowTimelineSelection()
+  local sig = TimelineSelSignature()
+  if sig == state.timeline_sig then return end
+  state.timeline_sig = sig
+
+  local n = r.CountSelectedMediaItems(0)
+  if n == 0 or n > 200 then return end
+  local selected = {}
+  for i = 0, n - 1 do selected[r.GetSelectedMediaItem(0, i)] = true end
+
+  -- Rows resolve their items on rebuild; a pointer gone stale simply misses,
+  -- and missing leaves the table alone -- never a wrong row lit.
+  local found, first = {}, nil
+  for _, row in ipairs(state.visible or {}) do
+    if row.item and selected[row.item] then
+      found[row.uid] = true
+      first = first or row.uid
+    end
+  end
+  if not first then return end   -- the selection is not takes this table shows
+
+  state.selection  = found
+  state.focus_key  = first
+  state.anchor_key = first
+  state.scroll_to_uid = first
+end
+
 -- Push the row selection out to the project. The edit cursor follows the FOCUS
 -- row only: seeking once per gesture rather than once per selected row keeps a
 -- fifty-row shift-click from thrashing the transport.
@@ -1263,6 +1311,10 @@ local function SyncProjectSelection()
     end
   end
   r.UpdateArrange()
+
+  -- This write IS the new project selection; refreshing the signature here is
+  -- what keeps FollowTimelineSelection from reading it back as the user's.
+  state.timeline_sig = TimelineSelSignature()
 end
 
 local function ClickRow(row, index, mods)
@@ -3426,6 +3478,12 @@ local function DrawTableBody()
       local at = i
       pending_action = function() ClickRow(row, at, captured) end
     end
+    -- The timeline->table follow asked for this row; consumed once, so the
+    -- user can scroll away afterwards without the table yanking them back.
+    if state.scroll_to_uid == row.uid then
+      im.SetScrollHereY(ctx, 0.4)
+      state.scroll_to_uid = nil
+    end
     if im.IsItemHovered(ctx) and not row.item then
       im.SetTooltip(ctx, row.status == "missing"
         and "This line has no audio in the project yet."
@@ -4255,6 +4313,10 @@ local function loop()
 
   FlushProjectFile(false)
   ApplyFilters()
+
+  -- After the filters, so the follow lights rows the table is actually
+  -- showing this frame.
+  FollowTimelineSelection()
 
   im.SetNextWindowSize(ctx, 1180, 720, im.Cond_FirstUseEver)
   local visible, open = im.Begin(ctx, 'ajsfx VO Overview', true)
