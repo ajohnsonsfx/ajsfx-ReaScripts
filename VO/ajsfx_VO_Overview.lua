@@ -956,6 +956,86 @@ local function ResetName(row)
   state.message, state.message_kind = "Reset to " .. clean .. ".", "ok"
 end
 
+-- Swap the delivery AFTER a pull: this row's take gets the line's plain
+-- delivered name and the Selects track; the take that had it gets the first
+-- free alt name and the Alts track. Names first -- the name IS the
+-- assignment -- and the tracks follow so the timeline tells the same story.
+local function MakeSelect(row)
+  local base = vo.SanitizeName(row.deliver or row.asset or "")
+  local item = LiveItemFor(row)
+  if base == "" or not item then
+    state.message, state.message_kind = "This row has no take to promote.", "error"
+    return
+  end
+  local take = r.GetActiveTake(item)
+  if not take then return end
+  local _, current_name = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+  if current_name == base then
+    state.message, state.message_kind = base .. " is already the Select.", "ok"
+    return
+  end
+
+  local cfg = vo.LoadConfig()
+  -- The take currently delivering under the plain name, and every alt number
+  -- already taken, found in one scan.
+  local old_sel, used = nil, {}
+  for i = 0, r.CountMediaItems(0) - 1 do
+    local other = r.GetMediaItem(0, i)
+    local tk2 = r.GetActiveTake(other)
+    if tk2 and other ~= item then
+      local _, nm2 = r.GetSetMediaItemTakeInfo_String(tk2, "P_NAME", "", false)
+      if nm2 == base then
+        old_sel = other
+      elseif vo.StripAltSuffix(nm2, cfg.alt_append_pattern) == base then
+        local n2 = tonumber(nm2:match("(%d+)%s*$") or "")
+        if n2 then used[n2] = true end
+      end
+    end
+  end
+
+  local function track_named(name)
+    for i = 0, r.CountTracks(0) - 1 do
+      local t = r.GetTrack(0, i)
+      local _, nm2 = r.GetSetMediaTrackInfo_String(t, "P_NAME", "", false)
+      if nm2 == name then return t end
+    end
+    return nil
+  end
+  local t_sel = track_named(cfg.track_selects or "Selects")
+  local t_alt = track_named(cfg.track_alts or "Alts")
+
+  local n = math.floor(cfg.alt_append_start or 1)
+  while used[n] do n = n + 1 end
+  local alt_name = vo.SanitizeName(base ..
+    vo.FormatAltAppend(cfg.alt_append_pattern, n, math.floor(cfg.alt_append_digits or 1)))
+
+  state.name_baseline = nil
+  core.Transaction("VO Overview: make select", function()
+    r.GetSetMediaItemTakeInfo_String(take, "P_NAME", base, true)
+    if t_sel and r.GetMediaItem_Track(item) ~= t_sel then
+      r.MoveMediaItemToTrack(item, t_sel)
+    end
+    if old_sel then
+      local tk2 = r.GetActiveTake(old_sel)
+      if tk2 then r.GetSetMediaItemTakeInfo_String(tk2, "P_NAME", alt_name, true) end
+      if t_alt and r.GetMediaItem_Track(old_sel) ~= t_alt then
+        r.MoveMediaItemToTrack(old_sel, t_alt)
+      end
+    end
+    r.UpdateArrange()
+  end)
+
+  -- The sheet's record follows the same decision.
+  for _, r2 in ipairs(state.overview) do
+    if r2.line_key and r2.line_key == row.line_key and r2 ~= row then
+      EntryFor(r2).select = false
+    end
+  end
+  Mutate(row, function(e) e.select = true end)
+  state.message, state.message_kind = string.format("%s is now the Select%s.",
+    base, old_sel and (" -- the previous one is " .. alt_name) or ""), "ok"
+end
+
 -- -----------------------------------------------------------------------
 -- Selection
 --
@@ -3618,6 +3698,22 @@ local function DrawTableBody()
           or  "Select the item in REAPER first.")
       end
 
+      -- Changing your mind after a pull is a SWAP, driven from the sheet:
+      -- this take gets the plain name and the Selects track, the old select
+      -- gets a free alt name and the Alts track. (Moving items between
+      -- tracks by hand decides nothing -- the name is the assignment.)
+      local can_make = (#targets == 1) and row.item
+                       and row.asset and row.asset ~= ""
+      if im.MenuItem(ctx, "Make this take the Select", nil, nil, can_make) then
+        local target = row
+        pending_action = function() MakeSelect(target) end
+      end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx,
+          "This take gets the line's delivered name and the Selects track;\n" ..
+          "the current select becomes an alt. One undo step.")
+      end
+
       im.Separator(ctx)
 
       -- Pinning is one line at a time on purpose: a time selection is one
@@ -4308,6 +4404,15 @@ local function RunRemoteCommand(command)
       end
     end
     return #out .. " span(s)\n" .. table.concat(out, "\n")
+  elseif verb == "make_select" then
+    -- Promote the take currently named `rest` to its line's Select.
+    for _, row in ipairs(state.overview or {}) do
+      if row.take_name == rest then
+        MakeSelect(row)
+        return state.message or "done"
+      end
+    end
+    return "no row carries the take name: " .. tostring(rest)
   elseif verb == "verify" then
     -- Dialogue check on every delivered item: the words the transcript holds
     -- inside the item's source range, against the text of the line its NAME
