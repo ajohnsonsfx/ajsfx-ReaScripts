@@ -726,6 +726,42 @@ local function Rebuild()
     alt_pattern  = cfg.alt_append_pattern,
   })
 
+  -- Name-based fallback for the rows: an item carrying a line's delivered
+  -- name IS that line's take, even when the transcript span no longer finds
+  -- it -- hand-trimmed edges and renamed comps break the span lookup but not
+  -- the name. Rows that resolved nothing adopt unclaimed name-matches, so
+  -- the sheet shows what the names already say.
+  local claimed = {}
+  for _, row in ipairs(state.overview) do
+    if row.item then claimed[row.item] = true end
+  end
+  local pool = {}
+  for _, ni in ipairs(named_items) do
+    if ni.item and not claimed[ni.item] then
+      local stem = vo.StripAltSuffix(ni.name, cfg.alt_append_pattern) or ni.name
+      local key = vo.NormalizeItemName(stem)
+      if key ~= "" then
+        pool[key] = pool[key] or {}
+        table.insert(pool[key], ni.item)
+      end
+    end
+  end
+  for _, row in ipairs(state.overview) do
+    if not row.item and row.status ~= "missing" then
+      local key = vo.NormalizeItemName(row.deliver or row.asset or "")
+      local list = key ~= "" and pool[key] or nil
+      if list and #list > 0 then
+        row.item = table.remove(list, 1)
+        row.item_by_name = true
+        local take = r.GetActiveTake(row.item)
+        if take then
+          local _, nm = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+          row.take_name = (nm ~= "") and nm or nil
+        end
+      end
+    end
+  end
+
   -- Out-of-band rename detection: the name IS the assignment, and anything --
   -- F2, a batch renamer, another script -- can move it silently. The baseline
   -- re-arms whenever this window renames things itself, so what is reported
