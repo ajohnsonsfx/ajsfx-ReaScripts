@@ -10,63 +10,83 @@ top. One table, all recordings, whether or not anything has been cut yet.
 
 ## 1. Why this is a separate script
 
-`ajsfx_VO_ScriptMatch.lua` was built to **cut and pull takes**. A spreadsheet UI
-was later grown onto the front of it, and the two purposes pull against each
-other at every turn:
+The tool used to be one script that transcribed, matched and cut in a single
+run. That run-and-forget shape and a project-wide picture of the dialogue pull
+against each other at every turn:
 
-| | ScriptMatch | Overview |
+| | Sources / Cut | Overview |
 |---|---|---|
-| Scope | the current item selection, on one track | every item in the project |
+| Scope | one batch of files, or the takes marked Select | every item in the project |
 | Lifetime | one run | the whole job, across sessions |
-| Owns | derived data (transcripts, spans) | the user's judgements |
+| Owns | derived data (transcripts, the live match) | the user's judgements |
 | Verb | *do something to this audio* | *tell me where I am* |
 
-Trying to serve both from one dialog is what produced a selection-following
-window that had to defend a live plan against every reselect. Splitting them
-lets each be simple. Overview is the front door; small focused actions can hang
-off it later.
+Splitting the three verbs apart — transcribe, judge, cut — lets each stay
+simple. Overview is the front door: it opens Sources and Cut for you
+(`VO/SPEC.md` §5), but does neither job itself.
 
 ### Non-goals
 
 Overview does **not** transcribe, cut, split, move items between tracks, or pull
-selects. Those belong to ScriptMatch and must not migrate here — that is exactly
-the drift this split exists to prevent. The only thing Overview writes to the
-project is a take name, and only when the user types one.
+selects. Those belong to Sources and Cut and must not migrate here — that is
+exactly the drift this split exists to prevent. The only thing Overview writes
+to the project is a take name, and only when the user types one; everything
+else it writes goes to the project file (§2).
 
 ---
 
-## 2. The three data layers
+## 2. The two data layers
 
 | Layer | File | Owner | Regenerable |
 |---|---|---|---|
-| **Expected** | the script CSV | the production | n/a |
-| **Actual** | `<audio>_vo_report.csv`, one per source | ScriptMatch | yes — disposable |
-| **The user's work** | `<project>_vo_tracker.csv`, one per project | Overview | **no** |
+| **Words** | `<audio>_vo_transcript.csv`, one per source wav | Sources | yes — costs a whisper run |
+| **The user's work** | `<project>_vo.csv`, one per project | Overview | **no** |
 
-The separation is the point of the whole design. Re-transcribing a recording
-rewrites its sidecar wholesale; it must not cost the user a single checkmark.
-Verified flags, notes, name overrides and select choices are *judgements about*
-audio, not facts *derived from* it, so they get their own file that transcription
-never touches.
+The match between them — which words correspond to which script line — is
+computed live by `vo.BuildMatch` every time Overview needs it (`VO/SPEC.md` §6)
+and is never written to either file. That is the separation the whole design
+rests on: re-transcribing a recording rewrites its sidecar wholesale, and
+swapping the loaded script CSV re-derives every status instantly; neither can
+cost the user a single checkmark. Verified flags, notes, name overrides and
+select choices are *judgements about* audio, not facts *derived from* it, so
+they get their own file that neither transcription nor matching ever touches.
 
-The script CSV path and its column mapping live in `SetProjExtState` under
-`ajsfx_vo`, **shared with ScriptMatch**. Map the columns once; both windows know
-them.
+The script CSV path and its column mapping live **in the project file itself**
+(§2.1), not in `ProjExtState`. Overview is the only window that reads or writes
+either.
 
-### Tracker format
+### 2.1 Project file format
 
 ```csv
-ajsfx VO Overview,1
+ajsfx VO Project,1
+Script CSV,D:\Session\script.csv
+Mapping,speaker=Character;asset=Filename;text=Line Text
 
-Key,Source,Source start,Filename,Status,Name override,Notes,Primary
-RIVA.wav|1230,D:\Session\RIVA.wav,1.230,vo_guard_halt_01,verified,,great read,yes
+Key,Filename,Source,Source start,Select,Status,Name override,Notes
+RIVA.wav|1230,vo_guard_halt_01,D:\Session\RIVA.wav,1.230,yes,verified,,great read
 ```
 
-Only rows carrying actual user work are written — otherwise the file would grow
-a line per script line per session and the signal would drown. Clearing a row's
-marks removes it from the file.
+`Select` is the take Cut acts on; `Status` keeps the pre-existing `verified` /
+`flagged` vocabulary and is a separate column because a take can carry both at
+once. Only rows carrying actual user work are written — otherwise the file
+would grow a line per script line per session and the signal would drown.
+Clearing a row's marks removes it from the file. See `VO/SPEC.md` §4.2 for the
+full format, which this window owns.
 
-`vo.ParseTracker` never raises. A tracker mangled by a spreadsheet round-trip
+`View` rows in the preamble hold how the table was last left: the character
+filter, the search box, whether the per-column filter row is showing, and each
+column's filter needle. Only what is actually set is written,
+so an unfiltered table adds nothing to the file. They live here rather than in
+the global ExtState that holds the appearance settings because a character
+filter names *this project's* characters. A restored filter naming a status or
+column this version no longer has is dropped on load, and a restored character
+that matches no row — the script changed, or its Character column is no longer
+mapped — is dropped the first time there are rows to check it against, so the
+table can never open empty with no visible reason. The **sort** is not stored
+here: ImGui owns the header clicks and keeps the sort spec in its own ini,
+beside the column widths (§9).
+
+`vo.ParseProjectFile` never raises. A file mangled by a spreadsheet round-trip
 returns `nil, reason`, and Overview then **refuses to save** rather than
 overwriting whatever the user still has in there, and says so in the window.
 
@@ -85,11 +105,11 @@ over every row before the next begins:
 
 Keys are `<basename>|<source start in ms>` for audio rows and `|<filename>` for
 script lines with no audio. Basename rather than full path so a project that
-moves drives keeps its tracker; the full-path pass runs first so two recordings
-that happen to share a filename never share a checkmark.
+moves drives keeps its project file; the full-path pass runs first so two
+recordings that happen to share a filename never share a checkmark.
 
 Within a pass, proximity matches are taken **globally nearest-first**, and each
-tracker entry can be claimed by at most one row. Resolving per-row instead would
+project-file entry can be claimed by at most one row. Resolving per-row instead would
 let one row claim, through the loose basename bucket, an entry that a later row
 matches on its full path.
 
@@ -165,18 +185,28 @@ user cannot see.
 
 **Sort on timeline** re-lays the affected audio along the timeline in either
 script order or record order. It moves whole media items and **never cuts** —
-cutting is ScriptMatch's job, and the non-goal in §1 holds here.
+cutting is the Cut and Name panel's job.
+
+**Script order is resolved by NAME**, not by the match: each item's take name is
+looked up in the script (`vo.BuildNameIndex` / `vo.ResolveItemName`, §7.1), and an
+item whose name is not on the script is left exactly where it is and counted in
+the panel's summary. Two things follow from the one rule. A folder of rendered
+files with no transcripts at all sorts into script order. And an uncut recording
+cannot be swept up by accident: it carries the recording's name, which is not a
+script filename. **Record order is unchanged** — it asks where an item sat inside
+a recording, which a name cannot answer, so it still reads the row.
 
 The unit of movement is the **cluster**, and two relations weld one. They chain
 through each other, so a crossfade partner that carries no group of its own still
 travels with the group it is fused to.
 
 1. **Overlap, same track only.** A crossfade is nothing but an overlap: move one
-   side and the fade is gone. Cross-track overlaps do *not* weld — ScriptMatch
-   pulls selects onto per-character tracks, where two characters overlapping in
-   time is normal and means nothing about editing; welding those would chain a
-   multi-character session into one immovable blob. Items must overlap by more
-   than `vo.OVERLAP_EPSILON` (1 ms), so a butt-join trimmed to abut is left alone.
+   side and the fade is gone. Cross-track overlaps do *not* weld — a
+   multi-character session commonly ends up with each character on its own
+   track, where two characters overlapping in time is normal and means nothing
+   about editing; welding those would chain a multi-character session into one
+   immovable blob. Items must overlap by more than `vo.OVERLAP_EPSILON` (1 ms),
+   so a butt-join trimmed to abut is left alone.
 2. **Item group, across tracks.** A nonzero `I_GROUPID` is the user saying "these
    belong together" out loud, and stranding half a group is the same damage as
    breaking a crossfade. Group id `0` means ungrouped and never welds.
@@ -215,9 +245,10 @@ move there. Two consequences, both deliberate:
   nothing to collide with, so the question does not arise.
 - **Per-character separation survives.** One child per source, not one for the
   lot — collapsing ALEX and JORDAN onto a single track would throw away exactly
-  what ScriptMatch's select-pulling exists to create. A group welded across two
-  tracks likewise stays spread across two destinations: each member keeps its own
-  source-to-destination mapping, and only the *delta* is shared.
+  the separation a multi-character session's per-character tracks depend on. A
+  group welded across two tracks likewise stays spread across two destinations:
+  each member keeps its own source-to-destination mapping, and only the *delta*
+  is shared.
 
 Every child of one run shares the run number `N`, so a run reads as one set and
 the run before it is still sitting there untouched. Nesting is `I_FOLDERDEPTH`
@@ -260,20 +291,21 @@ the Settings dialog.
 - **Click a row** — moves the edit cursor there, seeks playback, selects the item.
 - **OK checkbox** — marks verified. `Space` toggles the selected row, but only
   when no text field has focus, or typing a space in Notes would fire it.
-- **Sel radio** — chooses which take of a line is the select, overriding the
-  configured first/last rule. Choosing one clears the rest of its group, so the
-  tracker can never hold two selects for one filename.
+- **Select checkbox** — the user's explicit choice of which take of a line
+  Cut should act on; there is no first/last default any more, only what the
+  user ticks (`VO/SPEC.md` §7). Ticking one clears the rest of its group, so
+  the project file can never hold two selects for one filename.
 - **Item name** — editable, and the only thing Overview writes to the project.
   It shows the take's *live* name, so a rename made anywhere else in REAPER
   appears here too. Committed on Enter or on losing focus, never per keystroke,
   so each commit is one undo point. The name is sanitized, applied to the take
-  inside a `core.Transaction`, and recorded in the tracker so it survives the
-  item being deleted. Take name is what REAPER's render patterns read; that is
-  the whole point of editing it here.
+  inside a `core.Transaction`, and recorded in the project file so it survives
+  the item being deleted. Take name is what REAPER's render patterns read; that
+  is the whole point of editing it here.
 - **CSV filename** — read-only, beside it. The script's own name for the line,
   kept on screen so a rename never leaves the user unable to find the original.
   Nothing here renames a file on disk.
-- **Notes** — editable free text, saved to the tracker.
+- **Notes** — editable free text, saved to the project file.
 
 Filters: status, character, and a text search across filename, line, transcript
 and notes. Sorting is an explicit droplist rather than clickable headers —
@@ -284,11 +316,143 @@ every other sort.
 ### Refresh
 
 A per-frame probe of `GetProjectStateChangeCount` + item count decides *whether*
-to rebuild; a 1.5 s throttle bounds how often that leads to actual sidecar file
-I/O, since a drag gesture moves the counter every frame. **Refresh** forces a
-re-read — that is the button to press after transcribing in ScriptMatch.
+to rebuild; a 1.5 s throttle bounds how often that leads to actual transcript
+file I/O, since a drag gesture moves the counter every frame. **Refresh** forces
+a re-read — that is the button to press after transcribing in Sources.
 
-Tracker writes are throttled to 2 s while typing and flushed on window close.
+Project file writes are throttled to 2 s while typing and flushed on window
+close.
+
+---
+
+## 4a. Cut and Name, Pull, Sort
+
+One toolbar row — `Script | Sources… | Cut and Name | Pull | Sort | Settings` —
+where Sources and Settings open their own windows and the rest toggle an inline
+panel, one at a time.
+
+| | reads | writes | needs the transcript |
+|---|---|---|---|
+| **Cut and Name** | the match | splits the recording, names each piece | **yes** |
+| **Pull** | item names, and the Select mark | renames to the delivered name, moves to child tracks | no |
+| **Sort** | item names | item positions on the timeline | no |
+
+Cut is the only tool that consults the match, and correctly so: cutting a span
+out of a continuous recording is a question only the transcript can answer.
+
+### 4a.0 Coverage: the question the job is judged on
+
+`vo.CheckCoverage(items, lines)` answers "have I got everything?" from the
+project's **item names** and the script, and from nothing else. No transcript,
+no match, no stored mapping. It is recomputed on every rebuild, so there is no
+copy that can drift out of step with the project: the item's name IS the
+assignment, and this only reports what the names say.
+
+It reports, per script line, how many items carry its name and which tracks
+they sit on; plus the names in the project that match no line (deduplicated),
+and the items whose name two lines both claim.
+
+The table shows it as the **Got** column and as the headline count in the
+summary. It is true however the audio got there — cut here, comped by hand, or
+delivered as a rendered file by somebody else — which is exactly why it is
+worth having separately from the match.
+
+**Assigning is naming.** "This item is that line" is expressed by giving the
+item the line's delivered name (right-click a row → *Assign selected item to
+this line*), which is what every name-driven tool already reads. Nothing is
+stored, so nothing can fall out of sync. Several items at once become the line
+and its alts, numbered with the alt pattern from §5.2.
+
+### 4a.1 Name resolution
+
+`vo.NormalizeItemName` lowercases, trims, and drops a trailing **alphabetic**
+extension of up to four characters — `line_042_v1.2` keeps its numeric tail,
+because that is part of what the file is called.
+
+`vo.BuildNameIndex` holds **two keys per line**: the script's own Filename and
+the DELIVERED name (Filename + Append, or the user's override). The delivered
+name is one this tool wrote, so recognising it is reading our own output back —
+that is what lets a second Pull see what the first one renamed. A key two lines
+claim resolves to **nothing** rather than to the first of them; that clash is
+what the Append column exists to fix, and guessing would put one line's audio
+under the other's name. `vo.ResolveItemName` returns the line index, or nil plus
+`"unknown"` / `"ambiguous"`.
+
+### 4a.2 Cut and Name
+
+Splits each take out of its source item and names it the **plain CSV filename** —
+no Append, no override, no uniquing. Two takes of one line SHOULD collide here;
+which is the delivery is not a question cutting can answer. It moves nothing and
+creates no track.
+
+Every take of a **decided** line is cut, not only the SEL: the alts are
+deliveries too, and the takes ticked neither still have to exist before they
+can be listened to and ticked.
+
+Two gates, both about acting on something undecided or no longer true: a source
+whose audio has changed since it was transcribed, and a line with several takes
+and no SEL.
+
+### 4a.3 Sel and Keep
+
+Two independent checkboxes.
+
+**Sel** is the take being delivered — one per line, so ticking one unticks the
+line's others. That exclusivity is keyed by **script row**, never by filename:
+two CSV rows may ask for the same filename (that is what the Append column
+separates), and keying on the name made ticking one line's Sel clear a different
+line's.
+
+**Keep** is a read worth keeping — any number per line, and independent of Sel.
+Independence is the point: the single cycling mark this replaces forced you
+through SEL on the way to ALT, which took the select off whichever take already
+had it.
+
+A kept take that is not the Sel is delivered as an **alt**. A take with neither
+tick stays on Review.
+
+In the project file they are two columns, `Select` and `Keep`, each `yes` or
+empty. 0.13 briefly wrote `alt` in the `Select` field before Keep had a column;
+that reads back as a Keep, so the work survives.
+
+### 4a.4 Pull
+
+Items are grouped by the line they resolve to and routed by one question — does
+anything say which of these is the delivery?
+
+| item | goes to |
+|---|---|
+| **Sel** ticked | **Selects**, renamed to the delivered name |
+| **Keep** ticked, not Sel | **Alts**, renamed to its own name (§5.2) |
+| neither | **Review**, unrenamed |
+| the only item for its line, unticked | **Selects** — one take is not a decision |
+
+Selects and Alts are **delivered**; Review is not. On a fresh session nothing is
+ticked, so the first Pull puts the whole read on Review; that is the pile the
+user works through. What is still there at the end is what was never wanted.
+
+Destination tracks are **children of the recording the item came from**
+(`vo.EnsureChildTrack`), so collapsing the recording folds everything cut from it
+away too. Because Pull runs repeatedly, "the recording" means the first parent
+that is not itself one of Pull's tracks (`vo.IsDestTrackName`) — without that, a
+second Pull would nest a track inside the Review track it made on the first. An
+item already on its destination is left alone rather than moved to where it
+already is.
+
+**Name alts** gives every alt that has none a delivered name of its own, from a
+pattern the user defines (`{n}` marks the number, plus a start value and zero
+padding), built on the line's delivered name — so an alt of a line that already
+carries an Append becomes `line_042_ch2_alt1`.
+
+The name is held against the **take**, as a `name_override`, NOT as an Append.
+An Append belongs to the script line: `vo.AppendKey` has no take component and
+`line.deliver` feeds every take of the line, so appending `_alt1` for an alt
+would rename its select too and the two would still collide. Two takes of one
+line can only be told apart by a name held against the take.
+
+Numbering is per line. A name already chosen is never overwritten — but it still
+consumes its number, or naming the second alt by hand would silently renumber
+the third.
 
 ---
 
@@ -296,9 +460,10 @@ Tracker writes are throttled to 2 s while typing and flushed on window close.
 
 Pure layer in `lib/ajsfx_vo.lua`, unit-tested with no REAPER:
 
-- `vo.TrackerPath`, `vo.OverviewKey`
-- `vo.SerializeTracker`, `vo.ParseTracker`
-- `vo.BuildOverview`, `vo.TrackerEntriesFromRows`, `vo.SummarizeOverview`
+- `vo.ProjectFilePath`, `vo.OverviewKey`
+- `vo.SerializeProjectFile`, `vo.ParseProjectFile`, `vo.ProjectEntriesFromRows`
+- `vo.BuildMatch` (`VO/SPEC.md` §6 — Overview's own call into the shared matching
+  pipeline), `vo.BuildOverview`, `vo.SummarizeOverview`
 - `vo.ClusterItems`, `vo.PlanTimelineLayout`, `vo.FolderDepthForChild`
 
 Coupled layer:
@@ -307,13 +472,13 @@ Coupled layer:
   every item, with no take access. Deliberately not built on `inspect_item`: see
   "Laying out the timeline" above.
 - `vo.EnsureSortChildTracks` — the destination child track per source track,
-  built on the same `vo.EnsureTrackBelow` ScriptMatch uses for character tracks,
-  plus the folder-depth rule.
+  built on the same `vo.EnsureTrackBelow` Cut uses for its Selects/Alts/Review
+  destinations, plus the folder-depth rule.
 - `vo.SourceModifiedTimes`
 - `vo.CollectProjectSpans` — project-wide sibling of `vo.CollectSourceSpans`.
   Both call one shared `inspect_item`, so the MIDI / no-source / playrate skip
   rules cannot drift apart between the two windows.
-- `vo.ProjectSourcePaths`, `vo.ResolveSourceTime`
+- `vo.ProjectSourcePaths`, `vo.ResolveSourceTime`, `vo.LaunchSibling`
 
 `ajsfx_VO_Overview.lua` is ReaImGui only: no matching, no file format knowledge,
 no REAPER mutation beyond `P_NAME` and the transport.
@@ -326,19 +491,20 @@ per-row `PushID` is likewise unwound by hand around the table body's `pcall` —
 with a misleading one.
 
 `ListClipper` is deliberately not used in the table — ReaImGui rejects it as
-excessive creation of short-lived resources, which is why ScriptMatch dropped it
-from its preview table too. ImGui's own table clipping keeps off-screen rows out
-of the draw list.
+excessive creation of short-lived resources, the same reason the old
+single-script tool's preview table dropped it too. ImGui's own table clipping
+keeps off-screen rows out of the draw list.
 
-Packaging: Overview ships inside the **existing** ScriptMatch package as a third
-`[main]` entry. It must not declare its own `@provides` for `lib/ajsfx_vo.lua` —
-only one package may provide a given file, and the loser is dropped from
-`index.xml` silently.
+Packaging: `ajsfx_VO_Overview.lua` is the ReaPack **package main file**; Sources,
+Cut and Settings ship as further `[main]` entries in its own `@provides`
+(`VO/SPEC.md` §5). It must not declare its own separate `@provides` for
+`lib/ajsfx_vo.lua` — only one package may provide a given file, and the loser is
+dropped from `index.xml` silently.
 
 ## Presentation settings
 
 How the table LOOKS belongs to the user, not to the session, so none of it
-touches the project or the tracker. Column widths and column order are persisted
+touches the project or the project file. Column widths and column order are persisted
 by ImGui itself, into `REAPER/ReaImGui/<hash>.ini`. Everything else lives in
 `ExtState` under section `ajsfx_vo` with a `view_` prefix:
 

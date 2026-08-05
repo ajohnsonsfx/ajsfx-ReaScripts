@@ -1,15 +1,25 @@
-# ajsfx VO ScriptMatch — Design Spec
+# ajsfx VO — Design Spec
 
-**Status:** Draft for review · **Version:** 0.1 · **Date:** 2026-07-21
+**Status:** Implemented, unverified in REAPER · **Version:** 0.2 · **Date:** 2026-08-01
 
-Script-matched cut-and-name for game VO / dialogue delivery. Given a recorded session
-in REAPER and a CSV script that lists each line's text and its required asset filename,
-cut the session into one clip per line and name each clip with the correct asset name.
+Script-matched cut-and-name for game VO / dialogue delivery, built as two windows —
+**ajsfx VO Sources** and **ajsfx VO Overview** — plus **ajsfx VO Settings**. Cutting,
+pulling and sorting are panels inside Overview; the separate **ajsfx VO Cut** window was
+retired in 0.13 (see `SPEC-overview.md` §7). Given a recorded session in REAPER and a CSV script that lists each line's
+text and its required asset filename, cut the session into one clip per line and name
+each clip with the correct asset name.
 
 This is **not** a transcription tool. The script already exists, so the problem is
 forced alignment + matching, not blind recognition. That framing drives every design
 decision below: transcription is a means of locating known text, and match confidence
 is measured against the script rather than reported by the recognizer.
+
+The tool was originally one script, `ajsfx_VO_ScriptMatch.lua`, that transcribed,
+matched and cut in a single run. It is now split by verb — one window transcribes, one
+window judges, one window cuts — because those three had different scopes and different
+lifetimes and were welded together by an artefact that mixed transcription with
+matching. See `docs/superpowers/specs/2026-08-01-vo-source-manager-design.md` for the
+rationale behind the split; this document describes the result.
 
 ---
 
@@ -18,9 +28,14 @@ is measured against the script rather than reported by the recognizer.
 ### Goals
 
 - Read a session script from CSV with **configurable column mapping** (nothing hardcoded).
-- Transcribe the recorded session locally with word-level timestamps.
-- Match each spoken span against the script's `Text` column and assign its `AudioAsset`.
-- Cut the session and route clips to **Selects / Alts / Review** tracks, named correctly.
+- Transcribe recorded audio locally with word-level timestamps, once per wav, independent
+  of any script.
+- Match each spoken span against the script's `Text` column and assign its `AudioAsset`,
+  recomputed live rather than stored.
+- Cut the session into named clips with their edges snapped to silence, and route them to
+  **Selects / Alts / Review** tracks nested under the recording they came from.
+  Routing identifies a clip by its NAME, not by the match, so it serves rendered files
+  this tool never cut as well as a session it did.
 - Handle real session conditions: lines out of CSV order, multiple takes of a line,
   slates, false starts, and chatter between takes.
 - Report confidence; flag low-confidence and unmatched spans for review rather than
@@ -30,12 +45,15 @@ is measured against the script rather than reported by the recognizer.
 
 ### Non-goals (v1)
 
-- Speaker diarization. Sessions are one actor at a time; the CSV `Speaker` column is a
+- Speaker diarization. Sessions are one actor at a time; the CSV `Character` column is a
   *filter*, not something to be inferred from audio.
 - Blind transcription as a user-facing feature.
 - LLM-assisted disambiguation — deferred to v2, see §11.
 - Performance/quality judgement. "Confidence" measures textual match to the script,
   never how good the read was. The tool must never imply otherwise.
+- Multiple script CSVs in one project. The project file's key format is shaped so this
+  can be added later, but only one script is loaded at a time in this version.
+- Manual re-carving of spans by dragging word ranges.
 
 ---
 
@@ -66,14 +84,14 @@ copyleft component, it will be flagged in this document and an alternative propo
 rather than the component being bundled.
 
 **Model weights are never committed to this repository.** They are downloaded by the
-user (manually, or via the opt-in Settings button described in §7).
+user (manually, or via the opt-in Settings button described in §9).
 
 ---
 
 ## 3. Verified technical findings
 
 These were confirmed against upstream source rather than assumed. Anything **not**
-verified is marked as such in §10.
+verified is marked as such in §12.
 
 1. **Word-level timestamps require no JSON parsing.**
    `whisper-cli -ml 1 -sow -ocsv` forces one word per segment and writes a CSV of
@@ -104,62 +122,111 @@ verified is marked as such in §10.
 
 ---
 
-## 4. User-facing behaviour
+## 4. Data
 
-### Input
+Two files own everything the tool knows. Neither the match between them, nor the cut
+plan derived from it, is ever written to disk — both are recomputed every time they are
+needed.
 
-Selected media item(s) on a track — the recorded session. Multiple items are supported
-(a session split across several recordings on one track).
+| File | One per | Owner | Regenerable |
+|---|---|---|---|
+| `<audio>_vo_transcript.csv` | source wav | ajsfx VO Sources | yes — costs a whisper run |
+| `<project>_vo.csv` | project | ajsfx VO Overview | **no** |
 
-### Output
+### 4.1 Transcript sidecar
 
-The session is **split**, and the pieces are moved down to new tracks created directly
-beneath the source track:
+`vo.TranscriptPath(source_path)` derives `<dir>/<base>_vo_transcript.csv` from
+`<dir>/<base>.<ext>`, stripping the final extension only, and returns `nil` for a nil or
+empty path.
 
-| Track | Receives | Default name |
-|---|---|---|
-| **Selects** | Matched takes (all of them, or just the primary — see toggles) | `Selects` |
-| **Alts** | Non-primary takes, when the Alts toggle is on | `Alts` |
-| **Review** | Low-confidence matches | `Review` |
+```csv
+ajsfx VO Transcript,1
+Source,RIVA_session.wav
+Source bytes,412839104
+Source hash,3fa9c21e
+Backend,whisper.cpp
+Model,ggml-medium.en.bin
+Language,en
 
-**Unmatched audio is never pulled.** Slates, chatter and false starts match no script
-line, so they are left exactly as recorded on the source track — not split, not moved,
-not renamed. They are still listed in the report, which is where they get flagged.
+Start,End,Text
+12.480,12.660,we
+12.660,12.910,should
+12.910,13.040,not
+```
 
-Splitting rather than copying is deliberate: with the pieces physically removed from the
-source track, it is immediately obvious what has been pulled and what has not — and what
-remains behind is precisely what the tool could not match. Every mutation lives in a
-single `core.Transaction`, so the whole run is one undo step.
+- **Times are source-relative, in seconds**, to three decimals. The file must survive
+  its item being moved, trimmed, duplicated or opened elsewhere, none of which the audio
+  knows about. `vo.ProjectTimeToSource` and `vo.SourceTimeToProject` convert at the
+  boundary.
+- **One row per word**, written by `vo.SerializeTranscript` straight from
+  `whisper-cli -ml 1 -sow -ocsv`'s own output — `-ml 1` makes every whisper segment
+  exactly one word, so there is no sentence grouping to preserve or lose. Where the
+  Sources detail panel wants readable prose it reassembles words with single spaces and
+  starts a new paragraph after a word ending in `.`, `?` or `!` (`vo.Paragraphs`) — a
+  display rule computed at read time, never stored and never consulted by matching.
+- **The preamble is the staleness check.** `Source bytes` is the cheap first pass;
+  `Source hash` (`vo.FileFingerprint` — a size folded with three 64 KB sample windows)
+  catches an in-place edit that leaves the file the same length. `vo.TranscriptMeta`
+  builds the whole block together so a writer cannot record one without the other.
+  `Backend`, `Model` and `Language` are informational, shown in the Sources detail panel.
 
-Clips are named by setting the take name (`P_NAME`). Non-speech silence between spans,
-and unmatched audio, remain on the source track.
+`vo.ParseTranscript(text)` returns `{ version, source, source_bytes, source_hash,
+backend, model, language, words }` or `nil, reason`. A malformed sidecar is reported
+inline, never thrown — a bad file next to the audio must not stop a window opening.
+`vo.TranscriptState(source_path)` returns `"yes"`, `"no"`, `"stale"` or `"error"` from
+the parse result plus the size/hash check.
 
-Named **regions** over the Selects clips are available for Region Render Matrix
-delivery, but are **off by default** (Settings toggle).
+### 4.2 Project file
 
-### The three per-session toggles
+`vo.ProjectFilePath(project_path)` returns `<project dir>/<project name>_vo.csv`.
 
-These live in the **run dialog**, not Settings, because they change from session to
-session with the rhythm of the actor and director.
+```csv
+ajsfx VO Project,1
+Script CSV,D:\Session\script.csv
+Mapping,speaker=Character;asset=Filename;text=Line Text
 
-| Setting | Values | Effect |
-|---|---|---|
-| `use_alts_track` | off / on | **off:** every take goes to Selects. **on:** non-primary takes go to Alts. |
-| `suffix_alt_names` | off / on | **off:** all takes named identically (`vo_npc_greet_01`). **on:** non-primary takes get `_tk01`, `_tk02`… |
-| `primary_take` | `last` / `first` | Which take of a repeated line is the primary — the last read, or the first. |
+Key,Filename,Source,Source start,Select,Status,Name override,Notes
+RIVA_session.wav|12480,vo_riva_intro_01,D:\Session\RIVA_session.wav,12.480,yes,verified,,great read
+|vo_riva_deck_03,vo_riva_deck_03,,,,,,re-record next session
+```
 
-Defaults are `use_alts_track = off`, `suffix_alt_names = off`, `primary_take = last`:
-every take is cut and named identically, and the user auditions and deletes. Take
-numbering is chronological across all matches of a line; the primary carries the bare
-`AudioAsset` name whenever suffixing is on.
+`Status` is the user-set mark and keeps its established vocabulary — `verified` or
+`flagged`, anything else dropped on load (`vo.TRACKER_STATUSES`). `Select` is a separate
+column rather than a third status because a take can be both selected and flagged; it is
+what Cut acts on.
 
-### Naming of flagged clips
+- **Keys** are `<basename>|<source start in ms>` for a row backed by audio, and
+  `|<filename>` for a script line with no audio — `vo.OverviewKey`. A `|<filename>` row
+  is how a **note on an unrecorded line** is stored; this is what the audio-only sidecar
+  cannot hold, and is the reason judgements are project-scoped rather than travelling
+  with the wav.
+- **Only rows carrying actual user work are written** (`vo.SerializeProjectFile`).
+  Clearing a row's marks removes it from the file.
+- `Script CSV` and `Mapping` live in this file rather than in `ProjExtState`, so the
+  project file is the whole of the project's VO state. `ProjExtState` and `ExtState`
+  keep only view preferences (column widths, order, per-column presentation), which are
+  about the window, not the work.
 
-- Low-confidence: `REVIEW_<AudioAsset>_s<score>` (e.g. `REVIEW_vo_npc_greet_01_s0.67`)
-- Unmatched: `UNMATCHED_<sanitized transcript snippet>` (e.g. `UNMATCHED_take_two`) —
-  a **report label only**, since unmatched audio is never cut and so has no take to name.
+`vo.ParseProjectFile` never raises. On `nil, reason` Overview **refuses to save** and
+says so in the window, rather than overwriting work it could not read.
 
-Prefixes are configurable. All names pass through a filesystem-safe sanitizer.
+### 4.3 Row identity
+
+A verified flag has to survive a re-transcription that nudges a boundary by a few tens
+of milliseconds. Identity is therefore tolerant, in four passes, each run over every row
+before the next begins:
+
+1. exact key, same full path — the row has not moved
+2. exact key, same basename — the project moved to another drive
+3. within ±0.5 s, same filename, same full path — a boundary shifted
+4. within ±0.5 s, same filename, same basename — both at once
+
+Within a pass, proximity matches are taken globally nearest-first, and each project-file
+entry can be claimed by at most one row. A take moved more than 0.5 s by
+re-transcription loses its mark, deliberately: past that distance it is more likely a
+different piece of audio, and silently migrating a "verified" onto the wrong take is
+worse than dropping it. See `VO/SPEC-overview.md` §3 for the full account, unchanged
+from before this split.
 
 ---
 
@@ -168,193 +235,135 @@ Prefixes are configurable. All names pass through a filesystem-safe sanitizer.
 ```
 VO/
   SPEC.md                     this document
-  SPEC-overview.md            the project-wide tracking window
-  ajsfx_VO_ScriptMatch.lua    main action — transcribe, match, cut
-  ajsfx_VO_Overview.lua       project-wide dialogue tracking; reads sidecars, cuts nothing
-  ajsfx_VO_Settings.lua       ImGui settings, backend readiness, optional model fetch
+  SPEC-overview.md            the project-wide matching and judgement window
+  SPEC-sources.md             the transcription window
+  SPEC-cut.md                 the cutting window and boundary snapping
+  ajsfx_VO_Overview.lua       package main file — matches live, owns judgements
+  ajsfx_VO_Sources.lua        transcribes; owns the transcript sidecars
+  ajsfx_VO_Cut.lua            cuts, routes and names; the only script that mutates
+  ajsfx_VO_Settings.lua       ImGui settings, backend readiness, model fetch, snapping
   lib/ajsfx_vo.lua            all logic — pure layer + REAPER-coupled layer
+  lib/ajsfx_vo_view.lua       shared ImGui table presentation
 tests/
   test_vo.lua                 unit tests
+  test_vo_view.lua            unit tests for the view-settings module
   fixtures/vo_sample_script.csv
 ```
 
-The three actions divide by verb, not by feature: Settings configures the
-backend, ScriptMatch *does something to* audio, and Overview *reports on* it.
-Overview never transcribes or cuts — see [SPEC-overview.md](SPEC-overview.md) §1.
-
-`@provides` mirrors the established PVX pattern so the shared core ships alongside:
+The windows divide by verb: Sources transcribes, Overview matches, records judgements and
+mutates the project. `ajsfx_VO_Overview.lua` is the ReaPack **package main file**; Sources
+and Settings ship alongside it as additional `[main]` entries in its `@provides`, the same
+pattern PVX uses for its own siblings:
 
 ```lua
 -- @provides
 --   [main] .
+--   [main] ajsfx_VO_Sources.lua
+--   [main] ajsfx_VO_Cut.lua
+--   [main] ajsfx_VO_Settings.lua
 --   lib/ajsfx_vo.lua
+--   lib/ajsfx_vo_view.lua
 --   ../lib/ajsfx_core.lua > lib/ajsfx_core.lua
 ```
 
-### Data flow
+`ajsfx_VO_ScriptMatch.lua` is deleted; there is no migration path from its report and
+tracker formats, and the ReaPack package it defined is retired in favour of the one
+`ajsfx_VO_Overview.lua` now defines. A user with the old package installed reinstalls
+once and re-transcribes.
 
-```
-selected items ──> unique source files ──> whisper-cli (cached) ──> word CSV
-                                                                       │
-CSV script ──> script lines (filtered) ────────────────────────────────┤
-                                                                       v
-                                        BuildPlan()  [PURE — unit-tested]
-                                                                       │
-                                                    ┌──────────────────┴───────────┐
-                                                    v                              v
-                                          ApplyPlan() [REAPER]              sidecar CSV (per source)
-                                     split → move → rename → regions
-```
+A sibling script is launched with `vo.LaunchSibling(filename)`, which wraps
+`r.AddRemoveReaScript(true, 0, path, true)` — idempotent, so it both registers and
+launches, and is the only supported way to reach a sibling script by path. Handoff
+between windows (Overview asking Sources to focus a file) goes through
+`SetExtState("ajsfx_vo", "focus_source", path)`, read every frame by Sources so an
+already-open window responds too.
 
-### The pure / coupled split
-
-The load-bearing design decision. `BuildPlan(script_lines, word_stream, cfg)` is a pure
-function returning an array of span records:
-
-```lua
-{ start = 12.34, stop = 15.02,
-  kind = "match" | "review" | "unmatched",
-  line_id = "NPC_014", asset = "vo_npc_greet_01",
-  score = 0.94, margin = 0.31, take_index = 2,
-  dest = "selects" | "alts" | "review",
-  name = "vo_npc_greet_01" }
-```
-
-`ApplyPlan(plan, cfg)` consumes that array and performs every REAPER mutation. All the
-interesting behaviour — parsing, normalization, alignment, scoring, span selection,
-duplicate grouping, routing, naming — is therefore testable headlessly with no REAPER
-and no audio. This mirrors how `pvx/lib/ajsfx_pvx.lua` separates its pure helpers
-(`BuildArgv`, `QuoteArg`, `BumpTakeVersion`) from its REAPER-coupled ones.
-
-### Module API
-
-**Pure layer**
-
-| Function | Purpose |
-|---|---|
-| `vo.ParseCSV(text)` | RFC4180 parser: quoted fields, embedded commas/newlines/quotes, CRLF, BOM |
-| `vo.MapColumns(header, mapping)` | Resolve configured column names to indices |
-| `vo.BuildScriptLines(rows, cols, filters)` | Apply skip values and Speaker/Type filters |
-| `vo.Normalize(text, subs)` | Lowercase, strip punctuation/apostrophes, expand numbers, apply substitutions |
-| `vo.NumberToWords(n)` / `vo.NumberToOrdinalWords(n)` | Cardinal/ordinal expansion for 0–9999 |
-| `vo.Tokenize(s)` | Whitespace tokenizer |
-| `vo.ParseWhisperCSV(text)` | Word rows → `{t0, t1, text}` with ms → seconds |
-| `vo.BuildWordTokens(words, cfg)` | Normalized token stream; carries each word's times onto every token it expands into |
-| `vo.Opt(cfg, key)` | Config read with documented fallback (`vo.DEFAULTS`) |
-| `vo.Levenshtein(a, b)` | Token-level edit distance |
-| `vo.BuildIndex(lines, cfg)` | IDF-weighted inverted index over script tokens |
-| `vo.FindCandidates(words, lines, index, cfg)` | Anchor-driven candidate spans with scores |
-| `vo.Classify(score, margin, cfg)` | `match` / `review` / reject |
-| `vo.SelectSpans(candidates, cfg)` | Non-overlapping selection |
-| `vo.FindGaps(words, spans)` | Unconsumed word runs → unmatched spans |
-| `vo.ApplyPadding(spans, cfg, bounds)` | Pre/post pad with neighbour and item-bound clamping; a span the clamps would invert falls back to its raw times and is flagged `degenerate` |
-| `vo.AssignNames(spans, cfg)` | Duplicate grouping, take numbering, routing, naming |
-| `vo.SanitizeName(s, max_len)` | Filesystem-safe names |
-| `vo.BuildPlan(lines, words, cfg)` | Composes all of the above |
-| `vo.EscapeCSVField(s)` / `vo.FormatCSVRow(fields)` | RFC4180 output escaping |
-| `vo.SerializeSidecar(spans, lines, meta)` | Sidecar CSV string (source-time spans) |
-| `vo.ParseSidecar(text)` | Parsed sidecar table, or nil plus a reason |
-| `vo.DTWPresetForModel(path)` | Model filename → `-dtw` preset, or nil |
-| `vo.BuildWhisperArgv(cfg, audio, out_prefix)` | Backend command line |
-
-Two functions were added during implementation that this table originally lacked.
-`BuildWordTokens` exists because normalization is not token-count preserving —
-`"42"` is one recognizer word but two tokens — so timings must be carried onto
-each expanded token or every span containing a number drifts. `Classify` was
-split out of `SelectSpans` so the threshold edges are testable directly.
-
-**REAPER-coupled layer**
-
-| Function | Purpose |
-|---|---|
-| `vo.CollectSourceSpans()` | Selected items → source path, source range, playrate, position |
-| `vo.MapWordsToProject(words, item_info)` | Source time → project time |
-| `vo.RunWhisperAsync(...)` | Detached process, progress UI, cancel |
-| `vo.EnsureTrackBelow(track, name)` | Create-or-reuse destination track |
-| `vo.ApplyPlan(plan, cfg)` | Split, move, rename, optional regions |
+See `VO/SPEC-sources.md`, `VO/SPEC-overview.md` and `VO/SPEC-cut.md` for what each
+window actually does.
 
 ---
 
-## 6. Matching approach
+## 6. Matching, live
 
-Global word-stream matching, **not** silence-splitting. Silence detection cannot
-distinguish a take boundary from a dramatic pause; the transcript can. Segmentation is
-therefore a *result* of matching rather than an input to it.
+`vo.BuildMatch(transcripts, script_lines, cfg)` is a pure function returning one
+`{ path, spans }` entry per source, called by Overview whenever the script, the mapping,
+or the set of loaded transcripts changes, and by Cut immediately before it runs. It is
+never persisted — see §4.
 
 ### Pipeline
 
-1. **Transcribe per unique source file.** Each selected item's take source is
-   transcribed once. Words are mapped into project time per item, keeping only words
-   whose midpoint falls inside that item's visible source range; the results are merged
-   into one project-ordered word stream.
-
-2. **Normalize both sides identically.** Lowercase; strip punctuation and apostrophes
+1. **Normalize both sides identically.** Lowercase; strip punctuation and apostrophes
    (`don't` → `dont`); expand digits to words (0–9999, ordinals, years); collapse
    whitespace; apply a user-editable substitution table. Because script and transcript
    pass through the same function, internal consistency matters more than linguistic
    correctness.
 
-3. **Generate candidates from rare-token anchors.** An IDF-weighted inverted index over
-   script tokens supplies each line's *k* rarest tokens. Every occurrence of such a
-   token in the word stream proposes a candidate window beginning at
+2. **Generate candidates from rare-token anchors.** An IDF-weighted inverted index over
+   script tokens (`vo.BuildIndex`) supplies each line's *k* rarest tokens. Every
+   occurrence of such a token in the word stream proposes a candidate window beginning at
    `hit_position − token_offset_within_line`. This avoids an O(lines × positions) scan
    while still finding lines recorded far out of order.
 
-4. **Score each candidate.** Token-level Levenshtein over a window of ±30% of the line
+3. **Score each candidate.** Token-level Levenshtein over a window of ±30% of the line
    length: `score = 1 − dist / max(#line, #window)`. The runner-up line's score at the
    same position gives `margin`, which detects genuinely ambiguous near-duplicate lines.
+   The winning window is then shrunk to the tightest range preserving that score, so a
+   word the recognizer dropped before the anchor cannot leave a phantom token overlapping
+   the previous span.
 
-   The winning window is then **shrunk to the tightest range preserving that score**.
-   A candidate's start is derived from its anchor's offset within the line, so any word
-   the recognizer drops *before* the anchor pushes the start one token early — onto the
-   tail of the previous line. Left un-trimmed that phantom token overlaps the preceding
-   span, and step 5 rejects the whole line for overlapping. A shorter window scoring the
-   same is strictly better regardless: it excludes audio that is not part of the line,
-   which tightens the cut as well as the match.
-
-5. **Select non-overlapping spans** greedily by score (interval scheduling), tie-broken
+4. **Select non-overlapping spans** greedily by score (interval scheduling), tie-broken
    by margin.
 
-6. **Classify:**
+5. **Classify** (`vo.Classify`):
    - `match` — `score ≥ accept_threshold` (default 0.80) **and** `margin ≥ margin_threshold` (default 0.05)
    - `review` — `score ≥ review_floor` (default 0.55)
    - otherwise the words remain unconsumed
 
-7. **Gap sweep.** Any run of unconsumed words becomes an `unmatched` span — this is
-   where slates, chatter, and false starts land, without needing to be modelled
-   explicitly. These spans are reported but never cut: they route to
-   `vo.DEST_IN_PLACE`, which `ApplyPlan` skips, leaving the audio on the source track.
+6. **Gap sweep.** Any run of unconsumed words becomes an `unmatched`/`review` span
+   (`vo.FindGaps`) — this is where slates, chatter, and false starts land, without
+   needing to be modelled explicitly.
 
-8. **Refine boundaries.** Start = first aligned word start − `pre_pad` (default 150 ms);
-   end = last aligned word end + `post_pad` (default 250 ms). Clamped so neighbouring
-   spans never overlap and never cross the containing item's bounds.
+Cost is bounded by the whole project's word count; a one-hour session is on the order of
+10⁴ words, the index build is linear, and the candidate search is already gated by
+`vo.FindCandidates`. Overview recomputes on change, not per frame, and memoises the
+result on `(script path, mapping string, sorted source path list, source bytes list)`.
 
-9. **Group duplicates.** Spans sharing a `line_id` are sorted chronologically and
-   numbered `take_index` 1..N. The primary is chosen per `primary_take`, then routing
-   and naming follow the three toggles.
+**Conflicting selects across sources are expected and not an error.** Two recordings can
+both carry a select for the same `Filename`; each is a separate row with its own key,
+and both survive — see `VO/SPEC-cut.md` for where they land.
 
-### Transcription caching
-
-Keyed by source path + file size + model + whisper parameters, stored in
-`<project>/vo_scratch/`. Re-running after a threshold change is instant. This is what
-makes threshold iteration practical, and it is the reason the audio stage is cleanly
-separated from the matching stage. A force-retranscribe toggle bypasses it.
+Boundary placement (padding and silence snapping) and the toggles that route and name
+the cut clips are Cut's job — see `VO/SPEC-cut.md` §6–7.
 
 ---
 
 ## 7. Configuration
 
-Persisted via `ExtState` section `ajsfx_vo` per `.agents/standards.md`; the per-project
-script CSV path uses `SetProjExtState`.
+Persisted via `ExtState` section `ajsfx_vo` per `.agents/standards.md`.
 
 **Settings panel** (`ajsfx_VO_Settings.lua`): whisper binary path, model path, threads,
-DTW preset, language, accept threshold, review floor, margin threshold, pre/post pad,
-destination track names, review/unmatched name prefixes, create-regions toggle, CSV
-column mapping, skip values (default `TO RECORD`), substitution table, scratch
-directory, force-retranscribe, backend readiness indicator.
+DTW preset, language, accept threshold, review floor, margin threshold, boundary
+snapping (`snap_boundaries`, `pre_pad`/`post_pad` as maximum reach,
+`snap_min_silence`, `snap_floor_offset`, `snap_floor_window`), destination track names,
+review/unmatched name prefixes, create-regions toggle, CSV column mapping presets, skip
+values (default `TO RECORD`), substitution table, scratch directory, force-retranscribe,
+backend readiness indicator.
 
-**Run dialog** (`ajsfx_VO_ScriptMatch.lua`): script CSV picker (remembered per project),
-Speaker/Type filter, and the three per-session toggles.
+The script CSV path and its column mapping are **not** here any more — they live in the
+project file (§4.2), since they describe the project's work, not the machine's backend.
+
+**Cut window** (`ajsfx_VO_Cut.lua`): the two per-session toggles below. `primary_take`
+is gone — see `VO/SPEC-cut.md` §6.
+
+| Toggle | Values | Effect |
+|---|---|---|
+| `suffix_alt_names` | off / on | **off:** all takes named identically (`vo_npc_greet_01`). **on:** non-selected takes get `_tk01`, `_tk02`… |
+
+`use_alts_track` was removed in 0.13. Alts are marked per take in the Select column
+rather than switched on per run — see `SPEC-overview.md` §7.
+
+These are session-only state in the Cut window, not part of `vo.CONFIG_SCHEMA`, so they
+do not persist between runs — the user's `Select` column is the persistent decision.
 
 ### The single network path
 
@@ -377,33 +386,23 @@ The matching path contains no network code whatsoever.
 
 ## 8. Failure handling
 
-Transcription completes **before** any project mutation, so cancelling or failing leaves
-the project untouched. All mutations occur inside one `core.Transaction`, giving a
-single undo point and automatic error reporting via `core.Error`.
+Cut's mutations occur inside one `core.Transaction`, giving a single undo point and
+automatic error reporting via `core.Error`. Everything upstream of Cut — transcribing in
+Sources, matching in Overview — reads and computes only; nothing it does needs undoing.
 
 | Condition | Behaviour |
 |---|---|
-| No items selected | Inline message in the dialog ("Select the recorded session item(s) on a track."); Transcribe disabled, no mutation |
-| Backend not configured / binary or model missing | Inline dialog message pointing at Settings; no mutation |
-| Take is MIDI or empty, playrate ≠ 1.0, or reversed | Item skipped and listed in the report; run continues |
-| whisper exits non-zero | Tail of log shown inline; abort before mutation |
-| Zero words transcribed | Abort with an inline message |
+| No recorded audio in the project | Sources shows "No recorded audio in this project yet."; Transcribe has nothing to act on |
+| Backend not configured / binary or model missing | Inline red line in Sources/Cut naming the reason, with a `Settings…` button; Transcribe disabled |
+| A transcript file cannot be parsed | Sources reports that row `error`, names the reason inline; the other rows still load |
+| Audio changed since it was transcribed | Sources reports the row `stale`; Overview still matches against the (now stale) words; Cut refuses to run and names the file |
+| Transcript write fails (e.g. read-only directory) | Reported inline as a warning after the batch; files that did write keep their result, and the session stays usable |
 | CSV missing mapped columns | Inline message listing the headers actually found |
-| No span clears the review floor | Everything is unmatched, so nothing is cut and no track is created; the report is still written |
-| User cancels transcription | Nothing committed |
-| Span crosses an item boundary | Clamped to the containing item; noted in the report |
-| Sidecar audio-file size mismatch on load | Source flagged STALE inline; Cut disabled until re-transcribed |
-| Sidecar written against a different script CSV | Mismatch reported per-line inline |
-
-### Report
-
-One `<audio>_vo_report.csv` sidecar per media source file, written beside the audio
-itself rather than once per project. It is written when you transcribe (not only when
-you cut) and rewritten on cut. Span times are stored **source-relative**, so the
-sidecar stays valid if the item is later moved, trimmed, or copied on the timeline.
-The file is read back on open, so reopening the dialog on a recording that already has
-a sidecar restores its transcription result without re-running whisper. This report is
-also the designed input for the deferred LLM pass.
+| Nothing is selected in Overview | Cut shows "Nothing is selected." and does not run |
+| A line has several takes and none is selected | Cut lists it as needing a decision and does not run |
+| Two sources both select the same `Filename` | Both are cut; each source gets its own `Selects — <basename>` track and the collision is reported inline |
+| The project file cannot be parsed | Overview reports the reason inline and **refuses to save**, so the file on disk is not overwritten |
+| A span's source has no item left in the project | Dropped from the cut and counted in the summary, rather than cut against silence |
 
 ---
 
@@ -411,129 +410,97 @@ also the designed input for the deferred LLM pass.
 
 ### Automated (headless, runs in CI)
 
-`tests/test_vo.lua`, following the harness style of `tests/test_pvx.lua`, run by
-`./run_tests.sh`. Lua 5.4 is available locally and in CI.
+`tests/test_vo.lua`, run by `./run_tests.sh`. Lua 5.4 is available locally and in CI.
+Coverage includes the transcript sidecar (`vo.SerializeTranscript` / `vo.ParseTranscript`
+round-trip and rejection cases), the project file (`vo.SerializeProjectFile` /
+`vo.ParseProjectFile` round-trip including a `|<filename>` row with no audio),
+`vo.BuildMatch` against parsed transcripts (including two sources matching the same
+`Filename`), and boundary snapping (`vo.SnapBoundary`) against a synthetic amplitude
+callback — silence found, no silence found (pad fallback, flag set), a window shorter
+than `snap_min_silence`, no neighbouring word at the start of a file, and the invariant
+that a boundary never crosses the neighbouring word's timestamp. The rest of the pure
+layer (CSV parsing, column mapping, normalization, candidate generation, scoring,
+classification, naming) is unchanged from the single-script version and stays covered
+under the same names.
 
-The central technique is a **synthetic transcript generator**: given the sample script
-CSV, it emits a word stream with deterministic (fixed-seed) noise — dropped words,
-substituted words, injected slates, repeated takes, and shuffled line order. This
-exercises the entire matching pipeline against known ground truth with no audio and no
-REAPER, and turns threshold changes into a regression test.
-
-Coverage:
-
-- **CSV parsing** — quoted fields, embedded commas, embedded newlines, doubled quotes, CRLF, BOM, ragged rows
-- **Column mapping** — configurable names, missing-column errors, header whitespace
-- **Filtering** — `TO RECORD` skipping, Speaker and Type filters
-- **Normalization** — case, punctuation, apostrophes, digits→words both directions, substitution table
-- **Whisper CSV parsing** — ms→seconds, quoted text, empty rows
-- **Levenshtein / scoring** — identical, disjoint, single edit, boundary lengths
-- **Candidate generation** — out-of-order lines, near-duplicate lines, rare-anchor selection
-- **Span selection** — overlap rejection, score/margin tie-breaks
-- **Gap sweep** — slates and chatter become unmatched spans
-- **Pad clamping** — neighbour collisions, item-bound collisions
-- **Duplicate handling** — take numbering and naming/routing across **all eight** toggle combinations
-- **Classification** — accept/review/unmatched threshold edges, low-margin ambiguity
-- **Name sanitization** — path separators, reserved characters, length
-- **Report generation** — row shape, unmatched-lines section
-- **`BuildPlan` end-to-end** — synthetic session with out-of-order lines, two takes of one line, a slate, and chatter
+`tests/test_vo_view.lua` covers the view-settings module (`VO/lib/ajsfx_vo_view.lua`)
+independently.
 
 ### Manual (REAPER-in-the-loop — cannot be verified headlessly)
 
-Documented separately in `VO/MANUAL_TEST.md`, with a sample dataset: a six-line script
-CSV including one `TO RECORD` row, one line to be recorded twice, and two speakers.
-Procedure: record yourself reading the lines **out of order, with a slate and chatter
-between takes**, then run the tool and verify Selects / Alts / Review contents against
-an expected table, for each toggle combination. Includes undo integrity, region
-creation, and a Region Render Matrix delivery check.
+Documented in `VO/MANUAL_TEST.md`.
 
 ---
 
 ## 10. Explicitly unverified
 
-Stated plainly rather than assumed working:
+Stated plainly rather than assumed working. **No manual testing in REAPER has been run
+for the Cut and Name, Pull and Sort panels** — they are implemented and pass the
+automated suite, but have not been exercised against real audio yet. See
+`VO/MANUAL_TEST.md` for the checks that would clear them.
 
 - **whisper-cli has not been executed.** Its flags and CSV output format were read from
   upstream source (`examples/cli/cli.cpp`), not observed. The first manual test must
   confirm the actual CSV shape.
-- **`-ot` / `-d` offset semantics are unconfirmed** — specifically whether reported
-  timestamps are absolute to the file start or relative to the offset. v1 sidesteps this
-  by transcribing whole source files and filtering words by item range. If range-limited
-  transcription is added later, this must be verified first.
-- **ReaImGui progress/cancel behaviour** in the async runner is untested outside REAPER.
-- **Split / move / rename correctness and undo integrity** require a real project.
-- **Region creation and Region Render Matrix delivery** require a real project.
-- **Collision behaviour of identically-named regions** in the Render Matrix is expected
-  to append `-01`, `-02` to output files, but is unverified.
-- **`-dtw` presets for the `.en` models are unverified**, so `BuildWhisperArgv` emits the
-  flag only for the presets confirmed against upstream source (§3.2). An English-only
-  model therefore runs *without* DTW — less precise word boundaries, but it runs, which
-  is the right failure direction given an unknown preset makes whisper-cli abort. Confirm
-  the `.en` preset names in the first manual test and widen the table if they hold.
+- **`-dtw` presets for the `.en` models are unverified**, so `vo.BuildWhisperArgv` emits
+  the flag only for the presets confirmed against upstream source (§3.2). An
+  English-only model therefore runs *without* DTW today.
 - **Number readings are cardinal only.** `1999` normalizes to "one thousand nine hundred
-  ninety nine", not "nineteen ninety nine", and the recognizer will usually produce the
-  latter. Year and other non-cardinal readings are not guessed; the substitution table is
-  the documented override, which is why substitutions are applied *before* number
-  expansion. Whether game VO scripts contain enough bare years to justify a year heuristic
-  is a judgement call for the repo owner, not something to infer.
+  ninety nine", not "nineteen ninety nine". The substitution table is the documented
+  override, applied before number expansion.
+- **ReaImGui progress/cancel behaviour** in the async transcription runner is untested
+  outside REAPER.
+- **Split / move / rename correctness and undo integrity** in Cut require a real project.
+- **Region creation and Region Render Matrix delivery**, including the collision
+  behaviour of identically-named regions, are unverified.
+- **Boundary snapping's amplitude reads** (`vo.MeasureGapRMS` via
+  `CreateTakeAudioAccessor`) have not been run against real audio; the pure logic in
+  `vo.SnapBoundary` is unit-tested against synthetic callbacks only.
+- **The transcript-write-failure warning** (a read-only audio directory) has not been
+  triggered in REAPER; see `VO/MANUAL_TEST.md`.
+- **The project-file-corruption refusal-to-save path** has not been triggered in REAPER.
 
 ---
 
 ## 11. Deferred to v2 — designed for, not dismissed
 
+- **Export** — transcript plus matched data out to CSV/SRT/whatever the delivery needs.
+- **Multiple scripts in one project** — the project file's key format is shaped for it.
+- **Manual re-carve** — per-row start/stop overrides in the project file, and a
+  word-range drag in the Sources detail view.
 - **LLM-assisted disambiguation** for spans whose top two candidates fall within the
-  margin threshold. The report's ambiguity rows are precisely the payload such a pass
-  would consume, so the extension point already exists. It will be **opt-in, off by
-  default, and gated behind a first-use dialog** stating explicitly that dialogue text
-  leaves the machine. v1 deliberately ships with **no network code in the matching
-  path**, so there is nothing to enable accidentally.
+  margin threshold. It will be **opt-in, off by default, and gated behind a first-use
+  dialog** stating explicitly that dialogue text leaves the machine. The tool
+  deliberately ships with **no network code in the matching path**, so there is nothing
+  to enable accidentally.
 - **WhisperX backend** (BSD-2-Clause) as an optional higher-accuracy path via wav2vec2
   forced alignment. Backend selection is already an indirection in `BuildWhisperArgv`.
   torch/CUDA will never become a hard requirement for using the tool.
 - **ImGui review panel** for accept / reject / reassign before commit.
-- **Shared async-subprocess runner.** v1 keeps its own copy in `VO/lib/ajsfx_vo.lua`
-  rather than refactoring PVX's working `RunPVXAsync` without REAPER testing available.
-  This is **known, deliberate duplication**, to be resolved by extracting a shared
-  runner once both are exercised in REAPER.
+- **Comped and partially re-rendered sources.** A wav assembled from two recordings has
+  no coherent sidecar today; it is simply a new file needing a new transcription.
 
 ---
 
-## 12. Implementation phases
+## 12. Implementation history
 
-1. ~~**Groundwork**~~ — *done.* Feature branch `feature/vo-script-match`; added the
-   missing MIT `LICENSE` (`README.md` linked to one that did not exist); wrote this spec.
-2. ~~**Pure layer, test-first**~~ — *done.* `VO/lib/ajsfx_vo.lua` + `tests/test_vo.lua`
-   (161 tests) + `tests/fixtures/vo_sample_script.csv`. Every function in the pure-layer
-   table above is implemented and covered, including all eight toggle combinations and a
-   deterministic synthetic-transcript generator driving `BuildPlan` end-to-end.
-3. ~~**Backend + Settings**~~ — *done.* Argv builder, `-dtw` preset mapping, shell
-   quoting, cache key, schema-driven `LoadConfig`/`SaveConfig`, detached async runner
-   with progress and cancel, `ajsfx_VO_Settings.lua`.
-4. ~~**Apply layer + main action**~~ — *done.* `CollectSourceSpans`,
-   `MapWordsToProject`, `EnsureTrackBelow`, `ApplyPlan`, and
-   `ajsfx_VO_ScriptMatch.lua` with the run dialog, per-project CSV memory, and a per-source sidecar.
-5. ~~**Docs**~~ — *done.* README section, `VO/MANUAL_TEST.md`, sample dataset.
+The tool shipped first as one script (`ajsfx_VO_ScriptMatch.lua`), then grew a
+project-wide tracking window (`ajsfx_VO_Overview.lua`) alongside it, then was split into
+the three-window design this document describes. The split's rationale and task-by-task
+plan are in `docs/superpowers/plans/2026-08-01-vo-source-manager.md`; its design
+rationale is in `docs/superpowers/specs/2026-08-01-vo-source-manager-design.md`.
 
-**Remaining work is verification, not implementation:** everything in §10 needs a
-REAPER session. `VO/MANUAL_TEST.md` is the procedure, ordered so the highest-risk
-assumption — the shape of whisper-cli's CSV — is checked first, before any of the
-REAPER-side behaviour is worth testing.
+Release follows `.agents/standards.md`: `@version` and `@changelog` on every script, CI
+rebuilds `index.xml` on merge to `main`. **`index.xml` is never hand-edited.**
 
-Release follows `.agents/standards.md`: `@version` and `@changelog` on every script,
-CI rebuilds `index.xml` on merge to `main`. **`index.xml` is never hand-edited.**
-
-> **Note on library indexing.** `VO/lib/ajsfx_vo.lua` carries `@noindex`. Without it,
-> `reapack-index` publishes a shared library as its own installable package — `index.xml`
-> currently lists `pvx/lib/ajsfx_pvx.lua` as a `pvx/lib` package with `main="main"`, which
-> also registers the library in REAPER's action list as a script that does nothing when
-> run. The library still ships correctly via the main script's `@provides`. The existing
-> `pvx/lib` package is left alone deliberately: it is already published, so removing it
-> would withdraw a package from users who have it installed — a call for the repo owner,
-> not a drive-by fix.
+> **Note on library indexing.** `VO/lib/ajsfx_vo.lua` and `VO/lib/ajsfx_vo_view.lua`
+> carry `@noindex`. Without it, `reapack-index` publishes a shared library as its own
+> installable package, which also registers it in REAPER's action list as a script that
+> does nothing when run. The library still ships correctly via `ajsfx_VO_Overview.lua`'s
+> `@provides`.
 
 > **Note on branching.** `.agents/standards.md` describes a `dev` → `main` workflow, but
-> `origin/dev` is currently **68 commits behind `main`** and still carries the obsolete
-> `scripts/` layout from before the `Items/` / `Track/` / `lib/` / `pvx/` split — its
-> test suite does not even run against the current tree. This branch was therefore taken
-> from `main`. Either `dev` should be reset to `main` or the documented workflow updated;
-> flagged for the repo owner rather than decided here.
+> `origin/dev` has historically lagged `main` significantly and carried an obsolete
+> layout. VO feature work is taken from `main` directly; this is unchanged by the
+> three-window split and is a standing note for the repo owner rather than something
+> resolved here.

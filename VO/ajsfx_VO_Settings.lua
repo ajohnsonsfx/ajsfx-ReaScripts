@@ -1,16 +1,16 @@
--- @description ajsfx VO Settings
--- @author ajsfx
--- @version 0.4
--- @changelog Note that the unmatched prefix now labels report rows only, since unmatched audio stays on the source track
 -- @noindex
--- @about Settings panel for ajsfx VO ScriptMatch. Configure the speech backend,
---        matching thresholds, destination tracks, and the substitution table.
---        Script CSV column mapping and character filtering live in
---        ajsfx VO ScriptMatch itself. See VO/SPEC.md for the design.
+-- Provided by the ajsfx VO package; see ajsfx_VO_Overview.lua's @provides.
 --
---        Not its own ReaPack package: it is shipped as a second [main] action by
---        ajsfx_VO_ScriptMatch.lua. Only one package may provide lib/ajsfx_vo.lua,
---        and two packages claiming it made reapack-index drop this one silently.
+-- ajsfx VO Settings — the speech backend, the matching thresholds, the clip
+-- boundaries, the destination tracks and the substitution table.
+--
+-- Script CSV column mapping and character filtering are not here: they belong
+-- to a script, not to the user, so they live in ajsfx VO Overview and are saved
+-- in the project file. See VO/SPEC.md for the design.
+--
+-- Not its own ReaPack package: it ships as one of the [main] actions of
+-- ajsfx_VO_Overview.lua. Only one package may provide lib/ajsfx_vo.lua, and two
+-- packages claiming it made reapack-index drop one of them silently.
 
 local r = reaper
 
@@ -97,10 +97,8 @@ end
 
 local function Apply()
   cfg.substitutions = vo.ParseSubstitutionText(subs_text)
-  -- Skip tokens now live in the ScriptMatch layout (per-CSV, saved with the
-  -- preset); this global cfg.skip_values round-trip is retained only for
-  -- backward-compat with configs saved before that move — no UI edits it and
-  -- no behavior depends on it here.
+  -- Skip tokens live with the script's own layout, not here; this round-trip
+  -- exists only so a config saved before that move is not silently emptied.
   cfg.skip_values = {}
   for v in skip_text:gmatch("[^\n]+") do
     local trimmed = v:match("^%s*(.-)%s*$")
@@ -331,17 +329,73 @@ local function DrawMatching()
   changed, cfg.margin_threshold = im.InputDouble(ctx, "Margin threshold", cfg.margin_threshold, 0.01, 0.05, "%.2f")
   changed, cfg.anchor_count     = im.InputInt(ctx,    "Anchor tokens",    cfg.anchor_count)
   im.Spacing(ctx)
-  changed, cfg.pre_pad  = im.InputDouble(ctx, "Pre-roll (s)",  cfg.pre_pad,  0.01, 0.05, "%.3f")
-  changed, cfg.post_pad = im.InputDouble(ctx, "Post-roll (s)", cfg.post_pad, 0.01, 0.05, "%.3f")
-
-  im.Spacing(ctx)
   im.TextDisabled(ctx, "Score is textual agreement with the script — never a\n" ..
                        "judgement of the performance. Margin is the lead over the\n" ..
                        "next-best script line, which catches near-duplicate lines.")
+
+  im.Spacing(ctx)
+  im.Separator(ctx)
+  im.Text(ctx, "Read order")
+  changed, cfg.backbone_min_tokens = im.InputInt(ctx, "Short line is under",
+                                                 cfg.backbone_min_tokens)
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Lines with fewer words than this cannot identify themselves —\n" ..
+                       "a line that is just \"You.\" matches every \"you\" in the read.\n" ..
+                       "Only these are judged on where they fall.")
+  end
+  changed, cfg.order_weight = im.InputDouble(ctx, "Out-of-order penalty",
+                                             cfg.order_weight, 0.01, 0.05, "%.2f")
+  im.Spacing(ctx)
+  im.TextDisabled(ctx, "A session is read roughly in script order, so a short line's\n" ..
+                       "position says which of its many possible matches is the real\n" ..
+                       "one. A short line that contradicts the order is sent to review,\n" ..
+                       "never dropped and never silently named. Longer lines are left\n" ..
+                       "alone: pickups and per-character passes are normal.")
+end
+
+local PAD_TOOLTIP =
+  "With snapping on this is the furthest the edge may travel, not a fixed amount."
+
+local function PadTooltip()
+  if im.IsItemHovered(ctx) then im.SetTooltip(ctx, PAD_TOOLTIP) end
+end
+
+local function DrawBoundaries()
+  local changed
+  changed, cfg.snap_boundaries =
+    im.Checkbox(ctx, "Snap clip edges to silence", cfg.snap_boundaries)
+
+  im.Spacing(ctx)
+  changed, cfg.pre_pad =
+    im.DragDouble(ctx, "Maximum head room (s)", cfg.pre_pad, 0.01, 0.0, 2.0, "%.3f")
+  PadTooltip()
+  changed, cfg.post_pad =
+    im.DragDouble(ctx, "Maximum tail (s)", cfg.post_pad, 0.01, 0.0, 2.0, "%.3f")
+  PadTooltip()
+
+  -- The three measurement controls mean nothing with snapping off: without a
+  -- measured floor ApplyPadding takes the plain-padding path and never reads
+  -- them. Greyed rather than hidden, so the user can see what snapping buys.
+  im.Spacing(ctx)
+  im.BeginDisabled(ctx, not cfg.snap_boundaries)
+  changed, cfg.snap_min_silence =
+    im.DragDouble(ctx, "Minimum silence (s)", cfg.snap_min_silence, 0.005, 0.01, 0.5, "%.3f")
+  changed, cfg.snap_floor_offset =
+    im.DragDouble(ctx, "Noise floor headroom (dB)", cfg.snap_floor_offset, 0.1, 0.0, 24.0, "%.1f")
+  changed, cfg.snap_floor_window =
+    im.DragDouble(ctx, "Floor measurement window (s)", cfg.snap_floor_window, 0.01, 0.1, 2.0, "%.3f")
+  im.EndDisabled(ctx)
+
+  im.Spacing(ctx)
+  im.TextDisabled(ctx, "An edge only moves into audio quieter than the measured noise\n" ..
+                       "floor plus the headroom, and never past the neighbouring word.\n" ..
+                       "With snapping off, both pads apply as fixed amounts.")
 end
 
 local function DrawOutput()
   local changed
+  -- The three tracks Pull routes to. Selects and Alts are delivered; Review
+  -- holds everything untouched -- undecided, unwanted, or not listened to yet.
   changed, cfg.track_selects = im.InputText(ctx, "Selects track", cfg.track_selects)
   changed, cfg.track_alts    = im.InputText(ctx, "Alts track",    cfg.track_alts)
   changed, cfg.track_review  = im.InputText(ctx, "Review track",  cfg.track_review)
@@ -351,9 +405,6 @@ local function DrawOutput()
   im.TextDisabled(ctx, "Unmatched audio is left untouched on the source track, so the\n" ..
                        "unmatched prefix labels its rows in the report rather than\n" ..
                        "naming a clip.")
-  im.Spacing(ctx)
-  changed, cfg.create_regions = im.Checkbox(ctx, "Create regions over Selects clips", cfg.create_regions)
-  im.TextDisabled(ctx, "For Region Render Matrix delivery. Off by default.")
 end
 
 local function DrawScript()
@@ -387,7 +438,8 @@ local function loop()
     if im.CollapsingHeader(ctx, 'Speech backend', nil, im.TreeNodeFlags_DefaultOpen) then
       DrawBackend()
     end
-    if im.CollapsingHeader(ctx, 'Matching') then DrawMatching() end
+    if im.CollapsingHeader(ctx, 'Matching')   then DrawMatching()   end
+    if im.CollapsingHeader(ctx, 'Boundaries') then DrawBoundaries() end
     if im.CollapsingHeader(ctx, 'Output')   then DrawOutput()   end
     if im.CollapsingHeader(ctx, 'Substitutions') then DrawScript()  end
     if im.CollapsingHeader(ctx, 'Advanced') then DrawAdvanced() end

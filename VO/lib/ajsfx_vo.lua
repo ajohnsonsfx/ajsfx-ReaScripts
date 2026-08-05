@@ -1,9 +1,9 @@
 -- @description ajsfx VO Shared Library
 -- @author ajsfx
--- @version 0.4
--- @changelog Guard ApplyPlan against degenerate zero-length spans (a boundary split no-op was moving a whole item's tail, orphaning later spans); simplify CSV columns to Character/Filename/Line Text with Filename as the line identity
+-- @version 0.5
+-- @changelog Word-level transcript sidecars, a project file for the user's own marks, live matching, and silence-snapped clip boundaries The script side of a project is a list rather than a single CSV: the project file holds one row per script with its own column mapping and an on/off switch, plus the per-line Append that decides the delivered name. A project file written by the previous version still opens, and folds its one script into the list.
 -- @noindex
--- @about Shared logic for ajsfx VO ScriptMatch.
+-- @about Shared logic for the ajsfx VO windows.
 --        Split into a pure layer (parsing, normalization, matching, naming —
 --        unit-testable with no REAPER and no audio) and a REAPER-coupled layer.
 --        See VO/SPEC.md for the design.
@@ -42,7 +42,7 @@ end
 -- Shallow copy: a new table with the same top-level key/value pairs. Nested
 -- tables (e.g. cfg.column_mapping) remain shared with the original -- callers
 -- that need to isolate a config snapshot from later top-level field writes
--- (see run_cfg in ajsfx_VO_ScriptMatch.lua) only need the top level copied.
+-- (see the Cut panel's run config) only need the top level copied.
 function vo.ShallowCopy(t)
   local out = {}
   for k, v in pairs(t) do out[k] = v end
@@ -322,6 +322,658 @@ function vo.BuildScriptLines(rows, cols, filters)
   return lines
 end
 
+-- Script lines that two or more rows want DELIVERED under the same name, after
+-- each line's Append has been applied.
+-- The overview can still keep their takes apart -- it groups by script row --
+-- but the delivered files cannot be kept apart, so one line's audio would
+-- overwrite the other's. Nothing downstream can repair that; only the script
+-- can. Returns: array of { asset, rows = { script row numbers }, texts = {…} },
+-- in first-appearance order, or an empty array when every filename is unique.
+function vo.DuplicateAssets(lines)
+  local seen, order = {}, {}
+  for _, l in ipairs(lines or {}) do
+    -- The RESOLVED name, so an Append that separates two lines clears the
+    -- clash and an Append that does not still shows it. `asset` is the fallback
+    -- for callers that never ran ResolveNames (tests, older entry points).
+    local name = l.deliver
+    if name == nil or name == "" then name = l.asset end
+    if name and name ~= "" then
+      local g = seen[name]
+      if not g then
+        g = { asset = name, rows = {}, texts = {} }
+        seen[name] = g
+        order[#order + 1] = g
+      end
+      g.rows[#g.rows + 1] = l.row
+      g.texts[#g.texts + 1] = l.text
+    end
+  end
+
+  local dupes = {}
+  for _, g in ipairs(order) do
+    if #g.rows > 1 then dupes[#dupes + 1] = g end
+  end
+  return dupes
+end
+
+-- Row-level clash detection, for the red highlight in ajsfx VO Overview.
+--
+-- This exists alongside DuplicateAssets because the two questions differ. An
+-- Append belongs to a script LINE; a name override belongs to a single TAKE. So
+-- an override can separate a clash the line-level check still sees, or create
+-- one it cannot see at all. Takes of a single line resolving to the same name is
+-- normal and must never be flagged -- Cut is what numbers them apart.
+--
+-- rows: overview rows carrying line_key, deliver and optionally name_override.
+-- Returns a set of the names claimed by two or more DIFFERENT script lines.
+function vo.DuplicateNames(rows)
+  local owners = {}
+  for _, row in ipairs(rows or {}) do
+    if row.line_key then
+      local name = row.name_override
+      if name == nil or name == "" then name = row.deliver end
+      if name and name ~= "" then
+        local o = owners[name]
+        if not o then
+          owners[name] = { row.line_key }
+        elseif o[1] ~= row.line_key and o[2] == nil then
+          o[2] = row.line_key
+        end
+      end
+    end
+  end
+
+  local dupes = {}
+  for name, o in pairs(owners) do
+    if o[2] then dupes[name] = true end
+  end
+  return dupes
+end
+
+-- A script's short name, used in the Overview's Script column and as part of an
+-- Append's storage key. Sanitized because it is displayed beside filenames and
+-- must not carry anything a path would choke on.
+function vo.ScriptLabel(path)
+  if type(path) ~= "string" or path == "" then return "" end
+  local base = path:match("([^/\\]+)$") or path
+  local stem = base:match("^(.*)%.[^.]*$") or base
+  return vo.SanitizeName(stem)
+end
+
+-- A script line's identity for the Append it carries. The parts are NEVER
+-- joined for storage -- a filename containing the separator would make the
+-- split ambiguous -- so this is a lookup key only, built from parts the project
+-- file keeps apart. `nth` is the 1-based occurrence of `asset` WITHIN its own
+-- script, chosen over the CSV row number so that inserting a line at the top of
+-- a script does not orphan every Append below it.
+function vo.AppendKey(script_label, asset, nth)
+  return tostring(script_label or "") .. "|" .. tostring(asset or "")
+       .. "|" .. tostring(nth or 1)
+end
+
+-- Several scripts' lines, flattened into the one ordered list the matcher, the
+-- overview and the cut all already expect. NOTHING is renamed here: two scripts
+-- delivering one filename produce two ordinary lines that happen to share a
+-- name, and the Append column is what separates them. Merging's only job is to
+-- record which script each line came from and to give it a stable key.
+--
+-- scripts: { { label, enabled, lines = <BuildScriptLines output> }, ... }
+function vo.MergeScriptLines(scripts)
+  local out = {}
+  for _, sc in ipairs(scripts or {}) do
+    if sc.enabled ~= false then
+      -- Occurrence is counted WITHIN a script, so a filename appearing once in
+      -- each of two scripts is the 1st in both. Counting globally would make an
+      -- Append depend on which other scripts happened to be loaded.
+      local nth = {}
+      for _, l in ipairs(sc.lines or {}) do
+        local line = vo.ShallowCopy(l)
+        local n = (nth[l.asset] or 0) + 1
+        nth[l.asset] = n
+        line.script     = sc.label
+        line.append_nth = n
+        line.append_key = vo.AppendKey(sc.label, l.asset, n)
+        out[#out + 1] = line
+        -- Position across the WHOLE list, which `row` cannot be: `row` counts
+        -- within one CSV, so two scripts both have a row 5 and anything keyed on
+        -- it would read them as one line. This is what "script order" means with
+        -- more than one script, and the script list's order is what sets it.
+        line.index      = #out
+      end
+    end
+  end
+  return out
+end
+
+-- Appends are held as an ARRAY of records, never as a map keyed by the joined
+-- string: splitting "label|asset|nth" back into three parts would be ambiguous
+-- the moment a filename contained the separator. The array is what the project
+-- file round-trips; the map below is built for lookup and thrown away.
+-- Record: { script = <label>, asset = <filename>, nth = <integer>, text = <string> }
+function vo.AppendMap(append_rows)
+  local m = {}
+  for _, a in ipairs(append_rows or {}) do
+    m[vo.AppendKey(a.script, a.asset, a.nth)] = a.text or ""
+  end
+  return m
+end
+
+-- The one mutator. Setting an append to empty REMOVES its record rather than
+-- storing "": the project file holds judgements, and "no append" is the absence
+-- of one -- the same rule SerializeProjectFile already applies to entry rows.
+function vo.SetAppend(append_rows, script, asset, nth, text)
+  append_rows = append_rows or {}
+  local clean = trim(tostring(text or ""))
+
+  for i, a in ipairs(append_rows) do
+    if a.script == script and a.asset == asset and a.nth == nth then
+      if clean == "" then
+        table.remove(append_rows, i)
+      else
+        a.text = clean
+      end
+      return append_rows
+    end
+  end
+
+  if clean ~= "" then
+    append_rows[#append_rows + 1] =
+      { script = script, asset = asset, nth = nth, text = clean }
+  end
+  return append_rows
+end
+
+-- The delivered name a script line asks for, before any per-take override.
+-- No separator is inserted: a user who wants "line_042_ch2" types "_ch2". That
+-- is the whole point -- nothing here renames anything the user did not spell.
+function vo.ResolveNames(lines, appends)
+  appends = appends or {}
+  for _, l in ipairs(lines or {}) do
+    local extra = l.append_key and appends[l.append_key] or nil
+    extra = extra and trim(extra) or ""
+    l.deliver = (l.asset or "") .. extra
+  end
+  return lines
+end
+
+--------------------------------
+-- Pure layer: name resolution
+--------------------------------
+
+-- What identifies an item is its NAME, not the transcript. Two cases need
+-- serving with one mechanism: takes this session cut out of a long recording,
+-- and rendered files delivered by someone else with no transcript at all. Both
+-- carry the script's filename, so both resolve the same way.
+
+-- A file extension is a delivery detail, not part of the name. Only a SHORT
+-- ALPHABETIC tail counts as one: "line_042_v1.2" ends in a number, which is
+-- part of what the file is called, and stripping it would merge two deliveries.
+function vo.NormalizeItemName(name)
+  local s = trim(tostring(name or "")):lower()
+  return (s:gsub("%.(%a%a?%a?%a?)$", ""))
+end
+
+-- Two keys per line: the script's own filename, and the DELIVERED name (that
+-- filename plus its Append, or the user's override). The delivered name is one
+-- this tool wrote, so recognising it is reading our own output back, not a
+-- guess -- it is what lets a second Pull see what the first one renamed.
+--
+-- A key two lines claim is deliberately POISONED rather than assigned to the
+-- first: that clash is what the Append column exists to fix, and picking one
+-- would put one line's audio under the other's name.
+function vo.BuildNameIndex(lines)
+  local index = {}
+  local function add(key, line_index)
+    if key == "" then return end
+    if index[key] == nil then
+      index[key] = line_index
+    elseif index[key] ~= line_index then
+      index[key] = false           -- false means "claimed twice"
+    end
+  end
+
+  for i, l in ipairs(lines or {}) do
+    local at = l.index or i
+    add(vo.NormalizeItemName(l.asset), at)
+    if l.deliver and l.deliver ~= l.asset then
+      add(vo.NormalizeItemName(l.deliver), at)
+    end
+  end
+  return index
+end
+
+-- Returns the line index, or nil plus "unknown" / "ambiguous". An item that
+-- resolves to nothing is never touched by Pull or Sort -- an uncut recording
+-- carries the recording's name, which is not a script filename, and that is
+-- what keeps both tools off audio they were not asked to move.
+function vo.ResolveItemName(index, name)
+  local key = vo.NormalizeItemName(name)
+  if key == "" then return nil, "unknown" end
+  local at = (index or {})[key]
+  if at == nil then return nil, "unknown" end
+  if at == false then return nil, "ambiguous" end
+  return at
+end
+
+-- "Have I got everything?" -- answered from the project's ITEM NAMES and the
+-- script, and from nothing else.
+--
+-- No transcript, no match, no stored mapping. It re-reads the truth every time
+-- it is asked, so it cannot drift out of sync with the project: the item's name
+-- IS the assignment, and this only reports what those names say. An answer it
+-- gives is wrong only if the names are wrong, which is a thing you can see.
+--
+-- `items` are { name = <take name>, track = <track name> }.
+-- Returns:
+--   by_line[line_index] = { count = n, tracks = { [track name] = n } }
+--   delivered  how many script lines have at least one item named for them
+--   missing    how many have none
+--   extra      names in the project that resolve to no line, deduplicated
+--   ambiguous  names claimed by two lines, which no name can distinguish
+-- The alt suffix as a Lua matcher: the pattern's literal parts escaped, {n}
+-- standing for the number. "_alt{n}" -> a name ending "_alt3" strips to its
+-- base. Returns nil when the name carries no such suffix.
+function vo.StripAltSuffix(name, pattern)
+  if type(name) ~= "string" or type(pattern) ~= "string"
+     or pattern == "" or not pattern:find("{n}", 1, true) then
+    return nil
+  end
+  local escaped = pattern:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")
+  local matcher = "^(.-)" .. escaped:gsub("{n}", "%%d+") .. "$"
+  local base = name:match(matcher)
+  if base and base ~= "" then return base end
+  return nil
+end
+
+-- Appends whose (script, asset, nth) no loaded line answers to. An Append
+-- detaches SILENTLY when a script file is renamed, re-exported with rows
+-- shifted, or removed -- the record survives in the project file, applies to
+-- nothing, and the clash it used to clear comes back on the next cut. This is
+-- what lets the window say so instead.
+function vo.OrphanAppends(appends, lines)
+  local live = {}
+  for _, l in ipairs(lines or {}) do
+    live[vo.AppendKey(l.script, l.asset, l.append_nth)] = true
+  end
+  local orphans = {}
+  for _, a in ipairs(appends or {}) do
+    if a.text and a.text ~= ""
+       and not live[vo.AppendKey(a.script, a.asset, a.nth)] then
+      orphans[#orphans + 1] = a
+    end
+  end
+  return orphans
+end
+
+-- A voiced leftover butted right up against a take's first sample usually
+-- HOLDS that take's real opening -- a spoken lead-in ('"Leave," he says')
+-- the matcher couldn't align to the script, so the span started at the
+-- first scripted word and the preamble stayed behind on the recording
+-- track. Warn, don't guess: adopting audio into a take is an editorial
+-- decision. leftovers/takes carry source-time spans ({src_start, src_end,
+-- name}); a take starting within `gap` seconds after a leftover ends is
+-- flagged with that leftover.
+function vo.FlagClippedHeads(leftovers, takes, gap)
+  gap = gap or 0.300
+  local flags = {}
+  for _, lo in ipairs(leftovers or {}) do
+    for _, tk in ipairs(takes or {}) do
+      local d = (tk.src_start or 0) - (lo.src_end or 0)
+      if d >= -0.010 and d <= gap then
+        flags[#flags + 1] = { leftover = lo, take = tk.name, gap = d }
+        break
+      end
+    end
+  end
+  return flags
+end
+
+-- How much of an item's edge is really room, seen from one end. `db_windows`
+-- is a peak-dB profile walking INWARD from that edge, one window per `step`
+-- seconds. The subtlety this exists for: a cut whose edge was clamped to the
+-- neighbouring word's timestamp puts the NEIGHBOUR take's onset (or decay)
+-- inside the item -- a short, edge-touching run of audio with a long stretch
+-- of silence behind it. A plain first-hot-window scan reads that as "tight"
+-- while the listener hears speech, dead air, then a foreign blip. A hot run
+-- at the edge no longer than `blip_max`, separated from the item's own audio
+-- by at least `gap_min` of silence, is counted as room right through it.
+function vo.EffectiveRoom(db_windows, step, opts)
+  opts = opts or {}
+  local floor_db = opts.floor_db or -45.0
+  local blip_max = opts.blip_max or 0.350
+  local gap_min  = opts.gap_min  or 0.400
+  local first_hot
+  for i, db in ipairs(db_windows or {}) do
+    if db > floor_db then first_hot = i break end
+  end
+  if not first_hot then return #(db_windows or {}) * step end
+  local room = (first_hot - 1) * step
+  -- The blip branch fires only when the very edge window is hot: a clamped
+  -- neighbour word is TRUNCATED by the edge, so it rings right at it. The
+  -- item's own final word -- however close -- has completed, and its decay
+  -- leaves at least a breath of quiet at the edge. That quiet is what keeps
+  -- a short real word behind a long pause from being read as bleed.
+  if first_hot > 1 then return room end
+  local run_end = first_hot
+  while run_end < #db_windows and db_windows[run_end + 1] > floor_db do
+    run_end = run_end + 1
+  end
+  local gap_end = run_end
+  while gap_end < #db_windows and db_windows[gap_end + 1] <= floor_db do
+    gap_end = gap_end + 1
+  end
+  local run_len = (run_end - first_hot + 1) * step
+  local gap_len = (gap_end - run_end) * step
+  -- Only a blip, only with real silence behind it, and only when the item's
+  -- own audio actually exists further in -- otherwise the edge audio IS the
+  -- content and the honest answer is the plain scan's.
+  if run_len <= blip_max and gap_len >= gap_min and gap_end < #db_windows then
+    return gap_end * step
+  end
+  return room
+end
+
+-- The finishing pass, planned from measurements. Each entry of `measured`
+-- says how far an item's edges sit from its audio ({name, head_room,
+-- tail_room, user_touched}); anything looser than room + slack is pulled
+-- in to the standard room. Items the user has already trimmed by hand
+-- (user_touched, detected by their non-default fades) are never planned.
+-- Deltas are seconds to move INWARD -- strictly loss-free: only measured
+-- silence is removed, speech is untouched by construction.
+function vo.PlanTighten(measured, opts)
+  opts = opts or {}
+  local head_room  = opts.head_room  or vo.DEFAULTS.snap_head_room
+  local tail_room  = opts.tail_room  or vo.DEFAULTS.snap_tail_room
+  local head_slack = opts.head_slack or vo.DEFAULTS.trim_head_slack
+  local tail_slack = opts.tail_slack or vo.DEFAULTS.trim_tail_slack
+  local edits = {}
+  for _, m in ipairs(measured or {}) do
+    if not m.user_touched then
+      local h = (m.head_room or 0) > (head_room + head_slack)
+        and (m.head_room - head_room) or 0
+      local t = (m.tail_room or 0) > (tail_room + tail_slack)
+        and (m.tail_room - tail_room) or 0
+      if h > 0 or t > 0 then
+        edits[#edits + 1] = { name = m.name, head = h, tail = t }
+      end
+    end
+  end
+  return edits
+end
+
+-- Matched/review spans of zero (or negative) width are matcher artifacts --
+-- whisper hands every token expanded from one word the same timestamps, and a
+-- word at the very end of a file can carry t0 == t1. Cutting one produces a
+-- millisecond sliver wearing a line's name. Dropped here, counted for the
+-- report; unmatched spans are left alone (nothing cuts them anyway).
+function vo.DropDegenerateSpans(spans)
+  local kept, dropped = {}, 0
+  for _, s in ipairs(spans or {}) do
+    local cuttable = s.kind == "match" or s.kind == "review"
+    if cuttable and (s.stop or 0) - (s.start or 0) <= 0 then
+      dropped = dropped + 1
+    else
+      kept[#kept + 1] = s
+    end
+  end
+  return kept, dropped
+end
+
+-- opts.source_names: set of vo.NormalizeItemName-ed source filenames. An item
+-- still wearing its recording's own name is the uncut remainder of a session,
+-- not a stray -- counting it as "not on the script" keeps one permanent
+-- warning on screen, which teaches the user to ignore the only warning that
+-- matters. opts.alt_pattern: the Pull panel's alt pattern, so a name the tool
+-- itself wrote ("line_alt2") counts as a take of its line.
+function vo.CheckCoverage(items, lines, opts)
+  opts = opts or {}
+  local index = vo.BuildNameIndex(lines)
+  local by_line, extra_seen, extra, ambiguous = {}, {}, {}, 0
+
+  for _, it in ipairs(items or {}) do
+    local at, why = vo.ResolveItemName(index, it.name)
+    if not at and why ~= "ambiguous" and opts.alt_pattern then
+      local base = vo.StripAltSuffix(it.name, opts.alt_pattern)
+      if base then at, why = vo.ResolveItemName(index, base) end
+    end
+    if not at and why ~= "ambiguous" and opts.source_names
+       and opts.source_names[vo.NormalizeItemName(it.name)] then
+      -- Skip entirely: neither delivered nor extra.
+      at, why = nil, "source"
+    end
+    if why == "source" then -- luacheck: ignore
+    elseif at then
+      local rec = by_line[at]
+      if not rec then rec = { count = 0, tracks = {} }; by_line[at] = rec end
+      rec.count = rec.count + 1
+      local track = it.track or ""
+      rec.tracks[track] = (rec.tracks[track] or 0) + 1
+    elseif why == "ambiguous" then
+      ambiguous = ambiguous + 1
+    else
+      -- Deduplicated: three takes of a name the script does not have is one
+      -- thing to look at, not three.
+      local key = vo.NormalizeItemName(it.name)
+      if key ~= "" and not extra_seen[key] then
+        extra_seen[key] = true
+        extra[#extra + 1] = it.name
+      end
+    end
+  end
+
+  local delivered, missing = 0, 0
+  for i = 1, #(lines or {}) do
+    if by_line[i] then delivered = delivered + 1 else missing = missing + 1 end
+  end
+
+  table.sort(extra)
+  return { by_line = by_line, delivered = delivered, missing = missing,
+           extra = extra, ambiguous = ambiguous }
+end
+
+-- Where each item goes, as a pure function of its NAME and its two ticks.
+-- Selects and Alts are DELIVERED; Review is everything else -- undecided,
+-- unwanted, or simply not listened to yet.
+--
+-- `items` are { id, name, override } in timeline order; `marks` maps an item id
+-- to "select" (the delivery) or "keep" (delivered alongside it, as an alt). An item whose name resolves to nothing produces no move
+-- at all: not moved, not renamed, not an error. It is counted so a run that
+-- does nothing can say why.
+--
+-- `override` is a name the user chose for THIS TAKE, and it wins over the
+-- line's delivered name. It is how two takes of one line can be delivered under
+-- different names: the Append belongs to the line and would rename the select
+-- as well as the alt.
+function vo.PlanPull(items, lines, marks)
+  marks = marks or {}
+  local index = vo.BuildNameIndex(lines)
+
+  local groups, order = {}, {}
+  local summary = { selects = 0, alts = 0, review = 0,
+                    unknown = 0, ambiguous = 0 }
+
+  for _, item in ipairs(items or {}) do
+    local at, why = vo.ResolveItemName(index, item.name)
+    if at then
+      if not groups[at] then
+        groups[at] = {}
+        order[#order + 1] = at
+      end
+      local g = groups[at]
+      g[#g + 1] = item
+    else
+      local bucket = (why == "ambiguous") and "ambiguous" or "unknown"
+      summary[bucket] = summary[bucket] + 1
+    end
+  end
+
+  local moves = {}
+  for _, at in ipairs(order) do
+    local group   = groups[at]
+    local line    = lines[at] or {}
+    local deliver = line.deliver or line.asset
+
+    -- One take is not a decision: a lone item IS the delivery, whether or not
+    -- anybody ticked it, and a folder of rendered files carries no ticks at
+    -- all. Everything else follows the two ticks.
+    if #group == 1 and not marks[group[1].id] then
+      moves[#moves + 1] = { id = group[1].id, line = at,
+                            dest = "selects", rename = group[1].override or deliver }
+      summary.selects = summary.selects + 1
+    else
+      for _, item in ipairs(group) do
+        local mark = marks[item.id]
+        if mark == "select" then
+          moves[#moves + 1] = { id = item.id, line = at,
+                                dest = "selects", rename = item.override or deliver }
+          summary.selects = summary.selects + 1
+        elseif mark == "keep" then
+          -- Without a per-take name of its own an alt takes the line's, which
+          -- clashes with the select. That clash is real and is reported in red
+          -- rather than uniqued behind the user's back -- "Name alts" is the
+          -- button that gives every alt a name.
+          moves[#moves + 1] = { id = item.id, line = at,
+                                dest = "alts", rename = item.override or deliver }
+          summary.alts = summary.alts + 1
+        else
+          -- Unticked takes go to Review and STAY there. Not a rejection and not
+          -- a decision -- the first Pull of a session puts everything there,
+          -- and what is left after the marking is what was never wanted.
+          moves[#moves + 1] = { id = item.id, line = at, dest = "review" }
+          summary.review = summary.review + 1
+        end
+      end
+    end
+  end
+
+  return moves, summary
+end
+
+-- The alt naming convention belongs to whoever the delivery is for, so it is
+-- three fields rather than a hardcoded "_alt2". `{n}` is where the number goes;
+-- with no placeholder it goes on the end. A pattern used with no number at all
+-- is returned as written -- a single alt may not need a counter.
+function vo.FormatAltAppend(pattern, n, digits)
+  local text = tostring(pattern or "")
+  if not n then return (text:gsub("{n}", "")) end
+  local num = string.format("%0" .. math.max(1, math.floor(digits or 1)) .. "d", n)
+  if text:find("{n}", 1, true) then
+    return (text:gsub("{n}", num))
+  end
+  return text .. num
+end
+
+-- Gives every alt -- a row with Keep ticked and Sel not -- a delivered name of
+-- its own.
+--
+-- It writes a PER-TAKE name, not an Append. An Append belongs to the script
+-- LINE -- `vo.AppendKey` has no take component and `line.deliver` feeds every
+-- take of the line -- so appending "_alt1" for an alt would rename its select
+-- too, and the two would still collide. Two takes of one line can only be told
+-- apart by a name held against the take, which is what `name_override` is.
+--
+-- Numbering runs per line, in the order the rows are given, and an alt that
+-- ALREADY has a name still consumes its number -- otherwise naming the second
+-- alt by hand would silently renumber the third.
+--
+-- It never overwrites: this button fills blanks, it does not impose a
+-- convention on work already done. Returns `{ { index = <index into rows>,
+-- name = <string> }, ... }` and the number skipped.
+function vo.PlanAltNames(rows, opts)
+  opts = opts or {}
+  local pattern = opts.pattern or "_alt{n}"
+  local start   = math.floor(tonumber(opts.start) or 1)
+  local digits  = math.floor(tonumber(opts.digits) or 1)
+
+  local edits, skipped, seen = {}, 0, {}
+  for i, row in ipairs(rows or {}) do
+    -- An alt is a take kept but not chosen: Keep ticked, Sel not.
+    if row.user_keep and not row.user_select and row.asset then
+      -- Keyed by the LINE, so two lines that happen to share a filename number
+      -- their alts separately -- the same reason the cut gate was keyed this
+      -- way before it.
+      local key = tostring(row.script_row or ((row.script or "") .. "\0" .. row.asset))
+      local n = (seen[key] or start - 1) + 1
+      seen[key] = n
+      if row.name_override and trim(row.name_override) ~= "" then
+        skipped = skipped + 1
+      else
+        -- Built on the line's DELIVERED name, so an alt of a line that already
+        -- carries an Append keeps it: line_042_ch2 -> line_042_ch2_alt1.
+        local base = row.deliver or row.asset
+        edits[#edits + 1] = {
+          index = i,
+          name  = base .. vo.FormatAltAppend(pattern, n, digits),
+        }
+      end
+    end
+  end
+  return edits, skipped
+end
+
+-- The whole script side of a project, loaded in one call. Both ajsfx VO Overview
+-- and the old ajsfx VO Cut window kept near-identical copies of this; it is now
+-- one function, so a script that loads for the table cannot fail to load for
+-- the cut.
+--
+-- `read_fn(path)` returns the file's text or nil. Injected rather than opened
+-- here so the whole thing stays in the pure layer and is testable headlessly.
+--
+-- entries: { { path, mapping, enabled }, ... }
+-- Returns { scripts = { { path, label, mapping, enabled, header, rows, lines,
+--                        error }, ... },
+--           lines   = <merged, in script-then-row order> }
+--
+-- `lines` do NOT carry `deliver`: the caller runs vo.ResolveNames once it has
+-- read the project's appends.
+function vo.LoadScripts(entries, read_fn)
+  local scripts = {}
+
+  for _, e in ipairs(entries or {}) do
+    local sc = {
+      path    = e.path,
+      label   = vo.ScriptLabel(e.path),
+      mapping = e.mapping or {},
+      enabled = e.enabled ~= false,
+      lines   = {},
+    }
+    scripts[#scripts + 1] = sc
+
+    local text = (e.path and e.path ~= "") and read_fn(e.path) or nil
+    if not text then
+      sc.error = "Cannot read the script CSV:\n" .. tostring(e.path)
+    else
+      local rows = vo.ParseCSV(text)
+      if #rows < 1 then
+        sc.error = "The script CSV is empty."
+      else
+        local header = table.remove(rows, 1)
+        local ok, err = vo.ValidateHeaderNames(header)
+        if not ok then
+          sc.error = err
+        else
+          -- Kept even on the errors below, because the header is what the
+          -- column pickers are built from -- a script the user still has to map
+          -- must show them something to pick.
+          sc.header, sc.rows = header, rows
+          if #rows == 0 then
+            sc.error = "The script CSV has no data rows."
+          else
+            local cols = vo.MapColumns(header, sc.mapping)
+            if not cols then
+              sc.error = "This script's Filename and Line text columns are not mapped."
+            else
+              sc.lines = vo.BuildScriptLines(rows, cols)
+            end
+          end
+        end
+      end
+    end
+  end
+
+  return { scripts = scripts, lines = vo.MergeScriptLines(scripts) }
+end
+
 --------------------------------
 -- Pure layer: number expansion
 --------------------------------
@@ -495,6 +1147,67 @@ function vo.ParseWhisperCSV(text)
   return words
 end
 
+-- Longest stretch of `words` that is one short phrase repeated back to back.
+--
+-- This is the signature of a whisper decoder that has fallen into a repetition
+-- loop: it keeps emitting the same phrase, with confident timestamps, until the
+-- audio runs out. Nothing downstream can distinguish that from real speech, so
+-- it has to be caught here and shown to the user -- a transcript that ends in a
+-- loop is not merely inaccurate, it is missing however many minutes the loop
+-- covered. `-mc 0` in vo.BuildWhisperArgv makes it far less likely; this is the
+-- check that it worked.
+--
+-- Thresholds are set so ordinary repetition in a read ("no, no, no") cannot
+-- trip it: a run needs at least 4 cycles AND 12 repeated words.
+-- Returns: nil, or { from, to, phrase, cycles, words } (times in source seconds)
+vo.LOOP_MAX_PHRASE  = 12
+vo.LOOP_MIN_CYCLES  = 4
+vo.LOOP_MIN_WORDS   = 12
+
+function vo.DetectRepetitionLoop(words)
+  local n = #(words or {})
+  local best
+  local i = 1
+  while i <= n do
+    local run_end = i
+    local best_k, best_cycles = nil, 0
+    for k = 1, vo.LOOP_MAX_PHRASE do
+      if i + 2 * k - 1 > n then break end
+      local cycles = 1
+      while true do
+        local a, b = i + (cycles - 1) * k, i + cycles * k
+        if b + k - 1 > n then break end
+        local same = true
+        for j = 0, k - 1 do
+          if words[a + j].text ~= words[b + j].text then same = false break end
+        end
+        if not same then break end
+        cycles = cycles + 1
+      end
+      if cycles * k > best_cycles * (best_k or 1) then
+        best_k, best_cycles = k, cycles
+      end
+    end
+    local span = best_k and best_cycles * best_k or 0
+    if best_k and best_cycles >= vo.LOOP_MIN_CYCLES and span >= vo.LOOP_MIN_WORDS then
+      if not best or span > best.words then
+        local phrase = {}
+        for j = 0, best_k - 1 do phrase[#phrase + 1] = words[i + j].text end
+        best = {
+          from   = words[i].t0,
+          to     = words[i + span - 1].t1,
+          phrase = table.concat(phrase, " "),
+          cycles = best_cycles,
+          words  = span,
+        }
+      end
+      run_end = i + span - 1
+    end
+    i = run_end + 1
+  end
+  return best
+end
+
 --------------------------------
 -- Pure layer: configuration
 --------------------------------
@@ -505,14 +1218,80 @@ vo.DEFAULTS = {
   margin_threshold = 0.05,  -- lead over the runner-up line needed to be confident
   anchor_count     = 3,     -- rarest tokens per line used to propose candidates
   window_slack     = 0.30,  -- window lengths tried around the script line length
+
+  -- Which take "Select takes" marks when a line was read more than once.
+  auto_select_take = "last",  -- "last" | "first"
+
+  -- Sequence. A session is read roughly in script order, and that is the only
+  -- evidence there is for placing a line too short to identify itself.
+  order_weight         = 0.15,  -- score moved by reading in, or out of, order
+  backbone_min_tokens  = 4,     -- shortest line trusted to establish the order
+
   pre_pad          = 0.150, -- seconds of head room before the first aligned word
   post_pad         = 0.250, -- seconds of tail after the last aligned word
+
+  -- Boundary snapping. With it on, pre_pad/post_pad above become the MAXIMUM
+  -- reach of the search rather than a fixed amount; the search itself is also
+  -- bounded by the neighbouring word's timestamp, which is what makes it
+  -- structurally impossible for a clip to contain a syllable of the next line.
+  snap_boundaries   = true,
+  snap_min_silence  = 0.060, -- seconds below the floor needed to place a boundary
+  -- How far either side of a CHAINED word boundary to look for the dip that
+  -- really divides two words. Whisper marks the join a hair late, so cutting on
+  -- the mark can split an onset between both clips; the quietest window inside
+  -- this reach belongs to neither. See vo.QuietestBoundary.
+  --
+  -- OFF by default (0 disables it), and deliberately so. The mechanism is real
+  -- -- one take rendered "Look." where the source says "Book." -- but three
+  -- attempts at placing that boundary each fixed one side of the join and cost
+  -- the other, and the only instrument available to judge them (whispering
+  -- half-second clips) is too noisy to settle it: the same fragment came back
+  -- "Book.", "Boo." and "6." across runs. Turning this on changes every cut in
+  -- every session, so it waits for a verification method that can tell a
+  -- clipped syllable from a recogniser having a bad day.
+  chained_boundary_reach = 0,
+  snap_floor_offset = 6.0,   -- dB above the measured noise floor
+  snap_floor_window = 0.500, -- seconds of the quietest gap used to measure it
+  -- Which gap sets the floor, as a fraction of the gaps sorted quietest-first.
+  -- Not the minimum: one near-silent patch left by noise reduction would put
+  -- the floor below the file's own room tone, and every silence test then fails.
+  snap_floor_percentile = 0.25,
+
+  -- With snapping on, edges sit at a FIXED distance from the measured speech
+  -- bounds -- every clip gets the same head and tail room, clamped by the
+  -- neighbouring word and by pre/post_pad. Placing the edge wherever the
+  -- probe first crossed the floor gave 0ms on clean silence and the full pad
+  -- on uneven room tone: 0-1760ms of head room across one session.
+  snap_head_room = 0.060, -- seconds of room before the measured speech onset
+  snap_tail_room = 0.150, -- seconds of room after the measured speech end
+
+  -- Every cut clip gets a short protective fade: shorter in, longer out,
+  -- both well inside the head/tail room so they live in silence.
+  cut_fade_in  = 0.010, -- seconds
+  cut_fade_out = 0.050, -- seconds
+
+  -- A leftover on the recording track shorter than this is deleted at Pull
+  -- regardless of content: a breath, a click or a single syllable under two
+  -- seconds is not audio anyone returns for. Measured on a real session,
+  -- every keepable leftover (chatter, false starts) ran 2s or longer.
+  pull_min_leftover = 2.0, -- seconds
+
+  -- Tighten (the finishing pass): edges sitting further from the audio
+  -- than room + slack are pulled in to the standard snap room. The slack
+  -- keeps it from fussing over near-misses; hand-trimmed items (their
+  -- fades differ from cut_fade_in/out) are never touched.
+  trim_head_slack = 0.250, -- seconds beyond snap_head_room tolerated
+  trim_tail_slack = 0.400, -- seconds beyond snap_tail_room tolerated
+
+  -- A voiced leftover ending within this of a take's first sample likely
+  -- holds that take's clipped opening (a spoken lead-in the matcher could
+  -- not align). Pull warns about the pair instead of guessing.
+  clipped_head_gap = 0.300, -- seconds
 
   -- Per-session toggles (see SPEC.md §4). Defaults cut and name every take
   -- identically, leaving the user to audition and delete.
   use_alts_track   = false,
   suffix_alt_names = false,
-  primary_take     = "last", -- "last" or "first"
 
   review_prefix           = "REVIEW_",
   unmatched_prefix        = "UNMATCHED_",
@@ -538,28 +1317,49 @@ end
 --------------------------------
 
 -- Token-level Levenshtein distance between two token arrays.
--- Two-row DP: O(#a * #b) time, O(#b) space.
+-- Three-row DP: O(#a * #b) time, O(#b) space.
+--
+-- Beyond insert/delete/substitute there are two free moves: two tokens on one
+-- side may FUSE into one token on the other, and one may SPLIT into two, at no
+-- cost, whenever the concatenation matches exactly. Where a word break falls is
+-- a spelling decision, not a difference in what was said -- the script writes
+-- "Some day it will be you" and the recognizer hears "Someday, it'll be you",
+-- and those are the same line read the same way. Plain edit distance charged
+-- that line two errors out of six and left it at 67%, low enough that window
+-- trimming then dropped "Someday" off the front of the take. It also covers the
+-- recognizer's habit of fusing a pair ("book man" -> "bookman").
+--
+-- Free, rather than cheap, because the equality test is exact: the operation
+-- can only fire on a genuine tokenization difference, never on a different word.
 function vo.Levenshtein(a, b)
   local n, m = #a, #b
   if n == 0 then return m end
   if m == 0 then return n end
 
-  local prev, cur = {}, {}
+  -- prev2 = row i-2, prev = row i-1, cur = row i.
+  local prev2, prev, cur = {}, {}, {}
   for j = 0, m do prev[j] = j end
 
   for i = 1, n do
     cur[0] = i
     local ai = a[i]
     for j = 1, m do
-      local sub = prev[j - 1] + ((ai == b[j]) and 0 or 1)
+      local best = prev[j - 1] + ((ai == b[j]) and 0 or 1)
       local del = prev[j] + 1
       local ins = cur[j - 1] + 1
-      local best = sub
       if del < best then best = del end
       if ins < best then best = ins end
+      -- a[i-1]a[i] fused into b[j]
+      if i >= 2 and a[i - 1] .. ai == b[j] and prev2[j - 1] < best then
+        best = prev2[j - 1]
+      end
+      -- a[i] split into b[j-1]b[j]
+      if j >= 2 and ai == b[j - 1] .. b[j] and prev[j - 2] < best then
+        best = prev[j - 2]
+      end
       cur[j] = best
     end
-    prev, cur = cur, prev
+    prev2, prev, cur = prev, cur, prev2
   end
 
   return prev[m]
@@ -701,16 +1501,34 @@ function vo.FindCandidates(word_tokens, lines, index, cfg)
           end
 
           if best_score and best_score >= floor_ then
-            -- Shrink to the tightest window that still achieves the best score.
-            -- The start is derived from the anchor's offset within the line, so
-            -- a word the recognizer dropped *before* the anchor pushes it one
-            -- token early — onto the tail of the previous line. That phantom
-            -- token overlaps the previous span and would cost this line its
-            -- match during selection. A shorter window scoring the same is
+            -- Shrink to the tightest window that scores at least as well. The
+            -- start is derived from the anchor's offset within the line, so a
+            -- word the recognizer dropped or fused *before* the anchor pushes
+            -- it a token early — onto the tail of the previous line. That
+            -- phantom token overlaps the previous span and would cost this line
+            -- its match during selection. A shorter window scoring the same is
             -- strictly better: it excludes audio that isn't part of the line.
+            --
+            -- The bar RISES as the window improves. Comparing against the
+            -- original score alone let shrinking walk straight through the best
+            -- window and out the far side, back down to a merely equal one --
+            -- which is how "Old book man say if you guard door, read what door
+            -- guards" lost its "old book man" and half its score, the
+            -- recognizer having fused "book man" into one word.
             local i0, i1 = start, best_stop
-            while i1 > i0 and score_window(i0 + 1, i1) >= best_score do i0 = i0 + 1 end
-            while i1 > i0 and score_window(i0, i1 - 1) >= best_score do i1 = i1 - 1 end
+            local bar = best_score
+            while i1 > i0 do
+              local s = score_window(i0 + 1, i1)
+              if s < bar then break end
+              i0, bar = i0 + 1, math.max(bar, s)
+            end
+            while i1 > i0 do
+              local s = score_window(i0, i1 - 1)
+              if s < bar then break end
+              i1, bar = i1 - 1, math.max(bar, s)
+            end
+            -- The window that is actually kept is the one that gets scored.
+            best_score = score_window(i0, i1)
 
             candidates[#candidates + 1] = {
               i0       = i0,
@@ -720,6 +1538,7 @@ function vo.FindCandidates(word_tokens, lines, index, cfg)
               score    = best_score,
               line_idx  = line_idx,
               asset     = lines[line_idx].asset,
+              deliver   = lines[line_idx].deliver,
               character = lines[line_idx].speaker,
             }
           end
@@ -761,24 +1580,184 @@ function vo.FindCandidates(word_tokens, lines, index, cfg)
   return candidates
 end
 
--- Greedy interval scheduling over scored candidates: best score first, ties
--- broken by the wider margin, skipping anything overlapping an accepted span.
--- Returns: chronologically ordered spans, each with a `kind`.
-function vo.SelectSpans(candidates, cfg)
-  local ordered = {}
-  for i, c in ipairs(candidates) do ordered[i] = c end
+-- The spine of the read: the matches that cannot be coincidences, in the order
+-- they were spoken.
+--
+-- Scoring each line on its own is blind to sequence, and that is fatal for short
+-- lines. A script line that is just "You." scores a perfect 1.0 against every
+-- one of the hundreds of times the actor says "you" in the middle of some other
+-- line -- and, being perfect, it wins the greedy selection and blocks the line
+-- that word really belonged to. Nothing in the line itself can resolve that.
+-- Where it sits in the read can: a session is performed roughly in script order,
+-- so the "You." that belongs to script line 42 is the one between the matches
+-- for 41 and 43.
+--
+-- Only long, confident, unambiguous matches are trusted to define that order --
+-- they are the ones no accident can produce. The result is then reduced to its
+-- longest non-decreasing run of line indices, because a line genuinely read out
+-- of sequence is a real thing but must not be allowed to define the sequence:
+-- every line after it would be judged against it.
+-- Returns: candidates in stream order, each also marked `.backbone = true`.
+function vo.BuildBackbone(candidates, cfg)
+  local min_tokens = vo.Opt(cfg, "backbone_min_tokens")
+  local accept     = vo.Opt(cfg, "accept_threshold")
+  local margin     = vo.Opt(cfg, "margin_threshold")
 
-  table.sort(ordered, function(a, b)
+  local pool = {}
+  for _, c in ipairs(candidates or {}) do
+    if (c.i1 - c.i0 + 1) >= min_tokens
+       and c.score >= accept and (c.margin or 1.0) >= margin then
+      pool[#pool + 1] = c
+    end
+  end
+  table.sort(pool, function(a, b)
     if a.score ~= b.score then return a.score > b.score end
-    local ma, mb = a.margin or 1.0, b.margin or 1.0
-    if ma ~= mb then return ma > mb end
+    local la, lb = a.i1 - a.i0, b.i1 - b.i0
+    if la ~= lb then return la > lb end
     return a.i0 < b.i0
   end)
 
-  local chosen = {}
+  local kept = {}
+  for _, c in ipairs(pool) do
+    local clash = false
+    for _, s in ipairs(kept) do
+      if c.i0 <= s.i1 and s.i0 <= c.i1 then clash = true break end
+    end
+    if not clash then kept[#kept + 1] = c end
+  end
+  table.sort(kept, function(a, b) return a.i0 < b.i0 end)
+
+  -- Longest non-decreasing subsequence of line indices. Non-DEcreasing rather
+  -- than increasing: a retake repeats a line index, and two takes of one line
+  -- are in order, not out of it.
+  local n = #kept
+  local len, prev, best_i, best_len = {}, {}, nil, 0
+  for i = 1, n do
+    len[i] = 1
+    for j = 1, i - 1 do
+      if kept[j].line_idx <= kept[i].line_idx and len[j] + 1 > len[i] then
+        len[i], prev[i] = len[j] + 1, j
+      end
+    end
+    if len[i] > best_len then best_len, best_i = len[i], i end
+  end
+
+  local seq, k = {}, best_i
+  while k do
+    table.insert(seq, 1, kept[k])
+    k = prev[k]
+  end
+  for _, c in ipairs(seq) do c.backbone = true end
+  return seq
+end
+
+-- Whether a candidate sits where the read says it should.
+-- true  the line index fits between the backbone matches either side of it
+-- false it contradicts one of them
+-- nil   there is no backbone evidence near it, so order says nothing
+function vo.OrderConsistency(c, backbone)
+  local before, after
+  for _, b in ipairs(backbone or {}) do
+    if b ~= c then
+      if b.i1 < c.i0 then before = b
+      elseif b.i0 > c.i1 and not after then after = b end
+    end
+  end
+  if not (before or after) then return nil end
+  -- Strict: equality is a retake of the same line, which is in order.
+  if before and c.line_idx < before.line_idx then return false end
+  if after  and c.line_idx > after.line_idx  then return false end
+  return true
+end
+
+-- Greedy interval scheduling over scored candidates: the backbone first, then
+-- best score, ties broken by the wider margin and then by length, skipping
+-- anything overlapping an accepted span.
+--
+-- Order evidence is applied narrowly and in one direction only.
+--
+-- One direction: it can cost a candidate `order_weight` and its confidence, but
+-- never add either. Sitting in the right place says nothing about whether the
+-- words were right, and a weak text match promoted to confident by its position
+-- is exactly the silent mis-name the review pass exists to prevent.
+--
+-- Narrowly: only against candidates too short to identify themselves. A line of
+-- five distinct words matched perfectly is not made wrong by being read out of
+-- order -- sessions are recorded out of order all the time, and pickups, ADR and
+-- per-character passes must all still match. A line of one or two words is the
+-- opposite case: it matches everywhere that word occurs, so its position in the
+-- read is the ONLY thing that can say which occurrence is the right one.
+--
+-- Nothing is ever dropped for reading out of order; the worst that happens is
+-- review, which is a person looking at it.
+-- Returns: chronologically ordered spans, each with a `kind`.
+function vo.SelectSpans(candidates, cfg, backbone, pinned)
+  local weight     = vo.Opt(cfg, "order_weight")
+  local min_tokens = vo.Opt(cfg, "backbone_min_tokens")
+
+  -- Pinned lines are placed by hand; the matcher has nothing to add about them.
+  local ordered = {}
+  for i, c in ipairs(candidates) do
+    ordered[i] = c
+    -- Not `backbone and ... or nil`: false is a verdict here, and that idiom
+    -- would quietly turn "out of order" into "no evidence".
+    if backbone and (c.i1 - c.i0 + 1) < min_tokens then
+      c.in_sequence = vo.OrderConsistency(c, backbone)
+    end
+    c.effective = (c.in_sequence == false)
+      and math.max(0.0, c.score - weight) or c.score
+  end
+
+  -- Selection is greedy, so the ORDER candidates are considered in is what
+  -- decides which of two overlapping placements survives -- and raw score is a
+  -- bad answer to that. A one-word line scores a perfect 1.0 against any
+  -- occurrence of its word, including one in the middle of a twelve-word line
+  -- that scores 0.75 because the recogniser fused two words. Ranked on score
+  -- alone the single word wins and cuts the long line in half, and demoting it
+  -- to review is not enough: a review-grade placement it should never have had
+  -- still blocks the real one.
+  --
+  -- So candidates are considered in tiers of how much they are worth believing,
+  -- and only ranked by score within a tier.
+  local function tier(c)
+    if c.backbone then return 1 end             -- long, confident, unambiguous
+    if c.in_sequence == false then return 5 end -- contradicts the read: last
+    -- A line too short to identify itself takes what is left once the lines
+    -- that CAN identify themselves have taken theirs. Where a short line's
+    -- window sits inside a long one's, only one of them can be right, and the
+    -- long one is not the one that could have happened by accident. Nothing is
+    -- lost by waiting: vo.ResidualPass comes back for whatever went unplaced.
+    if (c.i1 - c.i0 + 1) < min_tokens then return 4 end
+    return c.kind_pre == "match" and 2 or 3     -- confident before uncertain
+  end
+
   for _, c in ipairs(ordered) do
-    local kind = vo.Classify(c.score, c.margin or 1.0, cfg)
-    if kind then
+    c.kind_pre = vo.Classify(c.effective, c.margin or 1.0, cfg)
+    -- Contradicting the read costs a short line its confidence however well it
+    -- scored: a perfect match for a one-word line is perfect wherever that word
+    -- happens to fall.
+    if c.kind_pre == "match" and c.in_sequence == false then c.kind_pre = "review" end
+    c.tier = tier(c)
+  end
+
+  table.sort(ordered, function(a, b)
+    if a.tier ~= b.tier then return a.tier < b.tier end
+    if a.effective ~= b.effective then return a.effective > b.effective end
+    local ma, mb = a.margin or 1.0, b.margin or 1.0
+    if ma ~= mb then return ma > mb end
+    -- A twelve-word match and a one-word match scoring the same are not equal
+    -- evidence: only one of them could be an accident.
+    local la, lb = a.i1 - a.i0, b.i1 - b.i0
+    if la ~= lb then return la > lb end
+    return a.i0 < b.i0
+  end)
+
+  -- Seeded, not merged in and re-sorted: a pin is not competing for its place.
+  local chosen = {}
+  for _, p in ipairs(pinned or {}) do chosen[#chosen + 1] = p end
+
+  for _, c in ipairs(ordered) do
+    if c.kind_pre then
       local overlaps = false
       for _, s in ipairs(chosen) do
         if c.i0 <= s.i1 and s.i0 <= c.i1 then
@@ -789,7 +1768,8 @@ function vo.SelectSpans(candidates, cfg)
       if not overlaps then
         local span = {}
         for k, v in pairs(c) do span[k] = v end
-        span.kind = kind
+        span.kind = c.kind_pre
+        span.kind_pre, span.tier = nil, nil
         chosen[#chosen + 1] = span
       end
     end
@@ -797,6 +1777,253 @@ function vo.SelectSpans(candidates, cfg)
 
   table.sort(chosen, function(a, b) return a.i0 < b.i0 end)
   return chosen
+end
+
+-- A second look, at what is left over.
+--
+-- Selection is greedy and one-shot, so a line can end up with nothing not
+-- because it scored badly anywhere but because every window it wanted was taken
+-- by a line that got there first. That is an artefact of the order candidates
+-- were considered in, not a fact about the recording, and the evidence for it
+-- is still sitting there: unclaimed audio, and lines with no placement at all.
+--
+-- So match again with only those two -- the lines nobody placed, against the
+-- audio nobody claimed. There is no competition from the first pass to lose
+-- this time, and nothing already decided can be disturbed, because a candidate
+-- is only considered if it falls entirely in unclaimed territory.
+--
+-- Repeats until a pass adds nothing, since placing one line frees no audio but
+-- can reveal that two lines were fighting over the same stretch and only one
+-- needed it. Bounded, because a bug here would otherwise be an infinite loop.
+vo.RESIDUAL_PASSES = 3
+
+function vo.ResidualPass(word_tokens, lines, spans, cfg, index)
+  local added = {}
+  local current = spans
+
+  for _ = 1, vo.RESIDUAL_PASSES do
+    local covered, placed = {}, {}
+    for _, s in ipairs(current) do
+      if s.i0 and s.i1 then
+        for k = s.i0, s.i1 do covered[k] = true end
+      end
+      if s.line_idx then placed[s.line_idx] = true end
+    end
+
+    -- Postings for the unplaced lines only, so no window is proposed that we
+    -- would only throw away.
+    local postings, any = {}, false
+    for token, list in pairs(index.postings) do
+      local mine = {}
+      for _, p in ipairs(list) do
+        if not placed[p.line] then mine[#mine + 1] = p end
+      end
+      if #mine > 0 then
+        postings[token] = mine
+        any = true
+      end
+    end
+    if not any then break end
+
+    local restricted = {
+      n = index.n, idf = index.idf, tokens = index.tokens,
+      anchors = index.anchors, postings = postings,
+    }
+
+    local fresh = {}
+    for _, c in ipairs(vo.FindCandidates(word_tokens, lines, restricted, cfg)) do
+      local clear = true
+      for k = c.i0, c.i1 do
+        if covered[k] then clear = false break end
+      end
+      if clear then fresh[#fresh + 1] = c end
+    end
+    if #fresh == 0 then break end
+
+    local won = vo.SelectSpans(fresh, cfg, nil, nil)
+    if #won == 0 then break end
+    for _, s in ipairs(won) do
+      s.residual = true
+      added[#added + 1] = s
+    end
+
+    local merged = {}
+    for _, s in ipairs(current) do merged[#merged + 1] = s end
+    for _, s in ipairs(won)     do merged[#merged + 1] = s end
+    current = merged
+  end
+
+  return added
+end
+
+-- Spans a person placed by hand.
+--
+-- A pin is not a guess with a score. It is somebody who listened to the audio
+-- and said "this stretch IS this line", which is better evidence than anything
+-- the matcher can produce, so pinned spans are seeded into the selection before
+-- the greedy pass and everything overlapping them loses.
+--
+-- A pin speaks for its own TAKE and says nothing about the line's others. It
+-- once dropped them, on the reasoning that you pin a line when the matcher put
+-- it somewhere wrong -- but the same gesture is used to confirm one take of
+-- three, and there the suppression silently deleted two real ones. The two
+-- mistakes are not equally bad: an extra take is visible in the Take column
+-- and can be dealt with, a deleted one is not there to notice.
+--
+-- The pin's own times are kept, not the matched words' -- the range is the part
+-- the person chose. The token range is only what tells the rest of the pass
+-- which words are now spoken for.
+-- Returns: spans, unresolved (pins that name no word in this transcript)
+function vo.PinnedSpans(word_tokens, pins, lines)
+  local by_asset = {}
+  for i, line in ipairs(lines or {}) do
+    if line.asset and by_asset[line.asset] == nil then by_asset[line.asset] = i end
+  end
+
+  local spans, unresolved = {}, {}
+  for _, pin in ipairs(pins or {}) do
+    local line_idx = by_asset[pin.asset]
+    local i0, i1
+    for k, t in ipairs(word_tokens or {}) do
+      -- A word counts as pinned when its midpoint is inside the range, so a
+      -- word clipped by the edge of the selection goes one way or the other
+      -- rather than both.
+      local mid = (t.t0 + t.t1) / 2
+      if mid >= pin.start and mid <= pin.stop then
+        i0 = i0 or k
+        i1 = k
+      end
+    end
+
+    if not line_idx then
+      unresolved[#unresolved + 1] = { pin = pin, why = "no script line named " .. pin.asset }
+    elseif not i0 then
+      unresolved[#unresolved + 1] = { pin = pin, why = "no transcribed word in that range" }
+    else
+      spans[#spans + 1] = {
+        i0        = i0,
+        i1        = i1,
+        start     = pin.start,
+        stop      = pin.stop,
+        score     = 1.0,
+        margin    = 1.0,
+        effective = 1.0,
+        kind      = "match",
+        pinned    = true,
+        line_idx  = line_idx,
+        asset     = pin.asset,
+        deliver   = lines[line_idx].deliver,
+        character = lines[line_idx].speaker,
+      }
+    end
+  end
+
+  table.sort(spans, function(a, b) return a.i0 < b.i0 end)
+  return spans, unresolved
+end
+
+-- Every distinct place one script line could sit in one transcript, best first.
+--
+-- Deliberately NOT the matcher. The matcher has to choose one placement and
+-- live with it; this shows the ones it passed over -- including the ones it
+-- scored too low to consider at all -- so a person can go and listen to them.
+-- It decides nothing, changes nothing and is stored nowhere.
+--
+-- More of the line's words propose windows than the matcher uses: the matcher
+-- can afford to miss a placement because another of its anchors will find it,
+-- and a search cannot. Not ALL of them, though -- the commonest words of a long
+-- line would propose a near-identical window at every "the" in the recording.
+--
+-- The whole `lines` set is needed, not just the one being searched for: which of
+-- a line's words are rare enough to anchor on is a fact about the script, and a
+-- line indexed by itself has no rare words at all.
+--
+-- `opts.words`, when given, is the raw word list the tokens were built from, so
+-- the text shown back is what was actually said rather than the normalised form
+-- matching works on.
+-- Returns: { { i0, i1, start, stop, score, text, before, after }, ... }
+function vo.FindLineCandidates(lines, line_idx, word_tokens, cfg, opts)
+  opts = opts or {}
+  local line = lines and lines[line_idx]
+  if not line or not word_tokens or #word_tokens == 0 then return {} end
+
+  local sub = {}
+  for k, v in pairs(cfg or {}) do sub[k] = v end
+  sub.anchor_count = math.max(vo.Opt(cfg, "anchor_count") or 3, 8)
+  -- Below the review floor on purpose. A placement the matcher was right to
+  -- reject is still the answer to "where did this line go?".
+  sub.review_floor = opts.floor or 0.25
+
+  local full = vo.BuildIndex(lines, sub)
+  -- Every other line's postings are dropped rather than filtered afterwards:
+  -- they would propose windows only to have them thrown away.
+  local index = {
+    n = full.n, idf = full.idf, tokens = full.tokens, anchors = full.anchors,
+    postings = {},
+  }
+  for token, list in pairs(full.postings) do
+    local mine = {}
+    for _, p in ipairs(list) do
+      if p.line == line_idx then mine[#mine + 1] = p end
+    end
+    if #mine > 0 then index.postings[token] = mine end
+  end
+
+  local found = vo.FindCandidates(word_tokens, lines, index, sub)
+
+  table.sort(found, function(a, b)
+    if a.score ~= b.score then return a.score > b.score end
+    return a.i0 < b.i0
+  end)
+
+  -- Places, not scoring variants: several anchors of one line propose windows a
+  -- token or two apart, and listing them all would bury the distinct placements.
+  local kept = {}
+  for _, c in ipairs(found) do
+    local clash = false
+    for _, k in ipairs(kept) do
+      if c.i0 <= k.i1 and k.i0 <= c.i1 then clash = true break end
+    end
+    if not clash then
+      kept[#kept + 1] = c
+      if #kept >= (opts.limit or 12) then break end
+    end
+  end
+
+  local raw   = opts.words
+  local ctx_n = opts.context or 6
+  -- Read back over the RAW words the token range covers, not over the tokens.
+  -- Normalising drops words -- and one word can expand into several tokens --
+  -- so reading the tokens back gives text with holes in it, which is no use to
+  -- someone trying to recognise a moment in a recording.
+  local function say(a, b)
+    a, b = math.max(1, a), math.min(#word_tokens, b)
+    if a > b then return "" end
+    local out = {}
+    if raw and word_tokens[a].word and word_tokens[b].word then
+      for k = word_tokens[a].word, word_tokens[b].word do
+        if raw[k] then out[#out + 1] = raw[k].text end
+      end
+    else
+      for k = a, b do out[#out + 1] = word_tokens[k].text end
+    end
+    return table.concat(out, " ")
+  end
+
+  local out = {}
+  for _, c in ipairs(kept) do
+    out[#out + 1] = {
+      i0     = c.i0,
+      i1     = c.i1,
+      start  = c.start,
+      stop   = c.stop,
+      score  = c.score,
+      text   = say(c.i0, c.i1),
+      before = say(c.i0 - ctx_n, c.i0 - 1),
+      after  = say(c.i1 + 1, c.i1 + ctx_n),
+    }
+  end
+  return out
 end
 
 -- Any run of tokens no span consumed becomes an unmatched span.
@@ -873,11 +2100,202 @@ end
 
 -- Track name for a character bucket: "<Character>_<Base>" when a character is
 -- present, else the base name. The character is sanitized like a clip name.
+-- Is this track one Pull made? Needed because Pull runs more than once: on the
+-- second pass an item already sits on "<CHAR>_Review", and nesting its new
+-- destination under THAT would bury a track inside a track every run. The
+-- recording it came from is the first parent that is not one of ours.
+--
+-- Matched on the base names rather than a marker, because the user can rename
+-- them in Settings and a project can hold any number of characters.
+function vo.IsDestTrackName(name, bases)
+  name = tostring(name or "")
+  if name == "" then return false end
+  for _, base in ipairs(bases or {}) do
+    if base ~= "" and (name == base or name:sub(-(#base + 1)) == "_" .. base) then
+      return true
+    end
+  end
+  return false
+end
+
 function vo.CharacterTrackName(character, base)
   if character and character ~= "" then
     return vo.SanitizeName(character) .. "_" .. base
   end
   return base
+end
+
+--------------------------------
+-- Pure layer: silence detection
+--------------------------------
+
+-- Every function here takes its amplitude readings through an injected
+-- `probe(t0, t1) -> dBFS or nil`. Nothing in this section touches REAPER, so
+-- the placement rules are unit-testable against a synthetic amplitude curve;
+-- the real probe is vo.MakeTakeProbe in the coupled layer.
+
+-- The stretches between consecutive words -- where a boundary is allowed to go.
+-- Words that touch or overlap yield nothing: there is no gap to search.
+function vo.InterWordGaps(words)
+  local out = {}
+  for i = 2, #(words or {}) do
+    local from, to = words[i - 1].t1 or 0, words[i].t0 or 0
+    if to > from then out[#out + 1] = { from = from, to = to } end
+  end
+  return out
+end
+
+-- The room's noise floor, measured rather than assumed: a fixed -60 dBFS is
+-- wrong on a noisy room and wrong in the other direction on a clean one.
+-- One window is sampled from the middle of each gap long enough to hold it,
+-- and the quietest reading plus the offset is the floor.
+--
+-- Returns nil when nothing could be measured, which the caller must read as
+-- "snapping is unavailable" rather than as a floor of zero -- a floor of zero
+-- dBFS would call every sample silent and snap every boundary to its limit.
+function vo.MeasureNoiseFloor(gaps, probe, cfg)
+  if not probe then return nil end
+  local window  = vo.Opt(cfg, "snap_floor_window")
+  local minimum = vo.Opt(cfg, "snap_min_silence")
+  local levels  = {}
+
+  for _, g in ipairs(gaps or {}) do
+    local span = g.to - g.from
+    -- Measure over as much of the gap as there is, up to the configured window
+    -- -- NOT only over gaps long enough to fill it. Requiring a full window
+    -- meant a recording whose pauses all fell just short of it yielded no floor
+    -- at all, and snapping silently degraded to fixed pads for the whole file.
+    -- Ordinary speech has most of its gaps well under half a second.
+    if span >= minimum then
+      local w   = math.min(window, span)
+      local mid = (g.from + g.to) / 2
+      local db  = probe(mid - w / 2, mid + w / 2)
+      if db then levels[#levels + 1] = db end
+    end
+  end
+
+  if #levels == 0 then return nil end
+
+  -- A LOW PERCENTILE, not the minimum. Noise reduction leaves patches of a
+  -- cleaned recording at near-digital silence, and taking the quietest of them
+  -- set a floor the rest of the file could never meet -- measured -75dB against
+  -- its own room tone of about -67, so every silence test failed, snapping fell
+  -- back to fixed pads everywhere, and no edge could tell room from speech.
+  -- The percentile sits under the room tone without chasing an outlier down.
+  table.sort(levels)
+  local at = math.max(1, math.ceil(vo.Opt(cfg, "snap_floor_percentile") * #levels))
+  return levels[math.min(at, #levels)] + vo.Opt(cfg, "snap_floor_offset")
+end
+
+-- The first and last moment inside [from, to] that is louder than the floor.
+--
+-- Whisper's word timestamps are contiguous by construction: a word's END is
+-- simply the next word's START, so 94% of them touch exactly. The pause around
+-- a take is therefore INSIDE the span, not outside it -- the first word of a
+-- take carries the silence before it and the last word carries the silence
+-- after. Snapping outward from those edges has nowhere to go, and every take
+-- gets cut from the previous take's last syllable to the next take's first, so
+-- the clips tile the recording end to end with no breaks between them at all.
+--
+-- Finding where the speech actually starts and stops inside the span is what
+-- gives the edges something to mean. The audio is the only evidence available:
+-- the word times cannot tell speech from the pause they absorbed.
+--
+-- Returns: first, last -- both nil when nothing in the range is above the
+-- floor, which the caller must read as "no speech found here", falling back to
+-- the span's own edges rather than trimming to nothing.
+function vo.FindSpeechBounds(from, to, floor_db, probe, cfg)
+  local step = vo.Opt(cfg, "snap_min_silence")
+  if not probe or not floor_db or step <= 0 then return nil, nil end
+  if (to - from) <= step then return nil, nil end
+
+  -- Stepped by index, not by accumulation: a span can be twenty seconds long
+  -- at a sixty-millisecond step, and drifting a window edge a hair past the
+  -- speech is enough to read the pause as sound and give the trim nothing to do.
+  local first, last
+  local n = 0
+  while from + (n + 1) * step <= to + 1e-9 do
+    local a  = from + n * step
+    local db = probe(a, a + step)
+    if db and db > floor_db then
+      if not first then first = a end
+      last = a + step
+    end
+    n = n + 1
+  end
+  return first, last
+end
+
+-- Where to divide two words whose timestamps TOUCH.
+--
+-- Whisper chains word times -- a word's end is simply the next word's start --
+-- so a boundary between two takes is routinely one instant with no gap in it.
+-- That instant is not where the sound divides: the mark lands a hair late and
+-- the following word's onset begins before it. Cutting there leaves the first
+-- clip holding a fragment of the next word's attack and the second clip
+-- decapitated ("Book." rendered as "Look.").
+--
+-- A fixed offset cannot settle it -- both clips want the same milliseconds --
+-- so the audio is asked instead: the quietest window within `reach` of the mark
+-- is the dip BETWEEN the words, and that is the boundary. Relative, so it needs
+-- no absolute floor, which is what lets it work on a recording whose floor
+-- measurement is wrong.
+--
+-- Both neighbours run this on the same mark and so agree exactly, which is what
+-- stops either of them holding a piece of the other.
+-- Returns: the boundary time, or nil with no probe.
+function vo.QuietestBoundary(mark, reach, step, probe)
+  if not probe or not mark or (reach or 0) <= 0 or (step or 0) <= 0 then return nil end
+  local n = math.floor(reach / step)
+  local best, best_db
+  -- Outward from the mark, so an exact tie -- a run of digital silence, say --
+  -- keeps the boundary as near the transcript's own answer as it can.
+  for d = 0, n do
+    local ks = (d == 0) and { 0 } or { -d, d }
+    for _, k in ipairs(ks) do
+      local at = mark + k * step
+      local db = probe(at - step / 2, at + step / 2)
+      if db and (not best_db or db < best_db - 1e-9) then best, best_db = at, db end
+    end
+  end
+  return best
+end
+
+-- Place one boundary between a word edge and a hard limit.
+--
+--   from      -- the word's own edge, in the same time base as `probe`
+--   limit     -- how far the boundary may travel: the neighbouring word's edge,
+--                or the pad, whichever is nearer. NEVER exceeded.
+--   direction -- -1 searching backwards (a span start), +1 forwards (a stop)
+--   floor_db  -- from vo.MeasureNoiseFloor
+--   probe     -- amplitude reader, or nil
+--
+-- Steps outward from the word in `snap_min_silence` windows and stops at the
+-- far edge of the first window lying entirely below the floor, so the clip
+-- keeps that much silence as head or tail. Falls back to `limit` when there is
+-- no probe, no floor, no room, or no silence -- reported as "pad" so the run
+-- summary can say why an edge sits where it does.
+--
+-- Returns: boundary time, "silence" or "pad".
+function vo.SnapBoundary(from, limit, direction, floor_db, probe, cfg)
+  local min_sil = vo.Opt(cfg, "snap_min_silence")
+  if not probe or not floor_db or min_sil <= 0 then return limit, "pad" end
+
+  local reach = math.abs(limit - from)
+  if reach < min_sil then return limit, "pad" end
+
+  local travelled = 0
+  while travelled + min_sil <= reach + 1e-9 do
+    local near = from + direction * travelled
+    local a    = (direction < 0) and (near - min_sil) or near
+    local db   = probe(a, a + min_sil)
+    if db and db <= floor_db then
+      return (direction < 0) and a or (a + min_sil), "silence"
+    end
+    travelled = travelled + min_sil
+  end
+
+  return limit, "pad"
 end
 
 --------------------------------
@@ -888,23 +2306,188 @@ end
 -- crosses the containing item's bounds. Colliding neighbours meet at the
 -- midpoint of their original gap, which keeps the result independent of the
 -- order spans were selected in. Mutates and returns `spans`.
+--
 -- bounds: optional { start = number, stop = number }
-function vo.ApplyPadding(spans, cfg, bounds)
+-- probe, floor_db: optional. Supply BOTH (and leave cfg.snap_boundaries on) to
+--   place each edge by looking for silence instead of applying a fixed pad;
+--   each span then carries `snapped` = "silence" or "pad". With either absent
+--   this behaves exactly as it always did, which is why the fixed-pad tests
+--   still describe the truth.
+-- The last word to END at or before `t`, and the first to START at or after it.
+-- Words the caller passes are in the SAME time base as the spans.
+local function word_end_before(words, t)
+  local best
+  for _, w in ipairs(words or {}) do
+    local e = w.t1 or w.stop
+    if e and e <= t + 1e-9 and (not best or e > best) then best = e end
+  end
+  return best
+end
+
+local function word_start_after(words, t)
+  local best
+  for _, w in ipairs(words or {}) do
+    local s = w.t0 or w.start
+    if s and s >= t - 1e-9 and (not best or s < best) then best = s end
+  end
+  return best
+end
+
+function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
   local pre  = vo.Opt(cfg, "pre_pad")
   local post = vo.Opt(cfg, "post_pad")
+  local snap = vo.Opt(cfg, "snap_boundaries") and probe and floor_db
 
-  for _, s in ipairs(spans) do
-    s.raw_start, s.raw_stop = s.start, s.stop
-    s.start = s.start - pre
-    s.stop  = s.stop + post
+  for _, s in ipairs(spans) do s.raw_start, s.raw_stop = s.start, s.stop end
+
+  for i, s in ipairs(spans) do
+    if snap then
+      -- Where the speech in this span actually is. Whisper's word times put the
+      -- surrounding pause INSIDE the span (see vo.FindSpeechBounds), so an edge
+      -- has to be trimmed in to the sound before it is padded back out; without
+      -- this every take runs to the next take and the clips tile the recording.
+      -- Nothing found means the floor is untrustworthy here, so keep the edges.
+      local sp0, sp1 = vo.FindSpeechBounds(s.raw_start, s.raw_stop, floor_db, probe, cfg)
+      local at_start = sp0 or s.raw_start
+      local at_stop  = sp1 or s.raw_stop
+
+      -- The search window is bounded by the neighbouring WORD -- every word the
+      -- transcript holds, not just the ones this cut selected. Bounding by the
+      -- neighbouring SPAN alone is not enough: a false start or an aside sitting
+      -- between two selected takes is audio that belongs to neither, and an edge
+      -- allowed to travel its full pad into it can swallow a syllable of it.
+      -- With the word bound in place that is structurally impossible, whatever
+      -- the amplitude does inside the window. Raw boundaries throughout: a
+      -- neighbour's already-padded edge describes a decision, not where audio is.
+      -- The word bound is a timestamp, not a measurement, and whisper CHAINS
+      -- them: the previous word ends exactly where this one starts, so on a
+      -- chained transcript the clamp collapses onto the word and the clip is
+      -- cut with nothing to spare. That is worst for exactly the onsets most
+      -- at risk -- s, f, th, a breath -- which begin before whisper's mark and
+      -- sit below the floor, invisible to both the snap and the clamp.
+      --
+      -- So where the bound has collapsed, the AUDIO places it instead: the
+      -- quietest window near the mark is the dip between the two words. A fixed
+      -- offset was tried first and is not enough -- moving the shared edge 30ms
+      -- earlier saved the later take's "B" and left the same attack in the
+      -- earlier take's tail ("I only win a little." became "I only win, little
+      -- boy."). Both clips want those milliseconds; only the dip belongs to
+      -- neither. Bounded by the pad so it can never travel far.
+      local function settle(mark, hard, dir)
+        local reach = math.min(vo.Opt(cfg, "chained_boundary_reach"),
+                               math.abs(hard - mark))
+        local at = vo.QuietestBoundary(mark, reach, 0.010, probe)
+        if not at then return mark end
+        -- Never past the pad, in either direction.
+        if dir < 0 then return math.max(at, hard) end
+        return math.min(at, hard)
+      end
+
+      -- ONLY where the bound has collapsed onto the take's own edge. A word
+      -- ending well before this one starts describes a real pause, and that
+      -- boundary is meaningful evidence -- nothing may reach past it. A word
+      -- ending at the very instant this one begins describes nothing at all;
+      -- it is whisper's chaining, and it is the case that clips syllables.
+      local function collapsed(bound, edge)
+        return bound ~= nil and math.abs(bound - edge) <= 1e-3
+      end
+
+      -- The neighbouring SPAN's edge bounds this one only where it is a real
+      -- boundary. Chained word times make two takes share an instant exactly,
+      -- and clamping to that collapses the reach to nothing -- the same trap as
+      -- the word bound below. Overlap is prevented after the loop regardless.
+      local start_hard = at_start - pre
+      local prev_edge = spans[i - 1] and spans[i - 1].raw_stop
+      if prev_edge and math.abs(prev_edge - s.raw_start) > 1e-3 then
+        start_hard = math.max(start_hard, prev_edge)
+      end
+      local start_limit = start_hard
+      local wb = word_end_before(words, s.raw_start)
+      if wb then
+        start_limit = math.max(start_limit, wb)
+        if collapsed(wb, s.raw_start) then
+          start_limit = settle(start_limit, start_hard, -1)
+        end
+      end
+
+      local stop_hard = at_stop + post
+      local next_edge = spans[i + 1] and spans[i + 1].raw_start
+      if next_edge and math.abs(next_edge - s.raw_stop) > 1e-3 then
+        stop_hard = math.min(stop_hard, next_edge)
+      end
+      local stop_limit = stop_hard
+      local wa = word_start_after(words, s.raw_stop)
+      if wa then
+        stop_limit = math.min(stop_limit, wa)
+        if collapsed(wa, s.raw_stop) then
+          stop_limit = settle(stop_limit, stop_hard, 1)
+        end
+      end
+
+      -- A fixed distance from the SPEECH, not wherever the probe first
+      -- crossed the floor: the crossing point depends on room tone and
+      -- breaths, which handed one session anywhere from 0 to 1760ms of head
+      -- room. Speech bounds are the measurement; the room around them is a
+      -- constant, clamped by the neighbouring word and the pad maximums.
+      -- A breath or a "ha" welded to the take's first word is part of the
+      -- take, but whisper does not transcribe it, so the word time starts
+      -- after it. Walk outward through CONTIGUOUS sound until real silence,
+      -- bounded by the neighbour limits -- so a leading noise is captured,
+      -- and a neighbouring word can never be.
+      local function extend_through_sound(t, limit, dir)
+        local step = 0.02
+        while (dir < 0 and t - step >= limit) or (dir > 0 and t + step <= limit) do
+          local w0 = (dir < 0) and (t - step) or t
+          local db = probe(w0, w0 + step)
+          if not db or db <= floor_db then break end
+          t = t + dir * step
+        end
+        return t
+      end
+      at_start = extend_through_sound(at_start, start_limit, -1)
+      at_stop  = extend_through_sound(at_stop,  stop_limit,  1)
+
+      local head = math.min(pre,  vo.Opt(cfg, "snap_head_room"))
+      local tail = math.min(post, vo.Opt(cfg, "snap_tail_room"))
+      s.start = math.max(start_limit, at_start - head)
+      s.stop  = math.min(stop_limit,  at_stop  + tail)
+      -- "silence" is a verified claim: speech was measured on both ends AND
+      -- the room the edges sit in actually reads quiet. Loud room tone or an
+      -- unmeasurable floor reports "pad" so the run can say which clips to
+      -- listen to.
+      local function edge_quiet(x0, x1)
+        if x1 - x0 < 1e-6 then return true end
+        local db = probe(x0, x1)
+        return db ~= nil and db <= floor_db
+      end
+      s.snapped = (sp0 and sp1
+                   and edge_quiet(s.start, math.min(at_start, s.start + 0.05))
+                   and edge_quiet(math.max(at_stop, s.stop - 0.05), s.stop))
+                  and "silence" or "pad"
+    else
+      s.start = s.raw_start - pre
+      s.stop  = s.raw_stop + post
+    end
   end
 
   for i = 2, #spans do
     local prev, cur = spans[i - 1], spans[i]
     if cur.start < prev.stop then
+      -- Colliding neighbours meet at the midpoint of their ORIGINAL gap, which
+      -- keeps the result independent of the order spans were selected in.
       local mid = (prev.raw_stop + cur.raw_start) / 2
-      if prev.stop > mid then prev.stop, prev.clamped = mid, true end
-      if cur.start < mid then cur.start, cur.clamped = mid, true end
+      -- Unless there was no gap. Whisper chains word times, so two takes can
+      -- share an edge exactly -- and then "the midpoint" is that one instant,
+      -- which hands back every millimetre of head room the take just won and
+      -- leaves it cut on its own first syllable. A zero-width boundary is not
+      -- evidence of anything; an onset belongs to the word that FOLLOWS it, so
+      -- the later take's head wins and the earlier take's tail yields to it.
+      if math.abs(cur.raw_start - prev.raw_stop) <= 1e-3 then
+        prev.stop, prev.clamped = cur.start, true
+      else
+        if prev.stop > mid then prev.stop, prev.clamped = mid, true end
+        if cur.start < mid then cur.start, cur.clamped = mid, true end
+      end
     end
   end
 
@@ -923,7 +2506,7 @@ function vo.ApplyPadding(spans, cfg, bounds)
   -- Both clamps above move one boundary without consulting the other, so either
   -- can push a boundary past its own opposite edge and invert the span. The
   -- neighbour clamp does it whenever the plan's order is not chronological —
-  -- BuildPlan sorts by token index, and whisper timestamps are not guaranteed
+  -- BuildMatch sorts by token index, and whisper timestamps are not guaranteed
   -- monotonic (nor distinct: every token expanded from one word shares its
   -- times), so `mid` can land beyond the later span's own end. The bounds clamp
   -- does it for a span lying wholly outside the item.
@@ -952,6 +2535,36 @@ end
 -- Pure layer: routing and naming
 --------------------------------
 
+-- A span's `deliver` is COPIED from its line when the match is built, and the
+-- match is memoised precisely so that typing an Append does not rebuild it.
+-- That copy is stale the moment an Append lands -- so anything that names
+-- takes from spans must re-copy from the CURRENT lines first, or it delivers
+-- yesterday's name. Same line lookup as BuildOverview: the span's own
+-- line_idx when it still agrees on the asset, else the first line using it.
+function vo.RefreshSpanDeliveries(spans, lines)
+  lines = lines or {}
+  local first_row_using = {}
+  for i, l in ipairs(lines) do
+    if l.asset and first_row_using[l.asset] == nil then first_row_using[l.asset] = i end
+  end
+  for _, s in ipairs(spans or {}) do
+    if s.asset then
+      local li = s.line_idx
+      if not (li and lines[li] and lines[li].asset == s.asset) then
+        li = first_row_using[s.asset]
+      end
+      local line = li and lines[li] or nil
+      if line then
+        s.deliver = line.deliver
+        -- Same staleness family as deliver: any line-derived field cached on a
+        -- memoised span re-copies here, in the one place, or it drifts.
+        if line.speaker and line.speaker ~= "" then s.character = line.speaker end
+      end
+    end
+  end
+  return spans
+end
+
 -- Group repeated takes of a line (keyed by the Filename/asset, which is the
 -- line's identity), number them chronologically, then route and name every span
 -- according to the three per-session toggles.
@@ -963,8 +2576,8 @@ end
 -- every one of them re-derived from kind/asset/start/score/transcript plus cfg,
 -- and unconditionally overwritten -- nothing here reads a previously assigned
 -- value. That is what lets the two callers that assemble a plan out of
--- separately-named halves (the transcribe/retain merge and the multi-sidecar
--- load, both in ajsfx_VO_ScriptMatch.lua) simply re-run it over the union: two
+-- separately-named halves (the transcribe/retain merge and the multi-source
+-- load) simply re-run it over the union: two
 -- spans of the same line arriving from two different sources are only seen as
 -- takes of one line if something numbers them TOGETHER, and the halves were each
 -- numbered when they were the only spans for that asset.
@@ -974,7 +2587,6 @@ end
 function vo.AssignNames(spans, cfg)
   local use_alts         = vo.Opt(cfg, "use_alts_track")
   local suffix           = vo.Opt(cfg, "suffix_alt_names")
-  local primary_take     = vo.Opt(cfg, "primary_take")
   local review_prefix    = vo.Opt(cfg, "review_prefix")
   local unmatched_prefix = vo.Opt(cfg, "unmatched_prefix")
   local snippet_words    = vo.Opt(cfg, "unmatched_snippet_words")
@@ -1003,23 +2615,51 @@ function vo.AssignNames(spans, cfg)
       return (a.score or 0) < (b.score or 0)
     end)
     for i, s in ipairs(g) do s.take_index = i end
-    local primary = (primary_take == "first") and g[1] or g[#g]
+
+    -- The user's explicit Select IS the primary. Guessing "first" or "last" is
+    -- exactly what the Select column exists to stop, so a group of several
+    -- takes with no select simply has no primary -- and Cut reports it as
+    -- needing a decision rather than picking one.
+    --
+    -- A group of ONE is the exception: there is nothing to choose between, so
+    -- the lone take is primary whether or not it was ticked. Without this a
+    -- single unticked take would be routed to Alts and suffixed _tk01, which
+    -- is not a decision the user declined to make -- it is one they never had.
+    local primary = nil
+    if #g == 1 then
+      primary = g[1]
+    else
+      for _, s in ipairs(g) do
+        if s.select == true then primary = s; break end
+      end
+    end
     for _, s in ipairs(g) do s.primary = (s == primary) end
+  end
+
+  -- The name the SCRIPT asks this span to be delivered under: the filename plus
+  -- whatever the user typed in the Append column. The grouping above still keys
+  -- on the raw asset, and must -- two script lines that share a filename are
+  -- still two lines, and numbering their takes together would be wrong.
+  local function delivered(s)
+    if s.deliver ~= nil and s.deliver ~= "" then return s.deliver end
+    return s.asset
   end
 
   for _, s in ipairs(spans) do
     if s.kind == "match" then
       s.dest = (use_alts and not s.primary) and "alts" or "selects"
       if suffix and not s.primary then
-        s.name = vo.SanitizeName(string.format("%s_tk%02d", s.asset, s.take_index), max_len)
+        s.name = vo.SanitizeName(
+          string.format("%s_tk%02d", delivered(s), s.take_index), max_len)
       else
-        s.name = vo.SanitizeName(s.asset, max_len)
+        s.name = vo.SanitizeName(delivered(s), max_len)
       end
 
     elseif s.kind == "review" then
       s.dest = "review"
       s.name = vo.SanitizeName(
-        string.format("%s%s_s%.2f", review_prefix, s.asset or "", s.score or 0), max_len)
+        string.format("%s%s_s%.2f", review_prefix, delivered(s) or "", s.score or 0),
+        max_len)
 
     else
       -- Unmatched audio (slates, chatter, false starts) is left exactly where it
@@ -1088,6 +2728,20 @@ function vo.BuildWhisperArgv(cfg, audio, out_prefix)
   add("-ml", "1")  -- one word per segment; also enables token timestamps
   add("-sow")      -- split on word rather than mid-token
   add("-np")       -- no progress prints: we read the CSV, not stdout
+  -- No prior-text conditioning. whisper.cpp feeds each window the text it just
+  -- decoded, and on a long read that feedback can lock the decoder into
+  -- repeating one phrase for the rest of the file -- confidently, with
+  -- plausible timestamps, so nothing downstream can tell it from real speech.
+  -- The context is only worth anything for cross-sentence language modelling,
+  -- and matching is against a KNOWN script, so we give up nothing to remove it.
+  add("-mc", "0")
+  -- Discard a window as non-speech only when it is almost certainly not speech.
+  -- The default 0.60 threw away 29 seconds of a real read -- four script lines,
+  -- at full level, gone with no error anywhere. The trade is not symmetric
+  -- here: this is a recording where every second is MEANT to be speech, so an
+  -- invented word in a silence costs an unmatched span nobody reads, while a
+  -- dropped line costs a line.
+  add("-nth", "0.9")
 
   if cfg.whisper_threads then add("-t", tostring(cfg.whisper_threads)) end
   if cfg.whisper_language and cfg.whisper_language ~= "" then
@@ -1150,6 +2804,15 @@ function vo.FormatBytes(n)
   while v >= 1024 and i < #units do v = v / 1024; i = i + 1 end
   if i == 1 then return string.format("%d %s", v, units[i]) end
   return string.format("%.1f %s", v, units[i])
+end
+
+-- Seconds as m:ss, so a time the UI reports can be typed into REAPER's
+-- transport and found. Hours only appear once there are hours.
+function vo.FormatTime(seconds)
+  local s = math.max(0, math.floor((seconds or 0) + 0.5))
+  local h, m = math.floor(s / 3600), math.floor(s / 60) % 60
+  if h > 0 then return string.format("%d:%02d:%02d", h, m, s % 60) end
+  return string.format("%d:%02d", m, s % 60)
 end
 
 --------------------------------
@@ -1222,38 +2885,81 @@ end
 -- Pure layer: plan composition
 --------------------------------
 
--- Compose the whole matching pipeline. Pure: no REAPER, no audio, no I/O.
--- lines: script lines from BuildScriptLines
--- words: whisper words from ParseWhisperCSV, already in project time
--- Returns: chronological array of span records ready for ApplyPlan.
-function vo.BuildPlan(lines, words, cfg)
-  local tokens     = vo.BuildWordTokens(words, cfg)
-  local index      = vo.BuildIndex(lines, cfg)
-  local candidates = vo.FindCandidates(tokens, lines, index, cfg)
-  local spans      = vo.SelectSpans(candidates, cfg)
-  local gaps       = vo.FindGaps(tokens, spans)
+-- Match stored words against the script, one source file at a time.
+-- Pure: no REAPER, no audio, no I/O.
+--
+--   transcripts -- array of { path = <source file>, words = <vo.ParseTranscript
+--                  words> }, in SOURCE time
+--   lines       -- script lines from vo.BuildScriptLines
+--   Returns     -- array of { path, spans }, spans in SOURCE time
+--
+-- Per-source rather than pooled, deliberately: two recordings' words occupy
+-- overlapping time ranges in their own files, so pooling them would let the
+-- matcher build a span that starts in one recording and ends in another. The
+-- index is built once and shared -- it depends only on the script.
+--
+-- Padding and naming are NOT done here. Padding needs sample access to snap to
+-- silence (vo.ApplyPadding + vo.SnapBoundary), and take numbering needs every
+-- source at once (vo.BuildOverview). Both belong to the caller, and keeping
+-- this function free of them is what lets Overview re-run it on every script
+-- change without touching audio.
+-- `pins` is a flat list of { asset, source, start, stop } placed by hand; each
+-- one applies to the transcript whose path it names. Pins that cannot be
+-- resolved come back on the entry as `unresolved` rather than being dropped: a
+-- pin that silently does nothing is worse than no pin at all.
+function vo.BuildMatch(transcripts, lines, cfg, pins)
+  local index = vo.BuildIndex(lines, cfg)
+  local out = {}
 
-  local plan = {}
-  for _, s in ipairs(spans) do plan[#plan + 1] = s end
-  for _, g in ipairs(gaps)  do plan[#plan + 1] = g end
-  table.sort(plan, function(a, b)
-    if a.i0 ~= b.i0 then return a.i0 < b.i0 end
-    return a.i1 < b.i1
-  end)
-
-  -- Matched spans need their transcript too, for the report.
-  for _, s in ipairs(plan) do
-    if not s.transcript then
-      local text = {}
-      for k = s.i0, s.i1 do text[#text + 1] = tokens[k].text end
-      s.transcript = table.concat(text, " ")
+  local pins_by_source = {}
+  for _, p in ipairs(pins or {}) do
+    local list = pins_by_source[p.source]
+    if not list then
+      list = {}
+      pins_by_source[p.source] = list
     end
+    list[#list + 1] = p
   end
 
-  vo.ApplyPadding(plan, cfg, cfg and cfg.bounds)
-  vo.AssignNames(plan, cfg)
+  for _, t in ipairs(transcripts or {}) do
+    local tokens     = vo.BuildWordTokens(t.words, cfg)
+    local pinned, unresolved = vo.PinnedSpans(tokens, pins_by_source[t.path], lines)
+    local candidates = vo.FindCandidates(tokens, lines, index, cfg)
+    -- Per source file, because that is the unit a read is performed in.
+    local backbone   = vo.BuildBackbone(candidates, cfg)
+    local spans      = vo.SelectSpans(candidates, cfg, backbone, pinned)
 
-  return plan
+    -- Give the lines that got nothing a look at the audio nobody claimed.
+    for _, s in ipairs(vo.ResidualPass(tokens, lines, spans, cfg, index)) do
+      spans[#spans + 1] = s
+    end
+    table.sort(spans, function(a, b) return a.i0 < b.i0 end)
+
+    local gaps       = vo.FindGaps(tokens, spans)
+
+    local plan = {}
+    for _, s in ipairs(spans) do plan[#plan + 1] = s end
+    for _, g in ipairs(gaps)  do plan[#plan + 1] = g end
+    table.sort(plan, function(a, b)
+      if a.i0 ~= b.i0 then return a.i0 < b.i0 end
+      return a.i1 < b.i1
+    end)
+
+    -- Matched spans need their transcript too, for the table and the report.
+    for _, s in ipairs(plan) do
+      if not s.transcript then
+        local text = {}
+        for k = s.i0, s.i1 do text[#text + 1] = tokens[k].text end
+        s.transcript = table.concat(text, " ")
+      end
+    end
+
+    local kept, dropped = vo.DropDegenerateSpans(plan)
+    out[#out + 1] = { path = t.path, spans = kept, unresolved = unresolved,
+                      degenerate_dropped = dropped }
+  end
+
+  return out
 end
 
 --------------------------------
@@ -1276,19 +2982,8 @@ function vo.FormatCSVRow(fields)
   return table.concat(out, ",")
 end
 
-vo.SIDECAR_MARKER  = "ajsfx VO ScriptMatch"
-vo.SIDECAR_VERSION = 1
-
-vo.SIDECAR_HEADER = {
-  "Source start", "Source stop", "Kind", "Filename", "Character", "Score",
-  "Margin", "Take", "Dest", "Name", "Transcript", "Line text", "Clamped",
-  "Degenerate",
-}
-
-vo.SIDECAR_TAIL_MARKER = "SCRIPT LINES WITH NO MATCH"
-
--- role=column pairs joined by ";". Kept human-legible because the sidecar is
--- opened in spreadsheets; the role order matches vo.SerializeLayout.
+-- role=column pairs joined by ";". Kept human-legible because the project file
+-- is opened in spreadsheets; the role order matches vo.SerializeLayout.
 local function encode_mapping(mapping)
   local out = {}
   for _, role in ipairs({ "asset", "text", "speaker" }) do
@@ -1305,213 +3000,6 @@ local function decode_mapping(text)
     if role then mapping[role:match("^%s*(.-)%s*$")] = col end
   end
   return mapping
-end
-
--- Serialize a plan to its sidecar. `spans` must already be in SOURCE time (see
--- vo.PartitionPlanBySource); this function does no conversion, so it cannot
--- silently write project times. `lines` supplies script text for the readable
--- columns and the trailing unmatched section, and may be empty.
-function vo.SerializeSidecar(spans, lines, meta)
-  meta = meta or {}
-  local by_asset = {}
-  for _, l in ipairs(lines or {}) do by_asset[l.asset] = l end
-
-  local out = {
-    vo.FormatCSVRow({ vo.SIDECAR_MARKER, tostring(vo.SIDECAR_VERSION) }),
-    vo.FormatCSVRow({ "Source",      meta.source or "" }),
-    vo.FormatCSVRow({ "Source bytes", tostring(meta.source_bytes or 0) }),
-    vo.FormatCSVRow({ "Script CSV",  meta.script_csv or "" }),
-    vo.FormatCSVRow({ "Mapping",     encode_mapping(meta.mapping) }),
-    "",
-    vo.FormatCSVRow(vo.SIDECAR_HEADER),
-  }
-
-  local matched = {}
-  for _, s in ipairs(spans or {}) do
-    if s.kind == "match" and s.asset then matched[s.asset] = true end
-    local line = s.asset and by_asset[s.asset] or nil
-    out[#out + 1] = vo.FormatCSVRow({
-      string.format("%.3f", s.start or 0),
-      string.format("%.3f", s.stop or 0),
-      s.kind or "",
-      s.asset or "",
-      s.character or "",
-      s.score  and string.format("%.4f", s.score)  or "",
-      s.margin and string.format("%.4f", s.margin) or "",
-      s.take_index and tostring(s.take_index) or "",
-      s.dest or "",
-      s.name or "",
-      s.transcript or "",
-      line and line.text or "",
-      s.clamped and "yes" or "",
-      -- Padding would have inverted this span, so it carries its raw recognized
-      -- boundaries instead. Worth surfacing: it is the one row whose times are
-      -- not the padded times, and the likely explanation for a skipped cut.
-      s.degenerate and "yes" or "",
-    })
-  end
-
-  -- Readable only. ParseSidecar stops at this marker, so it can never become a
-  -- second source of truth that disagrees with the spans above it.
-  out[#out + 1] = ""
-  out[#out + 1] = vo.FormatCSVRow({ vo.SIDECAR_TAIL_MARKER })
-  out[#out + 1] = vo.FormatCSVRow({ "Filename", "Character", "Text" })
-  for _, l in ipairs(lines or {}) do
-    if not matched[l.asset] then
-      out[#out + 1] = vo.FormatCSVRow({ l.asset, l.speaker or "", l.text })
-    end
-  end
-
-  return table.concat(out, "\n") .. "\n"
-end
-
--- Returns the parsed sidecar, or nil plus a reason. A malformed file beside the
--- audio must never stop the dialog opening, so nothing here raises.
-function vo.ParseSidecar(text)
-  if type(text) ~= "string" or text == "" then
-    return nil, "The sidecar file is empty."
-  end
-
-  local rows = vo.ParseCSV(text)
-  if not rows[1] or rows[1][1] ~= vo.SIDECAR_MARKER then
-    return nil, "Not an " .. vo.SIDECAR_MARKER .. " file."
-  end
-
-  local version = tonumber(rows[1][2] or "")
-  if version ~= vo.SIDECAR_VERSION then
-    return nil, "Unsupported sidecar version: " .. tostring(rows[1][2])
-  end
-
-  local parsed = { version = version, source = "", source_bytes = 0,
-                   script_csv = "", mapping = {}, spans = {} }
-
-  -- Walk the preamble until the span header row, then read spans until the
-  -- readable tail marker.
-  local i, header_at = 2, nil
-  while rows[i] do
-    local key = rows[i][1] or ""
-    if key == vo.SIDECAR_HEADER[1] then header_at = i; break end
-    if     key == "Source"       then parsed.source       = rows[i][2] or ""
-    elseif key == "Source bytes" then parsed.source_bytes = tonumber(rows[i][2] or "") or 0
-    elseif key == "Script CSV"   then parsed.script_csv   = rows[i][2] or ""
-    elseif key == "Mapping"      then parsed.mapping      = decode_mapping(rows[i][2])
-    end
-    i = i + 1
-  end
-
-  if not header_at then
-    return nil, "The sidecar has no span header row."
-  end
-
-  for j = header_at + 1, #rows do
-    local row = rows[j]
-    local first = row[1] or ""
-    if first == vo.SIDECAR_TAIL_MARKER then break end
-    if first ~= "" and tonumber(first) then
-      parsed.spans[#parsed.spans + 1] = {
-        start      = tonumber(row[1]) or 0,
-        stop       = tonumber(row[2]) or 0,
-        kind       = row[3] ~= "" and row[3] or nil,
-        asset      = row[4] ~= "" and row[4] or nil,
-        character  = row[5] ~= "" and row[5] or nil,
-        score      = tonumber(row[6] or ""),
-        margin     = tonumber(row[7] or ""),
-        take_index = tonumber(row[8] or ""),
-        dest       = row[9] ~= "" and row[9] or nil,
-        name       = row[10] ~= "" and row[10] or nil,
-        transcript = row[11] ~= "" and row[11] or nil,
-      }
-    end
-  end
-
-  return parsed
-end
-
--- Split a project-time plan into one source-time span list per source file.
--- The midpoint decides which item a span belongs to, matching how the dialog's
--- ClampSpansToItems already assigns them, so the two cannot disagree.
--- Spans matching no item (gaps between items) are omitted.
-function vo.PartitionPlanBySource(plan, items)
-  local by_source = {}
-  for _, span in ipairs(plan or {}) do
-    local midpoint = ((span.raw_start or span.start or 0)
-                    + (span.raw_stop  or span.stop  or 0)) / 2
-    for _, item in ipairs(items or {}) do
-      if item.path and midpoint >= item.pos and midpoint <= item.pos + (item.length or 0) then
-        local copy = {}
-        for k, v in pairs(span) do copy[k] = v end
-        copy.start = vo.ProjectTimeToSource(span.start or 0, item)
-        copy.stop  = vo.ProjectTimeToSource(span.stop  or 0, item)
-        by_source[item.path] = by_source[item.path] or {}
-        table.insert(by_source[item.path], copy)
-        break
-      end
-    end
-  end
-  return by_source
-end
-
--- Group a plan's spans by the source file whose item plays them, WITHOUT
--- converting the times: spans come back exactly as they went in. This is the
--- project-time sibling of PartitionPlanBySource (which converts to source time
--- for writing sidecars) and exists for callers that must keep a SUBSET of a
--- live plan -- a partial re-transcription retaining the sources it skipped --
--- where converting would corrupt the very times it is trying to preserve.
-function vo.SpansBySourcePath(plan, items)
-  local by_source = {}
-  for _, span in ipairs(plan or {}) do
-    local midpoint = ((span.raw_start or span.start or 0)
-                    + (span.raw_stop  or span.stop  or 0)) / 2
-    for _, item in ipairs(items or {}) do
-      if item.path and midpoint >= item.pos and midpoint <= item.pos + (item.length or 0) then
-        by_source[item.path] = by_source[item.path] or {}
-        table.insert(by_source[item.path], span)
-        break
-      end
-    end
-  end
-  return by_source
-end
-
--- Merge a freshly written span list with what is already on disk for the SAME
--- source file. Both lists must be in SOURCE time (SerializeSidecar's base, i.e.
--- the output of vo.PartitionPlanBySource on one side and vo.ParseSidecar on the
--- other) -- this function converts nothing, so it can never double-convert.
---
--- Why it exists: a sidecar write rewrites a source's file WHOLE, but the plan
--- being written only ever covers the items currently SELECTED. Narrow the
--- selection to one of three items cut from the same recording and the other
--- two items' spans were dropped at load; writing then erased them from disk
--- permanently, losing transcription work the write simply could not see.
---
--- The rule is exactly that: a disk span is kept when its MIDPOINT falls inside
--- none of `ranges` (the source-time stretches the current items play, from
--- vo.SourceCoverageRanges). A disk span inside a covered range is superseded by
--- whatever `new_spans` says about that region -- including its absence, so a
--- re-transcription that legitimately produces fewer spans still shrinks the
--- file. Midpoints, not endpoints, because that is how every other placement
--- decision in this file is made (PartitionPlanBySource, SpansBySourcePath).
---
--- Returns: merged array sorted by start, plus how many disk spans were
--- preserved (so the dialog can say so inline).
-function vo.MergeSidecarSpans(new_spans, disk_spans, ranges)
-  local merged, preserved = {}, 0
-  for _, s in ipairs(new_spans or {}) do merged[#merged + 1] = s end
-
-  for _, s in ipairs(disk_spans or {}) do
-    local mid = ((s.start or 0) + (s.stop or 0)) / 2
-    local covered = false
-    for _, range in ipairs(ranges or {}) do
-      if mid >= range.from and mid <= range.to then covered = true; break end
-    end
-    if not covered then
-      merged[#merged + 1] = s
-      preserved = preserved + 1
-    end
-  end
-
-  table.sort(merged, function(a, b) return (a.start or 0) < (b.start or 0) end)
-  return merged, preserved
 end
 
 -- How many distinct tracks a list of items sits on. vo.ApplyPlan resolves every
@@ -1537,38 +3025,6 @@ function vo.DistinctTrackCount(items)
   return n
 end
 
--- Which of the selected sources still need transcribing. The question is asked
--- PER SOURCE FILE, never globally: a source is skipped only when it has a
--- usable result OF ITS OWN. Deciding from "does the plan contain anything at
--- all" would let four good sidecars vouch for a fifth source that has none.
---
--- A source needs transcription when:
---   * nothing in the plan belongs to it (no sidecar, or one that parsed to zero
---     usable spans), or
---   * it is listed stale -- its audio changed, so its timings are why Cut is
---     blocked; skipping it would leave the user no way to refresh it.
---
--- Pure: three plain tables in, an array of source paths out. `stale` is keyed
--- by FULL PATH, not basename, so two selected recordings that share a filename
--- in different folders cannot stand in for each other.
-function vo.SourcesNeedingTranscription(plan, stale, items)
-  local is_stale = {}
-  for _, path in ipairs(stale or {}) do is_stale[path] = true end
-
-  local have = vo.SpansBySourcePath(plan, items)
-
-  local need, seen = {}, {}
-  for _, item in ipairs(items or {}) do
-    if item.path and not seen[item.path] then
-      seen[item.path] = true
-      local spans = have[item.path]
-      if is_stale[item.path] or not spans or #spans == 0 then
-        need[#need + 1] = item.path
-      end
-    end
-  end
-  return need
-end
 
 --------------------------------
 -- Pure layer: shell quoting
@@ -1617,7 +3073,7 @@ function vo.CacheKey(source_path, file_size, cfg)
 end
 
 --------------------------------
--- Pure layer: sidecar paths and time base
+-- Pure layer: file paths and time base
 --------------------------------
 
 -- Only the final extension is stripped, and the character class excludes path
@@ -1635,24 +3091,19 @@ end
 
 vo.Basename = basename
 
--- The sidecar for a media source lives beside it: RIVA.wav -> RIVA_vo_report.csv.
-function vo.SidecarPath(source_path)
-  if not source_path or source_path == "" then return nil end
-  return strip_ext(source_path) .. "_vo_report.csv"
-end
-
--- The tracker for a project lives beside it: Session.rpp -> Session_vo_tracker.csv.
--- One per project, not one per source: it tracks the user's own work (verified,
--- notes, renames) across every recording at once, and unlike a sidecar it is
--- never regenerated from audio.
-function vo.TrackerPath(project_path)
+-- The project file lives beside the project: Session.rpp -> Session_vo.csv.
+-- One per project, not one per source: it holds the user's own work (selects,
+-- verified marks, notes, renames) plus the script it is all about. Unlike a
+-- transcript it is never regenerated from audio.
+function vo.ProjectFilePath(project_path)
   if not project_path or project_path == "" then return nil end
-  return strip_ext(project_path) .. "_vo_tracker.csv"
+  return strip_ext(project_path) .. "_vo.csv"
 end
 
--- Exact inverses of the arithmetic in vo.MapWordsToProject. A sidecar lives next
--- to the audio, so it must store times the audio file itself can vouch for; the
--- item's position, trim and playrate belong to the project, not the recording.
+-- Exact inverses of the arithmetic in vo.MapWordsToProject. A transcript lives
+-- next to the audio, so it must store times the audio file itself can vouch
+-- for; the item's position, trim and playrate belong to the project, not the
+-- recording.
 local function safe_playrate(item)
   local pr = item and item.playrate or 1.0
   if pr <= 0 then pr = 1.0 end
@@ -1670,14 +3121,13 @@ function vo.SourceTimeToProject(t, item)
 end
 
 -- The SOURCE-TIME stretch of a media source that a list of items actually
--- plays: one range per item, in the same time base ParseSidecar/SerializeSidecar
--- use. Mirrors the placement arithmetic in the dialog's LoadSidecars, so a span
--- LoadSidecars could place is exactly a span that falls inside one of these
--- ranges. All items passed in are expected to reference the same source file;
--- the caller groups them.
--- Defined HERE, below safe_playrate, and not beside vo.MergeSidecarSpans which
--- it partners: safe_playrate is a plain file local, so a definition above it
--- would resolve the name as a nil global and only fail inside REAPER.
+-- plays: one range per item, in the same time base the transcript uses. A span
+-- outside every one of these ranges has no audio behind it in this project --
+-- the item was trimmed after transcription -- and Cut drops it rather than
+-- cutting silence. All items passed in are expected to reference the same
+-- source file; the caller groups them.
+-- Defined HERE, below safe_playrate: it is a plain file local, so a definition
+-- above it would resolve the name as a nil global and only fail inside REAPER.
 function vo.SourceCoverageRanges(items)
   local out = {}
   for _, item in ipairs(items or {}) do
@@ -1689,26 +3139,161 @@ function vo.SourceCoverageRanges(items)
 end
 
 --------------------------------
--- Pure layer: the overview tracker
+-- Pure layer: the transcript sidecar
 --------------------------------
 
--- The tracker holds the one kind of data in this tool that CANNOT be recomputed:
--- what the user did. Verified checkmarks, notes, and delivery-name overrides are
--- judgements about audio, not facts derived from it, so they live in their own
--- file. Re-transcribing a recording rewrites its sidecar wholesale; it must not
--- cost the user a single checkmark. That separation is the whole reason this
--- file format exists rather than more columns on the sidecar.
+-- WORDS, not spans. A recording's transcription is a fact about the audio and
+-- nothing else: no script, no mapping, no match. Storing whisper's own segment
+-- grouping would store its guess at where lines divide, and the script -- not
+-- the recogniser -- is what says that. `-ml 1` makes every whisper segment one
+-- word anyway, so there is no grouping left to store.
 
-vo.TRACKER_MARKER  = "ajsfx VO Overview"
-vo.TRACKER_VERSION = 1
+vo.TRANSCRIPT_MARKER  = "ajsfx VO Transcript"
+vo.TRANSCRIPT_VERSION = 1
+vo.TRANSCRIPT_HEADER  = { "Start", "End", "Text" }
 
-vo.TRACKER_HEADER = {
-  "Key", "Source", "Source start", "Filename", "Status", "Name override",
-  "Notes", "Primary",
+function vo.TranscriptPath(source_path)
+  if not source_path or source_path == "" then return nil end
+  return strip_ext(source_path) .. "_vo_transcript.csv"
+end
+
+-- `words` are in SOURCE time, as vo.ParseWhisperCSV produces them. This
+-- function converts nothing, so it cannot silently write project times.
+function vo.SerializeTranscript(words, meta)
+  meta = meta or {}
+  local out = {
+    vo.FormatCSVRow({ vo.TRANSCRIPT_MARKER, tostring(vo.TRANSCRIPT_VERSION) }),
+    vo.FormatCSVRow({ "Source",       meta.source or "" }),
+    vo.FormatCSVRow({ "Source bytes", tostring(meta.source_bytes or 0) }),
+    vo.FormatCSVRow({ "Source hash",  meta.source_hash or "" }),
+    vo.FormatCSVRow({ "Backend",      meta.backend or "" }),
+    vo.FormatCSVRow({ "Model",        meta.model or "" }),
+    vo.FormatCSVRow({ "Language",     meta.language or "" }),
+    "",
+    vo.FormatCSVRow(vo.TRANSCRIPT_HEADER),
+  }
+  for _, w in ipairs(words or {}) do
+    out[#out + 1] = vo.FormatCSVRow({
+      string.format("%.3f", w.t0 or 0),
+      string.format("%.3f", w.t1 or 0),
+      w.text or "",
+    })
+  end
+  return table.concat(out, "\n") .. "\n"
+end
+
+function vo.ParseTranscript(text)
+  if type(text) ~= "string" or text == "" then
+    return nil, "The transcript file is empty."
+  end
+
+  local rows = vo.ParseCSV(text)
+  if not rows[1] or rows[1][1] ~= vo.TRANSCRIPT_MARKER then
+    return nil, "Not an " .. vo.TRANSCRIPT_MARKER .. " file."
+  end
+
+  local version = tonumber(rows[1][2] or "")
+  if version ~= vo.TRANSCRIPT_VERSION then
+    return nil, "Unsupported transcript version: " .. tostring(rows[1][2])
+  end
+
+  local parsed = { version = version, source = "", source_bytes = 0,
+                   source_hash = "", backend = "", model = "", language = "",
+                   words = {} }
+
+  local i, header_at = 2, nil
+  while rows[i] do
+    local key = rows[i][1] or ""
+    if key == vo.TRANSCRIPT_HEADER[1] then header_at = i; break end
+    if     key == "Source"       then parsed.source       = rows[i][2] or ""
+    elseif key == "Source bytes" then parsed.source_bytes = tonumber(rows[i][2] or "") or 0
+    elseif key == "Source hash"  then parsed.source_hash  = rows[i][2] or ""
+    elseif key == "Backend"      then parsed.backend      = rows[i][2] or ""
+    elseif key == "Model"        then parsed.model        = rows[i][2] or ""
+    elseif key == "Language"     then parsed.language     = rows[i][2] or ""
+    end
+    i = i + 1
+  end
+
+  if not header_at then
+    return nil, "The transcript has no word header row."
+  end
+
+  for j = header_at + 1, #rows do
+    local row = rows[j]
+    local t0, t1 = tonumber(row[1] or ""), tonumber(row[2] or "")
+    if t0 and t1 then
+      parsed.words[#parsed.words + 1] = { t0 = t0, t1 = t1, text = row[3] or "" }
+    end
+  end
+
+  return parsed
+end
+
+-- Reassemble a transcript's one-word-per-row storage into display prose.
+--
+-- Display only. Nothing here is stored, and matching never sees it: `-ml 1`
+-- destroyed whisper's own sentence grouping, and the SCRIPT is what says where
+-- lines divide anyway. This is purely a reading aid for the detail panel.
+--
+-- Words are grouped so a new paragraph starts after any word whose text ends
+-- in `.`, `?` or `!` (optionally followed by a closing quote).
+-- Returns: array of paragraphs, each an array of the original word tables (so
+-- a caller needing per-word timing -- the detail panel's word interaction --
+-- can index into the same objects vo.Paragraphs summarizes).
+function vo.ParagraphWords(words)
+  local paras, current = {}, {}
+  for _, w in ipairs(words or {}) do
+    current[#current + 1] = w
+    if w.text:match("[%.%?%!]['\"]?$") then
+      paras[#paras + 1] = current
+      current = {}
+    end
+  end
+  if #current > 0 then paras[#paras + 1] = current end
+  return paras
+end
+
+-- vo.ParagraphWords, joined to display prose. Returns: array of paragraph
+-- strings.
+function vo.Paragraphs(words)
+  local out = {}
+  for _, para in ipairs(vo.ParagraphWords(words)) do
+    local texts = {}
+    for _, w in ipairs(para) do texts[#texts + 1] = w.text end
+    out[#out + 1] = table.concat(texts, " ")
+  end
+  return out
+end
+
+--------------------------------
+-- Pure layer: the project file
+--------------------------------
+
+-- The project file holds the one kind of data in this tool that CANNOT be
+-- recomputed: what the user did. Selects, verified checkmarks, notes and
+-- delivery-name overrides are judgements ABOUT audio, not facts derived FROM
+-- it, so they live in their own file. Re-transcribing a recording rewrites its
+-- transcript wholesale; it must not cost the user a single checkmark. That
+-- separation is the whole reason this format exists rather than more columns
+-- on the transcript.
+--
+-- It also carries the script CSV path and the column mapping, which used to
+-- live in ProjExtState. A project's VO state is now one file, and moving the
+-- project moves it.
+
+vo.PROJECT_MARKER  = "ajsfx VO Project"
+vo.PROJECT_VERSION = 1
+
+vo.PROJECT_HEADER = {
+  "Key", "Filename", "Source", "Source start", "Select", "Status",
+  "Name override", "Notes", "Keep",
 }
 
 -- Statuses the USER sets. Derived statuses (missing/recorded/review/orphan) are
--- computed from the sidecars every time and are deliberately never stored.
+-- computed from the transcripts every time and are deliberately never stored.
+-- Select is NOT one of these: a take can be both selected and flagged, so it
+-- gets its own column rather than competing for this one.
 vo.TRACKER_STATUSES = { verified = true, flagged = true }
 
 -- How far a span may move and still be recognised as "the same take". A
@@ -1718,9 +3303,9 @@ vo.TRACKER_STATUSES = { verified = true, flagged = true }
 vo.TRACKER_REMATCH_TOLERANCE = 0.5
 
 -- Portable half of a row's identity. Basename rather than full path so a project
--- that moves drives keeps its tracker; full-path disambiguation happens in the
+-- that moves drives keeps its marks; full-path disambiguation happens in the
 -- lookup below, which tries the exact path first. Milliseconds, rounded, because
--- the sidecar itself only stores 3 decimal places.
+-- the transcript itself only stores 3 decimal places.
 function vo.OverviewKey(source_path, source_start, asset)
   if not source_path or source_path == "" then
     return "|" .. tostring(asset or "")
@@ -1729,30 +3314,103 @@ function vo.OverviewKey(source_path, source_start, asset)
        .. string.format("%d", math.floor((source_start or 0) * 1000 + 0.5))
 end
 
-function vo.SerializeTracker(entries)
+-- `meta` carries the script side of a project's VO state:
+-- { scripts = { { path, mapping, enabled }, ... }, appends = { ... }, pins = { ... } }.
+-- It lives here rather than in ProjExtState so the project file is the WHOLE of
+-- a project's VO state.
+function vo.SerializeProjectFile(entries, meta)
+  meta = meta or {}
   local out = {
-    vo.FormatCSVRow({ vo.TRACKER_MARKER, tostring(vo.TRACKER_VERSION) }),
-    "",
-    vo.FormatCSVRow(vo.TRACKER_HEADER),
+    vo.FormatCSVRow({ vo.PROJECT_MARKER, tostring(vo.PROJECT_VERSION) }),
   }
 
+  -- One row per script, in the order the user added them. This replaces the
+  -- single "Script CSV" + "Mapping" pair; ParseProjectFile still reads that pair
+  -- so a project saved by an older version opens untouched.
+  for _, sc in ipairs(meta.scripts or {}) do
+    if sc.path and sc.path ~= "" then
+      out[#out + 1] = vo.FormatCSVRow({
+        "Script", sc.path, encode_mapping(sc.mapping),
+        sc.enabled ~= false and "yes" or "",
+      })
+    end
+  end
+
+  -- Appends are keyed by script LINE, not by a stretch of audio, so like Pins
+  -- they cannot live in the entry table. An append whose script is no longer in
+  -- the list is still written: removing a script and adding it back must not
+  -- throw the user's naming away.
+  for _, a in ipairs(meta.appends or {}) do
+    if a.text and a.text ~= "" then
+      out[#out + 1] = vo.FormatCSVRow({
+        "Append", a.script or "", a.asset or "",
+        tostring(a.nth or 1), a.text,
+      })
+    end
+  end
+
+  -- Pins live in the preamble rather than the entry table because they are keyed
+  -- by the SCRIPT LINE, while every entry row is keyed by a stretch of audio.
+  -- Keeping them out of that table is also what lets them be added without
+  -- changing the entry columns, and so without invalidating existing files.
+  for _, p in ipairs(meta.pins or {}) do
+    if p.asset and p.asset ~= "" and p.source and p.source ~= "" then
+      out[#out + 1] = vo.FormatCSVRow({
+        "Pin", p.asset, p.source,
+        string.format("%.3f", p.start or 0),
+        string.format("%.3f", p.stop or 0),
+      })
+    end
+  end
+
+  -- How the table was left: which filters were on, what was searched for, how it
+  -- was sorted. Not a decision about the AUDIO like everything above, but it is
+  -- a decision about THIS project -- a character filter names this project's
+  -- characters -- so it belongs beside them rather than in the global ExtState
+  -- that holds column widths. A reader that predates these rows skips them.
+  local v = meta.view
+  if v then
+    local function row(key, ...) out[#out + 1] = vo.FormatCSVRow({ "View", key, ... }) end
+    if v.character and v.character ~= ""                 then row("character", v.character) end
+    if v.search and v.search ~= ""                       then row("search", v.search) end
+    if v.filter_row                                      then row("filter_row", "yes") end
+    -- The SORT is deliberately not here. ImGui owns the header clicks and keeps
+    -- the sort spec in its own ini alongside the column widths; storing it here
+    -- too would give it two owners, and ImGui's would win on the first frame.
+    -- Sorted, so a file that is otherwise unchanged does not churn its diff on
+    -- every save just because a table iterated in a different order.
+    local keys = {}
+    for key, needle in pairs(v.col_filters or {}) do
+      if needle and needle ~= "" then keys[#keys + 1] = key end
+    end
+    table.sort(keys)
+    for _, key in ipairs(keys) do row("column", key, v.col_filters[key]) end
+  end
+
+  local rest = {
+    "",
+    vo.FormatCSVRow(vo.PROJECT_HEADER),
+  }
+  for _, line in ipairs(rest) do out[#out + 1] = line end
+
   for _, e in ipairs(entries or {}) do
-    -- Only rows carrying actual user work are written. Without this the tracker
+    -- Only rows carrying actual user work are written. Without this the file
     -- would grow a line per script line per session and the signal would drown.
-    local has_work = (e.status and e.status ~= "")
+    local has_work = e.select or e.keep
+                  or (e.status and e.status ~= "")
                   or (e.name_override and e.name_override ~= "")
                   or (e.notes and e.notes ~= "")
-                  or (e.primary == true)
     if has_work then
       out[#out + 1] = vo.FormatCSVRow({
         e.key or "",
+        e.asset or "",
         e.source or "",
         e.source_start and string.format("%.3f", e.source_start) or "",
-        e.asset or "",
+        e.select and "yes" or "",
         e.status or "",
         e.name_override or "",
         e.notes or "",
-        e.primary and "yes" or "",
+        e.keep and "yes" or "",
       })
     end
   end
@@ -1760,54 +3418,111 @@ function vo.SerializeTracker(entries)
   return table.concat(out, "\n") .. "\n"
 end
 
--- Returns the parsed entries, or nil plus a reason. Nothing here raises: a
--- tracker mangled by a spreadsheet round-trip must never stop the window
--- opening, because the window is the only place the user can fix it.
-function vo.ParseTracker(text)
+-- Returns the parsed file, or nil plus a reason. Nothing here raises: a project
+-- file mangled by a spreadsheet round-trip must never stop the window opening,
+-- because the window is the only place the user can fix it.
+function vo.ParseProjectFile(text)
   if type(text) ~= "string" or text == "" then
-    return nil, "The tracker file is empty."
+    return nil, "The project file is empty."
   end
 
   local rows = vo.ParseCSV(text)
-  if not rows[1] or rows[1][1] ~= vo.TRACKER_MARKER then
-    return nil, "Not an " .. vo.TRACKER_MARKER .. " file."
+  if not rows[1] or rows[1][1] ~= vo.PROJECT_MARKER then
+    return nil, "Not an " .. vo.PROJECT_MARKER .. " file."
   end
 
   local version = tonumber(rows[1][2] or "")
-  if version ~= vo.TRACKER_VERSION then
-    return nil, "Unsupported tracker version: " .. tostring(rows[1][2])
+  if version ~= vo.PROJECT_VERSION then
+    return nil, "Unsupported project file version: " .. tostring(rows[1][2])
   end
 
-  local header_at
-  for i = 2, #rows do
-    if (rows[i][1] or "") == vo.TRACKER_HEADER[1] then header_at = i; break end
+  local parsed = { version = version, scripts = {}, appends = {},
+                   entries = {}, pins = {}, view = { col_filters = {} } }
+  -- The pre-multi-script format, folded in below only if no Script row appears.
+  local legacy_path, legacy_mapping = nil, nil
+
+  local i, header_at = 2, nil
+  while rows[i] do
+    local key = rows[i][1] or ""
+    if key == vo.PROJECT_HEADER[1] then header_at = i; break end
+    if     key == "Script CSV" then legacy_path    = rows[i][2] or ""
+    elseif key == "Mapping"    then legacy_mapping = decode_mapping(rows[i][2])
+    elseif key == "Script" then
+      local path = rows[i][2] or ""
+      if path ~= "" then
+        parsed.scripts[#parsed.scripts + 1] = {
+          path    = path,
+          mapping = decode_mapping(rows[i][3]),
+          -- Anything other than an explicit "" reads as enabled, so a row
+          -- hand-edited in a spreadsheet does not silently switch a script off.
+          enabled = (rows[i][4] or "") ~= "",
+        }
+      end
+    elseif key == "Append" then
+      local script, asset = rows[i][2] or "", rows[i][3] or ""
+      local nth, text = tonumber(rows[i][4] or ""), rows[i][5] or ""
+      if asset ~= "" and nth and text ~= "" then
+        parsed.appends[#parsed.appends + 1] =
+          { script = script, asset = asset, nth = math.floor(nth), text = text }
+      end
+    elseif key == "View" then
+      local what, a, b = rows[i][2] or "", rows[i][3] or "", rows[i][4] or ""
+      -- "status" was a preset filter that no longer exists; a file written by
+      -- that version is read without it rather than rejected.
+      if     what == "character"  then parsed.view.character  = a ~= "" and a or nil
+      elseif what == "search"     then parsed.view.search     = a ~= "" and a or nil
+      elseif what == "filter_row" then parsed.view.filter_row = a ~= ""
+      elseif what == "column" and a ~= "" and b ~= "" then
+        parsed.view.col_filters[a] = b
+      end
+    elseif key == "Pin" then
+      local asset, source = rows[i][2] or "", rows[i][3] or ""
+      local from, to = tonumber(rows[i][4] or ""), tonumber(rows[i][5] or "")
+      -- A pin with no range is not a weaker pin, it is a corrupt one.
+      if asset ~= "" and source ~= "" and from and to and to > from then
+        parsed.pins[#parsed.pins + 1] =
+          { asset = asset, source = source, start = from, stop = to }
+      end
+    end
+    i = i + 1
   end
+
+  -- A project saved before scripts became a list. Folded in only when no Script
+  -- row was found, so an explicit list always wins over a stale legacy row.
+  if #parsed.scripts == 0 and legacy_path and legacy_path ~= "" then
+    parsed.scripts[1] = { path = legacy_path, mapping = legacy_mapping or {},
+                          enabled = true }
+  end
+
   if not header_at then
-    return nil, "The tracker has no header row."
+    return nil, "The project file has no header row."
   end
 
-  local entries = {}
-  for i = header_at + 1, #rows do
-    local row = rows[i]
+  for j = header_at + 1, #rows do
+    local row = rows[j]
     local key = row[1] or ""
     if key ~= "" then
-      local status = fold(row[5] or "")
-      entries[#entries + 1] = {
+      local status = fold(row[6] or "")
+      parsed.entries[#parsed.entries + 1] = {
         key           = key,
-        source        = row[2] ~= "" and row[2] or nil,
-        source_start  = tonumber(row[3] or ""),
-        asset         = row[4] ~= "" and row[4] or nil,
+        asset         = row[2] ~= "" and row[2] or nil,
+        source        = row[3] ~= "" and row[3] or nil,
+        source_start  = tonumber(row[4] or ""),
+        -- Two independent marks. 0.13 briefly wrote "alt" in the Select field
+        -- before Keep had a column of its own; it reads as a keep, so a file
+        -- written by that version keeps the work rather than losing it.
+        select        = fold(row[5] or "") == "yes",
+        keep          = fold(row[9] or "") == "yes" or fold(row[5] or "") == "alt",
         -- An unrecognised status is dropped rather than carried: it would
         -- otherwise render as an unknown badge with no way to clear it.
         status        = vo.TRACKER_STATUSES[status] and status or nil,
-        name_override = row[6] ~= "" and row[6] or nil,
-        notes         = row[7] ~= "" and row[7] or nil,
-        primary       = fold(row[8] or "") == "yes",
+        name_override = row[7] ~= "" and row[7] or nil,
+        notes         = row[8] ~= "" and row[8] or nil,
       }
     end
   end
 
-  return entries
+  return parsed
 end
 
 -- Index tracker entries for lookup, bucketed by full source path AND by
@@ -1909,13 +3624,12 @@ local function resolve_tracker(index, recs)
 end
 
 -- Assemble the unified overview: every line the script SAYS should exist, every
--- span the sidecars say DOES exist, and the user's own marks over the top.
+-- span the live match says DOES exist, and the user's own marks over the top.
 --
 -- Inputs are already-parsed structures so this runs headless:
---   lines    -- from vo.BuildScriptLines: { text, asset, speaker, row }
---   sidecars -- array of { path = <source file>, spans = <vo.ParseSidecar spans> }
---   tracker  -- from vo.ParseTracker, or nil
---   cfg      -- for primary_take only
+--   lines   -- from vo.BuildScriptLines: { text, asset, speaker, row }
+--   matches -- from vo.BuildMatch: array of { path = <source file>, spans = … }
+--   entries -- the `entries` array from vo.ParseProjectFile, or nil
 --
 -- Take numbering is done here rather than by vo.AssignNames because AssignNames
 -- sorts a group by `start` alone, which is only meaningful inside ONE source
@@ -1923,22 +3637,21 @@ end
 -- ordinal ahead of the timestamp, so the rule is shared but the code is not.
 function vo.BuildOverview(input)
   input = input or {}
-  local lines    = input.lines or {}
-  local tracker  = input.tracker
-  local first_is_primary = vo.Opt(input.cfg, "primary_take") == "first"
+  local lines   = input.lines or {}
+  local entries = input.entries
 
   -- Sources in a stable order, so take numbers do not shuffle between openings.
-  local sidecars = {}
-  for _, sc in ipairs(input.sidecars or {}) do
-    if sc and sc.path then sidecars[#sidecars + 1] = sc end
+  local by_source = {}
+  for _, sc in ipairs(input.matches or {}) do
+    if sc and sc.path then by_source[#by_source + 1] = sc end
   end
-  table.sort(sidecars, function(a, b) return a.path < b.path end)
+  table.sort(by_source, function(a, b) return a.path < b.path end)
 
-  local index = index_tracker(tracker)
+  local index = index_tracker(entries)
 
   -- Flatten every span, tagged with its source and its global ordering key.
   local spans = {}
-  for si, sc in ipairs(sidecars) do
+  for si, sc in ipairs(by_source) do
     local ordered = {}
     for _, s in ipairs(sc.spans or {}) do ordered[#ordered + 1] = s end
     table.sort(ordered, function(a, b) return (a.start or 0) < (b.start or 0) end)
@@ -1954,18 +3667,32 @@ function vo.BuildOverview(input)
   -- so it cannot be decided one row at a time.
   local resolved = resolve_tracker(index, spans)
 
-  local known_asset = {}
-  for _, l in ipairs(lines) do known_asset[l.asset] = l end
+  -- A line's identity for grouping is its script ROW, not its filename. Those
+  -- are normally the same thing, but a script CAN name two different lines with
+  -- one filename, and grouping by filename then shows each of them the other's
+  -- takes -- eight takes of "Jump right in!" three of which are audibly a
+  -- different line. The span already knows which line it matched, so trust
+  -- that; the filename lookup is the fallback for spans that carry no line
+  -- index (older callers, hand-built tests).
+  local first_row_using = {}
+  for i, l in ipairs(lines) do
+    if l.asset and first_row_using[l.asset] == nil then first_row_using[l.asset] = i end
+  end
+  local function line_row_of(s)
+    local li = s.line_idx
+    if li and lines[li] and lines[li].asset == s.asset then return li end
+    return first_row_using[s.asset]
+  end
 
   -- Group the spans that claim a script line, so takes can be numbered.
   local groups = {}
   for _, rec in ipairs(spans) do
     local s = rec.span
-    local is_take = (s.kind == "match" or s.kind == "review") and s.asset
-                    and known_asset[s.asset]
-    if is_take then
-      groups[s.asset] = groups[s.asset] or {}
-      table.insert(groups[s.asset], rec)
+    local row_idx = (s.kind == "match" or s.kind == "review") and s.asset
+                    and line_row_of(s) or nil
+    if row_idx then
+      groups[row_idx] = groups[row_idx] or {}
+      table.insert(groups[row_idx], rec)
     else
       rec.orphan = true
     end
@@ -1979,21 +3706,34 @@ function vo.BuildOverview(input)
       status        = rec.orphan and "orphan"
                       or (s.kind == "review" and "review" or "recorded"),
       asset         = s.asset,
+      deliver       = (line and line.deliver) or s.deliver or s.asset,
+      script        = line and line.script or nil,
+      append_key    = line and line.append_key or nil,
+      append_nth    = line and line.append_nth or nil,
+      -- The line's identity for clash detection. Orphans have none: audio that
+      -- matched no script line has no delivered name to collide with.
+      line_key      = line and line.append_key or nil,
       character     = s.character or (line and line.speaker) or nil,
       line_text     = line and line.text or nil,
       transcript    = s.transcript,
       score         = s.score,
+      -- false when this match contradicts the order the rest of the read was in;
+      -- nil when order had nothing to say about it. The table explains a review
+      -- with it, since a 100% score in review is otherwise baffling.
+      in_sequence   = s.in_sequence,
+      pinned        = s.pinned or nil,
       source_path   = rec.source_path,
       source_start  = s.start,
       source_stop   = s.stop,
       take_index    = take_index,
       take_count    = take_count,
       name          = s.name,
-      script_row    = line and line.row or nil,
+      script_row    = line and (line.index or line.row) or nil,
       user_status   = t and t.status or nil,
       name_override = t and t.name_override or nil,
       notes         = t and t.notes or nil,
-      user_primary  = t and t.primary == true or false,
+      user_select   = t and t.select or false,
+      user_keep     = t and t.keep or false,
     }
   end
 
@@ -2001,8 +3741,8 @@ function vo.BuildOverview(input)
 
   -- Script order first: this is a script-shaped spreadsheet, so a line's takes
   -- sit together under it whether they were recorded in one session or five.
-  for _, line in ipairs(lines) do
-    local g = groups[line.asset]
+  for line_row, line in ipairs(lines) do
+    local g = groups[line_row]
     if g and #g > 0 then
       table.sort(g, function(a, b)
         if a.source_order ~= b.source_order then return a.source_order < b.source_order end
@@ -2014,13 +3754,14 @@ function vo.BuildOverview(input)
         built[#built + 1] = make_row(rec, line, i, #g)
       end
 
-      -- The select: the user's explicit choice if they made one, else the
-      -- configured first/last rule.
+      -- The user's explicit Select IS the primary. There is no first/last
+      -- fallback: guessing which take was meant is exactly what the Select
+      -- column exists to stop, and a group with no select simply has no
+      -- primary -- which Cut reports as needing a decision.
       local chosen
       for _, row in ipairs(built) do
-        if row.user_primary then chosen = row; break end
+        if row.user_select then chosen = row; break end
       end
-      chosen = chosen or (first_is_primary and built[1] or built[#built])
       for _, row in ipairs(built) do
         row.is_primary = (row == chosen)
         rows[#rows + 1] = row
@@ -2032,15 +3773,21 @@ function vo.BuildOverview(input)
         key           = key,
         status        = "missing",
         asset         = line.asset,
+        deliver       = line.deliver or line.asset,
+        script        = line.script,
+        append_key    = line.append_key,
+        append_nth    = line.append_nth,
+        line_key      = line.append_key,
         character     = line.speaker,
         line_text     = line.text,
         take_count    = 0,
-        script_row    = line.row,
+        script_row    = line.index or line.row,
         user_status   = t and t.status or nil,
         name_override = t and t.name_override or nil,
         notes         = t and t.notes or nil,
         is_primary    = false,
-        user_primary  = false,
+        user_select   = t and t.select or false,
+      user_keep     = t and t.keep or false,
       }
     end
   end
@@ -2059,10 +3806,11 @@ function vo.BuildOverview(input)
   return rows
 end
 
--- Fold the overview back into tracker entries for writing. Rows carrying no
--- user work are still returned; SerializeTracker is what drops them, so a row
--- the user CLEARED is written as empty here and then vanishes from the file.
-function vo.TrackerEntriesFromRows(rows)
+-- Fold the overview back into project-file entries for writing. Rows carrying
+-- no user work are still returned; SerializeProjectFile is what drops them, so
+-- a row the user CLEARED is written as empty here and then vanishes from the
+-- file.
+function vo.ProjectEntriesFromRows(rows)
   local entries = {}
   for _, row in ipairs(rows or {}) do
     entries[#entries + 1] = {
@@ -2070,10 +3818,11 @@ function vo.TrackerEntriesFromRows(rows)
       source        = row.source_path,
       source_start  = row.source_start,
       asset         = row.asset,
+      select        = row.user_select or nil,
+      keep          = row.user_keep or nil,
       status        = row.user_status,
       name_override = row.name_override,
       notes         = row.notes,
-      primary       = row.user_primary == true,
     }
   end
   return entries
@@ -2109,7 +3858,7 @@ end
 -- Laying the session out along the timeline moves ITEMS, never spans. An item
 -- holding five lines is one thing you can drag, so it is positioned by its
 -- first recognised line and everything after it is placed clear of its whole
--- length. Cutting stays ScriptMatch's job -- see SPEC-overview.md section 1.
+-- length. Cutting stays the Cut window's job -- see SPEC-overview.md section 1.
 
 -- How much two items must overlap before they are treated as one welded unit.
 -- REAPER trims adjacent takes to abut exactly, and float error can make the
@@ -2129,7 +3878,7 @@ end
 --
 -- 1. OVERLAP, same track only. A crossfade is nothing but an overlap: move one
 --    side of it and the fade is gone. Cross-track overlaps do NOT weld --
---    ScriptMatch pulls selects onto per-character tracks, where two characters
+--    Cut pulls selects onto per-character tracks, where two characters
 --    overlapping in time is the normal case and means nothing about editing;
 --    welding those would chain a multi-character session into one immovable blob.
 --
@@ -2465,13 +4214,29 @@ vo.CONFIG_SCHEMA = {
   { key = "review_floor",       kind = "number", default = vo.DEFAULTS.review_floor },
   { key = "margin_threshold",   kind = "number", default = vo.DEFAULTS.margin_threshold },
   { key = "anchor_count",       kind = "number", default = vo.DEFAULTS.anchor_count },
+  { key = "auto_select_take",    kind = "string", default = vo.DEFAULTS.auto_select_take },
+  { key = "order_weight",        kind = "number", default = vo.DEFAULTS.order_weight },
+  { key = "backbone_min_tokens", kind = "number", default = vo.DEFAULTS.backbone_min_tokens },
   { key = "pre_pad",            kind = "number", default = vo.DEFAULTS.pre_pad },
   { key = "post_pad",           kind = "number", default = vo.DEFAULTS.post_pad },
+
+  { key = "snap_boundaries",    kind = "bool",   default = vo.DEFAULTS.snap_boundaries },
+  { key = "snap_min_silence",   kind = "number", default = vo.DEFAULTS.snap_min_silence },
+  { key = "chained_boundary_reach", kind = "number",
+    default = vo.DEFAULTS.chained_boundary_reach },
+  { key = "snap_floor_offset",  kind = "number", default = vo.DEFAULTS.snap_floor_offset },
+  { key = "snap_floor_window",  kind = "number", default = vo.DEFAULTS.snap_floor_window },
+  { key = "snap_floor_percentile", kind = "number",
+    default = vo.DEFAULTS.snap_floor_percentile },
 
   { key = "track_selects",      kind = "string", default = "Selects" },
   { key = "track_alts",         kind = "string", default = "Alts" },
   { key = "track_review",       kind = "string", default = "Review" },
-  { key = "create_regions",     kind = "bool",   default = false },
+  -- The alt naming convention. Not bounded here: vo.PlanAltNames floors and
+  -- clamps its own inputs, so a hand-edited ExtState cannot break a run.
+  { key = "alt_append_pattern", kind = "string", default = "_alt{n}" },
+  { key = "alt_append_start",   kind = "number", default = 1 },
+  { key = "alt_append_digits",  kind = "number", default = 1 },
 
   { key = "review_prefix",      kind = "string", default = vo.DEFAULTS.review_prefix },
   { key = "unmatched_prefix",   kind = "string", default = vo.DEFAULTS.unmatched_prefix },
@@ -2651,6 +4416,59 @@ function vo.FileSize(path)
   return size
 end
 
+-- A content fingerprint cheap enough to run on every status check. Hashing a
+-- 30-minute wav in Lua would cost more than it buys, so this folds the file's
+-- size together with three 64 KB windows -- head, middle, tail. It exists to
+-- catch what size alone misses: an in-place edit that leaves the file the same
+-- length. It is not a security hash and does not try to be.
+vo.FINGERPRINT_WINDOW = 65536
+
+function vo.FileFingerprint(path)
+  if not path or path == "" then return nil end
+  local f = io.open(path, "rb")
+  if not f then return nil end
+
+  local size = f:seek("end")
+  local w    = vo.FINGERPRINT_WINDOW
+  local offsets = { 0 }
+  if size > w then
+    offsets[#offsets + 1] = math.floor((size - w) / 2)
+    offsets[#offsets + 1] = size - w
+  end
+
+  -- Polynomial rolling hash in plain arithmetic: every intermediate stays under
+  -- 2^53, so this behaves identically on any Lua the script might run under.
+  local h = 2166136261
+  local function fold(n) h = (h * 31 + n) % 4294967291 end
+
+  fold(size % 4294967291)
+  for _, off in ipairs(offsets) do
+    f:seek("set", off)
+    local chunk = f:read(w) or ""
+    for i = 1, #chunk, 256 do
+      local bytes = { string.byte(chunk, i, math.min(i + 255, #chunk)) }
+      for j = 1, #bytes do fold(bytes[j]) end
+    end
+  end
+
+  f:close()
+  return string.format("%08x", h)
+end
+
+-- The identity block every transcript carries. Built in one place so a writer
+-- cannot record a size without a fingerprint, or either without the path.
+function vo.TranscriptMeta(source_path, extra)
+  extra = extra or {}
+  return {
+    source       = source_path or "",
+    source_bytes = vo.FileSize(source_path) or 0,
+    source_hash  = vo.FileFingerprint(source_path) or "",
+    backend      = extra.backend or "",
+    model        = extra.model or "",
+    language     = extra.language or "",
+  }
+end
+
 function vo.IsWindows()
   return (r.GetOS() or ""):find("Win") ~= nil
 end
@@ -2803,7 +4621,7 @@ function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error
     end
   end
 
-  local ctx        = im.CreateContext('VO ScriptMatch')
+  local ctx        = im.CreateContext('VO Transcribe')
   local start_time = r.time_precise()
   local cancelled  = false
   local spinner    = { "|", "/", "-", "\\" }
@@ -2831,7 +4649,7 @@ function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error
 
     spin = (spin % #spinner) + 1
     if not (ctx and im.ValidatePtr(ctx, 'ImGui_Context*')) then
-      ctx = im.CreateContext('VO ScriptMatch')
+      ctx = im.CreateContext('VO Transcribe')
     end
 
     im.SetNextWindowSize(ctx, 460, 150, im.Cond_FirstUseEver)
@@ -3071,30 +4889,61 @@ function vo.WriteSilentWav(path, seconds)
 end
 
 -- Transcribe a list of unique source files in sequence, reusing cached
--- transcripts. Calls on_done(map) with path -> word array.
+-- transcripts.
+--
+-- Built for batches. A project where every line was recorded to its own file
+-- is not the exception -- it is a normal delivery shape, and it means 50+
+-- sources in one run. Two consequences are baked in here rather than left to
+-- the caller:
+--
+--   1. `cb.on_source(path, words, i, total)` fires as EACH file finishes, so
+--      the caller can write that file's transcript immediately. Handing back
+--      one big map at the end would mean a cancel at file 40 threw away 39
+--      completed whisper runs, which on a large model is most of an hour.
+--   2. A file that fails does NOT abort the batch. Its reason is collected and
+--      the run moves to the next source; `cb.on_done(results, failures)` reports
+--      them together at the end. One unreadable wav must not cost the other 56.
+--
+-- A user CANCEL is different from a failure and does stop the run: it is an
+-- instruction, not an accident. Everything already written stays written.
+--
+-- cb = { on_source, on_done, on_cancel, on_error }. on_error is called only for
+-- a failure that stopped the whole run (there are none left today); per-source
+-- failures arrive through on_done.
 -- UNVERIFIED outside REAPER — see SPEC.md §10.
-function vo.TranscribeSources(cfg, sources, on_done, on_cancel, on_error)
+function vo.TranscribeSources(cfg, sources, cb)
+  cb = cb or {}
   local scratch = vo.ResolveScratchDir(cfg)
   vo.EnsureDir(scratch)
 
-  local results = {}
-  local index   = 0
+  local results, failures = {}, {}
+  local index = 0
 
-  local function step()
+  local function finish(source, words)
+    results[source.path] = words
+    if cb.on_source then cb.on_source(source.path, words, index, #sources) end
+  end
+
+  local function fail(source, reason)
+    failures[#failures + 1] = { path = source.path, reason = reason }
+  end
+
+  local step
+  step = function()
     index = index + 1
     if index > #sources then
-      on_done(results)
+      if cb.on_done then cb.on_done(results, failures) end
       return
     end
 
-    local source    = sources[index]
-    local key       = vo.CacheKey(source.path, source.size, cfg)
-    local prefix    = scratch .. "/" .. key
-    local csv_path  = prefix .. ".csv"
+    local source   = sources[index]
+    local key      = vo.CacheKey(source.path, source.size, cfg)
+    local prefix   = scratch .. "/" .. key
+    local csv_path = prefix .. ".csv"
 
     if not cfg.force_retranscribe and vo.FileExists(csv_path) then
       local f = io.open(csv_path, "r")
-      results[source.path] = vo.ParseWhisperCSV(f:read("a"))
+      finish(source, vo.ParseWhisperCSV(f:read("a")))
       f:close()
       step()
       return
@@ -3104,25 +4953,160 @@ function vo.TranscribeSources(cfg, sources, on_done, on_cancel, on_error)
     vo.RunWhisperAsync(cfg, argv, scratch,
       function(code, log)
         if code ~= 0 then
-          local tail = log:sub(-1500)
-          on_error(string.format("whisper-cli exited with code %d for:\n%s\n\n%s",
-                                 code, source.path, tail))
+          fail(source, string.format("whisper-cli exited with code %d\n\n%s",
+                                     code, log:sub(-1500)))
+          step()
           return
         end
         local f = io.open(csv_path, "r")
         if not f then
-          on_error("whisper-cli reported success but wrote no CSV:\n" .. csv_path)
+          fail(source, "whisper-cli reported success but wrote no CSV:\n" .. csv_path)
+          step()
           return
         end
-        results[source.path] = vo.ParseWhisperCSV(f:read("a"))
+        finish(source, vo.ParseWhisperCSV(f:read("a")))
         f:close()
         step()
       end,
-      on_cancel,
-      on_error)
+      cb.on_cancel,
+      function(err) fail(source, err); step() end)
   end
 
   step()
+end
+
+--------------------------------
+-- Coupled layer: transcript files
+--------------------------------
+
+function vo.ReadTranscript(source_path)
+  local path = vo.TranscriptPath(source_path)
+  if not path then return nil, "No source path." end
+  local f = io.open(path, "r")
+  -- This exact string is how vo.TranscriptState tells "never transcribed" from
+  -- "transcribed, but the file is broken". Do not reword it without changing
+  -- that check too.
+  if not f then return nil, "no transcript" end
+  local text = f:read("a")
+  f:close()
+  return vo.ParseTranscript(text)
+end
+
+-- Returns false plus a reason rather than raising: a read-only or network media
+-- directory must leave the session usable, just not persistent.
+function vo.WriteTranscript(source_path, words, meta)
+  local path = vo.TranscriptPath(source_path)
+  if not path then return false, "No source path." end
+  local f, err = io.open(path, "w")
+  if not f then return false, tostring(err or ("Could not write " .. path)) end
+  f:write(vo.SerializeTranscript(words, meta))
+  f:close()
+  return true, path
+end
+
+-- What Sources puts in its Transcribed column.
+--   "no"    -- no transcript file beside the audio
+--   "error" -- a file is there but could not be parsed; reason says why
+--   "stale" -- parsed, but the audio has changed size since it was made
+--   "yes"   -- parsed and current
+-- Returns: state, parsed transcript or nil, reason or nil.
+function vo.TranscriptState(source_path)
+  local parsed, why = vo.ReadTranscript(source_path)
+  if not parsed then
+    if why == "no transcript" then return "no" end
+    return "error", nil, why
+  end
+  local size = vo.FileSize(source_path)
+  if size and parsed.source_bytes and parsed.source_bytes > 0
+     and size ~= parsed.source_bytes then
+    return "stale", parsed
+  end
+  -- Same length is not the same audio. The fingerprint is the check that catches
+  -- an in-place re-render or edit; size is only the cheap first pass.
+  if parsed.source_hash and parsed.source_hash ~= "" then
+    local hash = vo.FileFingerprint(source_path)
+    if hash and hash ~= parsed.source_hash then
+      return "stale", parsed
+    end
+  end
+  return "yes", parsed
+end
+
+--------------------------------
+-- Coupled layer: launching sibling scripts
+--------------------------------
+
+-- AddRemoveReaScript is idempotent: it returns the EXISTING command ID when the
+-- script is already in the action list, so this both installs and launches. A
+-- hardcoded _RS… command ID would be machine-local and is never used.
+--
+-- `filename` is a sibling of the VO scripts, i.e. one level above lib/.
+function vo.LaunchSibling(filename)
+  local here = debug.getinfo(1, "S").source:match("@?(.*[\\/])")
+  if not here then return false, "Could not resolve the script directory." end
+  local path = here .. "../" .. filename
+  local id = r.AddRemoveReaScript(true, 0, path, true)
+  if not id or id == 0 then
+    return false, "Could not register " .. filename .. " as an action."
+  end
+  r.Main_OnCommand(id, 0)
+  return true, path
+end
+
+--------------------------------
+-- Coupled layer: amplitude probing
+--------------------------------
+
+vo.PROBE_FLOOR_DB = -150.0  -- what digital silence reports as, instead of -inf
+
+-- An amplitude reader over one take, for vo.SnapBoundary and
+-- vo.MeasureNoiseFloor. Times are PROJECT time, matching the accessor's own
+-- base -- convert source times with vo.SourceTimeToProject before probing.
+--
+-- Returns the probe and a destroy function. ALWAYS call destroy, including on
+-- the error path: an undestroyed accessor holds the media file open.
+function vo.MakeTakeProbe(take)
+  if not take or not r.CreateTakeAudioAccessor then return nil, function() end end
+  local acc = r.CreateTakeAudioAccessor(take)
+  if not acc then return nil, function() end end
+
+  local source = r.GetMediaItemTake_Source(take)
+  local rate   = source and r.GetMediaSourceSampleRate and
+                 r.GetMediaSourceSampleRate(source) or 48000
+  if not rate or rate <= 0 then rate = 48000 end
+  local chans  = source and r.GetMediaSourceNumChannels and
+                 r.GetMediaSourceNumChannels(source) or 1
+  if not chans or chans < 1 then chans = 1 end
+
+  -- The accessor's clock starts at the take's own start, but every caller
+  -- reasons in PROJECT time -- word timings, span edges, gaps. Converting
+  -- HERE is what makes that true for an item anywhere on the timeline: with
+  -- the shift missing, a session whose recording sat at 10:00 handed every
+  -- probe a time outside the accessor, got nil, and silently lost the noise
+  -- floor -- and with it the whole boundary snap.
+  local item = r.GetMediaItemTake_Item and r.GetMediaItemTake_Item(take)
+  local item_pos = item and r.GetMediaItemInfo_Value(item, "D_POSITION") or 0
+
+  local function probe(t0, t1)
+    t0, t1 = t0 - item_pos, t1 - item_pos
+    local n = math.floor((t1 - t0) * rate)
+    if n < 1 then return nil end
+    -- Cap the read so a pathological window cannot allocate without bound.
+    if n > 65536 then n = 65536 end
+    local buf = r.new_array(n * chans)
+    buf.clear()
+    if r.GetAudioAccessorSamples(acc, rate, chans, t0, n, buf) ~= 1 then return nil end
+    local sum = 0.0
+    for i = 1, n * chans do
+      local v = buf[i] or 0.0
+      sum = sum + v * v
+    end
+    local rms = math.sqrt(sum / (n * chans))
+    if rms <= 0 then return vo.PROBE_FLOOR_DB end
+    return 20.0 * math.log(rms, 10)
+  end
+
+  return probe, function() r.DestroyAudioAccessor(acc) end
 end
 
 --------------------------------
@@ -3135,7 +5119,7 @@ end
 --
 -- Shared by the selection-scoped and project-scoped collectors below so the
 -- skip rules cannot drift apart: an item the Overview shows as usable but
--- ScriptMatch refuses to transcribe (or vice versa) is a bug report waiting to
+-- Sources refuses to transcribe (or vice versa) is a bug report waiting to
 -- happen, and the only defence is one copy of the rules.
 local function inspect_item(item)
   local take = r.GetActiveTake(item)
@@ -3182,7 +5166,7 @@ function vo.CollectSourceSpans()
 end
 
 -- Inspect EVERY item in the project. The Overview is a whole-session picture, so
--- unlike ScriptMatch it cannot key off the selection: the point is to see the
+-- unlike the cutting path it cannot key off the selection: the point is to see
 -- lines you are not currently looking at.
 function vo.CollectProjectSpans()
   local items = {}
@@ -3283,7 +5267,7 @@ function vo.SourceModifiedTimes(paths)
 end
 
 -- The distinct source files present in the project, as a sorted array of paths.
--- This is the list of sidecars worth trying to read.
+-- This is the list of transcripts worth trying to read.
 function vo.ProjectSourcePaths(items)
   local seen, paths = {}, {}
   for _, info in ipairs(items or {}) do
@@ -3298,32 +5282,169 @@ end
 
 -- Find the live item playing a given SOURCE-time position, and that position in
 -- project time. Returns nil when the audio is not in the project at all -- a
--- sidecar can outlive the item that produced it.
+-- transcript can outlive the item that produced it.
 --
 -- This resolves correctly both BEFORE and AFTER a cut, and that is not luck:
 -- splitting an item leaves each piece pointing at the same source file with an
 -- adjusted D_STARTOFFS, so a source-time coordinate still lands in exactly one
 -- piece's coverage range. Nothing here needs to know whether a cut has happened.
+-- Two passes, and the order matters.
+--
+-- Once a recording has been cut, its items ABUT in source time: one ends at
+-- exactly the source offset where the next begins. A take's start is precisely
+-- that instant, so a single inclusive test matches the item that ENDS there --
+-- the take before the one being asked about. The project time came out right,
+-- because the boundary is the same instant either way, so it looked like the
+-- cursor landing correctly on the wrong item, and only on takes whose padding
+-- had not moved their edge inward.
+--
+-- So: the item that CONTAINS the time wins, upper bound exclusive. Only if no
+-- item contains it does one that merely ends there answer -- which is what
+-- keeps a time at the very end of the last item resolvable at all.
 function vo.ResolveSourceTime(source_path, source_start, items)
   if not source_path or source_path == "" or not source_start then return nil end
+
+  local function find(inclusive_end)
+    for _, info in ipairs(items or {}) do
+      if info.path == source_path and not info.skip then
+        local range = vo.SourceCoverageRanges({ info })[1]
+        if range and source_start >= range.from
+           and (source_start < range.to
+                or (inclusive_end and source_start <= range.to)) then
+          return info.item, vo.SourceTimeToProject(source_start, info), info
+        end
+      end
+    end
+    return nil
+  end
+
+  local item, proj, info = find(false)
+  if item then return item, proj, info end
+  return find(true)
+end
+
+-- Cut resolves a span to the item holding its AUDIO -- the one covering the
+-- largest share of it -- rather than to whichever item covers the start
+-- instant. The instant lookup breaks on RE-cuts: takes cut earlier abut
+-- exactly at word boundaries, and float error at a shared edge lands the
+-- instant in the PREVIOUS item's tail, where the span then clamps to nothing
+-- and is skipped as too short. A majority cannot be fooled by an edge.
+-- `min_fraction` keeps the strictness the instant lookup provided: a span
+-- whose audio is mostly gone (trimmed since transcription) still refuses to
+-- resolve, rather than cutting a truncated take under the full line's name.
+function vo.ResolveSourceSpanForCut(source_path, start, stop, items, min_fraction)
+  if not source_path or source_path == "" or not start or not stop then return nil end
+  min_fraction = min_fraction or 0.95
+
+  local length = stop - start
+  if length <= 0 then
+    -- A zero-width span has no majority to take; the instant lookup is all
+    -- there is to ask.
+    return vo.ResolveSourceTime(source_path, start, items)
+  end
+
+  local best, best_cover = nil, 0
   for _, info in ipairs(items or {}) do
     if info.path == source_path and not info.skip then
-      local ranges = vo.SourceCoverageRanges({ info })
-      local range  = ranges[1]
-      if range and source_start >= range.from and source_start <= range.to then
-        return info.item, vo.SourceTimeToProject(source_start, info), info
+      local range = vo.SourceCoverageRanges({ info })[1]
+      if range then
+        local cover = math.min(stop, range.to) - math.max(start, range.from)
+        if cover > best_cover then best, best_cover = info, cover end
       end
     end
   end
-  return nil
+
+  if not best or best_cover / length < min_fraction then return nil end
+  return best.item, vo.SourceTimeToProject(start, best), best
+end
+
+-- The item holding a take, when the take's own start may no longer be in the
+-- project at all.
+--
+-- Trimming an item's head throws away source time, and a take that began in
+-- what was trimmed has no covered start -- so vo.ResolveSourceTime, which asks
+-- about one instant, answers nothing and the row goes blank even though most of
+-- the take is still sitting there. This asks about the take's WHOLE span and
+-- takes the item covering most of it.
+--
+-- Returns item, the project time of the first covered moment, info, and the
+-- coverage: "full" when the take's start is really there, "partial" when the
+-- answer is a best effort over what is left. Callers that must not act on a
+-- truncated take -- cutting, above all -- check that flag; navigation does not
+-- care, because taking the user near a take beats taking them nowhere.
+function vo.ResolveSourceSpan(source_path, source_start, source_stop, items)
+  -- With no span to weigh, the instant is all there is to ask.
+  if not source_stop or not source_start or source_stop <= source_start then
+    local item, proj, info = vo.ResolveSourceTime(source_path, source_start, items)
+    if item then return item, proj, info, "full" end
+    return nil
+  end
+
+  -- MAJORITY, never the start instant. The instant has two ways to lie after a
+  -- cut, and both were live faults:
+  --
+  --   * padding leaves a GAP between takes, so a take's recognised start can
+  --     touch the END of the take before it -- and the mark, the audition and
+  --     the row all landed one take early;
+  --   * the recording track still carries the unnamed remainders between
+  --     takes, and one of those can CONTAIN the start instant while holding a
+  --     few milliseconds of the take -- the row then points at a fragment and
+  --     the line's Sel never reaches Selects at all.
+  --
+  -- The measure is how much of the ITEM is this take, not how much of the take
+  -- the item holds. Both are needed, and only this one settles both faults: a
+  -- leftover holding a sliver of the take is mostly other things, while the
+  -- clip cut for the take is entirely the take. Ranking by the take's side
+  -- instead loses the reverse case -- whisper inflates a final word's end into
+  -- the pause after it, so a span can be LONGER than its own clip, and the
+  -- leftover that follows then holds more of the span than the clip does.
+  -- Absolute overlap breaks ties, which is what decides between two items that
+  -- are each wholly inside the take.
+  local best, best_share, best_overlap = nil, -1, 0
+  for _, cand in ipairs(items or {}) do
+    if cand.path == source_path and not cand.skip then
+      local range = vo.SourceCoverageRanges({ cand })[1]
+      if range then
+        local from    = math.max(source_start, range.from)
+        local to      = math.min(source_stop,  range.to)
+        local overlap = to - from
+        if overlap > 0 then
+          local length = range.to - range.from
+          local share  = (length > 0) and (overlap / length) or 0
+          if share > best_share + 1e-9
+             or (math.abs(share - best_share) <= 1e-9 and overlap > best_overlap) then
+            best, best_share, best_overlap = { cand, from, range }, share, overlap
+          end
+        end
+      end
+    end
+  end
+
+  -- Nothing holds any of it: an item that at least touches the start beats no
+  -- answer at all, which is what keeps a time at the very end of the last item
+  -- resolvable.
+  if not best then
+    local item, proj, info = vo.ResolveSourceTime(source_path, source_start, items)
+    if item then return item, proj, info, "full" end
+    return nil
+  end
+
+  local cand, from, range = best[1], best[2], best[3]
+  -- "full" means the take's own start is really in there; "partial" is a best
+  -- effort over what is left of it. Cutting checks this, navigation does not.
+  local full = source_start >= range.from and source_start < range.to
+  return cand.item, vo.SourceTimeToProject(from, cand), cand,
+         full and "full" or "partial"
 end
 
 -- Find a track by name, or create one directly below `track`.
+-- Returns the track and whether this call created it, so a caller that shapes
+-- folder depths can leave an already-placed track's depth alone.
 function vo.EnsureTrackBelow(track, name)
   for i = 0, r.CountTracks(0) - 1 do
     local candidate = r.GetTrack(0, i)
     local _, existing = r.GetSetMediaTrackInfo_String(candidate, "P_NAME", "", false)
-    if existing == name then return candidate end
+    if existing == name then return candidate, false end
   end
 
   -- IP_TRACKNUMBER is 1-based, so it is already the 0-based index *after* this
@@ -3332,7 +5453,7 @@ function vo.EnsureTrackBelow(track, name)
   r.InsertTrackAtIndex(insert_at, true)
   local created = r.GetTrack(0, insert_at)
   r.GetSetMediaTrackInfo_String(created, "P_NAME", name, true)
-  return created
+  return created, true
 end
 
 -- The name a track answers to, falling back to its number when it has none.
@@ -3343,11 +5464,32 @@ local function track_label(track)
     math.floor(r.GetMediaTrackInfo_Value(track, "IP_TRACKNUMBER")))
 end
 
+-- A track named `name`, nested as a CHILD of `parent`. The depth rule turns on
+-- what the parent's depth WAS, so it is read before the insert.
+--
+-- Pull's destinations are children rather than siblings because a session's
+-- Selects belong to the recording they came out of: collapsed, the recording
+-- and everything cut from it read as one thing.
+function vo.EnsureChildTrack(parent, name)
+  local parent_depth, child_depth =
+    vo.FolderDepthForChild(r.GetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH"))
+  local child, created = vo.EnsureTrackBelow(parent, name)
+  -- Depths are shaped only on creation. An existing child already sits inside
+  -- the folder, and rewriting its depth from the PARENT's current depth would
+  -- hand the track that closes the folder a 0 — leaving the folder open to
+  -- swallow whatever gets added below it.
+  if created then
+    r.SetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH", parent_depth)
+    r.SetMediaTrackInfo_Value(child, "I_FOLDERDEPTH", child_depth)
+  end
+  return child
+end
+
 -- One destination child track per source track, nested under it.
 --
 -- Sorting lays audio out somewhere new every time rather than shuffling it in
 -- place, so a run can never drop an item on top of audio it was not asked to
--- touch. One child PER SOURCE, not one for the lot: ScriptMatch pulls selects
+-- touch. One child PER SOURCE, not one for the lot: Cut pulls selects
 -- onto per-character tracks, and collapsing ALEX and JORDAN onto a single track
 -- would throw away the separation that step exists to create.
 --
@@ -3384,13 +5526,7 @@ function vo.EnsureSortChildTracks(source_tracks)
 
   local dest = {}
   for _, track in ipairs(source_tracks) do
-    -- Read the parent's depth BEFORE inserting: the rule turns on what it was.
-    local parent_depth, child_depth =
-      vo.FolderDepthForChild(r.GetMediaTrackInfo_Value(track, "I_FOLDERDEPTH"))
-    local child = vo.EnsureTrackBelow(track, child_name(track, run))
-    r.SetMediaTrackInfo_Value(track, "I_FOLDERDEPTH", parent_depth)
-    r.SetMediaTrackInfo_Value(child, "I_FOLDERDEPTH", child_depth)
-    dest[track] = child
+    dest[track] = vo.EnsureChildTrack(track, child_name(track, run))
   end
 
   return dest, run
@@ -3421,24 +5557,28 @@ end
 -- width) are skipped and reported rather than allowed to corrupt the take.
 vo.MIN_SPLIT_LENGTH = 0.001  -- seconds
 
--- Split the session and move each span to its destination track, named. Spans
--- destined for vo.DEST_IN_PLACE (unmatched audio) are left untouched instead.
+-- Split the session into its takes and NAME each one. Spans destined for
+-- vo.DEST_IN_PLACE (unmatched audio) are left untouched instead.
+--
+-- It moves nothing. Where a take goes is Pull's question, and Pull answers it
+-- from the name written here rather than from the match -- which is what lets
+-- it serve a folder of rendered files that was never cut at all.
+--
+-- The name applied is the script's own filename, with no Append and no
+-- override: two takes of one line SHOULD collide at this stage, because which
+-- of them is the delivery is not a question cutting can answer.
+--
 -- Splitting rather than copying is deliberate (SPEC.md §4): with the pieces
--- physically removed it is obvious what has been pulled and what has not — and
--- what stays behind on the source track is precisely what wasn't matched.
+-- physically separated it is obvious what has been cut and what has not.
 -- Caller wraps this in core.Transaction so the whole run is one undo step.
 -- UNVERIFIED outside REAPER — see SPEC.md §10.
 -- Returns: applied count, array of failure strings.
-function vo.ApplyPlan(plan, cfg, source_track)
-  local dest_names = {
-    selects = cfg.track_selects or "Selects",
-    alts    = cfg.track_alts    or "Alts",
-    review  = cfg.track_review  or "Review",
-  }
-
-  local tracks  = {}     -- full track name -> MediaTrack
+function vo.ApplyPlan(plan, source_track)
   local applied = 0
   local failures = {}
+  local cfg = vo.LoadConfig()
+  local fade_in  = vo.Opt(cfg, "cut_fade_in")
+  local fade_out = vo.Opt(cfg, "cut_fade_out")
 
   for _, span in ipairs(plan) do
     local length = (span.stop or 0) - (span.start or 0)
@@ -3464,25 +5604,28 @@ function vo.ApplyPlan(plan, cfg, source_track)
       local piece = right or item
       r.SplitMediaItem(piece, span.stop)
 
-      local base      = dest_names[span.dest] or dest_names.review
-      local full_name = vo.CharacterTrackName(span.character, base)
-      if not tracks[full_name] then
-        tracks[full_name] = vo.EnsureTrackBelow(source_track, full_name)
+      -- Named where it lies: the LINE's delivered base name -- the script
+      -- filename plus the line's Append, never a take suffix. Not span.name
+      -- (which may carry _tkNN or a review prefix): which take is the delivery
+      -- is not a question cutting can answer, so takes of one line SHOULD
+      -- collide here. The Append is different -- it is part of the line's own
+      -- name, and two lines sharing a filename are only tellable apart by it.
+      -- Writing the bare filename would leave their takes claimed by both
+      -- lines at once, which nothing downstream can resolve.
+      local take = r.GetActiveTake(piece)
+      if take then
+        r.GetSetMediaItemTakeInfo_String(take, "P_NAME",
+          span.deliver or span.asset or span.name or "", true)
       end
-
-      if r.MoveMediaItemToTrack(piece, tracks[full_name]) then
-        local take = r.GetActiveTake(piece)
-        if take then
-          r.GetSetMediaItemTakeInfo_String(take, "P_NAME", span.name, true)
-        end
-        if cfg.create_regions and span.dest == "selects" then
-          r.AddProjectMarker2(0, true, span.start, span.stop, span.name, -1, 0)
-        end
-        applied = applied + 1
-      else
-        failures[#failures + 1] =
-          string.format("%s: could not move to %s", span.name or "(unnamed)", full_name)
+      -- Protective fades, shorter in than out, sitting inside the head/tail
+      -- room the boundary placement just guaranteed.
+      if fade_in  and fade_in  > 0 then
+        r.SetMediaItemInfo_Value(piece, "D_FADEINLEN", fade_in)
       end
+      if fade_out and fade_out > 0 then
+        r.SetMediaItemInfo_Value(piece, "D_FADEOUTLEN", fade_out)
+      end
+      applied = applied + 1
     end
   end
 

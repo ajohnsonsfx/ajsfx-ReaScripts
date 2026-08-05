@@ -192,6 +192,853 @@ test("missing optional speaker column leaves speaker nil and filter inert", func
 end)
 
 --------------------------------
+-- DuplicateAssets
+--------------------------------
+print("\nDuplicateAssets:")
+
+test("a script whose filenames are all unique reports nothing", function()
+  local lines = { { asset = "a", text = "Alpha", row = 1 },
+                  { asset = "b", text = "Bravo", row = 2 } }
+  assert(#vo.DuplicateAssets(lines) == 0, "Expected no duplicates")
+end)
+
+test("two lines under one filename are reported with their script rows", function()
+  local lines = { { asset = "a",   text = "Alpha", row = 1 },
+                  { asset = "dup", text = "Jump right in!", row = 39 },
+                  { asset = "dup", text = "The nightmares...", row = 42 } }
+  local d = vo.DuplicateAssets(lines)
+  assert(#d == 1, "Expected 1 duplicate, got " .. #d)
+  assert(d[1].asset == "dup", "asset: " .. tostring(d[1].asset))
+  assert(d[1].rows[1] == 39 and d[1].rows[2] == 42,
+    "rows: " .. table.concat(d[1].rows, ","))
+  assert(d[1].texts[1] == "Jump right in!", "The text is there to tell them apart")
+end)
+
+test("three lines under one filename report as one group of three", function()
+  local lines = { { asset = "x", text = "1", row = 1 },
+                  { asset = "x", text = "2", row = 2 },
+                  { asset = "x", text = "3", row = 3 } }
+  local d = vo.DuplicateAssets(lines)
+  assert(#d == 1 and #d[1].rows == 3, "Expected one group of three")
+end)
+
+test("lines with no filename are not duplicates of each other", function()
+  local lines = { { asset = "", text = "1", row = 1 },
+                  { asset = "", text = "2", row = 2 } }
+  assert(#vo.DuplicateAssets(lines) == 0, "Empty filenames are not a collision")
+end)
+
+test("the resolved name is what collides, not the raw filename", function()
+  local lines = { { asset = "dup", deliver = "dup_a",  text = "A", row = 1 },
+                  { asset = "dup", deliver = "dup_b",  text = "B", row = 2 } }
+  assert(#vo.DuplicateAssets(lines) == 0,
+    "Appends that separate the names must clear the clash")
+end)
+
+test("two scripts delivering one name collide like two rows of one script", function()
+  local lines = { { asset = "dup", deliver = "dup", text = "A", row = 1, script = "Ch2" },
+                  { asset = "dup", deliver = "dup", text = "B", row = 1, script = "Ch5" } }
+  local d = vo.DuplicateAssets(lines)
+  assert(#d == 1 and #d[1].rows == 2, "Expected one group of two")
+  assert(d[1].asset == "dup", "The group is named by the resolved name")
+end)
+
+test("a line with no deliver falls back to its filename", function()
+  local lines = { { asset = "dup", text = "A", row = 1 },
+                  { asset = "dup", text = "B", row = 2 } }
+  assert(#vo.DuplicateAssets(lines) == 1, "The fallback must still detect the clash")
+end)
+
+--------------------------------
+-- ScriptLabel / AppendKey
+--------------------------------
+print("\nScriptLabel:")
+
+test("a windows path becomes its basename without the extension", function()
+  assert(vo.ScriptLabel("D:/game/Chapter2_Script.csv") == "Chapter2_Script",
+    "Got " .. tostring(vo.ScriptLabel("D:/game/Chapter2_Script.csv")))
+end)
+
+test("backslashes are separators too", function()
+  assert(vo.ScriptLabel("D:\\game\\Chapter5.csv") == "Chapter5",
+    "Got " .. tostring(vo.ScriptLabel("D:\\game\\Chapter5.csv")))
+end)
+
+test("a label a filesystem would reject is sanitized", function()
+  local got = vo.ScriptLabel("D:/game/Act 1: Pickups.csv")
+  assert(not got:find("[:]"), "Colon survived: " .. got)
+  assert(got ~= "", "Sanitizing must not empty a real name")
+end)
+
+test("no path is the empty label", function()
+  assert(vo.ScriptLabel(nil) == "", "nil should give an empty label")
+  assert(vo.ScriptLabel("") == "", "empty should give an empty label")
+end)
+
+test("a name with no extension is left alone", function()
+  assert(vo.ScriptLabel("D:/game/script") == "script",
+    "Got " .. tostring(vo.ScriptLabel("D:/game/script")))
+end)
+
+print("\nAppendKey:")
+
+test("the same line keys the same way twice", function()
+  assert(vo.AppendKey("Ch2", "line_042", 1) == vo.AppendKey("Ch2", "line_042", 1),
+    "The key must be deterministic")
+end)
+
+test("two occurrences of one filename in one script key differently", function()
+  assert(vo.AppendKey("Ch2", "line_042", 1) ~= vo.AppendKey("Ch2", "line_042", 2),
+    "Occurrence must be part of the key")
+end)
+
+test("one filename in two scripts keys differently", function()
+  assert(vo.AppendKey("Ch2", "line_042", 1) ~= vo.AppendKey("Ch5", "line_042", 1),
+    "Script must be part of the key")
+end)
+
+--------------------------------
+-- MergeScriptLines
+--------------------------------
+print("\nMergeScriptLines:")
+
+local function script(label, enabled, assets)
+  local lines = {}
+  for i, a in ipairs(assets) do
+    lines[i] = { asset = a, text = "line " .. a, row = i }
+  end
+  return { label = label, enabled = enabled, lines = lines }
+end
+
+test("lines come out in script order then row order", function()
+  local merged = vo.MergeScriptLines({
+    script("Ch2", true, { "a", "b" }),
+    script("Ch5", true, { "c" }),
+  })
+  assert(#merged == 3, "Expected 3 lines, got " .. #merged)
+  assert(merged[1].asset == "a" and merged[2].asset == "b" and merged[3].asset == "c",
+    "Order is script-then-row")
+end)
+
+test("each line is numbered across the whole list, not within its own script", function()
+  local merged = vo.MergeScriptLines({
+    script("Ch2", true, { "a", "b" }),
+    script("Ch5", true, { "c", "d" }),
+  })
+  for i, l in ipairs(merged) do
+    assert(l.index == i, "Line " .. i .. " has index " .. tostring(l.index))
+  end
+  -- Both scripts have a row 2; only the merged index tells the two apart, which
+  -- is what "which line comes first" means once a project reads several scripts.
+  assert(merged[2].row == merged[4].row, "The fixture's rows must collide")
+  assert(merged[2].index ~= merged[4].index, "Merged indices must not collide")
+end)
+
+test("reordering the script list renumbers the lines", function()
+  local a, b = script("Ch2", true, { "a" }), script("Ch5", true, { "c" })
+  assert(vo.MergeScriptLines({ a, b })[1].asset == "a", "Ch2 leads as given")
+  local swapped = vo.MergeScriptLines({ b, a })
+  assert(swapped[1].asset == "c" and swapped[1].index == 1,
+    "The list's order is the line order")
+  assert(swapped[2].asset == "a" and swapped[2].index == 2, "…and it renumbers")
+end)
+
+test("a disabled script leaves no gap in the numbering", function()
+  local merged = vo.MergeScriptLines({
+    script("Ch2", true,  { "a" }),
+    script("Ch5", false, { "c" }),
+    script("Ch7", true,  { "d" }),
+  })
+  assert(#merged == 2 and merged[2].index == 2,
+    "Numbering counts the lines that are there, not the ones switched off")
+end)
+
+test("each line knows which script it came from", function()
+  local merged = vo.MergeScriptLines({
+    script("Ch2", true, { "a" }),
+    script("Ch5", true, { "c" }),
+  })
+  assert(merged[1].script == "Ch2", "Got " .. tostring(merged[1].script))
+  assert(merged[2].script == "Ch5", "Got " .. tostring(merged[2].script))
+end)
+
+test("a disabled script contributes nothing", function()
+  local merged = vo.MergeScriptLines({
+    script("Ch2", true,  { "a" }),
+    script("Ch5", false, { "c" }),
+  })
+  assert(#merged == 1 and merged[1].asset == "a",
+    "A disabled script must contribute no lines")
+end)
+
+test("no filename is modified by merging", function()
+  local merged = vo.MergeScriptLines({
+    script("Ch2", true, { "line_042" }),
+    script("Ch5", true, { "line_042" }),
+  })
+  assert(merged[1].asset == "line_042" and merged[2].asset == "line_042",
+    "Merging must never rename anything")
+end)
+
+test("a clash across scripts gets two distinct append keys", function()
+  local merged = vo.MergeScriptLines({
+    script("Ch2", true, { "line_042" }),
+    script("Ch5", true, { "line_042" }),
+  })
+  assert(merged[1].append_key ~= merged[2].append_key,
+    "Two scripts' identical filenames are still two different lines")
+end)
+
+test("two lines sharing a filename inside one script get distinct keys", function()
+  local merged = vo.MergeScriptLines({ script("Ch2", true, { "dup", "dup" }) })
+  assert(merged[1].append_key ~= merged[2].append_key,
+    "Occurrence index must separate them")
+end)
+
+test("occurrence counting is per script, not global", function()
+  local merged = vo.MergeScriptLines({
+    script("Ch2", true, { "shared" }),
+    script("Ch5", true, { "shared" }),
+  })
+  assert(merged[1].append_key == vo.AppendKey("Ch2", "shared", 1), "Ch2 line is its 1st")
+  assert(merged[2].append_key == vo.AppendKey("Ch5", "shared", 1), "Ch5 line is its 1st too")
+  assert(merged[1].append_nth == 1 and merged[2].append_nth == 1,
+    "The occurrence integer rides along for the mutator")
+end)
+
+test("enabled defaults to true when the field is absent", function()
+  local merged = vo.MergeScriptLines({ { label = "Ch2",
+    lines = { { asset = "a", text = "t", row = 1 } } } })
+  assert(#merged == 1, "A script with no enabled field is enabled")
+end)
+
+--------------------------------
+-- Name resolution
+--------------------------------
+print("\nResolveItemName:")
+
+local function name_lines(...)
+  local lines = {}
+  for i, a in ipairs({...}) do
+    lines[i] = { asset = a, deliver = a, index = i, text = "line " .. a }
+  end
+  return lines
+end
+
+test("case, padding and extension are not part of a name", function()
+  assert(vo.NormalizeItemName("Line_042.wav") == "line_042",
+    "Got " .. vo.NormalizeItemName("Line_042.wav"))
+  assert(vo.NormalizeItemName("  line_042  ") == "line_042", "whitespace")
+  assert(vo.NormalizeItemName("line_042") == "line_042", "already clean")
+end)
+
+test("only a trailing extension is removed, never part of the name", function()
+  -- A filename may legitimately contain dots; only the last short suffix goes.
+  assert(vo.NormalizeItemName("vo.guard.halt.wav") == "vo.guard.halt",
+    "Got " .. vo.NormalizeItemName("vo.guard.halt.wav"))
+  assert(vo.NormalizeItemName("line_042_v1.2") == "line_042_v1.2",
+    "A numeric tail is not an extension: " .. vo.NormalizeItemName("line_042_v1.2"))
+end)
+
+test("an item resolves to the line that names it", function()
+  local idx = vo.BuildNameIndex(name_lines("line_041", "line_042"))
+  assert(vo.ResolveItemName(idx, "line_042.WAV") == 2, "should resolve to line 2")
+  assert(vo.ResolveItemName(idx, "line_041") == 1, "should resolve to line 1")
+end)
+
+test("an item resolves through the delivered name too", function()
+  -- What Pull renamed on a previous run must still be recognisable, or a second
+  -- Pull would see its own output as unknown audio.
+  local lines = name_lines("line_042")
+  lines[1].deliver = "line_042_ch2"
+  local idx = vo.BuildNameIndex(lines)
+  assert(vo.ResolveItemName(idx, "line_042_ch2") == 1, "delivered name")
+  assert(vo.ResolveItemName(idx, "line_042") == 1, "plain name still works")
+end)
+
+test("a name no line claims resolves to nothing, and says why", function()
+  local idx = vo.BuildNameIndex(name_lines("line_042"))
+  local hit, why = vo.ResolveItemName(idx, "RIVA_session_take3")
+  assert(hit == nil, "must not resolve")
+  assert(why == "unknown", "Got " .. tostring(why))
+end)
+
+test("a name two lines claim resolves to nothing rather than guessing", function()
+  local idx = vo.BuildNameIndex(name_lines("line_042", "line_042"))
+  local hit, why = vo.ResolveItemName(idx, "line_042")
+  assert(hit == nil, "an ambiguous name must not pick one")
+  assert(why == "ambiguous", "Got " .. tostring(why))
+end)
+
+test("a line whose Append separates it from its twin resolves again", function()
+  local lines = name_lines("line_042", "line_042")
+  lines[2].deliver = "line_042_ch2"
+  local idx = vo.BuildNameIndex(lines)
+  assert(vo.ResolveItemName(idx, "line_042_ch2") == 2, "the appended one is unambiguous")
+  assert(vo.ResolveItemName(idx, "line_042") == nil, "the bare name is still shared")
+end)
+
+test("an empty or missing name resolves to nothing", function()
+  local idx = vo.BuildNameIndex(name_lines("line_042"))
+  assert(vo.ResolveItemName(idx, "") == nil, "empty")
+  assert(vo.ResolveItemName(idx, nil) == nil, "nil")
+end)
+
+--------------------------------
+-- PlanPull
+--------------------------------
+print("\nPlanPull:")
+
+local function pull_items(...)
+  local items = {}
+  for i, n in ipairs({...}) do items[i] = { id = i, name = n } end
+  return items
+end
+
+local function dest_of(moves, id)
+  for _, m in ipairs(moves) do if m.id == id then return m.dest end end
+  return nil
+end
+
+test("one item for a line is the delivery without being marked", function()
+  -- One take is not a decision. Requiring a mark here would make Pull useless
+  -- on a folder of rendered files, which is half of what it is for.
+  local moves, n = vo.PlanPull(pull_items("line_042"), name_lines("line_042"), {})
+  assert(#moves == 1 and moves[1].dest == "selects", "Got " .. tostring(moves[1].dest))
+  assert(moves[1].rename == "line_042", "renamed to the delivered name")
+  assert(n.selects == 1, "counted")
+end)
+
+test("Sel delivers and the unticked takes wait on review", function()
+  local moves = vo.PlanPull(pull_items("line_042", "line_042", "line_042"),
+                            name_lines("line_042"), { [2] = "select" })
+  assert(dest_of(moves, 2) == "selects", "the ticked one delivers")
+  assert(dest_of(moves, 1) == "review" and dest_of(moves, 3) == "review",
+    "the rest stay where the first pull put them")
+end)
+
+test("Keep is delivered alongside the select, as an alt", function()
+  local moves = vo.PlanPull(pull_items("line_042", "line_042", "line_042"),
+                            name_lines("line_042"), { [1] = "select", [2] = "keep" })
+  assert(dest_of(moves, 1) == "selects", "select")
+  assert(dest_of(moves, 2) == "alts", "keep")
+  assert(dest_of(moves, 3) == "review", "unticked")
+end)
+
+test("nothing ticked puts the whole session on review", function()
+  -- The first pull of a real session: cut, named, nothing listened to yet.
+  local moves, n = vo.PlanPull(pull_items("line_042", "line_042"),
+                               name_lines("line_042"), {})
+  assert(dest_of(moves, 1) == "review" and dest_of(moves, 2) == "review",
+    "both go to review")
+  assert(n.review == 2, "counted")
+end)
+
+test("a Keep with no Sel is still delivered as an alt", function()
+  -- The ticks are independent now: marking an alt must not require choosing a
+  -- select first, which is exactly what the old three-state cycle forced.
+  local moves = vo.PlanPull(pull_items("line_042", "line_042"),
+                            name_lines("line_042"), { [1] = "keep" })
+  assert(dest_of(moves, 1) == "alts", "the keep is delivered")
+  assert(dest_of(moves, 2) == "review", "the other still waits")
+end)
+
+test("a lone take that IS ticked keeps to its tick", function()
+  local moves = vo.PlanPull(pull_items("line_042"), name_lines("line_042"),
+                            { [1] = "keep" })
+  assert(dest_of(moves, 1) == "alts",
+    "the one-take shortcut must not override an explicit tick")
+end)
+
+test("an item no line claims is left entirely alone", function()
+  local moves, n = vo.PlanPull(pull_items("RIVA_session"), name_lines("line_042"), {})
+  assert(#moves == 0, "nothing to move")
+  assert(n.unknown == 1, "but it is counted, so an empty run is never silent")
+end)
+
+test("an ambiguous name is counted apart from an unknown one", function()
+  local moves, n = vo.PlanPull(pull_items("line_042"),
+                               name_lines("line_042", "line_042"), {})
+  assert(#moves == 0, "nothing moves")
+  assert(n.ambiguous == 1 and n.unknown == 0, "the user can fix an ambiguity")
+end)
+
+test("a take's own name wins over the line's delivered name", function()
+  -- The Append belongs to the LINE, so it renames the select as well as the
+  -- alt. A per-take override is the only thing that can separate two takes of
+  -- one line, which is what an alt delivery needs.
+  local items = pull_items("line_042", "line_042")
+  items[2].override = "line_042_alt1"
+  local moves = vo.PlanPull(items, name_lines("line_042"),
+                            { [1] = "select", [2] = "keep" })
+  for _, m in ipairs(moves) do
+    if m.dest == "selects" then
+      assert(m.rename == "line_042", "the select keeps the line's name")
+    else
+      assert(m.rename == "line_042_alt1", "Got " .. tostring(m.rename))
+    end
+  end
+end)
+
+test("only delivered items are renamed", function()
+  local lines = name_lines("line_042")
+  lines[1].deliver = "line_042_ch2"
+  local moves = vo.PlanPull(pull_items("line_042", "line_042"), lines,
+                            { [1] = "select" })
+  assert(dest_of(moves, 1) == "selects", "select")
+  for _, m in ipairs(moves) do
+    if m.dest == "selects" then
+      assert(m.rename == "line_042_ch2", "Got " .. tostring(m.rename))
+    else
+      assert(m.rename == nil, "a take that is not delivered keeps its name")
+    end
+  end
+end)
+
+--------------------------------
+-- ResolveSourceTime
+--------------------------------
+print("\nResolveSourceTime:")
+
+-- Two items of one recording, abutting in source time the way a cut leaves
+-- them: A covers source 0..10 at project 100, B covers 10..20 at project 110.
+local function cut_items()
+  return {
+    { item = "A", path = "s.wav", pos = 100, length = 10, start_offs = 0,  playrate = 1 },
+    { item = "B", path = "s.wav", pos = 110, length = 10, start_offs = 10, playrate = 1 },
+  }
+end
+
+test("a time inside an item resolves to that item", function()
+  local item = vo.ResolveSourceTime("s.wav", 5, cut_items())
+  assert(item == "A", "Got " .. tostring(item))
+  assert(vo.ResolveSourceTime("s.wav", 15, cut_items()) == "B", "second item")
+end)
+
+test("a time on a boundary belongs to the item that STARTS there", function()
+  -- The bug: an inclusive upper bound matched the item that ENDS at that
+  -- instant, so clicking a take selected the take before it. The project time
+  -- came out right either way, which is what made it look like a selection
+  -- problem rather than a resolution one.
+  local item, proj = vo.ResolveSourceTime("s.wav", 10, cut_items())
+  assert(item == "B", "Got " .. tostring(item))
+  assert(math.abs(proj - 110) < 1e-9, "project time: " .. tostring(proj))
+end)
+
+test("a time at the very end of the last item still resolves", function()
+  -- Nothing starts there, so the fallback pass has to accept the item that
+  -- ends there or the row would resolve to nothing at all.
+  local item = vo.ResolveSourceTime("s.wav", 20, cut_items())
+  assert(item == "B", "Got " .. tostring(item))
+end)
+
+test("a time no item covers resolves to nothing", function()
+  assert(vo.ResolveSourceTime("s.wav", 40, cut_items()) == nil, "past the end")
+  assert(vo.ResolveSourceTime("other.wav", 5, cut_items()) == nil, "another source")
+end)
+
+test("a take whose start was trimmed away still finds its item", function()
+  -- The item now begins at source 12, and the take runs 10..20. Its start is
+  -- gone, but eight of its ten seconds are right there.
+  local items = { { item = "B", path = "s.wav", pos = 100, length = 8,
+                    start_offs = 12, playrate = 1 } }
+  local item, proj, _, coverage = vo.ResolveSourceSpan("s.wav", 10, 20, items)
+  assert(item == "B", "Got " .. tostring(item))
+  assert(coverage == "partial", "coverage: " .. tostring(coverage))
+  assert(math.abs(proj - 100) < 1e-9,
+    "lands on the first covered moment, not off the front: " .. tostring(proj))
+end)
+
+test("an intact take reports full coverage", function()
+  local item, proj, _, coverage = vo.ResolveSourceSpan("s.wav", 5, 8, cut_items())
+  assert(item == "A" and coverage == "full", "Got " .. tostring(item))
+  assert(math.abs(proj - 105) < 1e-9, "project time: " .. tostring(proj))
+end)
+
+test("the item holding MOST of the take wins", function()
+  local items = {
+    { item = "A", path = "s.wav", pos = 0,  length = 1, start_offs = 10, playrate = 1 },
+    { item = "B", path = "s.wav", pos = 50, length = 6, start_offs = 13, playrate = 1 },
+  }
+  -- The take runs 9..20 and its start is covered by neither: A holds one second
+  -- of what is left, B holds six.
+  local item = vo.ResolveSourceSpan("s.wav", 9, 20, items)
+  assert(item == "B", "Got " .. tostring(item))
+end)
+
+test("a take whose start fell in the gap between cuts finds its own item", function()
+  -- What Cut actually leaves: padding and snapping pull each take's edges in to
+  -- the silence around it, so consecutive takes do NOT abut -- there is a gap,
+  -- and a take's raw word start sits inside it, touching the END of the take
+  -- BEFORE. Resolving that instant answered with the previous take, which is
+  -- how a line's Sel mark landed one take early and two items went to Selects
+  -- wearing the same delivered name.
+  local items = {
+    { item = "A", path = "s.wav", pos = 100, length = 1.89, start_offs = 139.54, playrate = 1 },
+    { item = "B", path = "s.wav", pos = 102, length = 1.92, start_offs = 141.58, playrate = 1 },
+    { item = "C", path = "s.wav", pos = 104, length = 1.41, start_offs = 143.68, playrate = 1 },
+  }
+  -- 143.50 is where B ends, and where C's take was recognised as starting.
+  local item, proj, _, coverage = vo.ResolveSourceSpan("s.wav", 143.50, 145.04, items)
+  assert(item == "C", "Got " .. tostring(item))
+  assert(coverage == "partial", "coverage: " .. tostring(coverage))
+  assert(math.abs(proj - 104) < 1e-9,
+    "lands on the first covered moment: " .. tostring(proj))
+end)
+
+test("a sliver of leftover does not outrank the clip holding the take", function()
+  -- After a cut the recording track still carries the unnamed remainders
+  -- between takes. One of them can CONTAIN a take's start instant -- the take
+  -- was padded inward, so its own clip begins a few milliseconds later -- and
+  -- an instant lookup then answers with the leftover. The row points at a
+  -- fragment, Pull sees no delivered clip for it, and the line's Sel silently
+  -- never reaches Selects. Whichever item holds most of the take wins.
+  local items = {
+    { item = "leftover", path = "s.wav", pos = 100, length = 0.11, start_offs = 518.83, playrate = 1 },
+    { item = "clip",     path = "s.wav", pos = 200, length = 2.06, start_offs = 518.94, playrate = 1 },
+  }
+  local item = vo.ResolveSourceSpan("s.wav", 518.90, 521.00, items)
+  assert(item == "clip", "Got " .. tostring(item))
+end)
+
+test("a take's own clip outranks a longer leftover beside it", function()
+  -- The other half of the same problem. Whisper inflates a final word's end
+  -- into the pause after it, so a take's SPAN can be longer than the clip cut
+  -- for it -- here the span runs 373.37..375.26 while its clip ends at 374.24.
+  -- Ranked by how much of the span each item holds, the leftover that follows
+  -- (1.02s) beat the clip itself (0.87s), and the line's Sel stayed on Review.
+  -- What separates them is how much of the ITEM is this take: the clip is
+  -- entirely this take, the leftover only partly.
+  local items = {
+    { item = "clip",     path = "s.wav", pos = 100, length = 0.87, start_offs = 373.37, playrate = 1 },
+    { item = "leftover", path = "s.wav", pos = 200, length = 2.02, start_offs = 374.24, playrate = 1 },
+  }
+  local item = vo.ResolveSourceSpan("s.wav", 373.37, 375.26, items)
+  assert(item == "clip", "Got " .. tostring(item))
+end)
+
+test("a take with nothing left of it resolves to nothing", function()
+  local items = { { item = "B", path = "s.wav", pos = 100, length = 5,
+                    start_offs = 40, playrate = 1 } }
+  assert(vo.ResolveSourceSpan("s.wav", 10, 20, items) == nil, "no overlap at all")
+end)
+
+--------------------------------
+-- CheckCoverage
+--------------------------------
+print("\nCheckCoverage:")
+
+local function proj_items(...)
+  local out = {}
+  for i, pair in ipairs({...}) do
+    out[i] = { name = pair[1], track = pair[2] }
+  end
+  return out
+end
+
+test("a line with an item named for it is delivered", function()
+  local rep = vo.CheckCoverage(
+    proj_items({ "line_041", "MERIS_Selects" }, { "line_042", "MERIS_Selects" }),
+    name_lines("line_041", "line_042", "line_099"))
+  assert(rep.delivered == 2, "delivered: " .. rep.delivered)
+  assert(rep.missing == 1, "missing: " .. rep.missing)
+  assert(rep.by_line[1].count == 1, "line 1")
+  assert(rep.by_line[3] == nil, "line 3 has nothing")
+end)
+
+test("it counts takes per line and says which tracks they are on", function()
+  local rep = vo.CheckCoverage(
+    proj_items({ "line_042", "MERIS_Selects" },
+               { "line_042", "MERIS_Review" },
+               { "line_042", "MERIS_Review" }),
+    name_lines("line_042"))
+  local rec = rep.by_line[1]
+  assert(rec.count == 3, "count: " .. rec.count)
+  assert(rec.tracks["MERIS_Selects"] == 1 and rec.tracks["MERIS_Review"] == 2,
+    "tracks were not counted separately")
+end)
+
+test("a name the script does not have is reported once, not per take", function()
+  local rep = vo.CheckCoverage(
+    proj_items({ "line_042_alt3", "MERIS_Alts" }, { "line_042_alt3", "MERIS_Alts" },
+               { "chatter", "raw" }),
+    name_lines("line_042"))
+  assert(#rep.extra == 2, "extra: " .. #rep.extra)
+  assert(rep.extra[1] == "chatter" and rep.extra[2] == "line_042_alt3",
+    "sorted, and deduplicated")
+end)
+
+test("an item named for a line's delivered name counts for that line", function()
+  -- What Pull renamed must read as delivered, or the check would report every
+  -- appended line as missing the moment it was pulled.
+  local lines = name_lines("line_042")
+  lines[1].deliver = "line_042_ch2"
+  local rep = vo.CheckCoverage(proj_items({ "line_042_ch2", "MERIS_Selects" }), lines)
+  assert(rep.delivered == 1 and #rep.extra == 0, "the delivered name is the line's")
+end)
+
+test("a name two lines claim is counted apart, not credited to either", function()
+  local rep = vo.CheckCoverage(proj_items({ "dup", "raw" }),
+                               name_lines("dup", "dup"))
+  assert(rep.ambiguous == 1, "ambiguous: " .. rep.ambiguous)
+  assert(rep.delivered == 0, "neither line may claim it")
+  assert(#rep.extra == 0, "and it is not extra either -- it is a clash to fix")
+end)
+
+test("an empty project reports every line missing and nothing extra", function()
+  local rep = vo.CheckCoverage({}, name_lines("a", "b"))
+  assert(rep.delivered == 0 and rep.missing == 2, "nothing delivered")
+  assert(#rep.extra == 0, "nothing extra")
+end)
+
+--------------------------------
+-- IsDestTrackName
+--------------------------------
+print("\nIsDestTrackName:")
+
+test("a track Pull made is recognised, with or without a character", function()
+  local bases = { "Selects", "Alts", "Review" }
+  assert(vo.IsDestTrackName("MERIS_Selects", bases), "character prefixed")
+  assert(vo.IsDestTrackName("Review", bases), "bare base name")
+  assert(vo.IsDestTrackName("JORDAN_Alts", bases), "another character")
+end)
+
+test("a recording's own track is not one of ours", function()
+  -- The check that matters: a second pull must nest under the RECORDING, not
+  -- under the Review track the first pull put the item on.
+  local bases = { "Selects", "Alts", "Review" }
+  assert(not vo.IsDestTrackName("MERIS raw session", bases), "a recording")
+  assert(not vo.IsDestTrackName("", bases), "an unnamed track")
+  assert(not vo.IsDestTrackName("Selects and outtakes", bases),
+    "a name that merely starts with one of ours")
+  assert(not vo.IsDestTrackName("PreReview", bases),
+    "the separator matters, or any suffix would match")
+end)
+
+test("renamed destinations are recognised, the defaults then are not", function()
+  local bases = { "DELIVER", "ALT", "CHECK" }
+  assert(vo.IsDestTrackName("MERIS_DELIVER", bases), "renamed in Settings")
+  assert(not vo.IsDestTrackName("MERIS_Selects", bases),
+    "the default name is just a track once it has been renamed")
+end)
+
+--------------------------------
+-- Alt appends
+--------------------------------
+print("\nAltAppends:")
+
+test("the number goes where the pattern says", function()
+  assert(vo.FormatAltAppend("_alt{n}", 2, 1) == "_alt2", "tail")
+  assert(vo.FormatAltAppend("{n}_x", 2, 1) == "2_x", "head")
+  assert(vo.FormatAltAppend("_alt", 2, 1) == "_alt2",
+    "with no placeholder the number goes on the end")
+  assert(vo.FormatAltAppend("_pickup", nil, 1) == "_pickup",
+    "a pattern used without a number is left alone")
+end)
+
+test("digits pad the number", function()
+  assert(vo.FormatAltAppend("_alt{n}", 2, 2) == "_alt02", "two digits")
+  assert(vo.FormatAltAppend("_alt{n}", 12, 2) == "_alt12", "no truncation")
+end)
+
+-- mark is "select", "keep", or nil -- the two ticks the table now carries.
+local function alt_row(mark, asset, line, override)
+  return { user_select = mark == "select", user_keep = mark == "keep",
+           script = "Ch2", asset = asset, deliver = asset,
+           script_row = line or 1, name_override = override }
+end
+
+test("alts are numbered per line, from the start value", function()
+  local edits = vo.PlanAltNames({
+    alt_row("select", "line_042", 1), alt_row("keep", "line_042", 1),
+    alt_row("keep", "line_042", 1),    alt_row("keep", "line_099", 2),
+  }, { pattern = "_alt{n}", start = 1, digits = 1 })
+  assert(#edits == 3, "three alts, got " .. #edits)
+  assert(edits[1].name == "line_042_alt1" and edits[2].name == "line_042_alt2",
+    "numbered in timeline order within their line")
+  assert(edits[3].name == "line_099_alt1",
+    "a different line starts again: " .. tostring(edits[3].name))
+end)
+
+test("an alt is named per take, so the select keeps its own name", function()
+  -- The bug this replaces: an Append belongs to the line, so writing one for
+  -- the alt renamed the select as well and the two still collided.
+  local rows = {
+    alt_row("select", "line_042", 1), alt_row("keep", "line_042", 1),
+  }
+  local edits = vo.PlanAltNames(rows, { pattern = "_alt{n}", start = 1, digits = 1 })
+  assert(#edits == 1 and edits[1].index == 2,
+    "only the alt is renamed, and by its position in the rows")
+  assert(edits[1].name == "line_042_alt1", "Got " .. tostring(edits[1].name))
+end)
+
+test("an alt of a line that already has an Append keeps it", function()
+  local row = alt_row("keep", "line_042", 1)
+  row.deliver = "line_042_ch2"
+  local edits = vo.PlanAltNames({ row }, { pattern = "_alt{n}", start = 1, digits = 1 })
+  assert(edits[1].name == "line_042_ch2_alt1", "Got " .. tostring(edits[1].name))
+end)
+
+test("two lines sharing a filename number their alts separately", function()
+  local edits = vo.PlanAltNames({
+    alt_row("keep", "dup", 7), alt_row("keep", "dup", 9),
+  }, { pattern = "_alt{n}", start = 1, digits = 1 })
+  assert(edits[1].name == "dup_alt1" and edits[2].name == "dup_alt1",
+    "each line counts its own alts")
+end)
+
+test("the start value moves the first number", function()
+  local edits = vo.PlanAltNames({ alt_row("keep", "line_042", 1) },
+    { pattern = "_alt{n}", start = 2, digits = 1 })
+  assert(edits[1].name == "line_042_alt2", "Got " .. tostring(edits[1].name))
+end)
+
+test("a name already chosen is never overwritten", function()
+  local edits, skipped = vo.PlanAltNames({
+    alt_row("keep", "line_042", 1, "line_042_pickup"), alt_row("keep", "line_042", 1),
+  }, { pattern = "_alt{n}", start = 1, digits = 1 })
+  assert(#edits == 1, "only the blank one is filled, got " .. #edits)
+  assert(skipped == 1, "and the other is counted")
+  assert(edits[1].name == "line_042_alt2",
+    "the skipped alt still consumes its number: " .. tostring(edits[1].name))
+end)
+
+test("only alts are touched", function()
+  local edits = vo.PlanAltNames({
+    alt_row("select", "line_042", 1), alt_row(nil, "line_042", 1),
+  }, { pattern = "_alt{n}", start = 1, digits = 1 })
+  assert(#edits == 0, "a select and an unticked take are not alts")
+end)
+
+--------------------------------
+-- AppendMap / SetAppend / ResolveNames
+--------------------------------
+print("\nAppendMap and SetAppend:")
+
+test("records fold into a key-to-text map", function()
+  local m = vo.AppendMap({ { script = "Ch2", asset = "a", nth = 1, text = "_x" } })
+  assert(m[vo.AppendKey("Ch2", "a", 1)] == "_x", "Lookup failed")
+end)
+
+test("setting a new append adds one record", function()
+  local rows = vo.SetAppend({}, "Ch2", "a", 1, "_x")
+  assert(#rows == 1 and rows[1].text == "_x", "Expected one record")
+end)
+
+test("setting an existing append replaces it in place", function()
+  local rows = vo.SetAppend({}, "Ch2", "a", 1, "_x")
+  vo.SetAppend(rows, "Ch2", "a", 1, "_y")
+  assert(#rows == 1, "Expected one record, got " .. #rows)
+  assert(rows[1].text == "_y", "Got " .. tostring(rows[1].text))
+end)
+
+test("setting an append to empty removes the record", function()
+  local rows = vo.SetAppend({}, "Ch2", "a", 1, "_x")
+  vo.SetAppend(rows, "Ch2", "a", 1, "")
+  assert(#rows == 0, "An empty append is not a judgement; it is the absence of one")
+end)
+
+test("whitespace-only counts as empty", function()
+  local rows = vo.SetAppend({}, "Ch2", "a", 1, "   ")
+  assert(#rows == 0, "Whitespace-only must remove the record")
+end)
+
+test("appends for other lines are untouched", function()
+  local rows = vo.SetAppend({}, "Ch2", "a", 1, "_x")
+  vo.SetAppend(rows, "Ch5", "a", 1, "_y")
+  vo.SetAppend(rows, "Ch2", "a", 1, "")
+  assert(#rows == 1 and rows[1].script == "Ch5", "Only the named record may change")
+end)
+
+print("\nResolveNames:")
+
+test("no append leaves the filename alone", function()
+  local lines = { { asset = "a", append_key = vo.AppendKey("Ch2", "a", 1) } }
+  vo.ResolveNames(lines, {})
+  assert(lines[1].deliver == "a", "Got " .. tostring(lines[1].deliver))
+end)
+
+test("an append is concatenated with no separator", function()
+  local lines = { { asset = "line_042", append_key = vo.AppendKey("Ch2", "line_042", 1) } }
+  vo.ResolveNames(lines, vo.AppendMap({
+    { script = "Ch2", asset = "line_042", nth = 1, text = "_ch2" } }))
+  assert(lines[1].deliver == "line_042_ch2", "Got " .. tostring(lines[1].deliver))
+end)
+
+test("a whitespace-only append resolves to the bare filename", function()
+  local lines = { { asset = "a", append_key = vo.AppendKey("Ch2", "a", 1) } }
+  vo.ResolveNames(lines, { [vo.AppendKey("Ch2", "a", 1)] = "   " })
+  assert(lines[1].deliver == "a", "Got " .. tostring(lines[1].deliver))
+end)
+
+test("a line with no append key still resolves", function()
+  local lines = { { asset = "a" } }
+  vo.ResolveNames(lines, {})
+  assert(lines[1].deliver == "a", "A key-less line must not error")
+end)
+
+--------------------------------
+-- DuplicateNames
+--------------------------------
+print("\nDuplicateNames:")
+
+test("two lines resolving to one name are flagged", function()
+  local dupes = vo.DuplicateNames({
+    { line_key = "k1", deliver = "dup" },
+    { line_key = "k2", deliver = "dup" },
+  })
+  assert(dupes["dup"] == true, "Expected dup to be flagged")
+end)
+
+test("two takes of ONE line never flag each other", function()
+  local dupes = vo.DuplicateNames({
+    { line_key = "k1", deliver = "dup" },
+    { line_key = "k1", deliver = "dup" },
+  })
+  assert(next(dupes) == nil, "Takes of one line share a name by design")
+end)
+
+test("an override that separates a clash clears it", function()
+  local dupes = vo.DuplicateNames({
+    { line_key = "k1", deliver = "dup", name_override = "dup_a" },
+    { line_key = "k2", deliver = "dup" },
+  })
+  assert(next(dupes) == nil, "The override separated them")
+end)
+
+test("an override that recreates a clash is flagged", function()
+  local dupes = vo.DuplicateNames({
+    { line_key = "k1", deliver = "alpha", name_override = "bravo" },
+    { line_key = "k2", deliver = "bravo" },
+  })
+  assert(dupes["bravo"] == true, "An override can create a clash too")
+end)
+
+test("an empty override is ignored", function()
+  local dupes = vo.DuplicateNames({
+    { line_key = "k1", deliver = "dup", name_override = "" },
+    { line_key = "k2", deliver = "dup" },
+  })
+  assert(dupes["dup"] == true, "An empty override is not a rename")
+end)
+
+test("rows with no line are skipped", function()
+  local dupes = vo.DuplicateNames({
+    { deliver = "orphan" },
+    { deliver = "orphan" },
+  })
+  assert(next(dupes) == nil, "Audio matching no script line has no name to clash")
+end)
+
+test("an empty name is never a clash", function()
+  local dupes = vo.DuplicateNames({
+    { line_key = "k1", deliver = "" },
+    { line_key = "k2", deliver = "" },
+  })
+  assert(next(dupes) == nil, "Empty names are not a collision")
+end)
+
+--------------------------------
 -- Normalize
 --------------------------------
 print("\nNormalize:")
@@ -371,6 +1218,35 @@ test("both empty cost zero", function()
   assert(vo.Levenshtein({}, {}) == 0, "Expected 0")
 end)
 
+test("two tokens fused into one cost nothing", function()
+  -- The script writes "some day", the recognizer hears "someday". Same words.
+  assert(vo.Levenshtein({ "some", "day", "it" }, { "someday", "it" }) == 0, "Expected 0")
+  assert(vo.Levenshtein({ "book", "man" }, { "bookman" }) == 0, "Expected 0")
+end)
+
+test("one token split into two costs nothing", function()
+  assert(vo.Levenshtein({ "someday", "it" }, { "some", "day", "it" }) == 0, "Expected 0")
+end)
+
+test("a fusion inside a longer line still costs nothing", function()
+  assert(vo.Levenshtein(
+    { "some", "day", "it", "will", "be", "you" },
+    { "someday", "it", "will", "be", "you" }) == 0, "Expected 0")
+end)
+
+test("two fusions in one line still cost nothing", function()
+  -- "Someday, it'll be you" -- both "some day" and "it will" come back fused.
+  assert(vo.Levenshtein(
+    { "some", "day", "it", "will", "be", "you" },
+    { "someday", "itwill", "be", "you" }) == 0, "Expected 0")
+end)
+
+test("a fusion that is not an exact join still costs", function()
+  -- Free only when the concatenation matches exactly; otherwise it is a
+  -- different word and must be charged as one.
+  assert(vo.Levenshtein({ "some", "day" }, { "someone" }) == 2, "Expected 2")
+end)
+
 --------------------------------
 -- BuildWordTokens
 --------------------------------
@@ -517,6 +1393,24 @@ test("a verbatim reading of one line scores 1.0", function()
   assert(cands[1].i0 == 1 and cands[1].i1 == 4, "span: " .. cands[1].i0 .. ".." .. cands[1].i1)
 end)
 
+test("a line the recognizer fused keeps its first word", function()
+  -- Regression: "Some day it will be you" against a read heard as "Someday, it
+  -- will be you". Plain edit distance scored the full window and the window
+  -- missing "someday" identically at 0.67, and trimming then dropped the word
+  -- off the front of the take -- the line was delivered without "Someday".
+  local lines = script_lines({ { "L1", "Some day it will be you.", "a" } })
+  local idx   = vo.BuildIndex(lines, {})
+  local toks  = vo.BuildWordTokens(
+    whisper_words("takes every ounce of strength someday it will be you"), {})
+  local cands = vo.FindCandidates(toks, lines, idx, {})
+  assert(#cands >= 1, "Expected a candidate")
+  local c = cands[1]
+  assert(near(c.score, 1.0), "score: " .. tostring(c.score))
+  assert(toks[c.i0].text == "someday",
+    "window starts at: " .. tostring(toks[c.i0].text))
+  assert(toks[c.i1].text == "you", "window ends at: " .. tostring(toks[c.i1].text))
+end)
+
 test("finds lines recorded out of script order", function()
   local lines = script_lines({
     { "L1", "open the north gate", "a" },
@@ -638,6 +1532,427 @@ test("candidates below the review floor are discarded", function()
   assert(#spans == 0, "Expected 0 spans, got " .. #spans)
 end)
 
+test("a long match beats a short one of equal score and margin", function()
+  -- Without this a one-word line scoring a perfect 1.0 outranks the twelve-word
+  -- line whose audio it sits inside, and takes the audio with it.
+  local spans = vo.SelectSpans({ cand(4, 4, 1.0, 1.0, "WORD"),
+                                 cand(1, 9, 1.0, 1.0, "LINE") }, {})
+  assert(#spans == 1, "Expected 1 span, got " .. #spans)
+  assert(spans[1].asset == "LINE", "Wrong winner: " .. spans[1].asset)
+end)
+
+--------------------------------
+-- Read order: BuildBackbone, OrderConsistency
+--------------------------------
+print("\nRead order:")
+
+local function ocand(i0, i1, line_idx, score, margin)
+  local c = cand(i0, i1, score or 1.0, margin or 1.0, "L" .. line_idx)
+  c.line_idx = line_idx
+  return c
+end
+
+test("only long, confident, unambiguous matches define the order", function()
+  local short_ = ocand(1, 2, 1, 1.0)          -- 2 tokens: too short to trust
+  local unsure = ocand(10, 20, 2, 0.60)       -- below the accept threshold
+  local thin   = ocand(30, 40, 3, 1.0, 0.01)  -- a rival line scored almost as well
+  local good   = ocand(50, 60, 4, 1.0)
+  local bone = vo.BuildBackbone({ short_, unsure, thin, good }, {})
+  assert(#bone == 1, "Expected 1 backbone entry, got " .. #bone)
+  assert(bone[1] == good, "the wrong candidate was trusted")
+  assert(good.backbone == true, "the backbone entry was not marked")
+end)
+
+test("a line read out of sequence does not get to define the sequence", function()
+  -- Four trustworthy matches, one of which is a pickup of line 90 dropped in
+  -- the middle. The longest run that reads in order is the other three.
+  local a, pickup, b, c = ocand(1, 10, 1), ocand(20, 30, 90), ocand(40, 50, 2), ocand(60, 70, 3)
+  local bone = vo.BuildBackbone({ a, pickup, b, c }, {})
+  assert(#bone == 3, "Expected 3 backbone entries, got " .. #bone)
+  assert(bone[1] == a and bone[2] == b and bone[3] == c, "wrong run kept")
+  assert(pickup.backbone ~= true, "the out-of-order pickup was trusted")
+end)
+
+test("two takes of one line are in order, not out of it", function()
+  local a, take1, take2 = ocand(1, 10, 1), ocand(20, 30, 2), ocand(40, 50, 2)
+  local bone = vo.BuildBackbone({ a, take1, take2 }, {})
+  assert(#bone == 3, "a retake broke the run: " .. #bone)
+end)
+
+test("a candidate between its neighbours reads in sequence", function()
+  local bone = { ocand(1, 10, 10), ocand(40, 50, 20) }
+  assert(vo.OrderConsistency(ocand(20, 21, 15), bone) == true, "in-sequence rejected")
+  assert(vo.OrderConsistency(ocand(20, 21, 10), bone) == true, "a retake was rejected")
+  assert(vo.OrderConsistency(ocand(20, 21, 5),  bone) == false, "too early accepted")
+  assert(vo.OrderConsistency(ocand(20, 21, 90), bone) == false, "too late accepted")
+end)
+
+test("with no backbone near it, order says nothing either way", function()
+  assert(vo.OrderConsistency(ocand(1, 2, 5), {}) == nil, "an empty backbone judged")
+  local self_ = ocand(1, 10, 3)
+  assert(vo.OrderConsistency(self_, { self_ }) == nil, "a candidate judged against itself")
+end)
+
+test("a perfect match in the wrong place is flagged, never asserted", function()
+  -- The reported failure: a script line that is only "You." scores 1.0 against
+  -- every "you" in the read. The one in the wrong place must not be named.
+  local bone   = { ocand(1, 10, 10), ocand(40, 50, 20) }
+  local stray  = ocand(20, 20, 3, 1.0)   -- line 3, spoken between lines 10 and 20
+  local proper = ocand(25, 25, 15, 1.0)
+  local spans  = vo.SelectSpans({ bone[1], bone[2], stray, proper }, {}, bone)
+  local kinds = {}
+  for _, s in ipairs(spans) do kinds[s.asset] = s.kind end
+  assert(kinds.L3 == "review", "the stray match was not flagged: " .. tostring(kinds.L3))
+  assert(kinds.L15 == "match", "the properly placed match was demoted: " .. tostring(kinds.L15))
+end)
+
+test("reading in order is never enough on its own to assert a weak match", function()
+  -- Position is not evidence about the words. A 0.67 line stays in review.
+  local bone  = { ocand(1, 10, 10), ocand(40, 50, 20) }
+  local weak  = ocand(20, 26, 15, 0.67)
+  local spans = vo.SelectSpans({ weak }, {}, bone)
+  assert(#spans == 1 and spans[1].kind == "review",
+    "a weak match was promoted by its position: " .. tostring(spans[1] and spans[1].kind))
+end)
+
+test("a long line read out of order keeps its confidence", function()
+  -- Pickups, ADR and per-character passes are all recorded out of script order.
+  -- A line long enough to identify itself is not made wrong by where it fell.
+  local bone   = { ocand(1, 10, 10), ocand(40, 50, 20) }
+  local pickup = ocand(20, 27, 3, 1.0)   -- 8 tokens, line 3, spoken far too late
+  local spans  = vo.SelectSpans({ pickup }, {}, bone)
+  assert(spans[1].kind == "match", "a long pickup was demoted: " .. spans[1].kind)
+  assert(spans[1].in_sequence == nil, "order was judged on a line that can identify itself")
+end)
+
+--------------------------------
+-- Selection order and the residual pass
+--------------------------------
+print("\nSelection order:")
+
+-- The real failure this came from: the recogniser fused "book man" into
+-- "bookman" and dropped the closing "guards", and the script also has a line
+-- that is only "You." -- one of the words in the middle of it.
+local function bookman_lines()
+  return vo.BuildScriptLines(
+    { { "vo_book", "GRUMBAR", 'Old book man say "If you guard door, read what door guards."' },
+      { "vo_you",  "GRUMBAR", "You." } },
+    { asset = 1, speaker = 2, text = 3 }, {})
+end
+
+local function said(text)
+  local words, t = {}, 0.0
+  for w in text:gmatch("%S+") do
+    words[#words + 1] = { t0 = t, t1 = t + 0.4, text = w }
+    t = t + 0.5
+  end
+  return words
+end
+
+test("a window is scored as it is finally kept, not as it was proposed", function()
+  -- Trimming may only stop somewhere at least as good as the BEST it has seen.
+  -- Comparing against the proposed score alone walked through the best window
+  -- and out the far side to a merely equal one, losing "old bookman" and a
+  -- quarter of the score with it.
+  local lines = bookman_lines()
+  local toks  = vo.BuildWordTokens(
+    said("wrong old bookman say if you guard door read what door old"), {})
+  local hits  = vo.FindLineCandidates(lines, 1, toks, {})
+  assert(hits[1].text:find("^old bookman say"),
+    "the window lost its opening words: [" .. hits[1].text .. "]")
+  assert(hits[1].score >= 0.74,
+    string.format("scored %.3f, expected the 0.75 the kept window is worth", hits[1].score))
+end)
+
+test("a one-word line cannot cut a twelve-word line in half", function()
+  local lines = bookman_lines()
+  local got = vo.BuildMatch({ { path = "s.wav",
+    words = said("old bookman say if you guard door read what door") } }, lines, {})
+  local found
+  for _, s in ipairs(got[1].spans) do
+    if s.asset == "vo_book" then found = s end
+  end
+  assert(found, "the long line was lost entirely")
+  assert(found.i0 == 1, "the long line was cut at the front: i0 = " .. found.i0)
+  assert(found.transcript:find("guard door read what door"),
+    "the long line was cut at the back: " .. found.transcript)
+end)
+
+test("confident placements are laid down before uncertain ones", function()
+  -- Equal-ish scores, opposite confidence: the one that classifies as a match
+  -- must take the audio, not merely the one that scored a hair higher.
+  local sure   = cand(1, 6, 0.90, 0.50, "SURE")
+  local unsure = cand(4, 9, 0.92, 0.01, "UNSURE")   -- thin margin, so review
+  local spans  = vo.SelectSpans({ unsure, sure }, {})
+  assert(#spans == 1, "Expected 1 span, got " .. #spans)
+  assert(spans[1].asset == "SURE", "an uncertain placement blocked a confident one")
+end)
+
+test("a line that lost every window gets a second look at what is left", function()
+  -- "seal it" is spoken twice. The first is taken by the longer line that
+  -- contains it; on one pass the second occurrence goes to nobody, because the
+  -- greedy sweep had already placed the line elsewhere.
+  local lines = vo.BuildScriptLines(
+    { { "vo_long", "R", "seal it nobody goes below" },
+      { "vo_short", "R", "seal it" } },
+    { asset = 1, speaker = 2, text = 3 }, {})
+  local got = vo.BuildMatch({ { path = "s.wav",
+    words = said("seal it nobody goes below and later seal it") } }, lines, {})
+  local by_asset = {}
+  for _, s in ipairs(got[1].spans) do
+    if s.asset then by_asset[s.asset] = s end
+  end
+  assert(by_asset.vo_long, "the long line was lost")
+  assert(by_asset.vo_short, "the short line never got its second look")
+  assert(by_asset.vo_short.i0 > by_asset.vo_long.i1,
+    "the second look landed on audio that was already taken")
+end)
+
+test("the residual pass cannot disturb anything the first pass decided", function()
+  local lines = bookman_lines()
+  local words = said("old bookman say if you guard door read what door")
+  local one = vo.BuildMatch({ { path = "s.wav", words = words } }, lines, {})[1].spans
+  local kept = {}
+  for _, s in ipairs(one) do
+    if s.asset then kept[#kept + 1] = s.asset .. "@" .. s.i0 .. "-" .. s.i1 end
+  end
+  -- Running it again over the same input must be idempotent: the residual pass
+  -- only ever looks at token runs nothing claimed.
+  local two = vo.BuildMatch({ { path = "s.wav", words = words } }, lines, {})[1].spans
+  local again = {}
+  for _, s in ipairs(two) do
+    if s.asset then again[#again + 1] = s.asset .. "@" .. s.i0 .. "-" .. s.i1 end
+  end
+  assert(table.concat(kept, ",") == table.concat(again, ","),
+    "matching is not deterministic: " .. table.concat(kept, ",") ..
+    " vs " .. table.concat(again, ","))
+end)
+
+--------------------------------
+-- PinnedSpans
+--------------------------------
+print("\nPinnedSpans:")
+
+local function pin_lines()
+  return vo.BuildScriptLines(
+    { { "vo_you", "RIVA", "You." },
+      { "vo_seal", "RIVA", "seal it nobody goes below" } },
+    { asset = 1, speaker = 2, text = 3 }, {})
+end
+
+local function pin_tokens()
+  local words, t = {}, 0.0
+  for w in ("seal it nobody goes below you watch you left"):gmatch("%S+") do
+    words[#words + 1] = { t0 = t, t1 = t + 0.4, text = w }
+    t = t + 0.5
+  end
+  return vo.BuildWordTokens(words, {})
+end
+
+test("a pin becomes a match at exactly the range that was chosen", function()
+  local spans = vo.PinnedSpans(pin_tokens(),
+    { { asset = "vo_you", source = "s.wav", start = 4.0, stop = 4.45 } }, pin_lines())
+  assert(#spans == 1, "Expected 1 pinned span, got " .. #spans)
+  assert(spans[1].kind == "match", "kind: " .. spans[1].kind)
+  assert(spans[1].pinned == true, "the span is not marked pinned")
+  assert(spans[1].asset == "vo_you", "asset: " .. tostring(spans[1].asset))
+  -- The person's range, not the matched word's.
+  assert(spans[1].start == 4.0 and spans[1].stop == 4.45,
+    string.format("range: %.2f-%.2f", spans[1].start, spans[1].stop))
+  assert(spans[1].i0 == 9 and spans[1].i1 == 9,
+    string.format("tokens: %d-%d", spans[1].i0, spans[1].i1))
+end)
+
+test("a word half inside the range goes one way, not both", function()
+  -- Token 2 ("it") runs 0.50-0.90; a range ending at 0.60 clips it, and its
+  -- midpoint of 0.70 is outside, so it stays out.
+  local spans = vo.PinnedSpans(pin_tokens(),
+    { { asset = "vo_seal", source = "s.wav", start = 0.0, stop = 0.60 } }, pin_lines())
+  assert(spans[1].i1 == 1, "i1: " .. spans[1].i1)
+end)
+
+test("a pin naming no word, or no script line, is reported not dropped", function()
+  local lines = pin_lines()
+  local _, u1 = vo.PinnedSpans(pin_tokens(),
+    { { asset = "vo_you", source = "s.wav", start = 90.0, stop = 91.0 } }, lines)
+  assert(#u1 == 1 and u1[1].why:find("no transcribed word"), "silent on an empty range")
+
+  local _, u2 = vo.PinnedSpans(pin_tokens(),
+    { { asset = "vo_gone", source = "s.wav", start = 0.0, stop = 1.0 } }, lines)
+  assert(#u2 == 1 and u2[1].why:find("no script line"), "silent on a missing line")
+end)
+
+test("a pin beats the matcher and takes the audio with it", function()
+  local lines = pin_lines()
+  local words, t = {}, 0.0
+  for w in ("seal it nobody goes below"):gmatch("%S+") do
+    words[#words + 1] = { t0 = t, t1 = t + 0.4, text = w }
+    t = t + 0.5
+  end
+  -- vo_you pinned over the whole of vo_seal's audio: an absurd pin, chosen
+  -- because it proves the pin wins rather than merely coexists.
+  local got = vo.BuildMatch({ { path = "s.wav", words = words } }, lines, {},
+    { { asset = "vo_you", source = "s.wav", start = 0.0, stop = 2.4 } })
+  local kinds = {}
+  for _, s in ipairs(got[1].spans) do
+    if s.asset then kinds[s.asset] = s.kind end
+  end
+  assert(kinds.vo_you == "match", "the pin did not win: " .. tostring(kinds.vo_you))
+  assert(kinds.vo_seal == nil, "the matcher's placement survived under the pin")
+end)
+
+test("a pin speaks for its own take and not for the line's others", function()
+  -- "you" is said twice; one occurrence is pinned. The other is still a real
+  -- take of that line and has to survive. This once deleted it, on the
+  -- reasoning that you pin to correct a mistake -- but the same gesture
+  -- confirms one take of three, and there the deletion was silent and wrong.
+  local lines = pin_lines()
+  local words, t = {}, 0.0
+  for w in ("you seal it nobody goes below you"):gmatch("%S+") do
+    words[#words + 1] = { t0 = t, t1 = t + 0.4, text = w }
+    t = t + 0.5
+  end
+  local got = vo.BuildMatch({ { path = "s.wav", words = words } }, lines, {},
+    { { asset = "vo_you", source = "s.wav", start = 3.0, stop = 3.45 } })
+  local you = {}
+  for _, s in ipairs(got[1].spans) do
+    if s.asset == "vo_you" then you[#you + 1] = s end
+  end
+  assert(#you == 2, "the pin swallowed the line's other take: " .. #you)
+  local pinned = 0
+  for _, s in ipairs(you) do if s.pinned then pinned = pinned + 1 end end
+  assert(pinned == 1, "expected exactly one pinned take, got " .. pinned)
+end)
+
+test("two takes of one line can be pinned independently", function()
+  local lines = pin_lines()
+  local words, t = {}, 0.0
+  for w in ("you seal it nobody goes below you"):gmatch("%S+") do
+    words[#words + 1] = { t0 = t, t1 = t + 0.4, text = w }
+    t = t + 0.5
+  end
+  local got = vo.BuildMatch({ { path = "s.wav", words = words } }, lines, {}, {
+    { asset = "vo_you", source = "s.wav", start = 0.0, stop = 0.45 },
+    { asset = "vo_you", source = "s.wav", start = 3.0, stop = 3.45 },
+  })
+  local pinned = 0
+  for _, s in ipairs(got[1].spans) do
+    if s.asset == "vo_you" and s.pinned then pinned = pinned + 1 end
+  end
+  assert(pinned == 2, "expected both takes pinned, got " .. pinned)
+end)
+
+test("pins round-trip through the project file", function()
+  local pins = {
+    { asset = "vo_you",  source = "D:/s/A.wav", start = 12.5,  stop = 13.25 },
+    { asset = "vo_seal", source = "D:/s/B.wav", start = 100.0, stop = 104.5 },
+  }
+  local scripts = { { path = "s.csv", mapping = {}, enabled = true } }
+  local text   = vo.SerializeProjectFile({}, { scripts = scripts, pins = pins })
+  local parsed = assert(vo.ParseProjectFile(text))
+  assert(#parsed.pins == 2, "Expected 2 pins, got " .. #parsed.pins)
+  assert(parsed.pins[1].asset == "vo_you", "asset lost")
+  assert(parsed.pins[1].source == "D:/s/A.wav", "source lost")
+  assert(math.abs(parsed.pins[1].start - 12.5) < 1e-6, "start lost")
+  assert(math.abs(parsed.pins[2].stop - 104.5) < 1e-6, "stop lost")
+  assert(parsed.scripts[1].path == "s.csv", "the preamble was disturbed")
+end)
+
+test("a project file with no pins still reads, and a corrupt pin is dropped", function()
+  local text = vo.SerializeProjectFile({},
+    { scripts = { { path = "s.csv", mapping = {}, enabled = true } } })
+  local parsed = assert(vo.ParseProjectFile(text))
+  assert(#parsed.pins == 0, "phantom pins")
+
+  local bad = text:gsub("Script,", "Pin,vo_x,,0,0\nScript,", 1)
+  local reparsed = assert(vo.ParseProjectFile(bad))
+  assert(#reparsed.pins == 0, "a pin with no source or range was kept")
+end)
+
+--------------------------------
+-- FindLineCandidates
+--------------------------------
+print("\nFindLineCandidates:")
+
+local function tokens_from(text)
+  local words, t = {}, 0.0
+  for w in text:gmatch("%S+") do
+    words[#words + 1] = { t0 = t, t1 = t + 0.2, text = w }
+    t = t + 0.25
+  end
+  return vo.BuildWordTokens(words, {}), words
+end
+
+-- The searched line plus two decoys, so idf is a real fact about a script
+-- rather than a degenerate one about a single line.
+local function script_lines(text)
+  return vo.BuildScriptLines(
+    { { "vo_x_01", "RIVA", text },
+      { "vo_y_01", "RIVA", "alpha bravo charlie delta" },
+      { "vo_z_01", "RIVA", "echo foxtrot golf hotel" } },
+    { asset = 1, speaker = 2, text = 3 }, {})
+end
+
+test("a one-word line is found at every place that word occurs", function()
+  local toks = tokens_from("you should go now and you will see why you left")
+  local hits = vo.FindLineCandidates(script_lines("You."), 1, toks, {})
+  assert(#hits == 3, "Expected 3 placements, got " .. #hits)
+  for _, h in ipairs(hits) do
+    assert(h.score == 1.0, "a perfect word match scored " .. h.score)
+  end
+end)
+
+test("placements come back best first and never overlap each other", function()
+  local toks = tokens_from("seal it nobody goes below and then seal it again")
+  local hits = vo.FindLineCandidates(script_lines("seal it nobody goes below"), 1, toks, {})
+  assert(hits[1].score == 1.0, "the exact placement did not come first")
+  for i = 2, #hits do
+    assert(hits[i].score <= hits[i - 1].score, "placements out of order")
+    assert(hits[i].i0 > hits[i - 1].i1, "placements overlap")
+  end
+end)
+
+test("placements the matcher would reject are still offered", function()
+  -- Two of five words survive: far below review_floor, and exactly what someone
+  -- asking "where did this line go?" needs to see.
+  local toks = tokens_from("we come")
+  local hits = vo.FindLineCandidates(script_lines("we should not have come"), 1, toks, {})
+  assert(#hits >= 1, "a weak placement was hidden")
+  assert(hits[1].score < vo.DEFAULTS.review_floor,
+    "this fixture no longer tests a sub-floor placement: " .. hits[1].score)
+end)
+
+test("each placement carries the words either side of it", function()
+  local toks = tokens_from("alpha bravo charlie seal it delta echo foxtrot")
+  local hits = vo.FindLineCandidates(script_lines("seal it"), 1, toks, {}, { context = 2 })
+  assert(hits[1].text == "seal it", "text: " .. hits[1].text)
+  assert(hits[1].before == "bravo charlie", "before: " .. hits[1].before)
+  assert(hits[1].after == "delta echo", "after: " .. hits[1].after)
+end)
+
+test("the text shown back is what was said, not the normalised form", function()
+  local toks, raw = tokens_from("Open the gate, Captain!")
+  local hits = vo.FindLineCandidates(script_lines("open the gate"), 1, toks, {},
+                                     { words = raw, context = 1 })
+  assert(hits[1].text == "Open the gate,", "text: " .. hits[1].text)
+  assert(hits[1].after == "Captain!", "after: " .. hits[1].after)
+end)
+
+test("the limit is honoured and an empty transcript is not an error", function()
+  local toks = tokens_from("you you you you you you you you")
+  assert(#vo.FindLineCandidates(script_lines("You."), 1, toks, {}, { limit = 3 }) == 3,
+    "limit ignored")
+  assert(#vo.FindLineCandidates(script_lines("You."), 1, {}, {}) == 0, "empty transcript threw")
+  assert(#vo.FindLineCandidates(script_lines("You."), 9, tokens_from("you"), {}) == 0, "an out-of-range line index threw")
+end)
+
+test("without a backbone nothing is judged on order at all", function()
+  local stray = ocand(20, 20, 3, 1.0)
+  local spans = vo.SelectSpans({ stray }, {}, nil)
+  assert(spans[1].kind == "match", "order was applied with no backbone")
+  assert(spans[1].in_sequence == nil, "in_sequence set with no backbone")
+end)
+
 test("spans are returned in chronological order", function()
   local spans = vo.SelectSpans({ cand(5, 7, 0.9), cand(1, 3, 0.95) }, {})
   assert(spans[1].i0 == 1 and spans[2].i0 == 5, "Not chronological")
@@ -750,6 +2065,157 @@ end)
 --------------------------------
 -- ApplyPadding
 --------------------------------
+print("\nInterWordGaps:")
+
+test("gaps sit between consecutive words", function()
+  local gaps = vo.InterWordGaps({
+    { t0 = 0.0, t1 = 0.5, text = "a" },
+    { t0 = 1.0, t1 = 1.5, text = "b" },
+    { t0 = 3.0, t1 = 3.5, text = "c" },
+  })
+  assert(#gaps == 2, "Expected 2 gaps, got " .. #gaps)
+  assert(math.abs(gaps[1].from - 0.5) < 1e-9, "gap 1 from: " .. gaps[1].from)
+  assert(math.abs(gaps[1].to   - 1.0) < 1e-9, "gap 1 to: " .. gaps[1].to)
+  assert(math.abs(gaps[2].to   - 3.0) < 1e-9, "gap 2 to: " .. gaps[2].to)
+end)
+
+test("overlapping or touching words produce no gap", function()
+  local gaps = vo.InterWordGaps({
+    { t0 = 0.0, t1 = 1.0, text = "a" },
+    { t0 = 1.0, t1 = 2.0, text = "b" },
+    { t0 = 1.5, t1 = 2.5, text = "c" },
+  })
+  assert(#gaps == 0, "Expected no gaps, got " .. #gaps)
+end)
+
+test("fewer than two words means no gaps", function()
+  assert(#vo.InterWordGaps({}) == 0, "empty")
+  assert(#vo.InterWordGaps(nil) == 0, "nil must not raise")
+  assert(#vo.InterWordGaps({ { t0 = 0, t1 = 1, text = "a" } }) == 0, "single")
+end)
+
+--------------------------------
+print("\nMeasureNoiseFloor:")
+
+test("the floor is the quietest measurable gap plus the offset", function()
+  local gaps = { { from = 0, to = 2 }, { from = 5, to = 7 } }
+  local probe = function(t0, _) return t0 < 3 and -50.0 or -70.0 end
+  local floor = vo.MeasureNoiseFloor(gaps, probe, { snap_floor_offset = 6.0 })
+  assert(floor and math.abs(floor - (-64.0)) < 1e-9, "Floor: " .. tostring(floor))
+end)
+
+test("one freakishly quiet gap does not set the floor for the whole file", function()
+  -- The floor used to be the MINIMUM gap level. A cleaned recording has patches
+  -- the noise reduction took down to near-digital-silence, and one of those set
+  -- a floor the rest of the file could never meet: measured -75dB against room
+  -- tone of about -67, so every "is this window quiet?" test failed, snapping
+  -- degraded to fixed pads for all 401 clips, and nothing could tell room from
+  -- speech. A low percentile is under the room tone without chasing outliers.
+  local levels = { -90, -60, -60, -60, -60, -60, -60, -60, -60, -60 }
+  local gaps = {}
+  for i = 1, #levels do gaps[i] = { from = i * 10, to = i * 10 + 1 } end
+  local probe = function(t0, _) return levels[math.floor(t0 / 10)] end
+  local floor = vo.MeasureNoiseFloor(gaps, probe,
+                                     { snap_floor_offset = 6.0, snap_min_silence = 0.06 })
+  assert(floor and math.abs(floor - (-54.0)) < 1e-9,
+    "the outlier dragged the floor down to " .. tostring(floor))
+end)
+
+test("a gap shorter than snap_min_silence is ignored", function()
+  local floor = vo.MeasureNoiseFloor({ { from = 0, to = 0.01 } },
+                                     function() return -70 end,
+                                     { snap_floor_window = 0.5, snap_min_silence = 0.06 })
+  assert(floor == nil, "Expected nil, got " .. tostring(floor))
+end)
+
+-- Ordinary speech has most of its pauses well under half a second. Requiring a
+-- gap long enough to fill the whole window meant a file whose pauses all fell
+-- just short of it measured no floor at all, and snapping quietly turned itself
+-- off for that file. A REAPER run caught this; the mock never could.
+test("a gap shorter than the window is still measured, over what there is", function()
+  local seen = {}
+  local probe = function(t0, t1) seen[#seen + 1] = t1 - t0; return -70 end
+  local floor = vo.MeasureNoiseFloor({ { from = 1.0, to = 1.2 } }, probe,
+                                     { snap_floor_window = 0.5, snap_min_silence = 0.06,
+                                       snap_floor_offset = 6.0 })
+  assert(floor and math.abs(floor - (-64.0)) < 1e-9, "Floor: " .. tostring(floor))
+  assert(#seen == 1 and math.abs(seen[1] - 0.2) < 1e-9,
+    "should measure the gap's own width: " .. tostring(seen[1]))
+end)
+
+test("a gap longer than the window is measured over the window only", function()
+  local seen = {}
+  local probe = function(t0, t1) seen[#seen + 1] = t1 - t0; return -70 end
+  vo.MeasureNoiseFloor({ { from = 0, to = 4 } }, probe,
+                       { snap_floor_window = 0.5, snap_min_silence = 0.06 })
+  assert(#seen == 1 and math.abs(seen[1] - 0.5) < 1e-9,
+    "should cap at the window: " .. tostring(seen[1]))
+end)
+
+test("no probe means no floor", function()
+  assert(vo.MeasureNoiseFloor({ { from = 0, to = 5 } }, nil, {}) == nil, "Expected nil")
+end)
+
+test("a probe that cannot read returns nil rather than a bogus floor", function()
+  local floor = vo.MeasureNoiseFloor({ { from = 0, to = 5 } },
+                                     function() return nil end, {})
+  assert(floor == nil, "Expected nil, got " .. tostring(floor))
+end)
+
+--------------------------------
+print("\nSnapBoundary:")
+
+-- A probe describing one loud region [a, b]; everything else is silent.
+local function loud_between(a, b)
+  return function(t0, t1)
+    if t1 > a and t0 < b then return -10.0 end
+    return -80.0
+  end
+end
+
+test("a start boundary walks back into silence and stops there", function()
+  local t, how = vo.SnapBoundary(1.0, 0.5, -1, -60.0, loud_between(1.0, 2.0),
+                                 { snap_min_silence = 0.05 })
+  assert(how == "silence", "How: " .. tostring(how))
+  assert(math.abs(t - 0.95) < 1e-9, "Boundary: " .. tostring(t))
+end)
+
+test("a stop boundary walks forward into silence and stops there", function()
+  local t, how = vo.SnapBoundary(2.0, 2.5, 1, -60.0, loud_between(1.0, 2.0),
+                                 { snap_min_silence = 0.05 })
+  assert(how == "silence", "How: " .. tostring(how))
+  assert(math.abs(t - 2.05) < 1e-9, "Boundary: " .. tostring(t))
+end)
+
+test("no silence in the window falls back to the limit and says so", function()
+  local t, how = vo.SnapBoundary(2.0, 2.2, 1, -60.0, loud_between(0.0, 10.0),
+                                 { snap_min_silence = 0.05 })
+  assert(how == "pad", "How: " .. tostring(how))
+  assert(math.abs(t - 2.2) < 1e-9, "Boundary: " .. tostring(t))
+end)
+
+test("a window shorter than the minimum silence falls back immediately", function()
+  local t, how = vo.SnapBoundary(2.0, 2.1, 1, -60.0, loud_between(0, 0),
+                                 { snap_min_silence = 0.5 })
+  assert(how == "pad" and math.abs(t - 2.1) < 1e-9, "Got " .. t .. " / " .. how)
+end)
+
+test("no probe, and no floor, each fall back to the limit", function()
+  local a, ha = vo.SnapBoundary(2.0, 2.5, 1, -60.0, nil, {})
+  assert(ha == "pad" and math.abs(a - 2.5) < 1e-9, "no probe: " .. a .. " / " .. ha)
+  local b, hb = vo.SnapBoundary(2.0, 2.5, 1, nil, function() return -80 end, {})
+  assert(hb == "pad" and math.abs(b - 2.5) < 1e-9, "no floor: " .. b .. " / " .. hb)
+end)
+
+test("the result never crosses the limit, in either direction", function()
+  local cfg, quiet = { snap_min_silence = 0.05 }, function() return -80.0 end
+  local a = vo.SnapBoundary(1.0, 0.5, -1, -60.0, quiet, cfg)
+  assert(a >= 0.5 - 1e-9 and a <= 1.0 + 1e-9, "Backward escaped: " .. a)
+  local b = vo.SnapBoundary(1.0, 1.5, 1, -60.0, quiet, cfg)
+  assert(b >= 1.0 - 1e-9 and b <= 1.5 + 1e-9, "Forward escaped: " .. b)
+end)
+
+--------------------------------
 print("\nApplyPadding:")
 
 test("spans are padded by pre_pad and post_pad", function()
@@ -847,6 +2313,292 @@ test("ordinary padding is untouched by the inversion guard", function()
 end)
 
 --------------------------------
+print("\nApplyPadding (snapping):")
+
+local function pad_span(a, b) return { start = a, stop = b, kind = "match", asset = "x" } end
+
+test("without a probe the fixed pads are applied exactly as before", function()
+  local spans = { pad_span(2.0, 3.0) }
+  vo.ApplyPadding(spans, { pre_pad = 0.1, post_pad = 0.2 })
+  assert(near(spans[1].start, 1.9), "start: " .. spans[1].start)
+  assert(near(spans[1].stop,  3.2), "stop: " .. spans[1].stop)
+  assert(spans[1].snapped == nil, "snapped should not be set without a probe")
+end)
+
+test("with a probe the edges sit a FIXED room from the speech", function()
+  -- Consistency is the contract: every clip gets snap_head_room before its
+  -- measured onset and snap_tail_room after its end -- not wherever the probe
+  -- happened to cross the floor, which gave 0..1760ms across one session.
+  local spans = { pad_span(2.0, 3.0) }
+  local probe = function(t0, t1) if t1 > 2.0 and t0 < 3.0 then return -10 end return -80 end
+  vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.05 },
+                  nil, probe, -60)
+  assert(near(spans[1].start, 2.0 - 0.060), "start: " .. spans[1].start)
+  assert(near(spans[1].stop,  3.0 + 0.150), "stop: " .. spans[1].stop)
+  assert(spans[1].snapped == "silence", "snapped: " .. tostring(spans[1].snapped))
+end)
+
+--------------------------------
+print("\nFindSpeechBounds:")
+
+test("the sound inside a span is found, and the pause around it is not", function()
+  -- Speech in (12, 14) of a span running 10 to 16.
+  local probe = function(t0, t1) if t1 > 12.0 and t0 < 14.0 then return -10 end return -80 end
+  local a, b = vo.FindSpeechBounds(10.0, 16.0, -60, probe, { snap_min_silence = 0.5 })
+  assert(near(a, 12.0), "speech start: " .. tostring(a))
+  assert(near(b, 14.0), "speech stop: " .. tostring(b))
+end)
+
+test("a span that is silent throughout reports nothing rather than nothing found", function()
+  local a, b = vo.FindSpeechBounds(10.0, 16.0, -60, function() return -80 end,
+                                   { snap_min_silence = 0.5 })
+  assert(a == nil and b == nil, "Silence must not be trimmed to a point")
+end)
+
+test("no probe and no floor means no answer", function()
+  assert(vo.FindSpeechBounds(0, 5, -60, nil, {}) == nil, "no probe")
+  assert(vo.FindSpeechBounds(0, 5, nil, function() return -10 end, {}) == nil, "no floor")
+end)
+
+test("whisper's contiguous word times no longer weld the takes together", function()
+  -- The real shape of the bug. Whisper ends each word where the next begins,
+  -- so a take's span carries the pause before it AND the pause after it, and
+  -- two takes of a line share a boundary exactly. Cut faithfully, that tiles
+  -- the recording: every clip runs to the start of the next with no break.
+  -- Speech is in (10.5, 11.5) and (13.5, 14.5); the spans meet at 13.0.
+  local spans = { pad_span(10.0, 13.0), pad_span(13.0, 16.0) }
+  local words = { { t0 = 10.0, t1 = 13.0 }, { t0 = 13.0, t1 = 16.0 } }
+  local probe = function(t0, t1)
+    if (t1 > 10.5 and t0 < 11.5) or (t1 > 13.5 and t0 < 14.5) then return -10 end
+    return -80
+  end
+  vo.ApplyPadding(spans, { pre_pad = 0.3, post_pad = 0.3, snap_min_silence = 0.1 },
+                  nil, probe, -60, words)
+
+  assert(spans[1].stop < spans[2].start - 0.5,
+    string.format("The takes still touch: %.3f then %.3f", spans[1].stop, spans[2].start))
+  -- Each clip holds its own line with a little air, not three seconds of room.
+  assert(spans[1].start > 10.2 and spans[1].stop < 11.9,
+    string.format("take 1: %.3f..%.3f", spans[1].start, spans[1].stop))
+  assert(spans[2].start > 13.2 and spans[2].stop < 14.9,
+    string.format("take 2: %.3f..%.3f", spans[2].start, spans[2].stop))
+end)
+
+test("two takes sharing an instant meet in the dip, not on the mark", function()
+  -- The whole point, stated as the property that matters: neither clip may end
+  -- up holding a piece of the other's word. Whisper marks the join at 10.00;
+  -- the real quiet between the words is at 9.97, and the second word's onset
+  -- has already begun by 9.98. Cutting on the mark gave clip 1 that onset and
+  -- clip 2 a decapitated word -- "Book." rendered as "Look."
+  local spans = { pad_span(7.0, 10.0), pad_span(10.0, 12.0) }
+  local words = { { t0 = 7.0, t1 = 10.0 }, { t0 = 10.0, t1 = 12.0 } }
+  local probe = function(t0, t1)
+    -- Quiet only in a narrow dip around 9.97; speech either side of it.
+    if t0 >= 9.960 and t1 <= 9.985 then return -80 end
+    return -10
+  end
+  vo.ApplyPadding(spans, { pre_pad = 0.15, post_pad = 0.25, snap_min_silence = 0.06,
+                           chained_boundary_reach = 0.050 }, nil, probe, -60, words)
+  assert(near(spans[1].stop, spans[2].start),
+    string.format("the takes disagree about the join: %.3f then %.3f",
+                  spans[1].stop, spans[2].start))
+  assert(spans[2].start < 10.0 - 1e-9,
+    "clip 2 is still cut on the mark: " .. spans[2].start)
+  assert(math.abs(spans[2].start - 9.97) < 0.011,
+    "the join did not land in the dip: " .. spans[2].start)
+end)
+
+test("the dip search is off by default, so cuts do not move behind your back", function()
+  -- The mechanism is real but unverified (see chained_boundary_reach). Until it
+  -- is settled, the DEFAULT config must place a chained boundary exactly where
+  -- it always did -- this is the test that stops it shipping by accident.
+  local spans = { pad_span(7.0, 10.0), pad_span(10.0, 12.0) }
+  local words = { { t0 = 7.0, t1 = 10.0 }, { t0 = 10.0, t1 = 12.0 } }
+  local probe = function(t0, t1)
+    if t0 >= 9.960 and t1 <= 9.985 then return -80 end
+    return -10
+  end
+  local cfg = { pre_pad = 0.15, post_pad = 0.25, snap_min_silence = 0.06,
+                chained_boundary_reach = vo.DEFAULTS.chained_boundary_reach }
+  vo.ApplyPadding(spans, cfg, nil, probe, -60, words)
+  assert(near(spans[2].start, 10.0), "the default moved the join: " .. spans[2].start)
+end)
+
+test("with no probe a chained boundary is left exactly where it was", function()
+  local spans = { pad_span(7.0, 10.0), pad_span(10.0, 12.0) }
+  vo.ApplyPadding(spans, { pre_pad = 0.15, post_pad = 0.25 })
+  assert(near(spans[2].start, 10.0 - 0.15), "start: " .. spans[2].start)
+end)
+
+test("a chained bound moves off the word when there is quiet to move into", function()
+  -- Whisper chains word times, so the bound sits on the take's own first word
+  -- and the clip is cut with nothing to spare -- worst for a soft onset (s, f,
+  -- th, a breath), which begins before the mark. Quiet behind the mark is the
+  -- dip, so the boundary belongs there and the onset stays with its word.
+  local spans = { pad_span(10.0, 13.0) }
+  local words = { { t0 = 7.0, t1 = 10.0 }, { t0 = 10.0, t1 = 13.0 } }
+  local probe = function(t0, t1) if t1 > 10.0 and t0 < 11.5 then return -10 end return -80 end
+  vo.ApplyPadding(spans, { pre_pad = 0.3, post_pad = 0.3, snap_min_silence = 0.1,
+                           chained_boundary_reach = 0.050 }, nil, probe, -60, words)
+  assert(spans[1].start < 10.0 - 1e-9,
+    "no room left for the onset: " .. spans[1].start)
+end)
+
+test("uniform audio offers no dip, so the boundary is left alone", function()
+  -- Two takes welded by continuous sound: there is no quieter moment to prefer
+  -- and nothing to learn, so the mark stands. Guessing a fixed distance here is
+  -- what put one take's onset into the other take's tail.
+  local spans = { pad_span(31.87, 34.87), pad_span(34.87, 35.44) }
+  local words = { { t0 = 31.87, t1 = 34.87 }, { t0 = 34.87, t1 = 35.44 } }
+  local probe = function() return -10 end
+  vo.ApplyPadding(spans, { pre_pad = 0.15, post_pad = 0.25, snap_min_silence = 0.06,
+                           chained_boundary_reach = 0.050 }, nil, probe, -60, words)
+  assert(near(spans[2].start, 34.87), "the boundary wandered: " .. spans[2].start)
+  assert(spans[1].stop <= spans[2].start + 1e-9,
+    "the takes overlap: " .. spans[1].stop .. " then " .. spans[2].start)
+end)
+
+test("the give never crosses the neighbouring take's own edge", function()
+  -- The bound that has to hold: a real neighbouring SPAN is a decision about
+  -- where another take begins, and no amount of give may cross it.
+  local spans = { pad_span(9.0, 9.99), pad_span(10.0, 13.0) }
+  local words = { { t0 = 9.0, t1 = 9.99 }, { t0 = 10.0, t1 = 13.0 } }
+  local probe = function(t0, t1) if t1 > 9.0 and t0 < 11.5 then return -10 end return -80 end
+  vo.ApplyPadding(spans, { pre_pad = 0.3, post_pad = 0.3, snap_min_silence = 0.1,
+                           min_edge_room = 0.030 }, nil, probe, -60, words)
+  assert(spans[2].start >= 9.99 - 1e-9,
+    "crossed into the take before it: " .. spans[2].start)
+end)
+
+test("a take whose words are already tight gets the same fixed room", function()
+  -- Speech fills the span, so the bounds equal the raw span -- and the room
+  -- applied around them is identical to every other clip's.
+  local spans = { pad_span(2.0, 3.0) }
+  local probe = function(t0, t1) if t1 > 2.0 and t0 < 3.0 then return -10 end return -80 end
+  vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.05 },
+                  nil, probe, -60)
+  assert(near(spans[1].start, 2.0 - 0.060), "start: " .. spans[1].start)
+  assert(near(spans[1].stop,  3.0 + 0.150), "stop: " .. spans[1].stop)
+end)
+
+test("a boundary never crosses into the neighbouring take's audio", function()
+  local spans = { pad_span(2.0, 3.0), pad_span(3.1, 4.0) }
+  -- Silent everywhere: maximum temptation for the search to run away.
+  vo.ApplyPadding(spans, { pre_pad = 1.0, post_pad = 1.0, snap_min_silence = 0.02 },
+                  nil, function() return -80 end, -60)
+  assert(spans[1].stop <= 3.1 + 1e-9, "span 1 stop ate into span 2: " .. spans[1].stop)
+  assert(spans[2].start >= 3.0 - 1e-9, "span 2 start ate into span 1: " .. spans[2].start)
+  assert(spans[1].stop <= spans[2].start + 1e-9, "spans overlap after snapping")
+end)
+
+-- The span list only holds what this cut selected. A false start or an aside
+-- between two selected takes is audio that belongs to neither, and the words
+-- are the only record that it is there at all.
+test("a boundary stops at a word no span selected", function()
+  local spans = { pad_span(2.0, 3.0) }
+  local words = {
+    { t0 = 2.0, t1 = 3.0, text = "chosen" },
+    { t0 = 3.2, t1 = 3.6, text = "aside" },   -- not in the span list
+  }
+  vo.ApplyPadding(spans, { pre_pad = 1.0, post_pad = 1.0, snap_min_silence = 0.02 },
+                  nil, function() return -80 end, -60, words)
+  assert(spans[1].stop <= 3.2 + 1e-9,
+    "the edge travelled into an unselected word: " .. spans[1].stop)
+end)
+
+test("a word behind the span bounds the start the same way", function()
+  local spans = { pad_span(2.0, 3.0) }
+  local words = {
+    { t0 = 1.2, t1 = 1.7, text = "before" },
+    { t0 = 2.0, t1 = 3.0, text = "chosen" },
+  }
+  vo.ApplyPadding(spans, { pre_pad = 1.0, post_pad = 1.0, snap_min_silence = 0.02 },
+                  nil, function() return -80 end, -60, words)
+  assert(spans[1].start >= 1.7 - 1e-9,
+    "the edge travelled back over an unselected word: " .. spans[1].start)
+end)
+
+test("the span's own words do not bound its edges", function()
+  -- A word list always contains the span's own words; if those bounded it, no
+  -- edge could ever move at all.
+  local spans = { pad_span(2.0, 3.0) }
+  local words = { { t0 = 2.0, t1 = 3.0, text = "chosen" } }
+  vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.02 },
+                  nil, function() return -80 end, -60, words)
+  assert(spans[1].start < 2.0, "start did not move: " .. spans[1].start)
+  assert(spans[1].stop  > 3.0, "stop did not move: " .. spans[1].stop)
+end)
+
+test("without words the fixed room still applies from the raw span", function()
+  -- Silence throughout: no speech to measure, so the raw word times stand in
+  -- for the bounds and the room is applied around THEM.
+  local spans = { pad_span(2.0, 3.0) }
+  vo.ApplyPadding(spans, { pre_pad = 0.4, post_pad = 0.4, snap_min_silence = 0.02 },
+                  nil, function() return -80 end, -60)
+  assert(near(spans[1].start, 2.0 - 0.060), "start: " .. spans[1].start)
+  assert(spans[1].snapped == "pad", "unmeasured bounds must not claim silence")
+end)
+
+test("a breath welded to the first word travels with its take", function()
+  -- A "ha" at 1.7..2.0, contiguous with speech at 2.0..3.0 -- a noise, not a
+  -- word, so no timestamp covers it. The head walks back through the sound
+  -- and the room lands before the breath, not inside it.
+  local spans = { pad_span(2.0, 3.0) }
+  local probe = function(t0, t1) if t1 > 1.7 and t0 < 3.0 then return -10 end return -80 end
+  vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.05 },
+                  nil, probe, -60)
+  assert(spans[1].start < 1.70, "the breath was cut off: " .. spans[1].start)
+  assert(spans[1].start > 1.50, "the head ran away: " .. spans[1].start)
+end)
+
+test("the walk through sound never crosses the neighbour limit", function()
+  -- Loud all the way back to the previous word: the extension stops at the
+  -- limit, it does not eat the neighbour.
+  local spans = { pad_span(2.0, 3.0) }
+  local words = {
+    { t0 = 1.0, t1 = 1.5, text = "prev" },
+    { t0 = 2.0, t1 = 3.0, text = "chosen" },
+  }
+  local probe = function() return -10 end
+  vo.ApplyPadding(spans, { pre_pad = 2.0, post_pad = 0.5, snap_min_silence = 0.05 },
+                  nil, probe, -60, words)
+  assert(spans[1].start >= 1.5 - 1e-9,
+    "the extension crossed the previous word: " .. spans[1].start)
+end)
+
+test("loud room at the placed edge is reported as pad, not silence", function()
+  -- The flag is a verified claim: an edge sitting in audio that never drops
+  -- below the floor must say so, so the run can name the clips to listen to.
+  local spans = { pad_span(2.0, 3.0) }
+  vo.ApplyPadding(spans, { pre_pad = 0.2, post_pad = 0.2, snap_min_silence = 0.05 },
+                  nil, function() return -10 end, -60)
+  assert(spans[1].snapped == "pad", "snapped: " .. tostring(spans[1].snapped))
+end)
+
+test("snap_boundaries = false ignores the probe entirely", function()
+  local spans = { pad_span(2.0, 3.0) }
+  vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_boundaries = false },
+                  nil, function() return -80 end, -60)
+  assert(near(spans[1].start, 1.5), "start: " .. spans[1].start)
+  assert(spans[1].snapped == nil, "snapped should not be set when disabled")
+end)
+
+test("bounds still clamp a snapped boundary", function()
+  local spans = { pad_span(0.1, 1.0) }
+  vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.1, snap_min_silence = 0.02 },
+                  { start = 0.0, stop = 10.0 }, function() return -80 end, -60)
+  assert(spans[1].start >= 0.0 - 1e-9, "start escaped bounds: " .. spans[1].start)
+end)
+
+test("raw boundaries are still recorded when snapping", function()
+  local spans = { pad_span(2.0, 3.0) }
+  vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.05 },
+                  nil, function() return -80 end, -60)
+  assert(near(spans[1].raw_start, 2.0) and near(spans[1].raw_stop, 3.0),
+    "raw boundaries must survive so the report can compare them")
+end)
+
+--------------------------------
 -- AssignNames
 --------------------------------
 print("\nAssignNames:")
@@ -861,8 +2613,11 @@ local function take_spans()
   }
 end
 
-local function assigned(cfg)
+-- `select_index` is the span the user ticked in Overview. There is no
+-- first/last fallback any more: an unticked multi-take line has no primary.
+local function assigned(cfg, select_index)
   local spans = take_spans()
+  if select_index then spans[select_index].select = true end
   vo.AssignNames(spans, cfg)
   return spans
 end
@@ -880,58 +2635,72 @@ test("a line with one take is always its own primary", function()
   assert(s[2].dest == "selects" and s[2].name == "vo_b", "L2 routing/name")
 end)
 
-test("combo 1 - alts off, suffix off, primary last: all to selects, bare names", function()
-  local s = assigned({ use_alts_track = false, suffix_alt_names = false, primary_take = "last" })
+test("combo 1 - alts off, suffix off, later take selected: all to selects, bare names", function()
+  local s = assigned({ use_alts_track = false, suffix_alt_names = false }, 3)
   assert(s[1].dest == "selects" and s[3].dest == "selects", "both to selects")
   assert(s[1].name == "vo_a" and s[3].name == "vo_a", "both bare")
 end)
 
-test("combo 2 - alts off, suffix off, primary first: all to selects, bare names", function()
-  local s = assigned({ use_alts_track = false, suffix_alt_names = false, primary_take = "first" })
+test("combo 2 - alts off, suffix off, earlier take selected: all to selects, bare names", function()
+  local s = assigned({ use_alts_track = false, suffix_alt_names = false }, 1)
   assert(s[1].dest == "selects" and s[3].dest == "selects", "both to selects")
   assert(s[1].name == "vo_a" and s[3].name == "vo_a", "both bare")
 end)
 
-test("combo 3 - alts off, suffix on, primary last: earlier take suffixed", function()
-  local s = assigned({ use_alts_track = false, suffix_alt_names = true, primary_take = "last" })
+test("combo 3 - alts off, suffix on, later take selected: earlier take suffixed", function()
+  local s = assigned({ use_alts_track = false, suffix_alt_names = true }, 3)
   assert(s[1].name == "vo_a_tk01", "take 1: " .. s[1].name)
   assert(s[3].name == "vo_a", "primary: " .. s[3].name)
   assert(s[1].dest == "selects" and s[3].dest == "selects", "both to selects")
 end)
 
-test("combo 4 - alts off, suffix on, primary first: later take suffixed", function()
-  local s = assigned({ use_alts_track = false, suffix_alt_names = true, primary_take = "first" })
+test("combo 4 - alts off, suffix on, earlier take selected: later take suffixed", function()
+  local s = assigned({ use_alts_track = false, suffix_alt_names = true }, 1)
   assert(s[1].name == "vo_a", "primary: " .. s[1].name)
   assert(s[3].name == "vo_a_tk02", "take 2: " .. s[3].name)
 end)
 
-test("combo 5 - alts on, suffix off, primary last: earlier take to alts", function()
-  local s = assigned({ use_alts_track = true, suffix_alt_names = false, primary_take = "last" })
+test("combo 5 - alts on, suffix off, later take selected: earlier take to alts", function()
+  local s = assigned({ use_alts_track = true, suffix_alt_names = false }, 3)
   assert(s[1].dest == "alts", "take 1 dest: " .. s[1].dest)
   assert(s[3].dest == "selects", "primary dest: " .. s[3].dest)
   assert(s[1].name == "vo_a" and s[3].name == "vo_a", "both bare")
 end)
 
-test("combo 6 - alts on, suffix off, primary first: later take to alts", function()
-  local s = assigned({ use_alts_track = true, suffix_alt_names = false, primary_take = "first" })
+test("combo 6 - alts on, suffix off, earlier take selected: later take to alts", function()
+  local s = assigned({ use_alts_track = true, suffix_alt_names = false }, 1)
   assert(s[1].dest == "selects", "primary dest: " .. s[1].dest)
   assert(s[3].dest == "alts", "take 2 dest: " .. s[3].dest)
 end)
 
-test("combo 7 - alts on, suffix on, primary last", function()
-  local s = assigned({ use_alts_track = true, suffix_alt_names = true, primary_take = "last" })
+test("combo 7 - alts on, suffix on, later take selected", function()
+  local s = assigned({ use_alts_track = true, suffix_alt_names = true }, 3)
   assert(s[1].dest == "alts" and s[1].name == "vo_a_tk01", s[1].dest .. "/" .. s[1].name)
   assert(s[3].dest == "selects" and s[3].name == "vo_a", s[3].dest .. "/" .. s[3].name)
 end)
 
-test("combo 8 - alts on, suffix on, primary first", function()
-  local s = assigned({ use_alts_track = true, suffix_alt_names = true, primary_take = "first" })
+test("combo 8 - alts on, suffix on, earlier take selected", function()
+  local s = assigned({ use_alts_track = true, suffix_alt_names = true }, 1)
   assert(s[1].dest == "selects" and s[1].name == "vo_a", s[1].dest .. "/" .. s[1].name)
   assert(s[3].dest == "alts" and s[3].name == "vo_a_tk02", s[3].dest .. "/" .. s[3].name)
 end)
 
 test("a single-take line never goes to alts even with the toggle on", function()
-  local s = assigned({ use_alts_track = true, suffix_alt_names = true, primary_take = "last" })
+  local s = assigned({ use_alts_track = true, suffix_alt_names = true }, 3)
+  assert(s[2].dest == "selects" and s[2].name == "vo_b", s[2].dest .. "/" .. s[2].name)
+end)
+
+test("a several-take line with no select has no primary at all", function()
+  local s = assigned({ suffix_alt_names = true })
+  assert(s[1].primary == false and s[3].primary == false,
+    "Guessing which take was meant is what Select exists to stop")
+  assert(s[1].name == "vo_a_tk01" and s[3].name == "vo_a_tk02",
+    "Both takes are suffixed when none is the primary")
+end)
+
+test("a single take is primary even without a select, so it is never suffixed", function()
+  local s = assigned({ use_alts_track = true, suffix_alt_names = true })
+  assert(s[2].primary == true, "A group of one has nothing to choose between")
   assert(s[2].dest == "selects" and s[2].name == "vo_b", s[2].dest .. "/" .. s[2].name)
 end)
 
@@ -983,22 +2752,23 @@ test("review spans do not consume take numbers from delivered takes", function()
   local spans = {
     { kind = "review", asset = "vo_a", score = 0.60, start = 0, stop = 1 },
     { kind = "match",  asset = "vo_a", score = 0.95, start = 2, stop = 3 },
-    { kind = "match",  asset = "vo_a", score = 0.97, start = 4, stop = 5 },
+    { kind = "match",  asset = "vo_a", score = 0.97, start = 4, stop = 5, select = true },
   }
-  vo.AssignNames(spans, { suffix_alt_names = true, primary_take = "last" })
+  vo.AssignNames(spans, { suffix_alt_names = true })
   assert(spans[2].take_index == 1, "first delivered take: " .. tostring(spans[2].take_index))
   assert(spans[2].name == "vo_a_tk01", "name: " .. spans[2].name)
   assert(spans[3].name == "vo_a", "primary: " .. spans[3].name)
 end)
 
 -- Two sources each holding a read of the same line. Each half was named on its
--- own -- that is what BuildPlan does for a freshly transcribed source, and what
--- each sidecar recorded -- so both halves claim take 1, primary, bare name.
--- Concatenating them is exactly the merge in ajsfx_VO_ScriptMatch.lua, and if
+-- own -- a group of one, so each is its own primary with a bare name -- and if
 -- nothing re-names the union, Cut puts two items named "L001" on Selects.
+-- The later read carries the user's Select, which is what makes it the primary
+-- once the two halves are numbered together.
 local function separately_named_halves(cfg)
   local a = { { kind = "match", asset = "L001", score = 0.95, start = 0, stop = 1 } }
-  local b = { { kind = "match", asset = "L001", score = 0.96, start = 9, stop = 10 } }
+  local b = { { kind = "match", asset = "L001", score = 0.96, start = 9, stop = 10,
+                select = true } }
   vo.AssignNames(a, cfg)
   vo.AssignNames(b, cfg)
   local union = {}
@@ -1008,15 +2778,15 @@ local function separately_named_halves(cfg)
 end
 
 test("halves named in isolation both claim take 1 and primary (the collision)", function()
-  local u = separately_named_halves({ suffix_alt_names = true, primary_take = "last" })
+  local u = separately_named_halves({ suffix_alt_names = true })
   assert(u[1].take_index == 1 and u[2].take_index == 1, "both should still be take 1")
   assert(u[1].primary and u[2].primary, "both should still be primary")
   assert(u[1].name == u[2].name, "both should still carry the same name")
 end)
 
 test("re-naming the union gives one primary and distinct take numbers", function()
-  local u = separately_named_halves({ suffix_alt_names = true, primary_take = "last" })
-  vo.AssignNames(u, { suffix_alt_names = true, primary_take = "last" })
+  local u = separately_named_halves({ suffix_alt_names = true })
+  vo.AssignNames(u, { suffix_alt_names = true })
   assert(u[1].take_index == 1, "earlier take: " .. tostring(u[1].take_index))
   assert(u[2].take_index == 2, "later take: " .. tostring(u[2].take_index))
   local primaries = 0
@@ -1027,14 +2797,14 @@ test("re-naming the union gives one primary and distinct take numbers", function
 end)
 
 test("re-naming the union routes the non-primary to alts", function()
-  local u = separately_named_halves({ use_alts_track = true, primary_take = "last" })
-  vo.AssignNames(u, { use_alts_track = true, primary_take = "last" })
+  local u = separately_named_halves({ use_alts_track = true })
+  vo.AssignNames(u, { use_alts_track = true })
   assert(u[1].dest == "alts", "earlier take dest: " .. tostring(u[1].dest))
   assert(u[2].dest == "selects", "primary dest: " .. tostring(u[2].dest))
 end)
 
 test("AssignNames is idempotent over an already-named plan", function()
-  local cfg = { use_alts_track = true, suffix_alt_names = true, primary_take = "last" }
+  local cfg = { use_alts_track = true, suffix_alt_names = true }
   local once = take_spans()
   vo.AssignNames(once, cfg)
   local snapshot = {}
@@ -1051,7 +2821,7 @@ test("AssignNames is idempotent over an already-named plan", function()
 end)
 
 test("re-running over the union is itself idempotent", function()
-  local cfg = { suffix_alt_names = true, primary_take = "last" }
+  local cfg = { suffix_alt_names = true }
   local u = separately_named_halves(cfg)
   vo.AssignNames(u, cfg)
   local n1, n2, t1, t2 = u[1].name, u[2].name, u[1].take_index, u[2].take_index
@@ -1069,7 +2839,7 @@ test("take numbering does not depend on input order when four takes tie on every
   -- regardless of tie-break logic, so this needs at least four spans tied on
   -- every key but `score` before an order-dependent (pre-fix) comparator
   -- actually produces a different permutation for a different input order.
-  local cfg = { suffix_alt_names = true, primary_take = "last" }
+  local cfg = { suffix_alt_names = true }
 
   local function make(order)
     local by_id = {
@@ -1173,6 +2943,85 @@ test("a missing binary falls back to the bare command name", function()
   assert(argv[1] == "whisper-cli", "argv[1]: " .. tostring(argv[1]))
 end)
 
+test("prior-text conditioning is disabled so the decoder cannot loop", function()
+  local argv = vo.BuildWhisperArgv(WHISPER_CFG, "in.wav", "out")
+  assert(argv_value(argv, "-mc") == "0", "-mc: " .. tostring(argv_value(argv, "-mc")))
+end)
+
+test("speech is only discarded when it is almost certainly not speech", function()
+  local argv = vo.BuildWhisperArgv(WHISPER_CFG, "in.wav", "out")
+  assert(tonumber(argv_value(argv, "-nth")) >= 0.9,
+    "-nth: " .. tostring(argv_value(argv, "-nth")))
+end)
+
+--------------------------------
+-- DetectRepetitionLoop
+--------------------------------
+print("\nDetectRepetitionLoop:")
+
+local function loop_words(list)
+  local out = {}
+  for i, w in ipairs(list) do
+    out[i] = { t0 = i * 1.0, t1 = i * 1.0 + 0.5, text = w }
+  end
+  return out
+end
+
+local function repeated(phrase, times, before, after)
+  local list = {}
+  for _, w in ipairs(before or {}) do list[#list + 1] = w end
+  for _ = 1, times do
+    for _, w in ipairs(phrase) do list[#list + 1] = w end
+  end
+  for _, w in ipairs(after or {}) do list[#list + 1] = w end
+  return loop_words(list)
+end
+
+test("clean speech reports no loop", function()
+  local words = loop_words({ "the", "quick", "brown", "fox", "jumps", "over",
+                             "the", "lazy", "dog", "and", "then", "sleeps" })
+  assert(vo.DetectRepetitionLoop(words) == nil, "clean speech flagged as a loop")
+end)
+
+test("ordinary repetition in a read is not a loop", function()
+  -- "no, no, no, no" and a repeated two-word beat both stay under threshold.
+  assert(vo.DetectRepetitionLoop(repeated({ "no" }, 5)) == nil, "5 repeats flagged")
+  assert(vo.DetectRepetitionLoop(repeated({ "get", "out" }, 3)) == nil, "3 cycles flagged")
+end)
+
+test("a repeated phrase past both thresholds is reported", function()
+  local phrase = { "Riddle", "that", "punish", "you", "for", "answering." }
+  local found = vo.DetectRepetitionLoop(repeated(phrase, 40, { "and", "so" }))
+  assert(found, "loop not detected")
+  assert(found.cycles == 40, "cycles: " .. tostring(found.cycles))
+  assert(found.words == 240, "words: " .. tostring(found.words))
+  assert(found.phrase == "Riddle that punish you for answering.",
+    "phrase: " .. tostring(found.phrase))
+end)
+
+test("the reported span is where the loop starts and ends, not the whole file", function()
+  local found = vo.DetectRepetitionLoop(repeated({ "a", "b" }, 10, { "x", "y", "z" }))
+  -- three leading words, so the loop's first word is index 4 (t0 = 4.0) and its
+  -- last is index 23 (t1 = 23.5).
+  assert(math.abs(found.from - 4.0) < 1e-9, "from: " .. tostring(found.from))
+  assert(math.abs(found.to - 23.5) < 1e-9, "to: " .. tostring(found.to))
+end)
+
+test("the longest run wins when a file contains more than one", function()
+  local list = {}
+  for _, w in ipairs(repeated({ "short" }, 14)) do list[#list + 1] = w.text end
+  list[#list + 1] = "break"
+  for _, w in ipairs(repeated({ "long", "one" }, 30)) do list[#list + 1] = w.text end
+  local found = vo.DetectRepetitionLoop(loop_words(list))
+  assert(found.phrase == "long one", "phrase: " .. tostring(found.phrase))
+  assert(found.words == 60, "words: " .. tostring(found.words))
+end)
+
+test("an empty or nil transcript is handled without throwing", function()
+  assert(vo.DetectRepetitionLoop(nil) == nil, "nil flagged")
+  assert(vo.DetectRepetitionLoop({}) == nil, "empty flagged")
+end)
+
 --------------------------------
 -- CSV output helpers
 --------------------------------
@@ -1197,7 +3046,20 @@ end)
 --------------------------------
 -- BuildPlan
 --------------------------------
-print("\nBuildPlan:")
+print("\nBuildMatch:")
+
+-- BuildMatch plus the padding and naming that used to live inside BuildPlan.
+-- The matching pipeline these tests exercise did not change; only where the
+-- pieces live did, so the composition is rebuilt here rather than the coverage
+-- thrown away. Padding and naming moved out because one needs sample access
+-- and the other needs every source at once -- neither of which BuildMatch has.
+local function build_named_plan(lines, words, cfg)
+  local matched = vo.BuildMatch({ { path = "s.wav", words = words } }, lines, cfg)
+  local plan = (matched[1] and matched[1].spans) or {}
+  vo.ApplyPadding(plan, cfg, cfg and cfg.bounds)
+  vo.AssignNames(plan, cfg)
+  return plan
+end
 
 -- Deterministic synthetic transcript generator.
 -- Emits a whisper-style word list from the script with controllable noise, so
@@ -1282,7 +3144,7 @@ end)
 test("a clean read of every line matches every line", function()
   local lines = load_fixture()
   local words = synthesize(lines)
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
 
   local got = {}
   for _, s in ipairs(plan) do
@@ -1297,7 +3159,7 @@ end)
 test("lines recorded out of script order are still all matched", function()
   local lines = load_fixture()
   local words = synthesize(lines, { shuffle = true })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
 
   local count = 0
   for _, s in ipairs(plan) do
@@ -1309,7 +3171,7 @@ end)
 test("slates and chatter become unmatched spans without losing any line", function()
   local lines = load_fixture()
   local words = synthesize(lines, { slates = true, chatter = true })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
 
   local matches, unmatched = 0, 0
   for _, s in ipairs(plan) do
@@ -1323,7 +3185,7 @@ end)
 test("unmatched spans are left in place, never routed to a track", function()
   local lines = load_fixture()
   local words = synthesize(lines, { slates = true, chatter = true })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
   for _, s in ipairs(plan) do
     if s.kind == "unmatched" then
       assert(s.dest == vo.DEST_IN_PLACE, "unmatched routed to " .. tostring(s.dest))
@@ -1334,7 +3196,7 @@ end)
 test("a noisy transcript never silently loses a line", function()
   local lines = load_fixture()
   local words = synthesize(lines, { drop_rate = 0.10, sub_rate = 0.05, seed = 7 })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
 
   local found = {}
   for _, s in ipairs(plan) do
@@ -1349,7 +3211,7 @@ test("a line missing one word of five is still a confident match", function()
   -- At this seed the recognizer drops the leading "Open" from vo_guard_gate_01.
   local lines = load_fixture()
   local words = synthesize(lines, { drop_rate = 0.10, sub_rate = 0.05, seed = 7 })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
   for _, s in ipairs(plan) do
     if s.asset == "vo_guard_gate_01" then
       assert(s.kind == "match", "vo_guard_gate_01 kind: " .. s.kind)
@@ -1364,7 +3226,7 @@ test("a line missing a third of its words is flagged, not asserted", function()
   -- an asset name on it. This is the guarantee the Review track exists to provide.
   local lines = load_fixture()
   local words = synthesize(lines, { drop_rate = 0.10, sub_rate = 0.05, seed = 7 })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
   local seen = false
   for _, s in ipairs(plan) do
     if s.asset == "vo_hero_captain_01" then
@@ -1380,7 +3242,7 @@ end)
 test("a line recorded twice yields two numbered takes", function()
   local lines = load_fixture()
   local words = synthesize(lines, { repeats = { vo_guard_halt_01 = 2 } })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
 
   local takes = {}
   for _, s in ipairs(plan) do
@@ -1389,13 +3251,12 @@ test("a line recorded twice yields two numbered takes", function()
   assert(#takes == 2, "Expected 2 takes of vo_guard_halt_01, got " .. #takes)
   table.sort(takes, function(a, b) return a.start < b.start end)
   assert(takes[1].take_index == 1 and takes[2].take_index == 2, "take numbering wrong")
-  assert(takes[2].primary == true, "last take should be primary by default")
 end)
 
 test("plan spans are chronological and never overlap", function()
   local lines = load_fixture()
   local words = synthesize(lines, { slates = true, repeats = { vo_guard_gate_01 = 2 } })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
 
   for i = 2, #plan do
     assert(plan[i].start >= plan[i - 1].start - 1e-9,
@@ -1408,7 +3269,7 @@ end)
 test("every span carries a destination and a name", function()
   local lines = load_fixture()
   local words = synthesize(lines, { slates = true })
-  local plan  = vo.BuildPlan(lines, words, {})
+  local plan  = build_named_plan(lines, words, {})
   for i, s in ipairs(plan) do
     assert(s.dest, "span " .. i .. " has no dest")
     assert(s.name and s.name ~= "", "span " .. i .. " has no name")
@@ -1418,7 +3279,106 @@ end)
 
 test("an empty word stream yields an empty plan", function()
   local lines = load_fixture()
-  assert(#vo.BuildPlan(lines, {}, {}) == 0, "Expected an empty plan")
+  assert(#build_named_plan(lines, {}, {}) == 0, "Expected an empty plan")
+end)
+
+--------------------------------
+-- BuildMatch: the per-source contract
+--------------------------------
+
+-- Data rows only, and `cols` are column INDICES, not header names.
+local function match_lines()
+  return vo.BuildScriptLines(
+    { { "vo_a_01", "RIVA", "we should not have come" },
+      { "vo_b_01", "RIVA", "seal it nobody goes below" } },
+    { asset = 1, speaker = 2, text = 3 }, {})
+end
+
+local function words_from(text, t0)
+  local words, t = {}, t0 or 0
+  for w in text:gmatch("%S+") do
+    words[#words + 1] = { t0 = t, t1 = t + 0.2, text = w }
+    t = t + 0.25
+  end
+  return words
+end
+
+test("one source produces one entry keyed by its path", function()
+  local got = vo.BuildMatch(
+    { { path = "D:/s/A.wav", words = words_from("we should not have come") } },
+    match_lines(), {})
+  assert(#got == 1, "Expected 1 result, got " .. #got)
+  assert(got[1].path == "D:/s/A.wav", "Path: " .. tostring(got[1].path))
+end)
+
+test("the spoken line matches its script line", function()
+  local got = vo.BuildMatch(
+    { { path = "D:/s/A.wav", words = words_from("we should not have come") } },
+    match_lines(), {})
+  local found = false
+  for _, s in ipairs(got[1].spans) do
+    if s.kind == "match" and s.asset == "vo_a_01" then found = true end
+  end
+  assert(found, "vo_a_01 was not matched")
+end)
+
+test("two sources speaking the same line each get their own span", function()
+  local got = vo.BuildMatch({
+    { path = "D:/s/A.wav", words = words_from("we should not have come") },
+    { path = "D:/s/B.wav", words = words_from("we should not have come") },
+  }, match_lines(), {})
+  assert(#got == 2, "Expected 2 results, got " .. #got)
+  for _, entry in ipairs(got) do
+    local hits = 0
+    for _, s in ipairs(entry.spans) do
+      if s.kind == "match" and s.asset == "vo_a_01" then hits = hits + 1 end
+    end
+    assert(hits == 1, entry.path .. " produced " .. hits .. " matches, expected 1")
+  end
+end)
+
+test("spans come back in time order and carry their transcript", function()
+  local got = vo.BuildMatch(
+    { { path = "D:/s/A.wav", words = words_from("we should not have come") } },
+    match_lines(), {})
+  local last = -math.huge
+  for _, s in ipairs(got[1].spans) do
+    assert(s.start >= last, "Spans out of order")
+    last = s.start
+    assert(type(s.transcript) == "string", "Span has no transcript")
+  end
+end)
+
+test("no padding is applied -- start equals the first word's own time", function()
+  local words = words_from("we should not have come", 5.0)
+  local got = vo.BuildMatch({ { path = "D:/s/A.wav", words = words } },
+                            match_lines(), { pre_pad = 1.0, post_pad = 1.0 })
+  for _, s in ipairs(got[1].spans) do
+    if s.kind == "match" then
+      assert(s.start >= 5.0 - 1e-6,
+             "Padding leaked into BuildMatch: start=" .. tostring(s.start))
+    end
+  end
+end)
+
+test("no names are assigned -- that is the cutter's job", function()
+  local got = vo.BuildMatch(
+    { { path = "D:/s/A.wav", words = words_from("we should not have come") } },
+    match_lines(), {})
+  for _, s in ipairs(got[1].spans) do
+    assert(s.name == nil, "Span already named: " .. tostring(s.name))
+    assert(s.dest == nil, "Span already routed: " .. tostring(s.dest))
+  end
+end)
+
+test("an empty transcript list returns an empty result", function()
+  assert(#vo.BuildMatch({}, match_lines(), {}) == 0, "Expected no results")
+end)
+
+test("a source with no words still returns an entry with no spans", function()
+  local got = vo.BuildMatch({ { path = "D:/s/A.wav", words = {} } }, match_lines(), {})
+  assert(#got == 1, "Expected 1 result, got " .. #got)
+  assert(#got[1].spans == 0, "Expected no spans, got " .. #got[1].spans)
 end)
 
 test("audio with no script match produces only unmatched spans", function()
@@ -1429,167 +3389,11 @@ test("audio with no script match produces only unmatched spans", function()
     words[#words + 1] = { t0 = t, t1 = t + 0.3, text = w }
     t = t + 0.35
   end
-  local plan = vo.BuildPlan(lines, words, {})
+  local plan = build_named_plan(lines, words, {})
   for _, s in ipairs(plan) do
     assert(s.kind == "unmatched", "Expected only unmatched spans, got " .. s.kind)
   end
 end)
-
---------------------------------
--- Sidecar serialize / parse
---------------------------------
-print("\nSidecar serialize/parse:")
-
-local SIDECAR_META = {
-  source       = "RIVA_session.wav",
-  source_bytes = 412839104,
-  script_csv   = "D:/proj/script.csv",
-  mapping      = { asset = "Filename", text = "Line Text", speaker = "Character" },
-}
-
-local function sample_spans()
-  return {
-    { start = 12.48, stop = 15.22, kind = "match", asset = "vo_riva_intro_01",
-      character = "RIVA", score = 0.9821, margin = 0.441, take_index = 1,
-      dest = "Selects", name = "vo_riva_intro_01", transcript = "we should not have come" },
-    { start = 20.00, stop = 22.50, kind = "review", asset = "vo_riva_intro_02",
-      character = "RIVA", score = 0.6, margin = 0.05, take_index = 2,
-      dest = "Review", name = "vo_riva_intro_02_tk02", transcript = "quiet, something is wrong" },
-  }
-end
-
-test("the sidecar starts with the format marker and version", function()
-  local text = vo.SerializeSidecar({}, {}, SIDECAR_META)
-  local rows = vo.ParseCSV(text)
-  assert(rows[1][1] == vo.SIDECAR_MARKER, "Marker: " .. tostring(rows[1][1]))
-  assert(tonumber(rows[1][2]) == vo.SIDECAR_VERSION, "Version: " .. tostring(rows[1][2]))
-end)
-
-test("the preamble carries source, size, script path and mapping", function()
-  local parsed = vo.ParseSidecar(vo.SerializeSidecar({}, {}, SIDECAR_META))
-  assert(parsed, "Parse returned nil")
-  assert(parsed.source == "RIVA_session.wav", "source: " .. tostring(parsed.source))
-  assert(parsed.source_bytes == 412839104, "bytes: " .. tostring(parsed.source_bytes))
-  assert(parsed.script_csv == "D:/proj/script.csv", "csv: " .. tostring(parsed.script_csv))
-  assert(parsed.mapping.asset == "Filename", "asset: " .. tostring(parsed.mapping.asset))
-  assert(parsed.mapping.speaker == "Character", "speaker: " .. tostring(parsed.mapping.speaker))
-  assert(parsed.mapping.text == "Line Text", "text: " .. tostring(parsed.mapping.text))
-end)
-
--- Carried over from the padding-inversion fix on main, which added the
--- degenerate flag and a report column for it. The report became the sidecar in
--- this branch, so the assertion moves to SerializeSidecar; the behaviour it
--- guards — a rescued span is visibly marked, a healthy one is not — is unchanged.
-test("a span that fell back to its raw times is marked in the sidecar", function()
-  local plan = {
-    { kind = "match", asset = "vo_a", start = 1.0, stop = 2.0, degenerate = true },
-    { kind = "match", asset = "vo_b", start = 3.0, stop = 4.0 },
-  }
-  local rows = vo.ParseCSV(vo.SerializeSidecar(plan, {}, SIDECAR_META))
-  -- The preamble sits above the span header, so find the header row by name.
-  local header_row, col
-  for i, row in ipairs(rows) do
-    if row[1] == vo.SIDECAR_HEADER[1] then header_row = i; break end
-  end
-  assert(header_row, "No span header row in the sidecar")
-  for i, name in ipairs(rows[header_row]) do if name == "Degenerate" then col = i end end
-  assert(col, "No Degenerate column in the sidecar header")
-  assert(rows[header_row + 1][col] == "yes",
-    "Expected yes, got " .. tostring(rows[header_row + 1][col]))
-  assert(rows[header_row + 2][col] == "",
-    "Healthy span marked: " .. tostring(rows[header_row + 2][col]))
-end)
-
-test("every span field round-trips", function()
-  local parsed = vo.ParseSidecar(vo.SerializeSidecar(sample_spans(), {}, SIDECAR_META))
-  assert(#parsed.spans == 2, "Expected 2 spans, got " .. #parsed.spans)
-  local s = parsed.spans[1]
-  assert(near(s.start, 12.48), "start: " .. tostring(s.start))
-  assert(near(s.stop, 15.22), "stop: " .. tostring(s.stop))
-  assert(s.kind == "match", "kind: " .. tostring(s.kind))
-  assert(s.asset == "vo_riva_intro_01", "asset: " .. tostring(s.asset))
-  assert(s.character == "RIVA", "character: " .. tostring(s.character))
-  assert(near(s.score, 0.9821), "score: " .. tostring(s.score))
-  assert(near(s.margin, 0.441), "margin: " .. tostring(s.margin))
-  assert(s.take_index == 1, "take_index: " .. tostring(s.take_index))
-  assert(s.dest == "Selects", "dest: " .. tostring(s.dest))
-  assert(s.name == "vo_riva_intro_01", "name: " .. tostring(s.name))
-  assert(s.transcript == "we should not have come", "transcript: " .. tostring(s.transcript))
-end)
-
-test("fields containing commas, quotes and newlines survive the round-trip", function()
-  local spans = { { start = 0, stop = 1, kind = "match", asset = "a",
-                    transcript = 'he said "go, now"\nand left' } }
-  local parsed = vo.ParseSidecar(vo.SerializeSidecar(spans, {}, SIDECAR_META))
-  assert(parsed.spans[1].transcript == 'he said "go, now"\nand left',
-    "Got: " .. tostring(parsed.spans[1].transcript))
-end)
-
-test("the trailing no-match section lists unmatched script lines", function()
-  local lines = {
-    { asset = "vo_riva_intro_01", speaker = "RIVA", text = "We should not have come." },
-    { asset = "vo_riva_deck_03",  speaker = "RIVA", text = "Seal it." },
-  }
-  local text = vo.SerializeSidecar(sample_spans(), lines, SIDECAR_META)
-  local tail = text:match("SCRIPT LINES WITH NO MATCH(.*)$")
-  assert(tail, "No trailing section")
-  assert(tail:find("vo_riva_deck_03", 1, true), "Unmatched line missing from tail")
-  assert(not tail:find("vo_riva_intro_01", 1, true), "Matched line should not be in tail")
-end)
-
-test("the trailing no-match section is ignored on load", function()
-  local lines = { { asset = "vo_riva_deck_03", speaker = "RIVA", text = "Seal it." } }
-  local parsed = vo.ParseSidecar(vo.SerializeSidecar(sample_spans(), lines, SIDECAR_META))
-  assert(#parsed.spans == 2, "Tail section leaked into spans: got " .. #parsed.spans)
-end)
-
-test("a review span still counts as unmatched in the tail", function()
-  local lines = { { asset = "vo_riva_intro_02", speaker = "RIVA", text = "Quiet." } }
-  local tail = vo.SerializeSidecar(sample_spans(), lines, SIDECAR_META)
-                 :match("SCRIPT LINES WITH NO MATCH(.*)$")
-  assert(tail:find("vo_riva_intro_02", 1, true), "Review-only line should be listed as unmatched")
-end)
-
-print("\nSidecar parse rejection:")
-
-test("empty text is rejected with a reason", function()
-  local parsed, reason = vo.ParseSidecar("")
-  assert(parsed == nil, "Empty text should not parse")
-  assert(type(reason) == "string" and reason ~= "", "Expected a reason string")
-end)
-
-test("nil text is rejected without erroring", function()
-  local parsed, reason = vo.ParseSidecar(nil)
-  assert(parsed == nil, "nil should not parse")
-  assert(type(reason) == "string", "Expected a reason string")
-end)
-
-test("a file that is not a sidecar is rejected", function()
-  local parsed, reason = vo.ParseSidecar("name,age\nalice,30\n")
-  assert(parsed == nil, "Arbitrary CSV should not parse as a sidecar")
-  assert(reason:find("ajsfx VO ScriptMatch", 1, true), "Reason should name the marker: " .. reason)
-end)
-
-test("an unrecognised version is rejected", function()
-  local text = vo.SerializeSidecar({}, {}, SIDECAR_META):gsub("^(.-),1\n", "%1,99\n", 1)
-  local parsed, reason = vo.ParseSidecar(text)
-  assert(parsed == nil, "Version 99 should not parse")
-  assert(reason:find("99", 1, true), "Reason should name the version: " .. reason)
-end)
-
-test("a sidecar with no span header row is rejected", function()
-  local text = vo.SIDECAR_MARKER .. ",1\nSource,RIVA.wav\n"
-  local parsed, reason = vo.ParseSidecar(text)
-  assert(parsed == nil, "Missing span header should not parse")
-  assert(type(reason) == "string" and reason ~= "", "Expected a reason string")
-end)
-
-test("a sidecar with a header but no span rows parses to zero spans", function()
-  local parsed = vo.ParseSidecar(vo.SerializeSidecar({}, {}, SIDECAR_META))
-  assert(parsed, "Should parse")
-  assert(#parsed.spans == 0, "Expected 0 spans, got " .. #parsed.spans)
-end)
-
 --------------------------------
 -- QuoteArg
 --------------------------------
@@ -1662,7 +3466,7 @@ test("an empty ExtState yields documented defaults", function()
   assert(cfg.accept_threshold == 0.80, "accept: " .. tostring(cfg.accept_threshold))
   assert(cfg.review_floor == 0.55, "floor: " .. tostring(cfg.review_floor))
   assert(cfg.track_selects == "Selects", "selects: " .. tostring(cfg.track_selects))
-  assert(cfg.create_regions == false, "regions should default off")
+  assert(cfg.track_review == "Review", "review: " .. tostring(cfg.track_review))
   assert(cfg.whisper_language == "en", "language: " .. tostring(cfg.whisper_language))
 end)
 
@@ -1680,15 +3484,43 @@ test("numbers round-trip through save and load", function()
   assert(back.whisper_threads == 12, "threads: " .. tostring(back.whisper_threads))
 end)
 
+-- The snapping keys existed in vo.DEFAULTS before they were in the schema, so
+-- vo.Opt answered with them while LoadConfig did not -- a setting the user could
+-- change and never keep. These two assert the whole path, not just the default.
+test("the snapping settings default to the documented values", function()
+  mock.reset()
+  local cfg = vo.LoadConfig()
+  assert(cfg.snap_boundaries == true, "snap: " .. tostring(cfg.snap_boundaries))
+  assert(math.abs(cfg.snap_min_silence - 0.060) < 1e-9, "min silence: " .. tostring(cfg.snap_min_silence))
+  assert(math.abs(cfg.snap_floor_offset - 6.0) < 1e-9, "offset: " .. tostring(cfg.snap_floor_offset))
+  assert(math.abs(cfg.snap_floor_window - 0.500) < 1e-9, "window: " .. tostring(cfg.snap_floor_window))
+end)
+
+test("the snapping settings round-trip through save and load", function()
+  mock.reset()
+  local cfg = vo.LoadConfig()
+  cfg.snap_boundaries   = false
+  cfg.snap_min_silence  = 0.12
+  cfg.snap_floor_offset = 9.5
+  cfg.snap_floor_window = 0.25
+  vo.SaveConfig(cfg)
+
+  local back = vo.LoadConfig()
+  assert(back.snap_boundaries == false, "snap: " .. tostring(back.snap_boundaries))
+  assert(math.abs(back.snap_min_silence - 0.12) < 1e-9, "min silence: " .. tostring(back.snap_min_silence))
+  assert(math.abs(back.snap_floor_offset - 9.5) < 1e-9, "offset: " .. tostring(back.snap_floor_offset))
+  assert(math.abs(back.snap_floor_window - 0.25) < 1e-9, "window: " .. tostring(back.snap_floor_window))
+end)
+
 test("booleans round-trip rather than becoming truthy strings", function()
   mock.reset()
   local cfg = vo.LoadConfig()
-  cfg.create_regions = true
+  cfg.snap_boundaries = true
   cfg.force_retranscribe = false
   vo.SaveConfig(cfg)
 
   local back = vo.LoadConfig()
-  assert(back.create_regions == true, "create_regions: " .. tostring(back.create_regions))
+  assert(back.snap_boundaries == true, "snap_boundaries: " .. tostring(back.snap_boundaries))
   assert(back.force_retranscribe == false, "force_retranscribe: " .. tostring(back.force_retranscribe))
 end)
 
@@ -1937,6 +3769,14 @@ test("FormatBytes scales into human units", function()
   assert(vo.FormatBytes(677887125) == "646.5 MB", vo.FormatBytes(677887125))
 end)
 
+test("FormatTime reads as a transport position", function()
+  assert(vo.FormatTime(0) == "0:00", vo.FormatTime(0))
+  assert(vo.FormatTime(9.4) == "0:09", vo.FormatTime(9.4))
+  assert(vo.FormatTime(1385.2) == "23:05", vo.FormatTime(1385.2))
+  assert(vo.FormatTime(3725) == "1:02:05", vo.FormatTime(3725))
+  assert(vo.FormatTime(nil) == "0:00", vo.FormatTime(nil))
+end)
+
 --------------------------------
 -- Backend acquisition: paths, size checks, exe locator
 --------------------------------
@@ -2172,7 +4012,7 @@ test("a matched span carries the canonical character; unmatched carries nil", fu
     { t0=0.0, t1=0.4, text="open" }, { t0=0.4, t1=0.8, text="the" }, { t0=0.8, t1=1.2, text="gate" },
     { t0=5.0, t1=5.4, text="slate" },
   }
-  local plan = vo.BuildPlan(lines, words, { accept_threshold=0.5, review_floor=0.3, margin_threshold=0.0, anchor_count=1 })
+  local plan = build_named_plan(lines, words, { accept_threshold=0.5, review_floor=0.3, margin_threshold=0.0, anchor_count=1 })
   local matched, unmatched
   for _, s in ipairs(plan) do
     if s.kind == "match" then matched = s elseif s.kind == "unmatched" then unmatched = s end
@@ -2242,55 +4082,89 @@ test("a zero-length span is skipped and never sweeps the rest of the item", func
   -- stop, exactly what neighbour-clamping produced in the field), then another
   -- normal clip after it.
   local plan = {
-    { start = 10, stop = 20, dest = "selects", name = "A", kind = "match" },
-    { start = 50, stop = 50, dest = "selects", name = "Z", kind = "match" },
-    { start = 60, stop = 70, dest = "selects", name = "B", kind = "match" },
+    { start = 10, stop = 20, dest = "selects", asset = "A", name = "A", kind = "match" },
+    { start = 50, stop = 50, dest = "selects", asset = "Z", name = "Z", kind = "match" },
+    { start = 60, stop = 70, dest = "selects", asset = "B", name = "B", kind = "match" },
   }
   local cfg = { track_selects = "Selects", track_alts = "Alts", track_review = "Review" }
 
-  local applied, failures = vo.ApplyPlan(plan, cfg, raw)
+  local applied, failures = vo.ApplyPlan(plan, raw)
 
-  local function track_by_name(nm)
-    for _, t in ipairs(mock.tracks) do if t.name == nm then return t end end
-  end
-  local selects = track_by_name("Selects")
-  assert(selects, "Selects track should have been created")
+  -- Cutting moves nothing and creates no track: where a take goes is Pull's
+  -- question, and it is answered from the name, not from this plan.
+  assert(#mock.tracks == 1, "Cutting must create no tracks, got " .. #mock.tracks)
 
   -- Both real spans are cut; the degenerate one is not.
   assert(applied == 2, "Expected 2 clips applied, got " .. tostring(applied))
 
-  -- No clip on any created track may exceed the longest real span (10s). The
-  -- bug moved the whole 50..100 tail as a single 50s item.
-  for _, t in ipairs(mock.tracks) do
-    if t ~= raw then
-      for _, it in ipairs(t.items or {}) do
-        assert(it.info.D_LENGTH <= 10 + 1e-6, string.format(
-          "clip on %s is %.1fs long — the tail was swept", t.name, it.info.D_LENGTH))
-      end
-    end
-  end
-
-  -- The clip AFTER the degenerate span must exist: proof the tail survived so
-  -- later spans could still be cut.
+  -- No piece may exceed the longest real span (10s) apart from the leftovers
+  -- between them. The bug left the whole 50..100 tail welded as one item, so
+  -- the check that matters is that the piece at 60 exists at its own length.
   local found_b = false
-  for _, it in ipairs(selects.items) do
+  for _, it in ipairs(raw.items) do
     if math.abs(it.info.D_POSITION - 60) < 1e-6 and math.abs(it.info.D_LENGTH - 10) < 1e-6 then
       found_b = true
     end
   end
   assert(found_b, "The clip after the zero-length span was never cut")
 
-  -- The source item's tail (up to 100) is still on Raw.
+  -- Everything is still on Raw, and the tail still reaches 100.
   local raw_end = 0
   for _, it in ipairs(raw.items) do
     raw_end = math.max(raw_end, it.info.D_POSITION + it.info.D_LENGTH)
   end
-  assert(math.abs(raw_end - 100) < 1e-6, "Raw tail was moved away; last end = " .. raw_end)
+  assert(math.abs(raw_end - 100) < 1e-6, "Raw tail was lost; last end = " .. raw_end)
 
   -- The degenerate span is reported, not silently dropped.
   local reported = false
   for _, f in ipairs(failures) do if f:find('"Z"') or f:find("Z:") then reported = true end end
   assert(reported, "The skipped zero-length span should be reported")
+end)
+
+test("a take is named the line's delivered name, not the bare filename", function()
+  -- Two script lines sharing a filename are separated by their Appends. The
+  -- name written on the take is the assignment (nothing else stores one), so
+  -- writing the bare shared filename would leave the take claimed by two lines
+  -- at once -- unresolvable by Pull, Sort and the checker no matter what the
+  -- user types afterwards. Takes of ONE line still collide by design: the
+  -- delivered name carries no take number.
+  mock.reset()
+  local raw = { info = {}, name = "Raw", items = {} }
+  raw.items[1] = {
+    info  = { D_POSITION = 0, D_LENGTH = 100 },
+    take  = { info = {}, source = "mock_source" },
+    track = raw,
+  }
+  mock.tracks = { raw }
+
+  local plan = {
+    { start = 10, stop = 20, dest = "selects", kind = "match",
+      asset = "shared", deliver = "shared_greeting", name = "shared_greeting" },
+    { start = 60, stop = 70, dest = "selects", kind = "match",
+      asset = "shared", deliver = "shared_death", name = "shared_death" },
+  }
+  local applied = vo.ApplyPlan(plan, raw)
+  assert(applied == 2, "Expected 2 clips applied, got " .. tostring(applied))
+
+  local names = {}
+  for _, it in ipairs(raw.items) do
+    if it.take and it.take.name then names[it.take.name] = true end
+  end
+  assert(names["shared_greeting"], "The greeting line's take carries its Append")
+  assert(names["shared_death"],    "The death line's take carries its Append")
+  assert(not names["shared"], "No take may carry the ambiguous bare name")
+
+  -- Every cut clip carries the protective fades: short in, longer out.
+  local faded = 0
+  for _, it in ipairs(raw.items) do
+    if it.take and it.take.name and it.take.name:find("^shared_") then
+      assert((it.info.D_FADEINLEN or 0) > 0, "cut clip missing fade-in")
+      assert((it.info.D_FADEOUTLEN or 0) > (it.info.D_FADEINLEN or 0),
+        "fade-out should be longer than fade-in")
+      faded = faded + 1
+    end
+  end
+  assert(faded == 2, "expected both clips faded, got " .. faded)
 end)
 
 test("an unmatched span is neither split nor moved", function()
@@ -2314,7 +4188,7 @@ test("an unmatched span is neither split nor moved", function()
   }
   local cfg = { track_selects = "Selects", track_alts = "Alts", track_review = "Review" }
 
-  local applied, failures = vo.ApplyPlan(plan, cfg, raw)
+  local applied, failures = vo.ApplyPlan(plan, raw)
 
   local function track_by_name(nm)
     for _, t in ipairs(mock.tracks) do if t.name == nm then return t end end
@@ -2356,38 +4230,6 @@ test("an unmatched span is neither split nor moved", function()
   end
 end)
 
---------------------------------
--- SidecarPath
---------------------------------
-print("\nSidecarPath:")
-
-test("the final extension is replaced with the sidecar suffix", function()
-  assert(vo.SidecarPath("D:/audio/RIVA_session.wav") == "D:/audio/RIVA_session_vo_report.csv",
-    "Got: " .. tostring(vo.SidecarPath("D:/audio/RIVA_session.wav")))
-end)
-
-test("a path with no extension just gains the suffix", function()
-  assert(vo.SidecarPath("D:/audio/RIVA") == "D:/audio/RIVA_vo_report.csv",
-    "Got: " .. tostring(vo.SidecarPath("D:/audio/RIVA")))
-end)
-
-test("a dot in a directory name is not mistaken for an extension", function()
-  assert(vo.SidecarPath("D:/my.session/RIVA") == "D:/my.session/RIVA_vo_report.csv",
-    "Got: " .. tostring(vo.SidecarPath("D:/my.session/RIVA")))
-end)
-
-test("a backslash path is handled", function()
-  assert(vo.SidecarPath("D:\\audio\\RIVA.wav") == "D:\\audio\\RIVA_vo_report.csv",
-    "Got: " .. tostring(vo.SidecarPath("D:\\audio\\RIVA.wav")))
-end)
-
-test("nil and empty input return nil", function()
-  assert(vo.SidecarPath(nil) == nil, "nil should return nil")
-  assert(vo.SidecarPath("") == nil, "empty should return nil")
-end)
-
---------------------------------
--- Project/source time conversion
 --------------------------------
 print("\nProject/source time conversion:")
 
@@ -2431,177 +4273,9 @@ test("a playrate of zero or less is treated as 1.0", function()
 end)
 
 --------------------------------
--- PartitionPlanBySource
+-- FormatCutSummary — inline, non-modal Cut summary
 --------------------------------
-print("\nPartitionPlanBySource:")
-
--- Two items on the timeline, drawn from two different source files.
-local function two_source_items()
-  return {
-    { path = "A.wav", pos = 0,  length = 10, start_offs = 0, playrate = 1.0 },
-    { path = "B.wav", pos = 20, length = 10, start_offs = 0, playrate = 1.0 },
-  }
-end
-
-test("spans are grouped by the source of the item containing them", function()
-  local plan = {
-    { start = 1, stop = 2,  kind = "match", asset = "a" },
-    { start = 21, stop = 22, kind = "match", asset = "b" },
-  }
-  local by_source = vo.PartitionPlanBySource(plan, two_source_items())
-  assert(#by_source["A.wav"] == 1, "A.wav: " .. #(by_source["A.wav"] or {}))
-  assert(#by_source["B.wav"] == 1, "B.wav: " .. #(by_source["B.wav"] or {}))
-  assert(by_source["A.wav"][1].asset == "a", "Wrong span in A.wav")
-  assert(by_source["B.wav"][1].asset == "b", "Wrong span in B.wav")
-end)
-
-test("partitioned spans are converted to source time", function()
-  local plan = { { start = 21, stop = 22, kind = "match", asset = "b" } }
-  local by_source = vo.PartitionPlanBySource(plan, two_source_items())
-  -- Item B sits at project 20s with no offset, so project 21s is source 1s.
-  assert(near(by_source["B.wav"][1].start, 1.0), "start: " .. by_source["B.wav"][1].start)
-  assert(near(by_source["B.wav"][1].stop, 2.0), "stop: " .. by_source["B.wav"][1].stop)
-end)
-
-test("the input plan is not mutated", function()
-  local plan = { { start = 21, stop = 22, kind = "match", asset = "b" } }
-  vo.PartitionPlanBySource(plan, two_source_items())
-  assert(near(plan[1].start, 21), "Input span was mutated: " .. plan[1].start)
-end)
-
-test("a span inside no item is omitted", function()
-  local plan = { { start = 15, stop = 16, kind = "match", asset = "gap" } }
-  local by_source = vo.PartitionPlanBySource(plan, two_source_items())
-  assert(by_source["A.wav"] == nil, "A.wav should have no entry")
-  assert(by_source["B.wav"] == nil, "B.wav should have no entry")
-end)
-
-test("two items sharing one source produce one group", function()
-  local items = {
-    { path = "A.wav", pos = 0,  length = 10, start_offs = 0,  playrate = 1.0 },
-    { path = "A.wav", pos = 20, length = 10, start_offs = 30, playrate = 1.0 },
-  }
-  local plan = {
-    { start = 1,  stop = 2,  kind = "match", asset = "a" },
-    { start = 21, stop = 22, kind = "match", asset = "b" },
-  }
-  local by_source = vo.PartitionPlanBySource(plan, items)
-  assert(#by_source["A.wav"] == 2, "Expected 2 spans in A.wav, got " .. #by_source["A.wav"])
-  -- The second item plays the source from 30s, so project 21s is source 31s.
-  assert(near(by_source["A.wav"][2].start, 31.0), "start: " .. by_source["A.wav"][2].start)
-end)
-
-test("assignment uses the span midpoint, matching ClampSpansToItems", function()
-  -- A span starting before item A but centred inside it belongs to A.
-  local plan = { { start = -1, stop = 3, kind = "match", asset = "a" } }
-  local by_source = vo.PartitionPlanBySource(plan, two_source_items())
-  assert(by_source["A.wav"] and #by_source["A.wav"] == 1, "Midpoint 1.0s should land in A.wav")
-end)
-
-test("items with no path are skipped", function()
-  local items = { { pos = 0, length = 10, start_offs = 0, playrate = 1.0 } }
-  local by_source = vo.PartitionPlanBySource({ { start = 1, stop = 2 } }, items)
-  assert(next(by_source) == nil, "A pathless item should produce no groups")
-end)
-
---------------------------------
--- SpansBySourcePath
---------------------------------
-print("\nSpansBySourcePath:")
-
-test("spans are grouped by source and left in project time", function()
-  local plan = {
-    { start = 1,  stop = 2,  kind = "match", asset = "a" },
-    { start = 21, stop = 22, kind = "match", asset = "b" },
-  }
-  local by_path = vo.SpansBySourcePath(plan, two_source_items())
-  assert(#by_path["A.wav"] == 1, "A.wav: " .. #(by_path["A.wav"] or {}))
-  assert(near(by_path["B.wav"][1].start, 21.0),
-    "B.wav span must stay in project time, got " .. by_path["B.wav"][1].start)
-end)
-
-test("a source with no spans has no entry", function()
-  local plan = { { start = 1, stop = 2, kind = "match", asset = "a" } }
-  local by_path = vo.SpansBySourcePath(plan, two_source_items())
-  assert(by_path["B.wav"] == nil, "B.wav should have no entry")
-end)
-
---------------------------------
--- SourcesNeedingTranscription
---------------------------------
-print("\nSourcesNeedingTranscription:")
-
-test("only the source without a result is returned", function()
-  -- A has a sidecar span, B has none: paying whisper time for B alone is the
-  -- whole point, and the old global 'any plan at all' test skipped B too.
-  local plan = { { start = 1, stop = 2, kind = "match", asset = "a" } }
-  local need = vo.SourcesNeedingTranscription(plan, {}, two_source_items())
-  assert(#need == 1, "Expected 1, got " .. #need)
-  assert(need[1] == "B.wav", "Expected B.wav, got " .. tostring(need[1]))
-end)
-
-test("a stale source is returned even though it has spans", function()
-  local plan = {
-    { start = 1,  stop = 2,  kind = "match", asset = "a" },
-    { start = 21, stop = 22, kind = "match", asset = "b" },
-  }
-  local need = vo.SourcesNeedingTranscription(plan, { "A.wav" }, two_source_items())
-  assert(#need == 1, "Expected 1, got " .. #need)
-  assert(need[1] == "A.wav", "Expected A.wav, got " .. tostring(need[1]))
-end)
-
-test("a source whose sidecar yielded zero spans is returned", function()
-  local need = vo.SourcesNeedingTranscription({}, {}, two_source_items())
-  assert(#need == 2, "Expected both sources, got " .. #need)
-end)
-
-test("all sources fresh returns nothing", function()
-  local plan = {
-    { start = 1,  stop = 2,  kind = "match", asset = "a" },
-    { start = 21, stop = 22, kind = "match", asset = "b" },
-  }
-  local need = vo.SourcesNeedingTranscription(plan, {}, two_source_items())
-  assert(#need == 0, "Expected none, got " .. #need)
-end)
-
-test("four fresh sidecars do not vouch for a fifth source", function()
-  local items, plan = {}, {}
-  for i = 1, 4 do
-    items[i] = { path = "S" .. i .. ".wav", pos = (i - 1) * 10, length = 10,
-                 start_offs = 0, playrate = 1.0 }
-    plan[i]  = { start = (i - 1) * 10 + 1, stop = (i - 1) * 10 + 2,
-                 kind = "match", asset = "a" .. i }
-  end
-  items[5] = { path = "S5.wav", pos = 40, length = 10, start_offs = 0, playrate = 1.0 }
-  local need = vo.SourcesNeedingTranscription(plan, {}, items)
-  assert(#need == 1, "Expected only S5.wav, got " .. #need)
-  assert(need[1] == "S5.wav", "Expected S5.wav, got " .. tostring(need[1]))
-end)
-
-test("staleness is keyed by full path, not basename", function()
-  local items = {
-    { path = "/one/VO_take.wav", pos = 0,  length = 10, start_offs = 0, playrate = 1.0 },
-    { path = "/two/VO_take.wav", pos = 20, length = 10, start_offs = 0, playrate = 1.0 },
-  }
-  local plan = {
-    { start = 1,  stop = 2,  kind = "match", asset = "a" },
-    { start = 21, stop = 22, kind = "match", asset = "b" },
-  }
-  local need = vo.SourcesNeedingTranscription(plan, { "/one/VO_take.wav" }, items)
-  assert(#need == 1, "A same-named source in another folder must not be dragged in: " .. #need)
-  assert(need[1] == "/one/VO_take.wav", "Got " .. tostring(need[1]))
-end)
-
-test("each source is returned once however many items reference it", function()
-  local items = {
-    { path = "A.wav", pos = 0,  length = 10, start_offs = 0,  playrate = 1.0 },
-    { path = "A.wav", pos = 20, length = 10, start_offs = 30, playrate = 1.0 },
-  }
-  local need = vo.SourcesNeedingTranscription(nil, nil, items)
-  assert(#need == 1, "Expected 1, got " .. #need)
-end)
-
--- FormatCutSummary (Task 8: inline, non-modal Cut summary) ------------------
+print("\nFormatCutSummary:")
 
 test("counts and clips-cut always produce exactly two non-warning lines", function()
   local plan = {
@@ -2741,84 +4415,6 @@ test("no items yields no ranges", function()
 end)
 
 --------------------------------
-print("\nMergeSidecarSpans:")
-
--- The regression this whole function exists for: RIVA.wav is cut into three
--- timeline items and transcribed as one 60-span sidecar; the user then selects
--- only the FIRST item and presses Cut. Before the merge, the rewrite kept only
--- the 20 spans inside item 1 and the other 40 were erased from disk for good.
-test("spans outside every covered range survive the write", function()
-  local disk = {}
-  for i = 1, 6 do disk[i] = { start = i * 10, stop = i * 10 + 2, asset = "L00" .. i } end
-  local ranges = vo.SourceCoverageRanges({ item_at(0, 25) }) -- source 0..25s
-  local new    = { { start = 11, stop = 13, asset = "L001", kind = "match" } }
-  local merged, preserved = vo.MergeSidecarSpans(new, disk, ranges)
-  assert(preserved == 4, "Expected 4 out-of-range spans preserved, got " .. preserved)
-  assert(#merged == 5, "Expected 1 new + 4 preserved = 5, got " .. #merged)
-end)
-
-test("a disk span inside a covered range is superseded, not duplicated", function()
-  local disk   = { { start = 1.0, stop = 2.0, asset = "L001", kind = "review" } }
-  local ranges = vo.SourceCoverageRanges({ item_at(0, 10) })
-  local new    = { { start = 1.0, stop = 2.0, asset = "L001", kind = "match" } }
-  local merged, preserved = vo.MergeSidecarSpans(new, disk, ranges)
-  assert(preserved == 0, "A covered disk span must not be preserved, got " .. preserved)
-  assert(#merged == 1, "Expected exactly the new span, got " .. #merged)
-  assert(merged[1].kind == "match", "The new span must win, got " .. tostring(merged[1].kind))
-end)
-
-test("a re-transcription that finds fewer spans still shrinks the covered region", function()
-  local disk   = { { start = 1, stop = 2 }, { start = 3, stop = 4 }, { start = 5, stop = 6 } }
-  local ranges = vo.SourceCoverageRanges({ item_at(0, 10) })
-  local merged = vo.MergeSidecarSpans({ { start = 1, stop = 6 } }, disk, ranges)
-  assert(#merged == 1, "Expected the covered region to be replaced wholesale, got " .. #merged)
-end)
-
-test("the merged result is sorted by start", function()
-  local disk   = { { start = 90, stop = 91 }, { start = 50, stop = 51 } }
-  local ranges = vo.SourceCoverageRanges({ item_at(0, 10) })
-  local merged = vo.MergeSidecarSpans({ { start = 70, stop = 71 } }, disk, ranges)
-  assert(#merged == 3, "Expected 3, got " .. #merged)
-  assert(merged[1].start == 50 and merged[2].start == 70 and merged[3].start == 90,
-    "Out of order: " .. merged[1].start .. "," .. merged[2].start .. "," .. merged[3].start)
-end)
-
-test("membership is decided by midpoint, matching every other placement rule", function()
-  -- Starts inside the range, ends well outside: the midpoint is outside, so the
-  -- span belongs to a region this write could not see and must be kept.
-  local disk   = { { start = 9, stop = 21 } }
-  local ranges = vo.SourceCoverageRanges({ item_at(0, 10) })
-  local _, preserved = vo.MergeSidecarSpans({}, disk, ranges)
-  assert(preserved == 1, "Expected the span to be preserved, got " .. preserved)
-end)
-
-test("no ranges at all preserves every disk span", function()
-  local disk = { { start = 1, stop = 2 }, { start = 3, stop = 4 } }
-  local merged, preserved = vo.MergeSidecarSpans({}, disk, {})
-  assert(preserved == 2 and #merged == 2, "Expected both preserved, got " .. preserved)
-end)
-
-test("an empty disk side is a plain passthrough of the new spans", function()
-  local new = { { start = 1, stop = 2 } }
-  local merged, preserved = vo.MergeSidecarSpans(new, {}, vo.SourceCoverageRanges({ item_at(0, 10) }))
-  assert(preserved == 0 and #merged == 1, "Expected the new span alone")
-end)
-
-test("nil arguments are inert, never an error", function()
-  local merged, preserved = vo.MergeSidecarSpans(nil, nil, nil)
-  assert(#merged == 0 and preserved == 0, "Expected an empty merge")
-end)
-
-test("several items on one source cover several disjoint stretches", function()
-  -- Two items playing 0..5s and 40..45s of the same recording; a span at 20s
-  -- sits in the gap between them and must survive.
-  local ranges = vo.SourceCoverageRanges({ item_at(0, 5, 0), item_at(100, 5, 40) })
-  local disk   = { { start = 1, stop = 2 }, { start = 20, stop = 21 }, { start = 41, stop = 42 } }
-  local _, preserved = vo.MergeSidecarSpans({}, disk, ranges)
-  assert(preserved == 1, "Only the gap span may be preserved, got " .. preserved)
-end)
-
---------------------------------
 print("\nDistinctTrackCount:")
 
 test("items on one track count as one", function()
@@ -2839,22 +4435,22 @@ test("no items, or items with no track, count as zero", function()
 end)
 
 --------------------------------
-print("\nTrackerPath / OverviewKey:")
+print("\nProjectFilePath / OverviewKey:")
 
-test("the tracker sits beside the project, one per project", function()
-  assert(vo.TrackerPath("D:\\Session\\Ep01.rpp") == "D:\\Session\\Ep01_vo_tracker.csv",
-    "Got " .. tostring(vo.TrackerPath("D:\\Session\\Ep01.rpp")))
-  assert(vo.TrackerPath("/mix/Ep01.RPP") == "/mix/Ep01_vo_tracker.csv")
+test("the project file sits beside the project, one per project", function()
+  assert(vo.ProjectFilePath("D:\\Session\\Ep01.rpp") == "D:\\Session\\Ep01_vo.csv",
+    "Got " .. tostring(vo.ProjectFilePath("D:\\Session\\Ep01.rpp")))
+  assert(vo.ProjectFilePath("/mix/Ep01.RPP") == "/mix/Ep01_vo.csv")
 end)
 
 test("only the final extension is stripped, dots in directories are safe", function()
-  assert(vo.TrackerPath("D:\\v1.2\\Ep01.rpp") == "D:\\v1.2\\Ep01_vo_tracker.csv",
-    "Got " .. tostring(vo.TrackerPath("D:\\v1.2\\Ep01.rpp")))
+  assert(vo.ProjectFilePath("D:\\v1.2\\Ep01.rpp") == "D:\\v1.2\\Ep01_vo.csv",
+    "Got " .. tostring(vo.ProjectFilePath("D:\\v1.2\\Ep01.rpp")))
 end)
 
-test("an empty or missing project path yields no tracker path", function()
-  assert(vo.TrackerPath(nil) == nil, "nil in, nil out")
-  assert(vo.TrackerPath("") == nil, "empty in, nil out")
+test("an empty or missing project path yields no project file path", function()
+  assert(vo.ProjectFilePath(nil) == nil, "nil in, nil out")
+  assert(vo.ProjectFilePath("") == nil, "empty in, nil out")
 end)
 
 test("an audio row keys on basename and milliseconds", function()
@@ -2868,16 +4464,23 @@ test("a script-only row keys on its filename", function()
   assert(vo.OverviewKey(nil, nil, "vo_guard_bark_01") == "|vo_guard_bark_01")
 end)
 
-test("keys round to the millisecond the sidecar actually stores", function()
+test("keys round to the millisecond the transcript actually stores", function()
   assert(vo.OverviewKey("a.wav", 1.2304, "x") == "a.wav|1230")
   assert(vo.OverviewKey("a.wav", 1.2306, "x") == "a.wav|1231")
 end)
 
 --------------------------------
-print("\nSerializeTracker / ParseTracker:")
+print("\nSerializeProjectFile / ParseProjectFile:")
 
-local function round_trip(entries)
-  local parsed, err = vo.ParseTracker(vo.SerializeTracker(entries))
+local PF_HEADER = "Key,Filename,Source,Source start,Select,Status,Name override,Notes"
+
+local function pf_meta()
+  return { scripts = { { path = "D:\\S\\script.csv", enabled = true,
+      mapping = { asset = "Filename", text = "Line Text", speaker = "Character" } } } }
+end
+
+local function round_trip(entries, meta)
+  local parsed, err = vo.ParseProjectFile(vo.SerializeProjectFile(entries, meta or pf_meta()))
   assert(parsed, "Round trip failed: " .. tostring(err))
   return parsed
 end
@@ -2885,19 +4488,288 @@ end
 test("a full entry survives the round trip", function()
   local out = round_trip({
     { key = "RIVA.wav|1230", source = "D:\\S\\RIVA.wav", source_start = 1.23,
-      asset = "vo_guard_halt_01", status = "verified",
-      name_override = "vo_guard_halt_01_alt", notes = "great read", primary = true },
+      asset = "vo_guard_halt_01", select = true, status = "verified",
+      name_override = "vo_guard_halt_01_alt", notes = "great read" },
   })
-  assert(#out == 1, "Expected 1 entry, got " .. #out)
-  local e = out[1]
+  assert(#out.entries == 1, "Expected 1 entry, got " .. #out.entries)
+  local e = out.entries[1]
   assert(e.key == "RIVA.wav|1230", "key")
   assert(e.source == "D:\\S\\RIVA.wav", "source")
   assert(math.abs(e.source_start - 1.23) < 1e-6, "source_start")
   assert(e.asset == "vo_guard_halt_01", "asset")
+  assert(e.select == true, "select")
   assert(e.status == "verified", "status")
   assert(e.name_override == "vo_guard_halt_01_alt", "name_override")
   assert(e.notes == "great read", "notes")
-  assert(e.primary == true, "primary")
+end)
+
+test("Sel and Keep round-trip as independent ticks", function()
+  local out = round_trip({
+    { key = "A.wav|1000", asset = "line_042", select = true },
+    { key = "A.wav|2000", asset = "line_042", keep = true },
+    { key = "A.wav|3000", asset = "line_042", select = true, keep = true },
+    { key = "A.wav|4000", asset = "line_042", notes = "spare" },
+  })
+  assert(out.entries[1].select == true and not out.entries[1].keep, "select alone")
+  assert(out.entries[2].keep == true and not out.entries[2].select, "keep alone")
+  assert(out.entries[3].select == true and out.entries[3].keep == true, "both")
+  assert(not out.entries[4].select and not out.entries[4].keep, "neither")
+end)
+
+test("a Keep alone counts as user work", function()
+  local out = round_trip({ { key = "A.wav|1", asset = "x", keep = true } })
+  assert(#out.entries == 1, "a keep is a judgement and must be written")
+end)
+
+test("a file written before Keep had a column still reads its marks", function()
+  -- 0.13 briefly wrote "alt" in the Select field, before the cycling mark was
+  -- split into two ticks. It reads as a Keep, so that work survives.
+  local text = table.concat({
+    "ajsfx VO Project,1", "", PF_HEADER,
+    "A.wav|1000,line_042,D:\\A.wav,1.000,yes,,,",
+    "A.wav|2000,line_042,D:\\A.wav,2.000,alt,,,",
+    "A.wav|3000,line_042,D:\\A.wav,3.000,,,,x",
+  }, "\n")
+  local out = vo.ParseProjectFile(text)
+  assert(out, "must parse")
+  assert(out.entries[1].select == true, "yes still means Sel")
+  assert(out.entries[2].keep == true and not out.entries[2].select,
+    "the old alt becomes a Keep")
+  assert(not out.entries[3].select and not out.entries[3].keep, "empty is unticked")
+end)
+
+test("the script path and mapping survive the round trip", function()
+  local out = round_trip({})
+  local sc = out.scripts[1]
+  assert(sc.path == "D:\\S\\script.csv", "path: " .. tostring(sc.path))
+  assert(sc.mapping.asset == "Filename", "mapping asset")
+  assert(sc.mapping.text == "Line Text", "mapping text")
+  assert(sc.mapping.speaker == "Character", "mapping speaker")
+end)
+
+test("the filters survive the round trip", function()
+  local out = round_trip({}, { scripts = {}, view = {
+    character = "Meris", search = "halt", filter_row = true,
+    col_filters = { asset = "guard", line_text = "halt, now" },
+  } })
+  local v = out.view
+  assert(v.character == "Meris", "character: " .. tostring(v.character))
+  assert(v.search == "halt", "search: " .. tostring(v.search))
+  assert(v.filter_row == true, "filter_row")
+  assert(v.col_filters.asset == "guard", "column filter")
+  assert(v.col_filters.line_text == "halt, now", "a filter containing a comma")
+end)
+
+test("a character whose name is a CSV nightmare survives", function()
+  local out = round_trip({}, { scripts = {},
+    view = { character = 'MERIS, "the fixer"' } })
+  assert(out.view.character == 'MERIS, "the fixer"',
+    "Got " .. tostring(out.view.character))
+end)
+
+test("a view with nothing filtered writes no View rows", function()
+  local text = vo.SerializeProjectFile({}, { scripts = {}, view = {
+    search = "", filter_row = false, col_filters = { asset = "" } } })
+  assert(not text:find("View", 1, true), "An unfiltered table must add nothing:\n" .. text)
+end)
+
+test("a project file with no View rows loads with no filters", function()
+  local out = round_trip({})
+  assert(out.view, "view must always be present, even empty")
+  assert(out.view.character == nil and out.view.search == nil, "no stored filters")
+  assert(next(out.view.col_filters) == nil, "no stored column filters")
+end)
+
+test("a script CSV path containing a comma survives", function()
+  local out = round_trip({}, { scripts = {
+    { path = "D:\\S\\ep1, final.csv", mapping = {}, enabled = true } } })
+  assert(out.scripts[1].path == "D:\\S\\ep1, final.csv",
+    "Got " .. tostring(out.scripts[1].path))
+end)
+
+test("scripts round-trip with their mapping and enabled flag", function()
+  local text = vo.SerializeProjectFile({}, { scripts = {
+    { path = "D:/g/Ch2.csv", mapping = { asset = "File", text = "Line" }, enabled = true },
+    { path = "D:/g/Ch5.csv", mapping = { asset = "Fn" },                  enabled = false },
+  } })
+  local p = assert(vo.ParseProjectFile(text), "Should parse")
+  assert(#p.scripts == 2, "Expected 2 scripts, got " .. #p.scripts)
+  assert(p.scripts[1].path == "D:/g/Ch2.csv", "Got " .. tostring(p.scripts[1].path))
+  assert(p.scripts[1].mapping.asset == "File", "Mapping lost")
+  assert(p.scripts[1].enabled == true, "Enabled lost")
+  assert(p.scripts[2].enabled == false, "Disabled lost")
+end)
+
+test("appends round-trip", function()
+  local text = vo.SerializeProjectFile({}, {
+    scripts = { { path = "D:/g/Ch2.csv", mapping = {}, enabled = true } },
+    appends = { { script = "Ch2", asset = "line_042", nth = 2, text = "_take" } },
+  })
+  local p = assert(vo.ParseProjectFile(text), "Should parse")
+  assert(#p.appends == 1, "Expected 1 append, got " .. #p.appends)
+  assert(p.appends[1].script == "Ch2", "script lost")
+  assert(p.appends[1].asset == "line_042", "asset lost")
+  assert(p.appends[1].nth == 2, "nth lost or not a number: " .. tostring(p.appends[1].nth))
+  assert(p.appends[1].text == "_take", "text lost")
+end)
+
+test("an append naming an absent script survives a rewrite", function()
+  local first = vo.SerializeProjectFile({}, {
+    scripts = {},
+    appends = { { script = "Removed", asset = "a", nth = 1, text = "_x" } },
+  })
+  local p = assert(vo.ParseProjectFile(first), "Should parse")
+  assert(#p.appends == 1, "Removing a script must not lose its appends")
+end)
+
+test("a file from the previous version parses into one enabled script", function()
+  local old = table.concat({
+    vo.FormatCSVRow({ vo.PROJECT_MARKER, "1" }),
+    vo.FormatCSVRow({ "Script CSV", "D:/g/Only.csv" }),
+    vo.FormatCSVRow({ "Mapping", "asset=Filename;text=Line" }),
+    "",
+    vo.FormatCSVRow(vo.PROJECT_HEADER),
+  }, "\n") .. "\n"
+  local p = assert(vo.ParseProjectFile(old), "The old format must still open")
+  assert(#p.scripts == 1, "Expected 1 script, got " .. #p.scripts)
+  assert(p.scripts[1].path == "D:/g/Only.csv", "Path lost")
+  assert(p.scripts[1].mapping.asset == "Filename", "Mapping lost")
+  assert(p.scripts[1].enabled == true, "A migrated script is enabled")
+end)
+
+test("a new-format file ignores a stray old-format row", function()
+  local text = table.concat({
+    vo.FormatCSVRow({ vo.PROJECT_MARKER, "1" }),
+    vo.FormatCSVRow({ "Script CSV", "D:/g/Stale.csv" }),
+    vo.FormatCSVRow({ "Script", "D:/g/Real.csv", "asset=F", "yes" }),
+    "",
+    vo.FormatCSVRow(vo.PROJECT_HEADER),
+  }, "\n") .. "\n"
+  local p = assert(vo.ParseProjectFile(text), "Should parse")
+  assert(#p.scripts == 1 and p.scripts[1].path == "D:/g/Real.csv",
+    "An explicit Script row wins over the legacy fallback")
+end)
+
+test("entries still round-trip alongside the new rows", function()
+  local text = vo.SerializeProjectFile(
+    { { key = "a.wav|1500", source = "D:/a.wav", source_start = 1.5,
+        asset = "line_1", select = true } },
+    { scripts = { { path = "D:/g/Ch2.csv", mapping = {}, enabled = true } } })
+  local p = assert(vo.ParseProjectFile(text), "Should parse")
+  assert(#p.entries == 1 and p.entries[1].select == true, "Entry rows must be unharmed")
+end)
+
+--------------------------------
+-- LoadScripts
+--------------------------------
+print("\nLoadScripts:")
+
+local CSV_A = "Filename,Line\nline_a,Alpha\nline_b,Bravo\n"
+local CSV_B = "Filename,Line\nline_c,Charlie\n"
+
+local function reader(files)
+  return function(path) return files[path] end
+end
+
+test("two readable scripts merge into one line list", function()
+  local got = vo.LoadScripts(
+    { { path = "a.csv", mapping = { asset = "Filename", text = "Line" }, enabled = true },
+      { path = "b.csv", mapping = { asset = "Filename", text = "Line" }, enabled = true } },
+    reader({ ["a.csv"] = CSV_A, ["b.csv"] = CSV_B }))
+  assert(#got.lines == 3, "Expected 3 lines, got " .. #got.lines)
+  assert(got.lines[3].asset == "line_c", "Order is script-then-row")
+end)
+
+test("each script gets a label from its path", function()
+  local got = vo.LoadScripts(
+    { { path = "D:/g/Ch2.csv", mapping = { asset = "Filename", text = "Line" } } },
+    reader({ ["D:/g/Ch2.csv"] = CSV_A }))
+  assert(got.scripts[1].label == "Ch2", "Got " .. tostring(got.scripts[1].label))
+  assert(got.lines[1].script == "Ch2", "Lines carry the label")
+end)
+
+test("an unreadable script errors alone and the rest still load", function()
+  local got = vo.LoadScripts(
+    { { path = "gone.csv", mapping = { asset = "Filename", text = "Line" } },
+      { path = "b.csv",    mapping = { asset = "Filename", text = "Line" } } },
+    reader({ ["b.csv"] = CSV_B }))
+  assert(got.scripts[1].error ~= nil and got.scripts[1].error ~= "",
+    "The missing file must carry a reason")
+  assert(#got.lines == 1 and got.lines[1].asset == "line_c",
+    "The readable script must still contribute")
+end)
+
+test("a script with no mapping errors rather than silently matching nothing", function()
+  local got = vo.LoadScripts({ { path = "a.csv", mapping = {} } },
+                             reader({ ["a.csv"] = CSV_A }))
+  assert(got.scripts[1].error ~= nil and got.scripts[1].error ~= "",
+    "An unmapped script must say so")
+  assert(#got.lines == 0, "It must contribute no lines")
+end)
+
+test("an empty CSV errors", function()
+  local got = vo.LoadScripts(
+    { { path = "e.csv", mapping = { asset = "Filename", text = "Line" } } },
+    reader({ ["e.csv"] = "" }))
+  assert(got.scripts[1].error ~= nil and got.scripts[1].error ~= "", "Expected an error")
+end)
+
+test("a header-only CSV errors but keeps its header for the column pickers", function()
+  local got = vo.LoadScripts(
+    { { path = "h.csv", mapping = { asset = "Filename", text = "Line" } } },
+    reader({ ["h.csv"] = "Filename,Line\n" }))
+  assert(got.scripts[1].error ~= nil and got.scripts[1].error ~= "", "Expected an error")
+  assert(got.scripts[1].header and got.scripts[1].header[1] == "Filename",
+    "The header must survive so the mapping combos can still be used")
+end)
+
+test("a disabled script is loaded but contributes no lines", function()
+  local got = vo.LoadScripts(
+    { { path = "a.csv", mapping = { asset = "Filename", text = "Line" }, enabled = false } },
+    reader({ ["a.csv"] = CSV_A }))
+  assert(got.scripts[1].header ~= nil,
+    "A disabled script is still read, so it can be re-enabled")
+  assert(#got.lines == 0, "It contributes nothing while off")
+end)
+
+--------------------------------
+-- deliver threading
+--------------------------------
+print("\ndeliver threading:")
+
+test("AssignNames names a take from deliver, not from asset", function()
+  local spans = { { kind = "match", asset = "line_042", deliver = "line_042_ch2",
+                    start = 0, stop = 1, select = true } }
+  vo.AssignNames(spans, {})
+  assert(spans[1].name and spans[1].name:find("line_042_ch2", 1, true),
+    "Got " .. tostring(spans[1].name))
+end)
+
+test("AssignNames falls back to asset when there is no deliver", function()
+  local spans = { { kind = "match", asset = "line_042", start = 0, stop = 1,
+                    select = true } }
+  vo.AssignNames(spans, {})
+  assert(spans[1].name and spans[1].name:find("line_042", 1, true),
+    "Got " .. tostring(spans[1].name))
+end)
+
+test("overview rows carry the line's identity and delivered name", function()
+  local lines = { { asset = "line_a", text = "Alpha", row = 1,
+                    script = "Ch2", append_key = "Ch2|line_a|1", append_nth = 1,
+                    deliver = "line_a_x" } }
+  local rows = vo.BuildOverview({ lines = lines, matches = {}, entries = {} })
+  assert(#rows == 1, "Expected 1 row, got " .. #rows)
+  assert(rows[1].line_key == "Ch2|line_a|1", "Got " .. tostring(rows[1].line_key))
+  assert(rows[1].deliver == "line_a_x", "Got " .. tostring(rows[1].deliver))
+  assert(rows[1].script == "Ch2", "Got " .. tostring(rows[1].script))
+  assert(rows[1].append_nth == 1, "The occurrence integer must reach the row")
+end)
+
+test("a row with no matching line carries no line key", function()
+  local rows = vo.BuildOverview({ lines = {}, matches = {}, entries = {} })
+  for _, row in ipairs(rows) do
+    assert(row.line_key == nil, "An orphan must not claim a script line")
+  end
 end)
 
 test("notes survive commas, quotes and newlines", function()
@@ -2905,72 +4777,93 @@ test("notes survive commas, quotes and newlines", function()
   local out = round_trip({
     { key = "a.wav|0", source = "a.wav", source_start = 0, notes = nasty },
   })
-  assert(out[1].notes == nasty, "Got " .. tostring(out[1].notes))
+  assert(out.entries[1].notes == nasty, "Got " .. tostring(out.entries[1].notes))
 end)
 
 test("rows carrying no user work are not written at all", function()
-  local text = vo.SerializeTracker({
+  local out = round_trip({
     { key = "a.wav|0", source = "a.wav", source_start = 0, asset = "x" },
     { key = "a.wav|1", source = "a.wav", source_start = 1, asset = "y",
       status = "verified" },
   })
-  local out = vo.ParseTracker(text)
-  assert(#out == 1, "Expected only the verified row, got " .. #out)
-  assert(out[1].key == "a.wav|1", "Wrong row survived")
+  assert(#out.entries == 1, "Expected only the verified row, got " .. #out.entries)
+  assert(out.entries[1].key == "a.wav|1", "Wrong row survived")
+end)
+
+test("a select alone counts as user work", function()
+  local out = round_trip({
+    { key = "a.wav|0", source = "a.wav", source_start = 0, asset = "x", select = true },
+  })
+  assert(#out.entries == 1, "Expected the selected row to be kept, got " .. #out.entries)
+  assert(out.entries[1].select == true, "Select lost in the round trip")
 end)
 
 test("clearing a row's marks removes it from the file", function()
-  local out = vo.ParseTracker(vo.SerializeTracker({
+  local out = round_trip({
     { key = "a.wav|0", source = "a.wav", source_start = 0, asset = "x",
-      status = nil, notes = "", name_override = "", primary = false },
-  }))
-  assert(#out == 0, "A cleared row must vanish, got " .. #out)
+      status = nil, notes = "", name_override = "", select = false, keep = false },
+  })
+  assert(#out.entries == 0, "A cleared row must vanish, got " .. #out.entries)
 end)
 
-test("an empty tracker serializes and parses back to nothing", function()
-  local out = vo.ParseTracker(vo.SerializeTracker({}))
-  assert(out and #out == 0, "Expected an empty entry list")
+test("a script line with no audio keeps its note and has no source", function()
+  local out = round_trip({
+    { key = "|vo_deck_03", asset = "vo_deck_03", notes = "re-record next session" },
+  })
+  assert(#out.entries == 1, "Expected the script-line row to be kept")
+  assert(out.entries[1].source == nil, "A script-line row has no source")
+  assert(out.entries[1].notes == "re-record next session", "notes")
+end)
+
+test("an empty project file serializes and parses back to nothing", function()
+  local out = round_trip({})
+  assert(out and #out.entries == 0, "Expected an empty entry list")
 end)
 
 test("garbage never raises, it reports", function()
   for _, bad in ipairs({ "", "not a csv at all", "a,b,c\n1,2,3", "\n\n\n" }) do
-    local parsed, reason = vo.ParseTracker(bad)
+    local parsed, reason = vo.ParseProjectFile(bad)
     assert(parsed == nil, "Garbage must not parse: " .. bad)
     assert(type(reason) == "string" and reason ~= "", "A reason is required")
   end
-  assert(vo.ParseTracker(nil) == nil, "nil must not raise")
-  assert(vo.ParseTracker(42) == nil, "a non-string must not raise")
+  assert(vo.ParseProjectFile(nil) == nil, "nil must not raise")
+  assert(vo.ParseProjectFile(42) == nil, "a non-string must not raise")
 end)
 
-test("a future tracker version is refused, not misread", function()
-  local text = vo.SerializeTracker({}):gsub("^(ajsfx VO Overview),1", "%1,99")
-  local parsed, reason = vo.ParseTracker(text)
-  assert(parsed == nil, "A version 99 tracker must not parse")
+test("a future project file version is refused, not misread", function()
+  local text = vo.SerializeProjectFile({}, pf_meta()):gsub("^(ajsfx VO Project),1", "%1,99")
+  local parsed, reason = vo.ParseProjectFile(text)
+  assert(parsed == nil, "A version 99 project file must not parse")
   assert(reason:match("version"), "The reason should name the version, got " .. reason)
 end)
 
-test("a tracker with a header but no rows is valid and empty", function()
-  local out = vo.ParseTracker('ajsfx VO Overview,1\n\nKey,Source,Source start,Filename,Status,Name override,Notes,Primary\n')
-  assert(out and #out == 0, "Expected a valid empty tracker")
+test("a project file with no header row is refused", function()
+  local parsed, reason = vo.ParseProjectFile('ajsfx VO Project,1\nScript CSV,x\n')
+  assert(parsed == nil, "A headerless file must not parse")
+  assert(type(reason) == "string" and reason ~= "", "A reason is required")
+end)
+
+test("a project file with a header but no rows is valid and empty", function()
+  local out = vo.ParseProjectFile('ajsfx VO Project,1\n\n' .. PF_HEADER .. '\n')
+  assert(out and #out.entries == 0, "Expected a valid empty project file")
 end)
 
 test("an unrecognised status is dropped rather than shown as an unknown badge", function()
-  local text = 'ajsfx VO Overview,1\n\n'
-            .. 'Key,Source,Source start,Filename,Status,Name override,Notes,Primary\n'
-            .. 'a.wav|0,a.wav,0.000,x,bogus,,note,\n'
-  local out = vo.ParseTracker(text)
-  assert(#out == 1, "The row should still load")
-  assert(out[1].status == nil, "A bogus status must be dropped, got " .. tostring(out[1].status))
-  assert(out[1].notes == "note", "The rest of the row must survive")
+  local text = 'ajsfx VO Project,1\n\n' .. PF_HEADER .. '\n'
+            .. 'a.wav|0,x,a.wav,0.000,,bogus,,note\n'
+  local out = vo.ParseProjectFile(text)
+  assert(#out.entries == 1, "The row should still load")
+  assert(out.entries[1].status == nil,
+         "A bogus status must be dropped, got " .. tostring(out.entries[1].status))
+  assert(out.entries[1].notes == "note", "The rest of the row must survive")
 end)
 
-test("status is read case-insensitively", function()
-  local text = 'ajsfx VO Overview,1\n\n'
-            .. 'Key,Source,Source start,Filename,Status,Name override,Notes,Primary\n'
-            .. 'a.wav|0,a.wav,0.000,x,VERIFIED,,,YES\n'
-  local out = vo.ParseTracker(text)
-  assert(out[1].status == "verified", "Got " .. tostring(out[1].status))
-  assert(out[1].primary == true, "Primary should read case-insensitively")
+test("status and select are read case-insensitively", function()
+  local text = 'ajsfx VO Project,1\n\n' .. PF_HEADER .. '\n'
+            .. 'a.wav|0,x,a.wav,0.000,YES,VERIFIED,,\n'
+  local out = vo.ParseProjectFile(text)
+  assert(out.entries[1].status == "verified", "Got " .. tostring(out.entries[1].status))
+  assert(out.entries[1].select == true, "Select should read case-insensitively")
 end)
 
 --------------------------------
@@ -3010,7 +4903,7 @@ end)
 test("rows follow script order, not audio order", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2) },
-    sidecars = { { path = "s.wav", spans = {
+    matches = { { path = "s.wav", spans = {
       span(10, 11, "match", "b", "bravo", 0.9),
       span(1, 2, "match", "a", "alpha", 0.9),
     } } },
@@ -3019,10 +4912,43 @@ test("rows follow script order, not audio order", function()
     "Expected script order a,b; got " .. rows[1].asset .. "," .. rows[2].asset)
 end)
 
+test("two script lines sharing a filename keep their own takes apart", function()
+  -- Regression: grouping by filename showed each line the other's takes -- five
+  -- takes of "Jump right in!" three of which were audibly a different line.
+  local a = span(1, 2, "match", "dup", "jump right in", 0.9)
+  local b = span(10, 11, "match", "dup", "the nightmares have been getting stronger", 0.9)
+  a.line_idx, b.line_idx = 1, 2
+  local rows = vo.BuildOverview({
+    lines = { line("dup", "Jump right in!", nil, 1),
+              line("dup", "The nightmares have been getting stronger...", nil, 2) },
+    matches = { { path = "s.wav", spans = { a, b } } },
+  })
+  assert(#rows == 2, "Expected 2 rows, got " .. #rows)
+  for _, row in ipairs(rows) do
+    assert(row.take_count == 1,
+      "Each line has one take of its own, got " .. tostring(row.take_count))
+  end
+  assert(rows[1].transcript == "jump right in", "Row 1 got: " .. tostring(rows[1].transcript))
+  assert(rows[2].transcript:find("nightmares"), "Row 2 got: " .. tostring(rows[2].transcript))
+end)
+
+test("a span with no line index still groups by filename", function()
+  -- The fallback for spans that predate line_idx: one line, two takes.
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = {
+      span(1, 2, "match", "a", "alpha", 0.9),
+      span(5, 6, "match", "a", "alpha", 0.9),
+    } } },
+  })
+  assert(#rows == 2 and rows[1].take_count == 2,
+    "Expected one line with two takes, got " .. #rows .. " rows")
+end)
+
 test("audio matching no script line becomes an orphan row, listed last", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
-    sidecars = { { path = "s.wav", spans = {
+    matches = { { path = "s.wav", spans = {
       span(1, 2, "unmatched", nil, "take two", nil),
       span(5, 6, "match", "a", "alpha", 0.95),
     } } },
@@ -3037,7 +4963,7 @@ test("audio for a line the filters excluded is an orphan, never dropped", functi
   -- 'b' is not in `lines` (filtered out by character), but its audio exists.
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
-    sidecars = { { path = "s.wav", spans = { span(1, 2, "match", "b", "bravo", 0.9) } } },
+    matches = { { path = "s.wav", spans = { span(1, 2, "match", "b", "bravo", 0.9) } } },
   })
   assert(#rows == 2, "Expected the missing line plus the orphan, got " .. #rows)
   local orphan = rows[2]
@@ -3048,7 +4974,7 @@ end)
 test("a review span reads as review, not recorded", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
-    sidecars = { { path = "s.wav", spans = { span(1, 2, "review", "a", "alfa", 0.61) } } },
+    matches = { { path = "s.wav", spans = { span(1, 2, "review", "a", "alfa", 0.61) } } },
   })
   assert(rows[1].status == "review", "Got " .. rows[1].status)
   assert(math.abs(rows[1].score - 0.61) < 1e-6, "The score carries through")
@@ -3057,7 +4983,7 @@ end)
 test("multiple takes become sibling rows, numbered chronologically", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
-    sidecars = { { path = "s.wav", spans = {
+    matches = { { path = "s.wav", spans = {
       span(30, 31, "match", "a", "alpha three", 0.9),
       span(10, 11, "match", "a", "alpha one", 0.9),
       span(20, 21, "match", "a", "alpha two", 0.9),
@@ -3071,50 +4997,37 @@ test("multiple takes become sibling rows, numbered chronologically", function()
   assert(rows[1].transcript == "alpha one", "Takes are ordered by time, not file order")
 end)
 
-test("the last take is the select by default", function()
+test("with no select recorded, no take is the primary", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
-    sidecars = { { path = "s.wav", spans = {
+    matches = { { path = "s.wav", spans = {
       span(10, 11, "match", "a", "one", 0.9),
       span(20, 21, "match", "a", "two", 0.9),
     } } },
   })
-  assert(rows[2].is_primary == true, "The last take should be the select")
-  assert(rows[1].is_primary == false, "Only one take is the select")
+  assert(rows[1].is_primary == false and rows[2].is_primary == false,
+    "Guessing a take is exactly what the Select column exists to stop")
 end)
 
-test("primary_take = first moves the select to the first take", function()
+test("an explicit select in the project file names the primary", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
-    cfg = { primary_take = "first" },
-    sidecars = { { path = "s.wav", spans = {
-      span(10, 11, "match", "a", "one", 0.9),
-      span(20, 21, "match", "a", "two", 0.9),
-    } } },
-  })
-  assert(rows[1].is_primary == true, "The first take should be the select")
-  assert(rows[2].is_primary == false, "Only one take is the select")
-end)
-
-test("an explicit select in the tracker overrides the first/last rule", function()
-  local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1) },
-    sidecars = { { path = "s.wav", spans = {
+    matches = { { path = "s.wav", spans = {
       span(10, 11, "match", "a", "one", 0.9),
       span(20, 21, "match", "a", "two", 0.9),
       span(30, 31, "match", "a", "three", 0.9),
     } } },
-    tracker = { { key = "s.wav|20000", source = "s.wav", source_start = 20,
-                  asset = "a", primary = true } },
+    entries = { { key = "s.wav|20000", source = "s.wav", source_start = 20,
+                  asset = "a", select = true } },
   })
   assert(rows[2].is_primary == true, "The user's chosen take is the select")
   assert(rows[3].is_primary == false, "The last take yields to the user's choice")
 end)
 
-test("two sidecars fold into one list, takes numbered across both", function()
+test("two transcripts fold into one list, takes numbered across both", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
-    sidecars = {
+    matches = {
       { path = "B_session2.wav", spans = { span(5, 6, "match", "a", "second day", 0.9) } },
       { path = "A_session1.wav", spans = { span(9, 9.5, "match", "a", "first day", 0.9) } },
     },
@@ -3124,14 +5037,15 @@ test("two sidecars fold into one list, takes numbered across both", function()
     "Sources order stably by path, not by argument order; got " .. rows[1].source_path)
   assert(rows[1].take_index == 1 and rows[2].take_index == 2,
     "Takes number continuously across sources")
-  assert(rows[2].is_primary == true, "The select is the last take across all sources")
+  assert(rows[1].is_primary == false and rows[2].is_primary == false,
+    "Neither is primary until the user selects one, whichever source it came from")
 end)
 
 test("one source's missing line and another's audio coexist in one list", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2),
               line("c", "Charlie", nil, 3) },
-    sidecars = {
+    matches = {
       { path = "s1.wav", spans = { span(1, 2, "match", "a", "alpha", 0.9) } },
       { path = "s2.wav", spans = { span(1, 2, "match", "c", "charlie", 0.9) } },
     },
@@ -3143,7 +5057,7 @@ test("one source's missing line and another's audio coexist in one list", functi
 end)
 
 --------------------------------
-print("\nBuildOverview: tracker overlay and rematch:")
+print("\nBuildOverview: project-file overlay and rematch:")
 
 local function verified_at(start)
   return { { key = vo.OverviewKey("s.wav", start, "a"), source = "s.wav",
@@ -3154,8 +5068,8 @@ end
 test("an exact key match carries the verified flag and notes", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
-    sidecars = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
-    tracker = verified_at(10),
+    matches = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
+    entries = verified_at(10),
   })
   assert(rows[1].user_status == "verified", "Got " .. tostring(rows[1].user_status))
   assert(rows[1].notes == "checked", "Notes carry through")
@@ -3164,8 +5078,8 @@ end)
 test("a boundary nudged 40ms by re-transcription keeps its checkmark", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
-    sidecars = { { path = "s.wav", spans = { span(10.04, 11, "match", "a", "alpha", 0.9) } } },
-    tracker = verified_at(10),
+    matches = { { path = "s.wav", spans = { span(10.04, 11, "match", "a", "alpha", 0.9) } } },
+    entries = verified_at(10),
   })
   assert(rows[1].user_status == "verified",
     "A 40ms shift must not lose the mark; got " .. tostring(rows[1].user_status))
@@ -3174,8 +5088,8 @@ end)
 test("a span two seconds away is different audio and does not inherit the mark", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
-    sidecars = { { path = "s.wav", spans = { span(12, 13, "match", "a", "alpha", 0.9) } } },
-    tracker = verified_at(10),
+    matches = { { path = "s.wav", spans = { span(12, 13, "match", "a", "alpha", 0.9) } } },
+    entries = verified_at(10),
   })
   assert(rows[1].user_status == nil,
     "A 2s shift must not inherit the mark; got " .. tostring(rows[1].user_status))
@@ -3185,8 +5099,8 @@ test("the rematch never crosses to a different script line", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2) },
     -- 'b' sits 100ms from where 'a' was verified, but it is a different line.
-    sidecars = { { path = "s.wav", spans = { span(10.1, 11, "match", "b", "bravo", 0.9) } } },
-    tracker = verified_at(10),
+    matches = { { path = "s.wav", spans = { span(10.1, 11, "match", "b", "bravo", 0.9) } } },
+    entries = verified_at(10),
   })
   local b = by_asset(rows, "b")[1]
   assert(b.user_status == nil,
@@ -3196,11 +5110,11 @@ end)
 test("the nearest candidate wins when several are in tolerance", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
-    sidecars = { { path = "s.wav", spans = {
+    matches = { { path = "s.wav", spans = {
       span(10.0, 10.5, "match", "a", "near", 0.9),
       span(10.4, 10.9, "match", "a", "far",  0.9),
     } } },
-    tracker = { { key = "s.wav|9999", source = "s.wav", source_start = 10.05,
+    entries = { { key = "s.wav|9999", source = "s.wav", source_start = 10.05,
                   asset = "a", notes = "mine" } },
   })
   assert(rows[1].notes == "mine", "The nearer span should adopt the entry")
@@ -3210,9 +5124,9 @@ end)
 test("a project moved to another drive still finds its marks", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
-    sidecars = { { path = "E:\\Moved\\s.wav",
+    matches = { { path = "E:\\Moved\\s.wav",
                    spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
-    tracker = { { key = "s.wav|10000", source = "D:\\Old\\s.wav", source_start = 10,
+    entries = { { key = "s.wav|10000", source = "D:\\Old\\s.wav", source_start = 10,
                   asset = "a", status = "verified" } },
   })
   assert(rows[1].user_status == "verified",
@@ -3222,11 +5136,11 @@ end)
 test("two recordings sharing a filename do not share a checkmark", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
-    sidecars = {
+    matches = {
       { path = "D:\\A\\take.wav", spans = { span(10, 11, "match", "a", "one", 0.9) } },
       { path = "D:\\B\\take.wav", spans = { span(10, 11, "match", "a", "two", 0.9) } },
     },
-    tracker = { { key = "take.wav|10000", source = "D:\\B\\take.wav",
+    entries = { { key = "take.wav|10000", source = "D:\\B\\take.wav",
                   source_start = 10, asset = "a", status = "verified" } },
   })
   local marked, unmarked = 0, 0
@@ -3246,7 +5160,7 @@ end)
 test("a missing script line can still carry notes", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
-    tracker = { { key = "|a", asset = "a", notes = "reschedule with actor" } },
+    entries = { { key = "|a", asset = "a", notes = "reschedule with actor" } },
   })
   assert(rows[1].status == "missing", "Still missing")
   assert(rows[1].notes == "reschedule with actor", "Notes on a missing line survive")
@@ -3255,8 +5169,8 @@ end)
 test("a name override is carried but never overwrites the matched filename", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
-    sidecars = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
-    tracker = { { key = "s.wav|10000", source = "s.wav", source_start = 10,
+    matches = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
+    entries = { { key = "s.wav|10000", source = "s.wav", source_start = 10,
                   asset = "a", name_override = "vo_alpha_final" } },
   })
   assert(rows[1].asset == "a", "The script's filename is untouched")
@@ -3264,21 +5178,21 @@ test("a name override is carried but never overwrites the matched filename", fun
 end)
 
 --------------------------------
-print("\nTrackerEntriesFromRows / SummarizeOverview:")
+print("\nProjectEntriesFromRows / SummarizeOverview:")
 
 test("a full overview round-trips through the tracker unchanged", function()
   local built = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2) },
-    sidecars = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
-    tracker = { { key = "s.wav|10000", source = "s.wav", source_start = 10,
+    matches = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
+    entries = { { key = "s.wav|10000", source = "s.wav", source_start = 10,
                   asset = "a", status = "verified", notes = "good" } },
   })
-  local text   = vo.SerializeTracker(vo.TrackerEntriesFromRows(built))
-  local parsed = vo.ParseTracker(text)
+  local text   = vo.SerializeProjectFile(vo.ProjectEntriesFromRows(built))
+  local parsed = vo.ParseProjectFile(text)
   local again  = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2) },
-    sidecars = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
-    tracker = parsed,
+    matches = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
+    entries = parsed.entries,
   })
   assert(again[1].user_status == "verified", "The mark survives a save/load cycle")
   assert(again[1].notes == "good", "So do the notes")
@@ -3288,17 +5202,17 @@ test("marks survive a re-transcription that shifts every boundary slightly", fun
   local lines = { line("a", "Alpha", nil, 1) }
   local first = vo.BuildOverview({
     lines = lines,
-    sidecars = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
+    matches = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
   })
   first[1].user_status = "verified"
   first[1].notes = "keeper"
-  local saved = vo.ParseTracker(vo.SerializeTracker(vo.TrackerEntriesFromRows(first)))
+  local saved = vo.ParseProjectFile(vo.SerializeProjectFile(vo.ProjectEntriesFromRows(first)))
 
   -- Re-transcribed: the same take, boundaries moved by 30ms.
   local second = vo.BuildOverview({
     lines = lines,
-    sidecars = { { path = "s.wav", spans = { span(10.03, 11.02, "match", "a", "alpha", 0.91) } } },
-    tracker = saved,
+    matches = { { path = "s.wav", spans = { span(10.03, 11.02, "match", "a", "alpha", 0.91) } } },
+    entries = saved.entries,
   })
   assert(second[1].user_status == "verified",
     "This is the whole point of the design; got " .. tostring(second[1].user_status))
@@ -3309,7 +5223,7 @@ test("the summary counts lines delivered, not takes recorded", function()
   local n = vo.SummarizeOverview(vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2),
               line("c", "Charlie", nil, 3) },
-    sidecars = { { path = "s.wav", spans = {
+    matches = { { path = "s.wav", spans = {
       span(1, 2, "match",  "a", "one",   0.9),
       span(3, 4, "match",  "a", "two",   0.9),
       span(5, 6, "review", "b", "bravo", 0.6),
@@ -3487,6 +5401,321 @@ test("a missing depth is read as a plain track", function()
 end)
 
 --------------------------------
+-- StripAltSuffix / OrphanAppends / DropDegenerateSpans
+--------------------------------
+print("\nRobustness helpers:")
+
+test("an alt-patterned name strips to its base", function()
+  assert(vo.StripAltSuffix("line_042_alt3", "_alt{n}") == "line_042")
+  assert(vo.StripAltSuffix("line_042_alt12", "_alt{n}") == "line_042")
+end)
+
+test("a name without the suffix, or a bad pattern, strips to nothing", function()
+  assert(vo.StripAltSuffix("line_042", "_alt{n}") == nil)
+  assert(vo.StripAltSuffix("line_042_alt3", "") == nil)
+  assert(vo.StripAltSuffix("line_042_alt3", "_take") == nil, "no {n} marker")
+  assert(vo.StripAltSuffix("_alt3", "_alt{n}") == nil, "an empty base is no base")
+end)
+
+test("a pattern with magic characters is matched literally", function()
+  assert(vo.StripAltSuffix("line-take(2)", "-take({n})") == "line")
+end)
+
+test("an append whose line vanished is reported as an orphan", function()
+  local lines = { { script = "S", asset = "a", append_nth = 1 } }
+  local appends = {
+    { script = "S", asset = "a", nth = 1, text = "_x" },   -- attached
+    { script = "S", asset = "b", nth = 1, text = "_y" },   -- line gone
+    { script = "T", asset = "a", nth = 1, text = "_z" },   -- script renamed
+  }
+  local orphans = vo.OrphanAppends(appends, lines)
+  assert(#orphans == 2, "Expected 2 orphans, got " .. #orphans)
+  assert(orphans[1].asset == "b" and orphans[2].script == "T")
+end)
+
+test("zero-width matched spans are dropped and counted", function()
+  local spans = {
+    { kind = "match", start = 1, stop = 2 },
+    { kind = "match", start = 5, stop = 5 },       -- the EOF artifact
+    { kind = "review", start = 7, stop = 6.5 },    -- negative is no better
+    { kind = "unmatched", start = 9, stop = 9 },   -- not cuttable, left alone
+  }
+  local kept, dropped = vo.DropDegenerateSpans(spans)
+  assert(#kept == 2, "Expected 2 kept, got " .. #kept)
+  assert(dropped == 2, "Expected 2 dropped, got " .. dropped)
+  assert(kept[2].kind == "unmatched", "The unmatched span survives")
+end)
+
+--------------------------------
+-- FlagClippedHeads / PlanTighten
+--------------------------------
+print("\nFinishing helpers:")
+
+test("a leftover ending at a take's first sample is flagged with it", function()
+  local leftovers = { { pos = 913.65, src_end = 316.88 } }
+  local takes = {
+    { name = "line_A", src_start = 100.0 },
+    { name = "line_B", src_start = 316.88 },  -- butt joint: the clipped head
+  }
+  local flags = vo.FlagClippedHeads(leftovers, takes, 0.3)
+  assert(#flags == 1, "Expected 1 flag, got " .. #flags)
+  assert(flags[1].take == "line_B")
+  assert(flags[1].leftover.pos == 913.65)
+end)
+
+test("a leftover well before any take, or after one, is not flagged", function()
+  local leftovers = {
+    { pos = 600, src_end = 16.2 },    -- preroll: next take 0.5s away
+    { pos = 700, src_end = 250.0 },   -- take starts BEFORE the leftover ends...
+  }
+  local takes = { { name = "x", src_start = 16.7 }, { name = "y", src_start = 249.0 } }
+  local flags = vo.FlagClippedHeads(leftovers, takes, 0.3)
+  assert(#flags == 0, "Expected no flags, got " .. #flags)
+end)
+
+test("each leftover flags at most one take", function()
+  local leftovers = { { pos = 1, src_end = 10.0 } }
+  local takes = {
+    { name = "near", src_start = 10.05 },
+    { name = "also_near", src_start = 10.20 },
+  }
+  local flags = vo.FlagClippedHeads(leftovers, takes, 0.3)
+  assert(#flags == 1 and flags[1].take == "near")
+end)
+
+test("plain room is the distance to the first audio", function()
+  -- 5 windows of silence then speech: 50ms of room at 10ms windows.
+  local prof = { -60, -60, -60, -60, -60, -20, -10 }
+  assert(math.abs(vo.EffectiveRoom(prof, 0.010) - 0.050) < 1e-9)
+end)
+
+test("an all-silent profile is all room", function()
+  assert(math.abs(vo.EffectiveRoom({ -60, -60, -60 }, 0.010) - 0.030) < 1e-9)
+end)
+
+test("a truncated neighbour word at the edge is seen through", function()
+  -- Edge-hot blip (3 windows), 50 windows of silence, then real speech:
+  -- the room runs through the blip and the dead air.
+  local prof = { -8, -12, -20 }
+  for _ = 1, 50 do prof[#prof + 1] = -55 end
+  prof[#prof + 1] = -15
+  local room = vo.EffectiveRoom(prof, 0.010)
+  assert(math.abs(room - 0.530) < 1e-9, "Expected 530ms, got " .. room)
+end)
+
+test("a completed final word near the edge is NOT bleed", function()
+  -- One quiet window at the edge, then audio: the word finished inside the
+  -- item. Even with a long pause behind it, the plain answer stands.
+  local prof = { -60, -20, -18, -25 }
+  for _ = 1, 50 do prof[#prof + 1] = -55 end
+  prof[#prof + 1] = -15
+  assert(math.abs(vo.EffectiveRoom(prof, 0.010) - 0.010) < 1e-9)
+end)
+
+test("a long edge-touching run is content, not a blip", function()
+  -- Hot at the edge for 500ms: that is the item's own speech.
+  local prof = {}
+  for _ = 1, 50 do prof[#prof + 1] = -15 end
+  for _ = 1, 60 do prof[#prof + 1] = -55 end
+  prof[#prof + 1] = -20
+  assert(vo.EffectiveRoom(prof, 0.010) == 0)
+end)
+
+test("a blip with no real audio behind it keeps the plain answer", function()
+  local prof = { -10, -10 }
+  for _ = 1, 60 do prof[#prof + 1] = -55 end
+  assert(vo.EffectiveRoom(prof, 0.010) == 0, "the blip IS the only content")
+end)
+
+test("loose edges are planned in to the standard room", function()
+  local edits = vo.PlanTighten({
+    { name = "loose_head", head_room = 0.500, tail_room = 0.100 },
+    { name = "loose_tail", head_room = 0.050, tail_room = 0.900 },
+    { name = "tight",      head_room = 0.080, tail_room = 0.200 },
+  }, { head_room = 0.060, tail_room = 0.150, head_slack = 0.250, tail_slack = 0.400 })
+  assert(#edits == 2, "Expected 2 edits, got " .. #edits)
+  assert(edits[1].name == "loose_head")
+  assert(math.abs(edits[1].head - 0.440) < 1e-9, "head trims to 60ms room")
+  assert(edits[1].tail == 0, "its tail is already fine")
+  assert(math.abs(edits[2].tail - 0.750) < 1e-9, "tail trims to 150ms room")
+end)
+
+test("a hand-trimmed item is never planned", function()
+  local edits = vo.PlanTighten({
+    { name = "users", head_room = 2.0, tail_room = 2.0, user_touched = true },
+  }, {})
+  assert(#edits == 0, "The user's trims are theirs")
+end)
+
+test("PlanTighten defaults come from vo.DEFAULTS", function()
+  local edits = vo.PlanTighten({
+    { name = "a", head_room = vo.DEFAULTS.snap_head_room + vo.DEFAULTS.trim_head_slack + 0.001,
+      tail_room = 0 },
+  })
+  assert(#edits == 1 and edits[1].head > 0)
+end)
+
+--------------------------------
+-- CheckCoverage options
+--------------------------------
+print("\nCheckCoverage options:")
+
+test("an item wearing its recording's name is neither delivered nor extra", function()
+  local lines = { { asset = "line_a" } }
+  local items = {
+    { name = "line_a", track = "T" },
+    { name = "session_take1.wav", track = "T" },
+  }
+  local c = vo.CheckCoverage(items, lines, {
+    source_names = { [vo.NormalizeItemName("session_take1.wav")] = true },
+  })
+  assert(c.delivered == 1, "Got " .. c.delivered)
+  assert(#c.extra == 0, "The recording's own name is not a stray: " ..
+    table.concat(c.extra, ", "))
+end)
+
+test("an alt-patterned name counts as a take of its line", function()
+  local lines = { { asset = "line_a" } }
+  local items = {
+    { name = "line_a", track = "T" },
+    { name = "line_a_alt1", track = "T" },
+  }
+  local c = vo.CheckCoverage(items, lines, { alt_pattern = "_alt{n}" })
+  assert(c.by_line[1] and c.by_line[1].count == 2,
+    "Expected both takes counted, got " .. tostring(c.by_line[1] and c.by_line[1].count))
+  assert(#c.extra == 0, "The tool's own alt name is not a stray")
+end)
+
+test("without options the old behaviour stands", function()
+  local lines = { { asset = "line_a" } }
+  local c = vo.CheckCoverage({ { name = "stray", track = "T" } }, lines)
+  assert(#c.extra == 1 and c.extra[1] == "stray")
+end)
+
+--------------------------------
+-- ResolveSourceSpanForCut
+--------------------------------
+print("\nResolveSourceSpanForCut:")
+
+test("a span starting on a shared boundary resolves to the item holding it", function()
+  -- Re-cutting a session already cut once: takes abut exactly at word
+  -- boundaries, and the split point carries float error. The instant lookup
+  -- lands the span start in the PREVIOUS item's tail and the span clamps to
+  -- nothing; the majority lookup cannot be fooled by an edge.
+  local items = {
+    { path = "p", item = "A", pos = 0,          start_offs = 0,          length = 10.0000001 },
+    { path = "p", item = "B", pos = 10.0000001, start_offs = 10.0000001, length = 10 },
+  }
+  local item, proj, info = vo.ResolveSourceSpanForCut("p", 10.0, 12.0, items)
+  assert(item == "B", "Expected item B, got " .. tostring(item))
+  assert(info and info.item == "B", "info follows the resolved item")
+  assert(math.abs(proj - 10.0) < 1e-3, "Projected near the span start, got " .. tostring(proj))
+end)
+
+test("a span whose audio is mostly trimmed away refuses to resolve", function()
+  -- The strictness the instant lookup provided, kept: cutting a truncated
+  -- take under the full line's name is worse than not cutting it.
+  local items = {
+    { path = "p", item = "A", pos = 0, start_offs = 9.5, length = 10 },
+  }
+  local item = vo.ResolveSourceSpanForCut("p", 8.0, 10.0, items)
+  assert(item == nil, "A 25%-covered span must not resolve")
+end)
+
+test("an exactly covering item resolves with full overlap", function()
+  local items = {
+    { path = "p", item = "A", pos = 5, start_offs = 8.0, length = 2.0 },
+  }
+  local item, proj = vo.ResolveSourceSpanForCut("p", 8.0, 10.0, items)
+  assert(item == "A", "Expected A, got " .. tostring(item))
+  assert(math.abs(proj - 5.0) < 1e-9, "Got " .. tostring(proj))
+end)
+
+test("a zero-width span falls back to the instant lookup", function()
+  local items = {
+    { path = "p", item = "A", pos = 0, start_offs = 0, length = 10 },
+  }
+  local item = vo.ResolveSourceSpanForCut("p", 4.0, 4.0, items)
+  assert(item == "A", "Expected the instant fallback to answer, got " .. tostring(item))
+end)
+
+--------------------------------
+-- RefreshSpanDeliveries
+--------------------------------
+print("\nRefreshSpanDeliveries:")
+
+test("an append typed after the match reaches the span", function()
+  -- The match memoises spans WITH a copy of the line's delivered name, and an
+  -- Append deliberately does not rebuild the match. The copy is stale the
+  -- moment one is typed; a cut that trusts it delivers yesterday's name.
+  local lines = { { asset = "line_a", deliver = "line_a_greeting" } }
+  local spans = { { kind = "match", asset = "line_a", line_idx = 1,
+                    deliver = "line_a" } }
+  vo.RefreshSpanDeliveries(spans, lines)
+  assert(spans[1].deliver == "line_a_greeting",
+    "Got " .. tostring(spans[1].deliver))
+end)
+
+test("two lines sharing a filename each hand their own span their own name", function()
+  local lines = {
+    { asset = "shared", deliver = "shared_greeting" },
+    { asset = "shared", deliver = "shared_death" },
+  }
+  local spans = {
+    { kind = "match", asset = "shared", line_idx = 1, deliver = "shared" },
+    { kind = "match", asset = "shared", line_idx = 2, deliver = "shared" },
+  }
+  vo.RefreshSpanDeliveries(spans, lines)
+  assert(spans[1].deliver == "shared_greeting", "Got " .. tostring(spans[1].deliver))
+  assert(spans[2].deliver == "shared_death",    "Got " .. tostring(spans[2].deliver))
+end)
+
+test("a span with no line index falls back to the first line using its asset", function()
+  local lines = { { asset = "line_a", deliver = "line_a_x" } }
+  local spans = { { kind = "match", asset = "line_a" } }
+  vo.RefreshSpanDeliveries(spans, lines)
+  assert(spans[1].deliver == "line_a_x", "Got " .. tostring(spans[1].deliver))
+end)
+
+test("a span matching no line keeps what it has", function()
+  local spans = { { kind = "chatter", asset = nil, deliver = nil, transcript = "um" } }
+  vo.RefreshSpanDeliveries(spans, { { asset = "line_a", deliver = "line_a" } })
+  assert(spans[1].deliver == nil, "Nothing should be invented")
+end)
+
+--------------------------------
+-- EnsureChildTrack
+--------------------------------
+print("\nEnsureChildTrack:")
+
+test("a new child opens the folder and closes it", function()
+  mock.reset()
+  local parent = { info = { I_FOLDERDEPTH = 0 }, items = {}, name = "rec" }
+  mock.tracks = { parent }
+  local child = vo.EnsureChildTrack(parent, "Guard_Review")
+  assert(parent.info.I_FOLDERDEPTH == 1, "Parent becomes a folder")
+  assert(child.info.I_FOLDERDEPTH == -1, "The only child closes it")
+  assert(child.name == "Guard_Review", "Named on creation")
+end)
+
+test("ensuring an existing child does not disturb the folder shape", function()
+  -- The second Pull of a session: every destination already exists. The track
+  -- that closes the recording's folder must keep its -1, or the folder swallows
+  -- whatever the user adds below it later.
+  mock.reset()
+  local parent = { info = { I_FOLDERDEPTH = 1 },  items = {}, name = "rec" }
+  local review = { info = { I_FOLDERDEPTH = 0 },  items = {}, name = "Guard_Review" }
+  local closer = { info = { I_FOLDERDEPTH = -1 }, items = {}, name = "Hero_Selects" }
+  mock.tracks = { parent, review, closer }
+
+  local got = vo.EnsureChildTrack(parent, "Hero_Selects")
+  assert(got == closer, "The existing track is reused")
+  assert(closer.info.I_FOLDERDEPTH == -1,
+    "The closing child kept its depth, got " .. tostring(closer.info.I_FOLDERDEPTH))
+  assert(#mock.tracks == 3, "No track was created")
+end)
+
+--------------------------------
 -- PlanTimelineLayout
 --------------------------------
 print("\nPlanTimelineLayout:")
@@ -3638,5 +5867,254 @@ test("planning nothing is empty, not an error", function()
   assert(#moves == 0 and n.clusters == 0, "Nothing to lay out")
 end)
 
+--------------------------------
+-- Transcript sidecar
+--------------------------------
+print("\nTranscriptPath:")
+
+test("swaps the final extension for _vo_transcript.csv", function()
+  assert(vo.TranscriptPath("D:/s/RIVA.wav") == "D:/s/RIVA_vo_transcript.csv",
+         "Got: " .. tostring(vo.TranscriptPath("D:/s/RIVA.wav")))
+end)
+
+test("a path with no extension just gains the suffix", function()
+  assert(vo.TranscriptPath("D:/s/RIVA") == "D:/s/RIVA_vo_transcript.csv",
+         "Got: " .. tostring(vo.TranscriptPath("D:/s/RIVA")))
+end)
+
+test("a dot in a directory name is not treated as an extension", function()
+  local got = vo.TranscriptPath("D:/my.session/RIVA.wav")
+  assert(got == "D:/my.session/RIVA_vo_transcript.csv", "Got: " .. tostring(got))
+end)
+
+test("nil and empty return nil", function()
+  assert(vo.TranscriptPath(nil) == nil, "nil should return nil")
+  assert(vo.TranscriptPath("") == nil, "empty should return nil")
+end)
+
+print("\nSerializeTranscript / ParseTranscript:")
+
+local function sample_words()
+  return {
+    { t0 = 12.480, t1 = 12.660, text = "we" },
+    { t0 = 12.660, t1 = 12.910, text = "should" },
+    { t0 = 12.910, t1 = 13.040, text = "not," },
+  }
+end
+
+local function sample_meta()
+  return { source = "RIVA.wav", source_bytes = 412839104, source_hash = "deadbeef",
+           backend = "whisper.cpp", model = "ggml-medium.bin", language = "en" }
+end
+
+test("round-trip preserves every word and every preamble field", function()
+  local text = vo.SerializeTranscript(sample_words(), sample_meta())
+  local got, why = vo.ParseTranscript(text)
+  assert(got, "Parse failed: " .. tostring(why))
+  assert(got.version == 1, "Version: " .. tostring(got.version))
+  assert(got.source == "RIVA.wav", "Source: " .. tostring(got.source))
+  assert(got.source_bytes == 412839104, "Bytes: " .. tostring(got.source_bytes))
+  assert(got.source_hash == "deadbeef", "Hash: " .. tostring(got.source_hash))
+  assert(got.backend == "whisper.cpp", "Backend: " .. tostring(got.backend))
+  assert(got.model == "ggml-medium.bin", "Model: " .. tostring(got.model))
+  assert(got.language == "en", "Language: " .. tostring(got.language))
+  assert(#got.words == 3, "Word count: " .. #got.words)
+  assert(math.abs(got.words[1].t0 - 12.480) < 1e-6, "t0: " .. tostring(got.words[1].t0))
+  assert(math.abs(got.words[3].t1 - 13.040) < 1e-6, "t1: " .. tostring(got.words[3].t1))
+  assert(got.words[3].text == "not,", "text: " .. tostring(got.words[3].text))
+end)
+
+test("a word containing a comma, a quote and a newline survives", function()
+  local words = { { t0 = 0, t1 = 1, text = 'he said "go,"\nquietly' } }
+  local got = vo.ParseTranscript(vo.SerializeTranscript(words, sample_meta()))
+  assert(got, "Parse failed")
+  assert(got.words[1].text == 'he said "go,"\nquietly', "Got: " .. tostring(got.words[1].text))
+end)
+
+test("times are written to three decimals", function()
+  local text = vo.SerializeTranscript({ { t0 = 1.23456, t1 = 2.5, text = "x" } }, sample_meta())
+  assert(text:find("1.235,2.500,x", 1, true), "Row not found in:\n" .. text)
+end)
+
+test("an empty word list still produces a parseable file", function()
+  local got, why = vo.ParseTranscript(vo.SerializeTranscript({}, sample_meta()))
+  assert(got, "Parse failed: " .. tostring(why))
+  assert(#got.words == 0, "Expected no words, got " .. #got.words)
+end)
+
+test("empty text is rejected with a reason", function()
+  local got, why = vo.ParseTranscript("")
+  assert(got == nil and type(why) == "string", "Expected nil + reason")
+end)
+
+test("a foreign file is rejected with a reason", function()
+  local got, why = vo.ParseTranscript("Start,End,Text\n1,2,hi\n")
+  assert(got == nil and type(why) == "string", "Expected nil + reason")
+end)
+
+test("an unknown version is rejected with a reason", function()
+  local got, why = vo.ParseTranscript("ajsfx VO Transcript,99\n\nStart,End,Text\n")
+  assert(got == nil and type(why) == "string", "Expected nil + reason")
+end)
+
+test("a missing word header is rejected with a reason", function()
+  local got, why = vo.ParseTranscript("ajsfx VO Transcript,1\nSource,a.wav\n")
+  assert(got == nil and type(why) == "string", "Expected nil + reason")
+end)
+
+--------------------------------
+print("\nParagraphs / ParagraphWords:")
+
+test("a word ending in a sentence terminator closes a paragraph", function()
+  local words = {
+    { t0 = 0, t1 = 1, text = "we" },
+    { t0 = 1, t1 = 2, text = "should" },
+    { t0 = 2, t1 = 3, text = "go." },
+    { t0 = 3, t1 = 4, text = "okay" },
+  }
+  local paras = vo.Paragraphs(words)
+  assert(#paras == 2, "Expected 2 paragraphs, got " .. #paras)
+  assert(paras[1] == "we should go.", "Para 1: " .. tostring(paras[1]))
+  assert(paras[2] == "okay", "Para 2: " .. tostring(paras[2]))
+end)
+
+test("? and ! and a trailing closing quote also close a paragraph", function()
+  local paras = vo.Paragraphs({
+    { text = "really?" }, { text = "yes!" }, { text = "he" }, { text = "said" },
+    { text = 'stop."' }, { text = "done" },
+  })
+  assert(#paras == 4, "Expected 4 paragraphs, got " .. #paras)
+  assert(paras[1] == "really?", "Para 1: " .. tostring(paras[1]))
+  assert(paras[2] == "yes!", "Para 2: " .. tostring(paras[2]))
+  assert(paras[3] == 'he said stop."', "Para 3: " .. tostring(paras[3]))
+end)
+
+test("a trailing run with no terminator still becomes its own paragraph", function()
+  local paras = vo.Paragraphs({ { text = "hello" }, { text = "there" } })
+  assert(#paras == 1, "Expected 1 paragraph, got " .. #paras)
+  assert(paras[1] == "hello there", "Got: " .. tostring(paras[1]))
+end)
+
+test("an empty or nil word list produces no paragraphs", function()
+  assert(#vo.Paragraphs({}) == 0, "Expected 0 for empty list")
+  assert(#vo.Paragraphs(nil) == 0, "Expected 0 for nil")
+end)
+
+test("ParagraphWords groups the same original word tables Paragraphs summarizes", function()
+  local w1, w2, w3 = { t0 = 0, t1 = 1, text = "hi." }, { t0 = 1, t1 = 2, text = "there" }, { t0 = 2, t1 = 3, text = "friend." }
+  local groups = vo.ParagraphWords({ w1, w2, w3 })
+  assert(#groups == 2, "Expected 2 groups, got " .. #groups)
+  assert(#groups[1] == 1 and groups[1][1] == w1, "Group 1 should be {w1}")
+  assert(#groups[2] == 2 and groups[2][1] == w2 and groups[2][2] == w3, "Group 2 should be {w2, w3}")
+end)
+
+--------------------------------
+print("\nFileFingerprint / TranscriptMeta:")
+
+local function write_file(path, bytes)
+  local f = assert(io.open(path, "wb"))
+  f:write(bytes)
+  f:close()
+end
+
+test("the same bytes fingerprint the same way twice", function()
+  local p = os.tmpname()
+  write_file(p, string.rep("abc", 1000))
+  local a, b = vo.FileFingerprint(p), vo.FileFingerprint(p)
+  os.remove(p)
+  assert(a and a == b, "Got " .. tostring(a) .. " and " .. tostring(b))
+end)
+
+test("one changed byte at the same length changes the fingerprint", function()
+  local p, q = os.tmpname(), os.tmpname()
+  write_file(p, string.rep("abc", 1000))
+  write_file(q, string.rep("abc", 999) .. "abX")
+  local a, b = vo.FileFingerprint(p), vo.FileFingerprint(q)
+  os.remove(p); os.remove(q)
+  assert(a ~= b, "Both fingerprinted as " .. tostring(a))
+end)
+
+test("a file larger than three windows still fingerprints its tail", function()
+  local w = vo.FINGERPRINT_WINDOW
+  local p, q = os.tmpname(), os.tmpname()
+  write_file(p, string.rep("a", w * 3) .. "tail")
+  write_file(q, string.rep("a", w * 3) .. "TAIL")
+  local a, b = vo.FileFingerprint(p), vo.FileFingerprint(q)
+  os.remove(p); os.remove(q)
+  assert(a ~= b, "Tail change was not seen: " .. tostring(a))
+end)
+
+test("a missing file has no fingerprint", function()
+  assert(vo.FileFingerprint("no/such/file.wav") == nil, "Expected nil")
+  assert(vo.FileFingerprint(nil) == nil, "Expected nil for nil")
+end)
+
+test("TranscriptMeta records path, size and fingerprint together", function()
+  local p = os.tmpname()
+  write_file(p, string.rep("x", 128))
+  local meta = vo.TranscriptMeta(p, { backend = "whisper.cpp", model = "m", language = "en" })
+  os.remove(p)
+  assert(meta.source == p, "Source: " .. tostring(meta.source))
+  assert(meta.source_bytes == 128, "Bytes: " .. tostring(meta.source_bytes))
+  assert(meta.source_hash ~= "" and meta.source_hash ~= nil, "Missing hash")
+  assert(meta.backend == "whisper.cpp", "Backend: " .. tostring(meta.backend))
+end)
+
+--------------------------------
+print("\nTranscriptState:")
+
+-- Writes an audio stand-in plus its transcript, runs the state check, and
+-- cleans both up. `mutate` is handed the audio path after the transcript is
+-- written, so a test can edit the file behind the transcript's back.
+local function state_of(bytes, mutate)
+  local audio = os.tmpname() .. ".wav"
+  write_file(audio, bytes)
+  vo.WriteTranscript(audio, { { t0 = 0, t1 = 1, text = "hi" } }, vo.TranscriptMeta(audio))
+  if mutate then mutate(audio) end
+  local state, parsed, why = vo.TranscriptState(audio)
+  os.remove(audio)
+  os.remove(vo.TranscriptPath(audio))
+  return state, parsed, why
+end
+
+test("an untranscribed source reads as no", function()
+  local audio = os.tmpname() .. ".wav"
+  write_file(audio, "data")
+  local state = vo.TranscriptState(audio)
+  os.remove(audio)
+  assert(state == "no", "Got " .. tostring(state))
+end)
+
+test("an untouched source reads as yes", function()
+  local state = state_of(string.rep("a", 4096))
+  assert(state == "yes", "Got " .. tostring(state))
+end)
+
+test("a resized source reads as stale", function()
+  local state = state_of(string.rep("a", 4096), function(audio)
+    write_file(audio, string.rep("a", 8192))
+  end)
+  assert(state == "stale", "Got " .. tostring(state))
+end)
+
+test("a same-length rewrite reads as stale, which size alone would miss", function()
+  local state = state_of(string.rep("a", 4096), function(audio)
+    write_file(audio, string.rep("b", 4096))
+  end)
+  assert(state == "stale", "Got " .. tostring(state))
+end)
+
+test("an unparseable transcript reads as error with a reason", function()
+  local audio = os.tmpname() .. ".wav"
+  write_file(audio, "data")
+  write_file(vo.TranscriptPath(audio), "not a transcript at all\n")
+  local state, _, why = vo.TranscriptState(audio)
+  os.remove(audio)
+  os.remove(vo.TranscriptPath(audio))
+  assert(state == "error", "Got " .. tostring(state))
+  assert(type(why) == "string", "Expected a reason")
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
