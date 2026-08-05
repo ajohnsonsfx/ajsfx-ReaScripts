@@ -605,6 +605,57 @@ function vo.OrphanAppends(appends, lines)
   return orphans
 end
 
+-- A voiced leftover butted right up against a take's first sample usually
+-- HOLDS that take's real opening -- a spoken lead-in ('"Leave," he says')
+-- the matcher couldn't align to the script, so the span started at the
+-- first scripted word and the preamble stayed behind on the recording
+-- track. Warn, don't guess: adopting audio into a take is an editorial
+-- decision. leftovers/takes carry source-time spans ({src_start, src_end,
+-- name}); a take starting within `gap` seconds after a leftover ends is
+-- flagged with that leftover.
+function vo.FlagClippedHeads(leftovers, takes, gap)
+  gap = gap or 0.300
+  local flags = {}
+  for _, lo in ipairs(leftovers or {}) do
+    for _, tk in ipairs(takes or {}) do
+      local d = (tk.src_start or 0) - (lo.src_end or 0)
+      if d >= -0.010 and d <= gap then
+        flags[#flags + 1] = { leftover = lo, take = tk.name, gap = d }
+        break
+      end
+    end
+  end
+  return flags
+end
+
+-- The finishing pass, planned from measurements. Each entry of `measured`
+-- says how far an item's edges sit from its audio ({name, head_room,
+-- tail_room, user_touched}); anything looser than room + slack is pulled
+-- in to the standard room. Items the user has already trimmed by hand
+-- (user_touched, detected by their non-default fades) are never planned.
+-- Deltas are seconds to move INWARD -- strictly loss-free: only measured
+-- silence is removed, speech is untouched by construction.
+function vo.PlanTighten(measured, opts)
+  opts = opts or {}
+  local head_room  = opts.head_room  or vo.DEFAULTS.snap_head_room
+  local tail_room  = opts.tail_room  or vo.DEFAULTS.snap_tail_room
+  local head_slack = opts.head_slack or vo.DEFAULTS.trim_head_slack
+  local tail_slack = opts.tail_slack or vo.DEFAULTS.trim_tail_slack
+  local edits = {}
+  for _, m in ipairs(measured or {}) do
+    if not m.user_touched then
+      local h = (m.head_room or 0) > (head_room + head_slack)
+        and (m.head_room - head_room) or 0
+      local t = (m.tail_room or 0) > (tail_room + tail_slack)
+        and (m.tail_room - tail_room) or 0
+      if h > 0 or t > 0 then
+        edits[#edits + 1] = { name = m.name, head = h, tail = t }
+      end
+    end
+  end
+  return edits
+end
+
 -- Matched/review spans of zero (or negative) width are matcher artifacts --
 -- whisper hands every token expanded from one word the same timestamps, and a
 -- word at the very end of a file can carry t0 == t1. Cutting one produces a
@@ -1161,6 +1212,18 @@ vo.DEFAULTS = {
   -- seconds is not audio anyone returns for. Measured on a real session,
   -- every keepable leftover (chatter, false starts) ran 2s or longer.
   pull_min_leftover = 2.0, -- seconds
+
+  -- Tighten (the finishing pass): edges sitting further from the audio
+  -- than room + slack are pulled in to the standard snap room. The slack
+  -- keeps it from fussing over near-misses; hand-trimmed items (their
+  -- fades differ from cut_fade_in/out) are never touched.
+  trim_head_slack = 0.250, -- seconds beyond snap_head_room tolerated
+  trim_tail_slack = 0.400, -- seconds beyond snap_tail_room tolerated
+
+  -- A voiced leftover ending within this of a take's first sample likely
+  -- holds that take's clipped opening (a spoken lead-in the matcher could
+  -- not align). Pull warns about the pair instead of guessing.
+  clipped_head_gap = 0.300, -- seconds
 
   -- Per-session toggles (see SPEC.md §4). Defaults cut and name every take
   -- identically, leaving the user to audition and delete.

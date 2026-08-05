@@ -5293,6 +5293,71 @@ test("zero-width matched spans are dropped and counted", function()
 end)
 
 --------------------------------
+-- FlagClippedHeads / PlanTighten
+--------------------------------
+print("\nFinishing helpers:")
+
+test("a leftover ending at a take's first sample is flagged with it", function()
+  local leftovers = { { pos = 913.65, src_end = 316.88 } }
+  local takes = {
+    { name = "line_A", src_start = 100.0 },
+    { name = "line_B", src_start = 316.88 },  -- butt joint: the clipped head
+  }
+  local flags = vo.FlagClippedHeads(leftovers, takes, 0.3)
+  assert(#flags == 1, "Expected 1 flag, got " .. #flags)
+  assert(flags[1].take == "line_B")
+  assert(flags[1].leftover.pos == 913.65)
+end)
+
+test("a leftover well before any take, or after one, is not flagged", function()
+  local leftovers = {
+    { pos = 600, src_end = 16.2 },    -- preroll: next take 0.5s away
+    { pos = 700, src_end = 250.0 },   -- take starts BEFORE the leftover ends...
+  }
+  local takes = { { name = "x", src_start = 16.7 }, { name = "y", src_start = 249.0 } }
+  local flags = vo.FlagClippedHeads(leftovers, takes, 0.3)
+  assert(#flags == 0, "Expected no flags, got " .. #flags)
+end)
+
+test("each leftover flags at most one take", function()
+  local leftovers = { { pos = 1, src_end = 10.0 } }
+  local takes = {
+    { name = "near", src_start = 10.05 },
+    { name = "also_near", src_start = 10.20 },
+  }
+  local flags = vo.FlagClippedHeads(leftovers, takes, 0.3)
+  assert(#flags == 1 and flags[1].take == "near")
+end)
+
+test("loose edges are planned in to the standard room", function()
+  local edits = vo.PlanTighten({
+    { name = "loose_head", head_room = 0.500, tail_room = 0.100 },
+    { name = "loose_tail", head_room = 0.050, tail_room = 0.900 },
+    { name = "tight",      head_room = 0.080, tail_room = 0.200 },
+  }, { head_room = 0.060, tail_room = 0.150, head_slack = 0.250, tail_slack = 0.400 })
+  assert(#edits == 2, "Expected 2 edits, got " .. #edits)
+  assert(edits[1].name == "loose_head")
+  assert(math.abs(edits[1].head - 0.440) < 1e-9, "head trims to 60ms room")
+  assert(edits[1].tail == 0, "its tail is already fine")
+  assert(math.abs(edits[2].tail - 0.750) < 1e-9, "tail trims to 150ms room")
+end)
+
+test("a hand-trimmed item is never planned", function()
+  local edits = vo.PlanTighten({
+    { name = "users", head_room = 2.0, tail_room = 2.0, user_touched = true },
+  }, {})
+  assert(#edits == 0, "The user's trims are theirs")
+end)
+
+test("PlanTighten defaults come from vo.DEFAULTS", function()
+  local edits = vo.PlanTighten({
+    { name = "a", head_room = vo.DEFAULTS.snap_head_room + vo.DEFAULTS.trim_head_slack + 0.001,
+      tail_room = 0 },
+  })
+  assert(#edits == 1 and edits[1].head > 0)
+end)
+
+--------------------------------
 -- CheckCoverage options
 --------------------------------
 print("\nCheckCoverage options:")

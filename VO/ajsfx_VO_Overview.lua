@@ -1155,6 +1155,116 @@ local function PlaceSelectedItems()
     (#skipped > 0) and "error" or "ok"
 end
 
+-- The finishing pass. Cutting places edges from the transcript's word
+-- timestamps; those carry slop, and re-pulls inherit whatever the span said.
+-- Tighten instead measures where the audio actually is inside each delivered
+-- item and pulls loose edges in to the standard snap room. Strictly inward,
+-- so it can only remove measured silence -- and anything hand-trimmed
+-- (fades differ from the cut defaults) is left exactly alone.
+local TIGHTEN_FLOOR_DB = -45.0
+local function TightenItems()
+  local cfg = vo.LoadConfig()
+  local function track_named(name)
+    for i = 0, r.CountTracks(0) - 1 do
+      local t = r.GetTrack(0, i)
+      local _, nm2 = r.GetSetMediaTrackInfo_String(t, "P_NAME", "", false)
+      if nm2 == name then return t end
+    end
+    return nil
+  end
+
+  -- Selected items if there are any, else everything on Selects + Alts.
+  local pool = {}
+  if r.CountSelectedMediaItems(0) > 0 then
+    for i = 0, r.CountSelectedMediaItems(0) - 1 do
+      pool[#pool + 1] = r.GetSelectedMediaItem(0, i)
+    end
+  else
+    for _, tn in ipairs({ cfg.track_selects or "Selects", cfg.track_alts or "Alts" }) do
+      local tr = track_named(tn)
+      if tr then
+        for i = 0, r.CountTrackMediaItems(tr) - 1 do
+          pool[#pool + 1] = r.GetTrackMediaItem(tr, i)
+        end
+      end
+    end
+  end
+
+  local fade_in  = vo.Opt(cfg, "cut_fade_in")
+  local fade_out = vo.Opt(cfg, "cut_fade_out")
+  local measured, by_name = {}, {}
+  for _, item in ipairs(pool) do
+    local take = r.GetActiveTake(item)
+    if take and not r.TakeIsMIDI(take) then
+      local _, nm = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+      local pos = r.GetMediaItemInfo_Value(item, "D_POSITION")
+      local len = r.GetMediaItemInfo_Value(item, "D_LENGTH")
+      local touched =
+        math.abs(r.GetMediaItemInfo_Value(item, "D_FADEINLEN") - fade_in) > 0.002
+        or math.abs(r.GetMediaItemInfo_Value(item, "D_FADEOUTLEN") - fade_out) > 0.002
+      local probe, destroy = vo.MakeTakeProbe(take)
+      if probe then
+        local step = 0.010
+        local head, tail
+        for k = 0, math.floor(len / step) do
+          local db = probe(pos + k * step, math.min(pos + (k + 1) * step, pos + len))
+          if db and db > TIGHTEN_FLOOR_DB then head = k * step break end
+        end
+        for k = 0, math.floor(len / step) do
+          local db = probe(math.max(pos, pos + len - (k + 1) * step), pos + len - k * step)
+          if db and db > TIGHTEN_FLOOR_DB then tail = k * step break end
+        end
+        destroy()
+        if head and tail then
+          measured[#measured + 1] = {
+            name = nm, head_room = head, tail_room = tail, user_touched = touched,
+          }
+          by_name[nm] = item
+        end
+      end
+    end
+  end
+
+  local edits = vo.PlanTighten(measured, {
+    head_room  = vo.Opt(cfg, "snap_head_room"),
+    tail_room  = vo.Opt(cfg, "snap_tail_room"),
+    head_slack = vo.Opt(cfg, "trim_head_slack"),
+    tail_slack = vo.Opt(cfg, "trim_tail_slack"),
+  })
+  if #edits == 0 then
+    state.message, state.message_kind =
+      string.format("Measured %d item(s); every edge is already tight.", #measured), "ok"
+    return
+  end
+
+  core.Transaction("VO Overview: tighten edges", function()
+    for _, e in ipairs(edits) do
+      local item = by_name[e.name]
+      local take = item and r.GetActiveTake(item)
+      if item and take then
+        if e.head > 0 then
+          r.SetMediaItemInfo_Value(item, "D_POSITION",
+            r.GetMediaItemInfo_Value(item, "D_POSITION") + e.head)
+          r.SetMediaItemInfo_Value(item, "D_LENGTH",
+            r.GetMediaItemInfo_Value(item, "D_LENGTH") - e.head)
+          r.SetMediaItemTakeInfo_Value(take, "D_STARTOFFS",
+            r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS") + e.head)
+        end
+        if e.tail > 0 then
+          r.SetMediaItemInfo_Value(item, "D_LENGTH",
+            r.GetMediaItemInfo_Value(item, "D_LENGTH") - e.tail)
+        end
+      end
+    end
+    r.UpdateArrange()
+  end)
+  state.message, state.message_kind = string.format(
+    "Tightened %d of %d item(s) to %dms head / %dms tail room.",
+    #edits, #measured,
+    math.floor(vo.Opt(cfg, "snap_head_room") * 1000 + 0.5),
+    math.floor(vo.Opt(cfg, "snap_tail_room") * 1000 + 0.5)), "ok"
+end
+
 -- -----------------------------------------------------------------------
 -- Selection
 --
@@ -3027,17 +3137,59 @@ local function Pull()
         end
       end
     end
+
+    -- A kept leftover that ends right where a pulled take begins usually
+    -- holds that take's clipped opening -- a spoken lead-in the matcher
+    -- couldn't align, stranded when the span started at the first scripted
+    -- word. Say so; adopting audio into a take is the user's call.
+    local leftovers, takes = {}, {}
+    for parent in pairs(cleanup) do
+      for ii = 0, r.CountTrackMediaItems(parent) - 1 do
+        local it2 = r.GetTrackMediaItem(parent, ii)
+        local tk2 = r.GetActiveTake(it2)
+        if tk2 then
+          local _, nm2 = r.GetSetMediaItemTakeInfo_String(tk2, "P_NAME", "", false)
+          if nm2 == "" or nm2:find("%.wav$") then
+            local offs2 = r.GetMediaItemTakeInfo_Value(tk2, "D_STARTOFFS")
+            leftovers[#leftovers + 1] = {
+              pos = r.GetMediaItemInfo_Value(it2, "D_POSITION"),
+              src_end = offs2 + r.GetMediaItemInfo_Value(it2, "D_LENGTH"),
+            }
+          end
+        end
+      end
+    end
+    for _, dest in pairs(tracks) do
+      for ii = 0, r.CountTrackMediaItems(dest) - 1 do
+        local it2 = r.GetTrackMediaItem(dest, ii)
+        local tk2 = r.GetActiveTake(it2)
+        if tk2 then
+          local _, nm2 = r.GetSetMediaItemTakeInfo_String(tk2, "P_NAME", "", false)
+          takes[#takes + 1] = {
+            name = nm2,
+            src_start = r.GetMediaItemTakeInfo_Value(tk2, "D_STARTOFFS"),
+          }
+        end
+      end
+    end
+    state.pull_clipped = vo.FlagClippedHeads(
+      leftovers, takes, vo.Opt(cfg, "clipped_head_gap"))
     r.UpdateArrange()
   end)
 
+  local clipped = ""
+  for _, f in ipairs(state.pull_clipped or {}) do
+    clipped = clipped .. string.format(
+      " Leftover @%.1f may hold the clipped opening of %s.", f.leftover.pos, f.take)
+  end
   state.message, state.message_kind = string.format(
-    "Pulled %d select, %d alt, %d to review. %d item(s) not on the script.%s",
+    "Pulled %d select, %d alt, %d to review. %d item(s) not on the script.%s%s",
     summary.selects, summary.alts, summary.review,
     summary.unknown + summary.ambiguous,
     (state.pull_deleted or 0) > 0
       and string.format(" %d silent leftover(s) deleted.", state.pull_deleted)
-      or ""), "ok"
-  state.pull_result, state.pull_result_kind = state.message, "ok"
+      or "", clipped), (clipped ~= "") and "warn" or "ok"
+  state.pull_result, state.pull_result_kind = state.message, state.message_kind
   Reload()
 end
 
@@ -3188,7 +3340,9 @@ local function DrawPullPanel()
 
   -- The window's own message line is below the table; this panel is above it.
   if state.pull_result and state.pull_result ~= "" then
-    im.TextColored(ctx, state.pull_result_kind == "error" and 0xDD6666FF or 0x66BB66FF,
+    im.TextColored(ctx,
+      state.pull_result_kind == "error" and 0xDD6666FF
+      or state.pull_result_kind == "warn" and 0xDDAA44FF or 0x66BB66FF,
                    state.pull_result)
   end
 
@@ -3279,6 +3433,17 @@ local function DrawFilters()
       "File the item(s) selected in REAPER where their NAME says they\n" ..
       "belong: a plain delivered name goes to Selects, an alt-patterned\n" ..
       "one to Alts. Rename first, press this, the sheet follows.")
+  end
+
+  im.SameLine(ctx)
+  if im.Button(ctx, "Tighten") then pending_action = TightenItems end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx,
+      "Finishing pass: measure where the audio really is in each delivered\n" ..
+      "item and pull loose edges in to the standard head/tail room. Inward\n" ..
+      "only, so speech is never lost; hand-trimmed items (custom fades)\n" ..
+      "are left alone. Works on the REAPER selection, or everything on\n" ..
+      "Selects + Alts when nothing is selected.")
   end
 end
 
@@ -4535,6 +4700,9 @@ local function RunRemoteCommand(command)
   elseif verb == "place" then
     PlaceSelectedItems()
     return state.message or "place ran"
+  elseif verb == "tighten" then
+    TightenItems()
+    return state.message or "tighten ran"
   elseif verb == "make_select" then
     -- Promote the take currently named `rest` to its line's Select.
     for _, row in ipairs(state.overview or {}) do
@@ -4890,7 +5058,9 @@ local function loop()
       im.TextColored(ctx, 0xDD6666FF, state.project_error .. "\nNothing will be saved until this is fixed.")
     end
     if state.message ~= "" then
-      im.TextColored(ctx, state.message_kind == "error" and 0xDD6666FF or 0x66BB66FF,
+      im.TextColored(ctx,
+        state.message_kind == "error" and 0xDD6666FF
+        or state.message_kind == "warn" and 0xDDAA44FF or 0x66BB66FF,
                      state.message)
     end
 
