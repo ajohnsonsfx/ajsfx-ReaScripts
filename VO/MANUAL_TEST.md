@@ -608,6 +608,35 @@ no match, no stored mapping — so these checks are about names, not matching.
 
 ---
 
+## Tighten (2026-08-04)
+
+1. Cut and pull a session, then drag a few Selects' edges outward so they have
+   over a second of head or tail room. Press Tighten with nothing selected in
+   REAPER: the message names how many items moved, and each loose edge now sits
+   at the standard room (60ms head / 150ms tail by default).
+2. Select two items in REAPER and press Tighten: only those two are measured.
+3. Hand-trim one item (change its fades while you're at it) and make its edges
+   loose again: Tighten reports it measured but leaves it alone — custom fades
+   mark it as yours.
+4. Butt-joined takes (a cut where one take ends exactly where the next begins)
+   whose tail holds the NEXT take's first syllable and a stretch of dead air:
+   Tighten trims through the blip to the item's real last word. Play the ends —
+   no foreign syllable, no long silence.
+5. Press Tighten again immediately: "every edge is already tight."
+
+## Bulk Sel/Keep (2026-08-04)
+
+1. Shift-click a range of rows in the sheet, then tick Keep on one of the
+   highlighted rows: every highlighted row's Keep snaps to the same value.
+   Untick the same way — all clear together.
+2. Tick Keep on a row OUTSIDE the highlight: only that row changes.
+3. Tick Sel across a highlight spanning several lines: each line still ends up
+   with at most one Sel (exclusivity survives the bulk apply).
+4. Pull after marking: kept non-Sel takes land on Alts, unmarked takes on
+   Review — the marks are live workflow, not decoration.
+
+---
+
 ## Recording results
 
 Note anything that differs from the expectations above directly in

@@ -4091,15 +4091,37 @@ local function DrawTableBody()
     local markable = row.status ~= "missing" and row.status ~= "orphan"
                      and (row.take_count or 0) > 0
 
+    -- Ticking a box on a row that is part of the sheet's highlight snaps
+    -- every highlighted row to the same value -- marking thirty keeps is one
+    -- shift-click and one tick, not thirty ticks. A row outside the
+    -- highlight is just itself, same as the rename targeting above.
+    local function MarkTargets()
+      if not state.selection[row.uid] then return { row } end
+      local out = {}
+      for _, r2 in ipairs(SelectedRows()) do
+        if r2.status ~= "missing" and r2.status ~= "orphan"
+           and (r2.take_count or 0) > 0 then
+          out[#out + 1] = r2
+        end
+      end
+      return out
+    end
+
     im.TableSetColumnIndex(ctx, CI.select)
     if markable then
       CellWidget("select", row_h)
       local hit, now = im.Checkbox(ctx, "##sel", row.user_select == true)
-      if hit then pending_action = function() SetSelect(row, now) end end
+      if hit then
+        local targets = MarkTargets()
+        pending_action = function()
+          for _, r2 in ipairs(targets) do SetSelect(r2, now) end
+        end
+      end
       if im.IsItemHovered(ctx) then
         im.SetTooltip(ctx,
           "The take you are delivering. One per line —\n" ..
-          "ticking this one unticks the line's other takes.")
+          "ticking this one unticks the line's other takes.\n\n" ..
+          "On a highlighted row, every highlighted row follows.")
       end
     end
 
@@ -4107,13 +4129,19 @@ local function DrawTableBody()
     if markable then
       CellWidget("keep", row_h)
       local hit, now = im.Checkbox(ctx, "##keep", row.user_keep == true)
-      if hit then pending_action = function() SetKeep(row, now) end end
+      if hit then
+        local targets = MarkTargets()
+        pending_action = function()
+          for _, r2 in ipairs(targets) do SetKeep(r2, now) end
+        end
+      end
       if im.IsItemHovered(ctx) then
         im.SetTooltip(ctx,
           "A read worth keeping. Any number per line, and\n" ..
           "independent of Sel — ticking this steals nothing.\n\n" ..
           "Pull delivers a kept take that is not the Sel as an ALT.\n" ..
-          "Takes with neither tick stay on the Review track.")
+          "Takes with neither tick stay on the Review track.\n\n" ..
+          "On a highlighted row, every highlighted row follows.")
       end
     end
 
