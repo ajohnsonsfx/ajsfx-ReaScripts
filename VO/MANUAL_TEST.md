@@ -535,6 +535,34 @@ some lines.
 5. Switch to **record order**. The uncut recording is a member again — record
    order asks where audio sat in a recording, which needs no name.
 
+## "Have I got everything?" (2026-08-04)
+
+The checker reads the project's ITEM NAMES and nothing else — no transcript,
+no match, no stored mapping — so these checks are about names, not matching.
+
+1. Fresh project, script loaded, nothing cut. The header reads
+   `0 of N lines in the project`, and every row's **Got** cell is a red `no`.
+2. **Cut and Name**. The header count jumps and the Got cells turn green with
+   a count. Hover one: it names the track each take sits on.
+3. Rename an item in REAPER by hand to something off-script. The header gains
+   `1 name(s) not on the script`, and that line's Got count drops by one.
+4. Rename it back. Everything returns. Nothing had to be re-matched or
+   re-transcribed — the count is re-read from the names each rebuild.
+5. Drop a rendered wav named for a script line into the project, with no
+   transcript at all. Its line reads Got 1. This is the case that proves the
+   checker is not reading the match.
+6. Two script lines sharing a filename: the header reports them as
+   `named for two lines at once`, and neither line claims the item.
+
+## Assign an item to a line (2026-08-04)
+
+1. Select an item in REAPER. Right-click the line's row → **Assign selected
+   item to this line**. The item takes that line's delivered name, and the
+   line's Got cell goes green immediately. No time selection was involved.
+2. Comp four takes into four items, select all four, assign. They become the
+   line, then `_alt1`, `_alt2`, `_alt3` using the Pull panel's alt pattern.
+3. With nothing selected in REAPER, the menu item is greyed and says so.
+
 ## Filters are remembered (2026-08-04)
 
 1. Pick a character, set the status filter, type in the search box, open **Filters**

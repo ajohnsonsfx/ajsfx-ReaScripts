@@ -340,6 +340,29 @@ panel, one at a time.
 Cut is the only tool that consults the match, and correctly so: cutting a span
 out of a continuous recording is a question only the transcript can answer.
 
+### 4a.0 Coverage: the question the job is judged on
+
+`vo.CheckCoverage(items, lines)` answers "have I got everything?" from the
+project's **item names** and the script, and from nothing else. No transcript,
+no match, no stored mapping. It is recomputed on every rebuild, so there is no
+copy that can drift out of step with the project: the item's name IS the
+assignment, and this only reports what the names say.
+
+It reports, per script line, how many items carry its name and which tracks
+they sit on; plus the names in the project that match no line (deduplicated),
+and the items whose name two lines both claim.
+
+The table shows it as the **Got** column and as the headline count in the
+summary. It is true however the audio got there — cut here, comped by hand, or
+delivered as a rendered file by somebody else — which is exactly why it is
+worth having separately from the match.
+
+**Assigning is naming.** "This item is that line" is expressed by giving the
+item the line's delivered name (right-click a row → *Assign selected item to
+this line*), which is what every name-driven tool already reads. Nothing is
+stored, so nothing can fall out of sync. Several items at once become the line
+and its alts, numbered with the alt pattern from §5.2.
+
 ### 4a.1 Name resolution
 
 `vo.NormalizeItemName` lowercases, trims, and drops a trailing **alphabetic**
