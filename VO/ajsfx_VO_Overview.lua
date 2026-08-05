@@ -118,6 +118,10 @@ end
 -- Either may return nil or "" for a row that has no value; such rows sort last
 -- in BOTH directions, because reversing a sort should not fill the top of the
 -- table with blanks.
+-- Forward-declared: the column accessors below close over it, and `state` is
+-- not built until after this table. Assigned once state exists.
+local DELIVERY
+
 local COLUMNS = {
   { key = "order",      label = "#",          width =  36, nofilter = true,
     num  = function(row) return row.order end,
@@ -130,6 +134,22 @@ local COLUMNS = {
   { key = "status",     label = "Status",     width =  74,
     num  = function(row) return SORT_RANK[row.status] or 9 end,
     text = StatusLabel },
+  -- Answered from the project's item names, not from the match: this is the
+  -- "have I got everything" column, and it is true whether the take was cut
+  -- here, comped by hand, or delivered by somebody else.
+  { key = "delivered",  label = "Got",        width =  56,
+    num  = function(row)
+      local rec = row.script_row and DELIVERY(row.script_row)
+      return rec and rec.count or 0
+    end,
+    text = function(row)
+      local rec = row.script_row and DELIVERY(row.script_row)
+      if not rec then return "no" end
+      return tostring(rec.count)
+    end,
+    tip = "How many items in the project carry this line's name.\n" ..
+          "Read from the names themselves, so it counts takes this tool\n" ..
+          "never cut. Hover a cell for the tracks they sit on." },
   { key = "select",     label = "Sel",        width =  40,
     text = function(row)
       if row.status == "missing" or row.status == "orphan" then return "" end
@@ -249,6 +269,9 @@ local state = {
   layout_count     = { items = 0, unresolved = 0, scope = "" },
   appends       = {},         -- vo.SetAppend records, per script line
   dupe_names    = {},         -- vo.DuplicateNames set, for the red highlight
+  -- vo.CheckCoverage over the project's item names: which script lines have an
+  -- item carrying their name. Derived every rebuild, never stored.
+  check         = { by_line = {}, delivered = 0, missing = 0, extra = {}, ambiguous = 0 },
   lines         = {},         -- the merged, resolved script lines
 
   items         = {},         -- vo.CollectProjectSpans()
@@ -313,6 +336,11 @@ local state = {
   view          = { restore = true, mirror = false, sizes = {}, cols = {} },
   settings_open = false,
 }
+
+-- Now that `state` exists, give the Got column its accessor.
+DELIVERY = function(line_index)
+  return state.check and state.check.by_line[line_index] or nil
+end
 
 
 -- -----------------------------------------------------------------------
@@ -622,6 +650,28 @@ local function Rebuild()
       end
     end
   end
+
+  -- Coverage: which script lines actually have an item named for them, read
+  -- from the project's item names and nothing else. Recomputed here, so it can
+  -- never be out of step with the project -- there is no stored copy to drift.
+  local named_items = {}
+  for _, info in ipairs(state.items or {}) do
+    if info.item and not info.skip then
+      local take = r.GetActiveTake(info.item)
+      local name = ""
+      if take then
+        local _, got = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+        name = got or ""
+      end
+      local track = ""
+      if info.track then
+        local _, tname = r.GetSetMediaTrackInfo_String(info.track, "P_NAME", "", false)
+        track = tname or ""
+      end
+      named_items[#named_items + 1] = { name = name, track = track, item = info.item }
+    end
+  end
+  state.check = vo.CheckCoverage(named_items, state.lines)
 
   -- Row keys are NOT unique. A script line with no audio yet keys as
   -- "|<asset>", so a whole character's un-recorded lines collapse onto one key
@@ -3261,6 +3311,43 @@ local function DrawTableBody()
     end
     PopCellFont(sf)
 
+    -- Got ------------------------------------------------------------------
+    -- Whether the project actually holds an item named for this line. Green
+    -- when it does, red when it does not, and it does not care how the item got
+    -- there -- cut here, comped by hand, or delivered by somebody else.
+    im.TableSetColumnIndex(ctx, CI.delivered)
+    if row.status ~= "orphan" and row.script_row then
+      local rec = DELIVERY(row.script_row)
+      local gf = PushCellFont("delivered")
+      AlignCell("delivered", row_h, im.GetTextLineHeight(ctx))
+      if rec then
+        im.TextColored(ctx, 0x66BB66FF, tostring(rec.count))
+      else
+        im.TextColored(ctx, 0xDD6666FF, "no")
+      end
+      PopCellFont(gf)
+      if im.IsItemHovered(ctx) then
+        if rec then
+          local where = {}
+          for track, n in pairs(rec.tracks) do
+            where[#where + 1] = string.format("  %s x%d",
+              track ~= "" and track or "(unnamed track)", n)
+          end
+          table.sort(where)
+          im.SetTooltip(ctx, string.format(
+            "%d item%s in the project named %s:\n%s",
+            rec.count, rec.count == 1 and "" or "s",
+            row.deliver or row.asset or "?", table.concat(where, "\n")))
+        else
+          im.SetTooltip(ctx, string.format(
+            "No item in the project is named %s.\n\n" ..
+            "This is read from the item names, so it stays true however the\n" ..
+            "audio got there. Cut and Name, or name an item yourself.",
+            row.deliver or row.asset or "?"))
+        end
+      end
+    end
+
     -- Sel and Keep ---------------------------------------------------------
     local markable = row.status ~= "missing" and row.status ~= "orphan"
                      and (row.take_count or 0) > 0
@@ -3504,7 +3591,47 @@ end
 
 local function DrawSummary()
   local n = state.summary
-  im.Text(ctx, string.format("%d of %d lines recorded", n.delivered or 0, n.lines or 0))
+
+  -- The headline is COVERAGE, not matching: how many script lines the project
+  -- actually holds an item for. That is the question the job is judged on, and
+  -- it is read from the item names, so it stays true no matter how the audio
+  -- got there or what the matcher thinks.
+  local c = state.check or {}
+  local total = #(state.lines or {})
+  local got   = c.delivered or 0
+  im.TextColored(ctx, (got >= total and total > 0) and 0x66BB66FF or 0xDDAA33FF,
+    string.format("%d of %d lines in the project", got, total))
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx,
+      "Script lines with at least one item named for them.\n" ..
+      "Counted from the item names, so a take you cut by hand\n" ..
+      "or were sent as a rendered file counts just the same.")
+  end
+  if (c.missing or 0) > 0 then
+    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
+    im.TextColored(ctx, 0xDD6666FF, string.format("%d not there yet", c.missing))
+  end
+  if #(c.extra or {}) > 0 then
+    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
+    im.TextColored(ctx, 0xDDAA33FF, string.format("%d name(s) not on the script", #c.extra))
+    if im.IsItemHovered(ctx) then
+      local list = {}
+      for i, name in ipairs(c.extra) do
+        if i > 30 then list[#list + 1] = ("...and %d more"):format(#c.extra - 30); break end
+        list[#list + 1] = name
+      end
+      im.SetTooltip(ctx, "Items whose name matches no script line:\n" ..
+                         table.concat(list, "\n"))
+    end
+  end
+  if (c.ambiguous or 0) > 0 then
+    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
+    im.TextColored(ctx, 0xDDAA33FF,
+      string.format("%d item(s) named for two lines at once", c.ambiguous))
+  end
+
+  im.Spacing(ctx)
+  im.TextDisabled(ctx, string.format("%d of %d lines recorded", n.delivered or 0, n.lines or 0))
   im.SameLine(ctx)
   im.TextDisabled(ctx, "·")
   im.SameLine(ctx)
