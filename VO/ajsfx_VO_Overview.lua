@@ -4223,6 +4223,79 @@ local function RunRemoteCommand(command)
       end
     end
     return #out .. " span(s)\n" .. table.concat(out, "\n")
+  elseif verb == "missing" then
+    -- Why is a line absent? Three different answers hide under "missing":
+    -- never read (no match anywhere), read but the audio is not in the
+    -- project (trimmed/removed since transcription), or filtered off screen.
+    local out = {}
+    for _, row in ipairs(state.overview or {}) do
+      if row.status == "missing" then
+        out[#out + 1] = string.format("NOT MATCHED  %s [%s] \"%s\"",
+          row.asset or "?", row.character or "?",
+          (row.line_text or ""):sub(1, 60))
+      elseif row.status ~= "orphan" and not row.item
+             and row.source_path and row.source_start then
+        out[#out + 1] = string.format(
+          "NO AUDIO     %s [%s] take %s at %.1fs in %s -- transcribed, but no item plays that stretch",
+          row.asset or "?", row.character or "?", tostring(row.take_index or "?"),
+          row.source_start, vo.Basename(row.source_path))
+      end
+    end
+    return (#out == 0) and "nothing missing" or table.concat(out, "\n")
+  elseif verb == "boundaries" then
+    -- Cut-off word detector: an item edge landing INSIDE a transcript word
+    -- means a syllable was clipped. Checks every row that resolved to an
+    -- item, against the words of its own source.
+    local words_cache, out, checked = {}, {}, 0
+    for _, row in ipairs(state.overview or {}) do
+      if row.item and row.source_path
+         and r.ValidatePtr2(0, row.item, "MediaItem*") then
+        local take = r.GetActiveTake(row.item)
+        if take then
+          local pos  = r.GetMediaItemInfo_Value(row.item, "D_POSITION")
+          local len  = r.GetMediaItemInfo_Value(row.item, "D_LENGTH")
+          local offs = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS")
+          local rate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
+          if rate <= 0 then rate = 1 end
+          local a, b = offs, offs + len * rate
+          if not words_cache[row.source_path] then
+            local parsed = vo.ReadTranscript(row.source_path)
+            words_cache[row.source_path] = parsed and parsed.words or {}
+          end
+          checked = checked + 1
+          for _, w in ipairs(words_cache[row.source_path]) do
+            local EPS = 0.005
+            local function inside(t) return t > a + EPS and t < b - EPS end
+            if (inside(w.t0) and w.t1 > b + EPS)
+               or (inside(w.t1) and w.t0 < a - EPS) then
+              -- The transcript says a word crosses this edge -- but whisper
+              -- pads word ends into the following silence, so ask the AUDIO:
+              -- measure 60ms just inside the edge. Quiet edge = nothing was
+              -- audibly clipped, whatever the timestamps claim.
+              local edge_src = (w.t0 > a + EPS) and b or a
+              local probe, destroy = vo.MakeTakeProbe(take)
+              local db = nil
+              if probe then
+                -- Take-relative time: the accessor's zero is the item's start.
+                local rel = (edge_src - offs) / rate
+                local p0 = math.max(0, math.min(rel - 0.03, len - 0.06))
+                db = probe(p0, p0 + 0.06)
+              end
+              if destroy then destroy() end
+              local loud = db and db > -45.0
+              out[#out + 1] = string.format(
+                "%s%s: \"%s\" at %s edge, %s at the edge",
+                loud and "AUDIBLE " or "quiet   ",
+                row.asset or "?", w.text or "?",
+                (edge_src == a) and "head" or "tail",
+                db and string.format("%.1f dB", db) or "unmeasured")
+            end
+          end
+        end
+      end
+    end
+    return string.format("%d item(s) checked, %d cut word(s)%s%s",
+      checked, #out, (#out > 0) and "\n" or "", table.concat(out, "\n"))
   elseif verb == "dupes" then
     -- Line-level clashes on the RESOLVED name, script and occurrence included,
     -- so a caller has everything an `append` needs to clear one.
