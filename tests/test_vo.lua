@@ -3933,6 +3933,40 @@ test("a zero-length span is skipped and never sweeps the rest of the item", func
   assert(reported, "The skipped zero-length span should be reported")
 end)
 
+test("a take is named the line's delivered name, not the bare filename", function()
+  -- Two script lines sharing a filename are separated by their Appends. The
+  -- name written on the take is the assignment (nothing else stores one), so
+  -- writing the bare shared filename would leave the take claimed by two lines
+  -- at once -- unresolvable by Pull, Sort and the checker no matter what the
+  -- user types afterwards. Takes of ONE line still collide by design: the
+  -- delivered name carries no take number.
+  mock.reset()
+  local raw = { info = {}, name = "Raw", items = {} }
+  raw.items[1] = {
+    info  = { D_POSITION = 0, D_LENGTH = 100 },
+    take  = { info = {}, source = "mock_source" },
+    track = raw,
+  }
+  mock.tracks = { raw }
+
+  local plan = {
+    { start = 10, stop = 20, dest = "selects", kind = "match",
+      asset = "shared", deliver = "shared_greeting", name = "shared_greeting" },
+    { start = 60, stop = 70, dest = "selects", kind = "match",
+      asset = "shared", deliver = "shared_death", name = "shared_death" },
+  }
+  local applied = vo.ApplyPlan(plan, raw)
+  assert(applied == 2, "Expected 2 clips applied, got " .. tostring(applied))
+
+  local names = {}
+  for _, it in ipairs(raw.items) do
+    if it.take and it.take.name then names[it.take.name] = true end
+  end
+  assert(names["shared_greeting"], "The greeting line's take carries its Append")
+  assert(names["shared_death"],    "The death line's take carries its Append")
+  assert(not names["shared"], "No take may carry the ambiguous bare name")
+end)
+
 test("an unmatched span is neither split nor moved", function()
   mock.reset()
 
@@ -5164,6 +5198,97 @@ end)
 test("a missing depth is read as a plain track", function()
   local parent, child = vo.FolderDepthForChild(nil)
   assert(parent == 1 and child == -1, "nil is depth 0")
+end)
+
+--------------------------------
+-- ResolveSourceSpanForCut
+--------------------------------
+print("\nResolveSourceSpanForCut:")
+
+test("a span starting on a shared boundary resolves to the item holding it", function()
+  -- Re-cutting a session already cut once: takes abut exactly at word
+  -- boundaries, and the split point carries float error. The instant lookup
+  -- lands the span start in the PREVIOUS item's tail and the span clamps to
+  -- nothing; the majority lookup cannot be fooled by an edge.
+  local items = {
+    { path = "p", item = "A", pos = 0,          start_offs = 0,          length = 10.0000001 },
+    { path = "p", item = "B", pos = 10.0000001, start_offs = 10.0000001, length = 10 },
+  }
+  local item, proj, info = vo.ResolveSourceSpanForCut("p", 10.0, 12.0, items)
+  assert(item == "B", "Expected item B, got " .. tostring(item))
+  assert(info and info.item == "B", "info follows the resolved item")
+  assert(math.abs(proj - 10.0) < 1e-3, "Projected near the span start, got " .. tostring(proj))
+end)
+
+test("a span whose audio is mostly trimmed away refuses to resolve", function()
+  -- The strictness the instant lookup provided, kept: cutting a truncated
+  -- take under the full line's name is worse than not cutting it.
+  local items = {
+    { path = "p", item = "A", pos = 0, start_offs = 9.5, length = 10 },
+  }
+  local item = vo.ResolveSourceSpanForCut("p", 8.0, 10.0, items)
+  assert(item == nil, "A 25%-covered span must not resolve")
+end)
+
+test("an exactly covering item resolves with full overlap", function()
+  local items = {
+    { path = "p", item = "A", pos = 5, start_offs = 8.0, length = 2.0 },
+  }
+  local item, proj = vo.ResolveSourceSpanForCut("p", 8.0, 10.0, items)
+  assert(item == "A", "Expected A, got " .. tostring(item))
+  assert(math.abs(proj - 5.0) < 1e-9, "Got " .. tostring(proj))
+end)
+
+test("a zero-width span falls back to the instant lookup", function()
+  local items = {
+    { path = "p", item = "A", pos = 0, start_offs = 0, length = 10 },
+  }
+  local item = vo.ResolveSourceSpanForCut("p", 4.0, 4.0, items)
+  assert(item == "A", "Expected the instant fallback to answer, got " .. tostring(item))
+end)
+
+--------------------------------
+-- RefreshSpanDeliveries
+--------------------------------
+print("\nRefreshSpanDeliveries:")
+
+test("an append typed after the match reaches the span", function()
+  -- The match memoises spans WITH a copy of the line's delivered name, and an
+  -- Append deliberately does not rebuild the match. The copy is stale the
+  -- moment one is typed; a cut that trusts it delivers yesterday's name.
+  local lines = { { asset = "line_a", deliver = "line_a_greeting" } }
+  local spans = { { kind = "match", asset = "line_a", line_idx = 1,
+                    deliver = "line_a" } }
+  vo.RefreshSpanDeliveries(spans, lines)
+  assert(spans[1].deliver == "line_a_greeting",
+    "Got " .. tostring(spans[1].deliver))
+end)
+
+test("two lines sharing a filename each hand their own span their own name", function()
+  local lines = {
+    { asset = "shared", deliver = "shared_greeting" },
+    { asset = "shared", deliver = "shared_death" },
+  }
+  local spans = {
+    { kind = "match", asset = "shared", line_idx = 1, deliver = "shared" },
+    { kind = "match", asset = "shared", line_idx = 2, deliver = "shared" },
+  }
+  vo.RefreshSpanDeliveries(spans, lines)
+  assert(spans[1].deliver == "shared_greeting", "Got " .. tostring(spans[1].deliver))
+  assert(spans[2].deliver == "shared_death",    "Got " .. tostring(spans[2].deliver))
+end)
+
+test("a span with no line index falls back to the first line using its asset", function()
+  local lines = { { asset = "line_a", deliver = "line_a_x" } }
+  local spans = { { kind = "match", asset = "line_a" } }
+  vo.RefreshSpanDeliveries(spans, lines)
+  assert(spans[1].deliver == "line_a_x", "Got " .. tostring(spans[1].deliver))
+end)
+
+test("a span matching no line keeps what it has", function()
+  local spans = { { kind = "chatter", asset = nil, deliver = nil, transcript = "um" } }
+  vo.RefreshSpanDeliveries(spans, { { asset = "line_a", deliver = "line_a" } })
+  assert(spans[1].deliver == nil, "Nothing should be invented")
 end)
 
 --------------------------------

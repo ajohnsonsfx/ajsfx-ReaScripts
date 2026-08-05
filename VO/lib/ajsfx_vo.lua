@@ -2173,6 +2173,31 @@ end
 -- Pure layer: routing and naming
 --------------------------------
 
+-- A span's `deliver` is COPIED from its line when the match is built, and the
+-- match is memoised precisely so that typing an Append does not rebuild it.
+-- That copy is stale the moment an Append lands -- so anything that names
+-- takes from spans must re-copy from the CURRENT lines first, or it delivers
+-- yesterday's name. Same line lookup as BuildOverview: the span's own
+-- line_idx when it still agrees on the asset, else the first line using it.
+function vo.RefreshSpanDeliveries(spans, lines)
+  lines = lines or {}
+  local first_row_using = {}
+  for i, l in ipairs(lines) do
+    if l.asset and first_row_using[l.asset] == nil then first_row_using[l.asset] = i end
+  end
+  for _, s in ipairs(spans or {}) do
+    if s.asset then
+      local li = s.line_idx
+      if not (li and lines[li] and lines[li].asset == s.asset) then
+        li = first_row_using[s.asset]
+      end
+      local line = li and lines[li] or nil
+      if line then s.deliver = line.deliver end
+    end
+  end
+  return spans
+end
+
 -- Group repeated takes of a line (keyed by the Filename/asset, which is the
 -- line's identity), number them chronologically, then route and name every span
 -- according to the three per-session toggles.
@@ -4915,6 +4940,41 @@ function vo.ResolveSourceTime(source_path, source_start, items)
   return find(true)
 end
 
+-- Cut resolves a span to the item holding its AUDIO -- the one covering the
+-- largest share of it -- rather than to whichever item covers the start
+-- instant. The instant lookup breaks on RE-cuts: takes cut earlier abut
+-- exactly at word boundaries, and float error at a shared edge lands the
+-- instant in the PREVIOUS item's tail, where the span then clamps to nothing
+-- and is skipped as too short. A majority cannot be fooled by an edge.
+-- `min_fraction` keeps the strictness the instant lookup provided: a span
+-- whose audio is mostly gone (trimmed since transcription) still refuses to
+-- resolve, rather than cutting a truncated take under the full line's name.
+function vo.ResolveSourceSpanForCut(source_path, start, stop, items, min_fraction)
+  if not source_path or source_path == "" or not start or not stop then return nil end
+  min_fraction = min_fraction or 0.95
+
+  local length = stop - start
+  if length <= 0 then
+    -- A zero-width span has no majority to take; the instant lookup is all
+    -- there is to ask.
+    return vo.ResolveSourceTime(source_path, start, items)
+  end
+
+  local best, best_cover = nil, 0
+  for _, info in ipairs(items or {}) do
+    if info.path == source_path and not info.skip then
+      local range = vo.SourceCoverageRanges({ info })[1]
+      if range then
+        local cover = math.min(stop, range.to) - math.max(start, range.from)
+        if cover > best_cover then best, best_cover = info, cover end
+      end
+    end
+  end
+
+  if not best or best_cover / length < min_fraction then return nil end
+  return best.item, vo.SourceTimeToProject(start, best), best
+end
+
 -- The item holding a take, when the take's own start may no longer be in the
 -- project at all.
 --
@@ -5116,13 +5176,18 @@ function vo.ApplyPlan(plan, source_track)
       local piece = right or item
       r.SplitMediaItem(piece, span.stop)
 
-      -- Named where it lies. The plain script filename, not span.name: the
-      -- delivered name carries the Append, and applying that here would decide
-      -- a delivery that nothing has decided yet.
+      -- Named where it lies: the LINE's delivered base name -- the script
+      -- filename plus the line's Append, never a take suffix. Not span.name
+      -- (which may carry _tkNN or a review prefix): which take is the delivery
+      -- is not a question cutting can answer, so takes of one line SHOULD
+      -- collide here. The Append is different -- it is part of the line's own
+      -- name, and two lines sharing a filename are only tellable apart by it.
+      -- Writing the bare filename would leave their takes claimed by both
+      -- lines at once, which nothing downstream can resolve.
       local take = r.GetActiveTake(piece)
       if take then
         r.GetSetMediaItemTakeInfo_String(take, "P_NAME",
-          span.asset or span.name or "", true)
+          span.deliver or span.asset or span.name or "", true)
       end
       applied = applied + 1
     end

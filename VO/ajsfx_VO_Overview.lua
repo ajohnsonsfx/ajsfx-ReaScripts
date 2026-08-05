@@ -2299,6 +2299,10 @@ local function DoCut()
 
   -- Name before converting: vo.AssignNames sorts each asset's takes by `start`
   -- to number them, and source time is the one base every span shares.
+  -- Deliveries first: the memoised spans hold the delivered names as they were
+  -- when the match was built, and an Append typed since then lives only in the
+  -- lines. See vo.RefreshSpanDeliveries.
+  vo.RefreshSpanDeliveries(all_spans, ScriptLines())
   vo.AssignNames(all_spans, cfg)
 
   -- Resolve each candidate against the live item that plays it, in project
@@ -2313,11 +2317,15 @@ local function DoCut()
   -- working from nonsense.
   local skipped_msgs, by_item = {}, {}
   for _, s in ipairs(candidates) do
-    -- Strictly, by instant. A take whose start has been trimmed away would cut
-    -- as a truncated line delivered under the full line's name, which is worse
-    -- than not cutting it -- so it is reported instead. Navigation is the
-    -- lenient one; delivery is not.
-    local item, proj_start, info = vo.ResolveSourceTime(s.source_path, s.start, state.items)
+    -- By the span's MAJORITY, not the start instant: a re-cut resolves spans
+    -- against takes that abut exactly at word boundaries, where an instant
+    -- falls on an edge and lands in the wrong item (see
+    -- vo.ResolveSourceSpanForCut). The strictness is kept -- a take whose
+    -- audio is mostly trimmed away still refuses to resolve, and is reported,
+    -- because cutting a truncated line under the full line's name is worse
+    -- than not cutting it. Navigation is the lenient one; delivery is not.
+    local item, proj_start, info =
+      vo.ResolveSourceSpanForCut(s.source_path, s.start, s.stop, state.items)
     if not item then
       skipped_msgs[#skipped_msgs + 1] = string.format("%s: no item covers %.3fs in %s",
         s.name or s.asset or "(unnamed)", s.start or 0, vo.Basename(s.source_path))
@@ -3970,7 +3978,7 @@ end
 local REMOTE_SECTION = "ajsfx_vo_remote"
 local REMOTE_HELP =
   "status | rematch | cut | pull | name_alts | sort script|record | " ..
-  "set selection_only 0|1"
+  "set selection_only 0|1 | dupes | append script|asset|nth|text"
 
 local function RemoteStatus()
   local c, parts = state.check or {}, {}
@@ -4016,6 +4024,44 @@ local function RunRemoteCommand(command)
       return "selection_only=" .. (state.selection_only and "1" or "0")
     end
     return "unknown setting: " .. tostring(key) .. ". Commands: " .. REMOTE_HELP
+  elseif verb == "spans" then
+    -- Raw memoised span table for any asset containing `rest`, with source
+    -- times and lengths. Diagnostic: this is the exact input Cut works from.
+    local out = {}
+    for _, m in ipairs(state.matches or {}) do
+      for _, s in ipairs(m.spans or {}) do
+        if rest ~= "" and (s.asset or ""):find(rest, 1, true) then
+          out[#out + 1] = string.format("%s k=%s %.3f..%.3f len=%.3f li=%s d=%s",
+            s.asset, tostring(s.kind), s.start or -1, s.stop or -1,
+            (s.stop or 0) - (s.start or 0), tostring(s.line_idx), tostring(s.deliver))
+        end
+      end
+    end
+    return #out .. " span(s)\n" .. table.concat(out, "\n")
+  elseif verb == "dupes" then
+    -- Line-level clashes on the RESOLVED name, script and occurrence included,
+    -- so a caller has everything an `append` needs to clear one.
+    local out = {}
+    for _, l in ipairs(state.lines or {}) do
+      for _, g in ipairs(state.dupe_assets or {}) do
+        if (l.deliver or l.asset) == g.asset then
+          out[#out + 1] = string.format("%s|%s|%d",
+            l.script or "", l.asset or "", l.append_nth or 1)
+        end
+      end
+    end
+    return (#out == 0) and "no duplicate delivered names"
+        or table.concat(out, "\n")
+  elseif verb == "append" then
+    local script, asset, nth, text = rest:match("^([^|]*)|([^|]*)|([^|]*)|(.*)$")
+    if not script or asset == "" then
+      return "append needs script|asset|nth|text (text empty to clear)"
+    end
+    vo.SetAppend(state.appends, script, asset, tonumber(nth) or 1, text)
+    state.dirty = true
+    Rebuild()
+    return string.format("append %s: now %d duplicate delivered name(s)",
+      asset, #(state.dupe_assets or {}))
   end
 
   return "unknown command: " .. tostring(verb) .. ". Commands: " .. REMOTE_HELP
