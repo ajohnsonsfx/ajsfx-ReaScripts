@@ -2739,6 +2739,63 @@ local function Pull()
       end
     end
 
+    -- Leftover chunks that are only floor noise are deleted; anything with
+    -- talking in it stays. Self-calibrating rather than thresholded against
+    -- a guess: speech rises tens of dB over its own room tone, a chunk of
+    -- floor noise has almost no dynamic range. Only UNNAMED remainders on a
+    -- recording track are candidates -- named takes and anything on other
+    -- tracks are never touched. Recordings are found through the routed
+    -- items too, so a re-pull with nothing to move still tidies.
+    local cleanup = {}
+    for p in pairs(seen_parents) do cleanup[p] = true end
+    for _, it in ipairs(items) do
+      local tr = r.GetMediaItem_Track(it.id)
+      if tr then
+        local _, tn = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
+        if vo.IsDestTrackName(tn, bases) then
+          local p = RecordingTrackOf(it.id)
+          if p then cleanup[p] = true end
+        end
+      end
+    end
+    local deleted = 0
+    for parent in pairs(cleanup) do
+      local doomed = {}
+      for ii = 0, r.CountTrackMediaItems(parent) - 1 do
+        local it2 = r.GetTrackMediaItem(parent, ii)
+        local tk2 = r.GetActiveTake(it2)
+        if tk2 then
+          local _, nm2 = r.GetSetMediaItemTakeInfo_String(tk2, "P_NAME", "", false)
+          if nm2 == "" or nm2:find("%.wav$") then
+            local pos2 = r.GetMediaItemInfo_Value(it2, "D_POSITION")
+            local len2 = r.GetMediaItemInfo_Value(it2, "D_LENGTH")
+            local probe, destroy = vo.MakeTakeProbe(tk2)
+            if probe then
+              local lo, hi = math.huge, -math.huge
+              local t = pos2
+              while t < pos2 + len2 - 0.05 do
+                local db = probe(t, math.min(t + 0.1, pos2 + len2))
+                if db then
+                  if db < lo then lo = db end
+                  if db > hi then hi = db end
+                end
+                t = t + 0.1
+              end
+              destroy()
+              -- Quietly uniform AND quiet overall. Both, so neither a soft
+              -- distant mutter (range) nor a steady loud hum (level) is lost.
+              if hi > -math.huge and (hi - lo) < 12.0 and hi < -35.0 then
+                doomed[#doomed + 1] = it2
+              end
+            end
+          end
+        end
+      end
+      for _, d in ipairs(doomed) do r.DeleteTrackMediaItem(parent, d) end
+      deleted = deleted + #doomed
+    end
+    state.pull_deleted = deleted
+
     for _, move in ipairs(moves) do
       local item   = move.id
       -- Read the track INSIDE the loop: an earlier move may already have taken
@@ -2770,9 +2827,12 @@ local function Pull()
   end)
 
   state.message, state.message_kind = string.format(
-    "Pulled %d select, %d alt, %d to review. %d item(s) not on the script.",
+    "Pulled %d select, %d alt, %d to review. %d item(s) not on the script.%s",
     summary.selects, summary.alts, summary.review,
-    summary.unknown + summary.ambiguous), "ok"
+    summary.unknown + summary.ambiguous,
+    (state.pull_deleted or 0) > 0
+      and string.format(" %d silent leftover(s) deleted.", state.pull_deleted)
+      or ""), "ok"
   state.pull_result, state.pull_result_kind = state.message, "ok"
   Reload()
 end
