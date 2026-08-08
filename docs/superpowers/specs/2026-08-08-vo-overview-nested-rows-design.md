@@ -54,14 +54,10 @@ as a comparison.
 
 Frozen top header carries the questions; parent and child answer:
 
-| Column | Parent (line) | Child (take) |
-|---|---|---|
-| **#** | Line number in the script + expand arrow | Take number `1, 2, 3` (replaces the old `2/3` Take column) |
-| **State** | Status dot + Got badge (`● ✓2`) + rollup text (loudest: "no Sel yet") | Status dot + `[Sel] [Keep] [Lock]` checkboxes |
-| **Text** | Line text (what the script says) | Transcript (what was said) — stacked directly beneath for comparison |
-| **Name** | CSV filename + Append rendered inline, dimmed (delivered name) | Item name, editable (the take's actual name); vertical diff against parent shows drift |
-| **Where** | Which script: `mainquest.csv · row 41` | Which recording: `rec_03 @ 4:12.3`; full paths in tooltip |
-| **Notes** | Line-level note | Take-level note (entries are already keyed per row) |
+| | **#** | **State** | **Text** | **Name** | **Where** | **Notes** |
+|---|---|---|---|---|---|---|
+| **Parent (line)** | Line number in the script + expand arrow | Status dot + Got badge (`● ✓2`) + rollup text (loudest: "no Sel yet") | Line text (what the script says) | CSV filename + Append rendered inline, dimmed (delivered name) | Which script: `mainquest.csv · row 41` | Line-level note |
+| **Child (take)** | Take number `1, 2, 3` (replaces the old `2/3` Take column) | Status dot + `[Sel] [Keep] [Lock]` checkboxes | Transcript (what was said) — stacked directly beneath for comparison | Item name, editable (the take's actual name); vertical diff against parent shows drift | Which recording: `rec_03 @ 4:12.3`; full paths in tooltip | Take-level note (entries are already keyed per row) |
 
 Approximate widths: # 48, State 150, Text stretch (min ~240), Name 190,
 Where 140, Notes stretch. Comfortable at ~900px.
