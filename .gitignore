@@ -7,3 +7,7 @@
 .superpowers/
 # Downloaded whisper-cli binaries and ggml models (VO backend acquisition)
 /Resources/
+
+# Per-machine Claude Code settings (personal permission allowlist, local paths).
+# .claude/settings.json IS tracked — it holds repo-wide policy.
+.claude/settings.local.json
