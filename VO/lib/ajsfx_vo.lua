@@ -3885,6 +3885,38 @@ function vo.GroupOverview(rows)
   return nodes
 end
 
+-- Line-level visibility: filters choose LINES, and a line travels whole.
+-- `match` sees take rows and line reps alike -- both are overview rows, so
+-- one predicate (character, search, per-column needles) serves both.
+function vo.FilterGroups(nodes, match)
+  local out, pending_char = {}, nil
+  for _, node in ipairs(nodes or {}) do
+    if node.kind == "character" then
+      pending_char = node
+    elseif node.kind == "line" then
+      local visible = match(node.rep)
+      if not visible then
+        for _, t in ipairs(node.takes) do
+          if match(t) then visible = true break end
+        end
+      end
+      if visible then
+        if pending_char then out[#out + 1] = pending_char; pending_char = nil end
+        out[#out + 1] = node
+      end
+    elseif node.kind == "orphans" then
+      local kept = {}
+      for _, t in ipairs(node.takes) do
+        if match(t) then kept[#kept + 1] = t end
+      end
+      if #kept > 0 then
+        out[#out + 1] = { kind = "orphans", takes = kept }
+      end
+    end
+  end
+  return out
+end
+
 function vo.SummarizeOverview(rows)
   local n = { total = 0, recorded = 0, review = 0, missing = 0, orphan = 0,
               verified = 0, flagged = 0, lines = 0 }

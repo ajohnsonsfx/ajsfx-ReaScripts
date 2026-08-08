@@ -6202,5 +6202,60 @@ test("lines without script_row group by asset", function()
 end)
 
 --------------------------------
+-- FilterGroups
+--------------------------------
+print("FilterGroups:")
+
+test("a take match keeps the whole line with all takes", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ take_index = 1, transcript = "alpha" }),
+    mkrow({ take_index = 2, transcript = "bravo" }),
+    mkrow({ script_row = 2, asset = "grum_02", transcript = "charlie" }),
+  })
+  local out = vo.FilterGroups(nodes, function(row)
+    return (row.transcript or "") == "bravo"
+  end)
+  local lines = {}
+  for _, n in ipairs(out) do if n.kind == "line" then lines[#lines + 1] = n end end
+  assert(#lines == 1, "one line expected, got " .. #lines)
+  assert(#lines[1].takes == 2, "the matching line keeps BOTH takes")
+end)
+
+test("a rep-only match keeps a childless line", function()
+  local nodes = vo.GroupOverview({ mkrow({ status = "missing", line_text = "needle" }) })
+  local out = vo.FilterGroups(nodes, function(row)
+    return (row.line_text or ""):find("needle", 1, true) ~= nil
+  end)
+  assert(#out == 2 and out[2].kind == "line")
+end)
+
+test("character header dropped when none of its lines survive", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ script_row = 1 }),
+    mkrow({ script_row = 2, character = "VERA", asset = "vera_01", line_text = "pay him" }),
+  })
+  local out = vo.FilterGroups(nodes, function(row)
+    return (row.line_text or ""):find("pay", 1, true) ~= nil
+  end)
+  assert(#out == 2, "expected VERA header + line, got " .. #out)
+  assert(out[1].kind == "character" and out[1].name == "VERA")
+end)
+
+test("orphan takes filter individually and empty section vanishes", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ status = "orphan", script_row = nil, asset = nil, character = nil,
+            transcript = "keep me" }),
+    mkrow({ status = "orphan", script_row = nil, asset = nil, character = nil,
+            transcript = "drop me" }),
+  })
+  local out = vo.FilterGroups(nodes, function(row)
+    return (row.transcript or "") == "keep me"
+  end)
+  assert(#out == 1 and out[1].kind == "orphans" and #out[1].takes == 1)
+  local none = vo.FilterGroups(nodes, function() return false end)
+  assert(#none == 0)
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
