@@ -66,6 +66,46 @@ Frozen top header carries the questions; parent and child answer:
 Approximate widths: # 48, State 150, Text stretch (min ~240), Name 190,
 Where 140, Notes stretch. Comfortable at ~900px.
 
+### Full layout example
+
+One character section with an expanded line (two takes), a collapsed line, a
+missing line, and the orphan section. `▾/▸` is the expand arrow in the # cell;
+`●` is the status dot (colour carries the status); the `Sel Keep Lock` row is
+the per-line sub-header.
+
+```
+ #    │ State              │ Text                        │ Name                    │ Where               │ Notes
+══════╪════════════════════╪═════════════════════════════╪═════════════════════════╪═════════════════════╪══════════════
+── GRUMBAR ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ▾ 41 │ ● ✓1               │ Get off my bridge!          │ grum_bridge_01 _v2      │ mainquest.csv · 41  │ redo w/ growl
+      │    Sel  Keep  Lock │                             │                         │                     │
+   1  │ ●  [x]  [ ]   [x]  │ get off my bridge           │ grum_bridge_01          │ rec_03 @ 4:12.3     │
+   2  │ ●  [ ]  [x]   [ ]  │ get OFF my bridge           │ grum_bridge_01_alt1     │ rec_03 @ 4:18.9     │ angrier
+ ▸ 42 │ ● ✓1               │ You shall not pass the toll │ grum_toll_01            │ mainquest.csv · 42  │
+   43 │ ●  (no takes)      │ A troll has standards, you… │ grum_standards_01       │ mainquest.csv · 43  │
+── VERA ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ▾ 44 │ ●    (no Sel yet)  │ Pay him. We don't have time │ vera_pay_01             │ mainquest.csv · 44  │
+      │    Sel  Keep  Lock │                             │                         │                     │
+   1  │ ●  [ ]  [ ]   [ ]  │ pay him we don't have time  │ vera_pay_01             │ rec_04 @ 0:22.1     │
+── NOT ON THE SCRIPT ────────────────────────────────────────────────────────────────────────────────────────────────────
+   —  │ ●                  │ uh line's good, moving on   │                         │ rec_04 @ 1:03.7     │
+```
+
+Reading it:
+
+- **Row 41, expanded:** parent carries the script's answer in every column —
+  line text, delivered name (`grum_bridge_01` + Append ` _v2` dimmed), script
+  origin, line note. The sub-header labels the checkbox columns once; take
+  rows 1–2 carry only take facts, each cell correlated with the parent cell
+  above it (transcript under line text, item name under delivered name,
+  recording position under script position).
+- **Row 42, collapsed:** one row summarises the line — green dot, one
+  delivered. Expand to work on it.
+- **Row 43, missing:** no arrow, no children; red dot and "(no takes)".
+- **Row 44:** the rollup warning — recorded but no Sel ticked yet.
+- **Orphan section:** child-shaped rows (transcript, recording position),
+  no parent to answer the line-side questions.
+
 ### The State group
 
 Physically four narrow columns (dot, Sel, Keep, Lock) treated as one visual
