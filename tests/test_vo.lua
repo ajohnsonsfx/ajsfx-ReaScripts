@@ -6257,5 +6257,29 @@ test("orphan takes filter individually and empty section vanishes", function()
 end)
 
 --------------------------------
+-- Collapsed persistence
+--------------------------------
+print("Collapsed persistence:")
+
+test("view.collapsed round-trips", function()
+  local text = vo.SerializeProjectFile({}, {
+    scripts = {}, appends = {}, pins = {},
+    view = { character = nil, search = "", filter_row = false,
+             col_filters = {}, collapsed = { "3", "asset:grum_01" } },
+  })
+  local parsed = assert(vo.ParseProjectFile(text))
+  local got = (parsed.view or {}).collapsed or {}
+  assert(#got == 2, "expected 2 collapsed keys, got " .. #got)
+  assert(got[1] == "3" and got[2] == "asset:grum_01")
+end)
+
+test("absent collapsed parses as nil/empty without error", function()
+  local text = vo.SerializeProjectFile({}, { scripts = {}, appends = {}, pins = {}, view = {} })
+  local parsed = assert(vo.ParseProjectFile(text))
+  local got = (parsed.view or {}).collapsed
+  assert(got == nil or #got == 0)
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
