@@ -67,12 +67,6 @@ local KEY_LSUPER     = Api('Key_LeftSuper')
 local HEADER_ROW_FLAGS = Api('TableRowFlags_Headers')
 local KEY_RSUPER     = Api('Key_RightSuper')
 
--- Header-click sorting. Absent on an older binding, in which case the table
--- simply stays in script order and the headers do nothing when clicked.
-local SORT_SPECS  = Api('TableGetColumnSortSpecs')
-local NEED_SORT   = Api('TableNeedSort')
-local SORT_DESC   = Api('SortDirection_Descending')
-
 -- Transcripts and the project file are read off disk, and matching is linear
 -- in the project's whole word count, so the rebuild cannot sit on the
 -- per-frame path. A project-state counter decides WHETHER to rebuild; this
@@ -96,112 +90,50 @@ local function FormatTime(t)
   return string.format("%d:%06.3f", m, t - m * 60)
 end
 
-local SORT_RANK = { missing = 1, review = 2, orphan = 3, recorded = 4 }
-
-local function StatusLabel(row)
-  if row.user_status == "flagged" then return "Flagged" end
-  local s = STATUS_STYLE[row.status]
-  return s and s.label or (row.status or "")
-end
-
-local function ItemName(row)
-  return row.take_name or row.name_override or row.deliver or row.asset or ""
-end
-
--- Sorting and filtering are one mechanism across every column, driven by two
--- optional accessors rather than a switch statement per feature.
---   text  what a column's filter box matches against, and what an alphabetical
---         sort compares. A column without it is neither sorted nor filtered:
---         there is nothing there a user could have meant.
---   num   overrides text for columns that are really numbers, so Time sorts
---         9:59 before 10:00 and # sorts 2 before 10.
--- Either may return nil or "" for a row that has no value; such rows sort last
--- in BOTH directions, because reversing a sort should not fill the top of the
--- table with blanks.
--- Forward-declared: the column accessors below close over it, and `state` is
--- not built until after this table. Assigned once state exists.
+-- Six questions across the top; the parent row answers each for the LINE and
+-- the take rows answer it for the TAKE, so every cell is correlated with the
+-- cell above it. State is one visual group over four physical columns: the
+-- status dot plus the Sel/Keep/Lock checkboxes, labelled once per expanded
+-- line by a slim sub-header row rather than in the frozen header.
+--
+--   text  what a column's filter box (and the search) matches against. It sees
+--         take rows and line reps alike, so it folds both levels' fields.
+--         A column without it has no filter box: there is nothing there a
+--         user could have meant.
+-- Display sorting is gone on purpose: the table is always in script order,
+-- and the timeline is arranged by the Sort tool, not by the display.
+-- Forward-declared: accessors close over it; assigned once state exists.
 local DELIVERY
 
 local COLUMNS = {
-  { key = "order",      label = "#",          width =  36, nofilter = true,
-    num  = function(row) return row.order end,
-    text = function(row) return tostring(row.order or "") end,
-    tip = "Position in the script CSV. Sort by this column to put the\n" ..
-          "table back into script order." },
-  { key = "verify",     label = "Lock",       width =  40,
-    text = function(row) return row.user_status == "verified" and "yes" or "no" end,
-    tip = "A locked line keeps the placement it has.\nRematching leaves it alone." },
-  { key = "status",     label = "Status",     width =  74,
-    num  = function(row) return SORT_RANK[row.status] or 9 end,
-    text = StatusLabel },
-  -- Answered from the project's item names, not from the match: this is the
-  -- "have I got everything" column, and it is true whether the take was cut
-  -- here, comped by hand, or delivered by somebody else.
-  { key = "delivered",  label = "Got",        width =  56,
-    num  = function(row)
-      local rec = row.script_row and DELIVERY(row.script_row)
-      return rec and rec.count or 0
+  { key = "order", label = "#",     width =  48, nofilter = true,
+    tip = "Line: its position in the script, and the arrow that folds its\n" ..
+          "takes. Take: the take number." },
+  { key = "state", label = "State", width =  24, nofilter = true,
+    tip = "Line: status dot, delivered count, and what still needs deciding.\n" ..
+          "Take: status dot. Hover any dot for the words." },
+  { key = "sel",   label = "",      width =  30, nofilter = true },
+  { key = "keep",  label = "",      width =  30, nofilter = true },
+  { key = "lock",  label = "",      width =  30, nofilter = true },
+  { key = "text",  label = "Text",  width = 260,
+    text = function(row) return (row.line_text or "") .. " " .. (row.transcript or "") end,
+    tip = "Line: what the script says. Take: what was actually said,\n" ..
+          "directly beneath it for comparison." },
+  { key = "name",  label = "Name",  width = 190,
+    text = function(row)
+      return (row.take_name or row.name_override or "") .. " "
+          .. (row.deliver or row.asset or "")
     end,
+    tip = "Line: the delivered name (CSV filename + Append, dimmed).\n" ..
+          "Take: the item's own name. Editable on takes; right-click the\n" ..
+          "line's name to edit its Append." },
+  { key = "where", label = "Where", width = 140,
     text = function(row)
-      local rec = row.script_row and DELIVERY(row.script_row)
-      if not rec then return "no" end
-      return tostring(rec.count)
+      return (row.script or "") .. " "
+          .. (row.source_path and vo.Basename(row.source_path) or "")
     end,
-    tip = "How many items in the project carry this line's name.\n" ..
-          "Read from the names themselves, so it counts takes this tool\n" ..
-          "never cut. Hover a cell for the tracks they sit on." },
-  { key = "select",     label = "Sel",        width =  40,
-    text = function(row)
-      if row.status == "missing" or row.status == "orphan" then return "" end
-      return row.user_select and "yes" or "no"
-    end },
-  -- Two independent ticks, not one cycling mark. Marking a take as an alt used
-  -- to mean passing through "select" on the way, which stole the select from
-  -- whichever take already had it.
-  { key = "keep",       label = "Keep",       width =  46,
-    text = function(row)
-      if row.status == "missing" or row.status == "orphan" then return "" end
-      return row.user_keep and "yes" or "no"
-    end },
-  { key = "character",  label = "Character",  width =  90,
-    text = function(row) return row.character or "" end },
-  { key = "script",     label = "Script",     width =  90,
-    text = function(row) return row.script or "" end,
-    tip = "Which script CSV this line came from." },
-  -- Two names, deliberately. "Item name" is what the user is changing and what
-  -- REAPER's render patterns read; "CSV filename" is the script's own name for
-  -- the line, kept visible and read-only so a rename never loses the original.
-  { key = "item_name",  label = "Item name",  width = 190,
-    text = ItemName,
-    tip = "The take's name in REAPER. Editable, and what the stock render\n" ..
-          "patterns read. Nothing here renames a file on disk." },
-  { key = "asset",      label = "CSV filename", width = 160,
-    text = function(row) return row.asset or "" end,
-    tip = "The filename from the script CSV. Not editable.\n" ..
-          "Right-click a cell to copy it or to put it back on the item." },
-  { key = "append",     label = "Append",     width = 110,
-    text = function(row) return row.append or "" end,
-    tip = "Added to the end of the CSV filename to make the delivered name.\n" ..
-          "No separator is inserted -- type the one you want. Use it to tell\n" ..
-          "apart two lines that ask for the same filename." },
-  { key = "take",       label = "Take",       width =  44,
-    num  = function(row) return row.take_index end,
-    text = function(row)
-      if not row.take_index then return "" end
-      return string.format("%d/%d", row.take_index, row.take_count or 1)
-    end },
-  { key = "line_text",  label = "Line text",  width = 240,
-    text = function(row) return row.line_text or "" end },
-  { key = "transcript", label = "Transcript", width = 240,
-    text = function(row) return row.transcript or "" end },
-  { key = "source",     label = "Source",     width = 120,
-    text = function(row)
-      return row.source_path and vo.Basename(row.source_path) or ""
-    end },
-  { key = "time",       label = "Time",       width =  76,
-    num  = function(row) return row.proj_time end,
-    text = function(row) return FormatTime(row.proj_time) end },
-  { key = "notes",      label = "Notes",      width = 200,
+    tip = "Line: which script CSV, and its row.\nTake: which recording, and when." },
+  { key = "notes", label = "Notes", width = 170,
     text = function(row) return row.notes or "" end },
 }
 
@@ -304,12 +236,12 @@ local state = {
   layout_gap     = 2.0,
   layout_src_gap = 60.0,
 
-  -- nil means script order. ImGui owns the header clicks and the arrow; these
-  -- two fields are all we keep of the spec it hands back.
-  sort_col      = nil,        -- a COLUMNS key
-  sort_desc     = false,
-
   auto_select_take = "last",  -- which take "Select takes" marks; from the config
+
+  -- Lines folded shut, keyed by LineNodeKey. Persisted in the project file's
+  -- view section: a reopened project looks the way it was left.
+  collapsed     = {},
+  nodes         = {},         -- the filtered draw list: vo.FilterGroups output
 
   filter_row    = false,      -- the per-column filter boxes under the header
   col_filters   = {},         -- column key -> needle
@@ -452,6 +384,7 @@ end
 local function LoadProjectFile()
   state.entries, state.project_error, state.parse_failed = {}, "", false
   state.scripts, state.appends, state.pins = {}, {}, {}
+  state.collapsed = {}
   -- Everything below describes the PREVIOUS project. A message like "Pulled 27
   -- select" surviving a tab switch reads as a claim about the new project.
   state.message, state.message_kind = nil, nil
@@ -490,6 +423,8 @@ local function LoadProjectFile()
       if COLUMN_BY_KEY[key] then state.col_filters[key] = needle end
     end
     state.check_character = (v.character ~= nil)
+    state.collapsed = {}
+    for _, k in ipairs(v.collapsed or {}) do state.collapsed[k] = true end
   else
     -- The file is NOT overwritten on a parse failure: writing would destroy
     -- whatever the user still has in there. Saving stays off until they fix or
@@ -529,6 +464,12 @@ local function SaveProjectFile()
         search      = state.search,
         filter_row  = state.filter_row,
         col_filters = state.col_filters,
+        collapsed   = (function()
+          local out = {}
+          for k in pairs(state.collapsed or {}) do out[#out + 1] = k end
+          table.sort(out)
+          return out
+        end)(),
       } }))
   if not ok then
     state.message, state.message_kind = "Cannot write " .. tostring(path), "error"
@@ -1735,29 +1676,30 @@ local function CheckRestoredCharacter()
   state.character = nil
 end
 
+local function LineNodeKey(node)
+  return tostring(node.rep.script_row or ("asset:" .. tostring(node.rep.asset)))
+end
+
 local function ApplyFilters()
   CheckRestoredCharacter()
-  local out = {}
-  for i, row in ipairs(state.overview) do
-    row.order = i     -- script position: the # column, and every sort's tiebreak
-    if Matches(row) then out[#out + 1] = row end
-  end
+  for i, row in ipairs(state.overview) do row.order = i end
 
-  local col = state.sort_col and COLUMN_BY_KEY[state.sort_col]
-  if col then
-    local desc = state.sort_desc
-    local key = col.num or function(row) return col.text(row):lower() end
-    table.sort(out, function(a, b)
-      local ka, kb = key(a), key(b)
-      local ma, mb = Absent(ka), Absent(kb)
-      -- Valueless rows sink to the bottom in both directions.
-      if ma ~= mb then return mb end
-      if not ma and ka ~= kb then
-        if desc then return kb < ka end
-        return ka < kb
+  state.nodes = vo.FilterGroups(vo.GroupOverview(state.overview), Matches)
+
+  -- The flat take list every existing consumer keeps reading: selection
+  -- ranges, SelectedRows, tool scoping, the remote `rows` dump. Parents and
+  -- headers are not in it -- only takes are selectable or actionable. Takes
+  -- of a COLLAPSED line are left out too, so a shift-range matches what the
+  -- eye sees and the selection never outlives visibility.
+  local out = {}
+  for _, node in ipairs(state.nodes) do
+    if node.kind == "line" then
+      if not state.collapsed[LineNodeKey(node)] then
+        for _, t in ipairs(node.takes) do out[#out + 1] = t end
       end
-      return a.order < b.order
-    end)
+    elseif node.kind == "orphans" then
+      for _, t in ipairs(node.takes) do out[#out + 1] = t end
+    end
   end
 
   state.visible = out
@@ -3802,21 +3744,6 @@ local function DrawHeaderMenu(c)
   im.EndPopup(ctx)
 end
 
--- ImGui owns the header click, the arrow and the spec; all we do is read which
--- column it settled on. The read has to happen inside the table, which is the
--- only place the spec exists, so the re-sort lands on the NEXT frame — one
--- frame of lag, and in exchange the list is never mutated mid-draw.
-local function ReadSortSpec()
-  if not (SORT_SPECS and NEED_SORT) then return end
-  if not NEED_SORT(ctx) then return end
-  local ok, index, _, dir = SORT_SPECS(ctx, 0)
-  local c = ok and COLUMNS[(index or 0) + 1] or nil
-  -- Tristate: the third click clears the spec, which puts the table back into
-  -- script order rather than leaving it wherever the last sort left it.
-  state.sort_col  = c and c.key or nil
-  state.sort_desc = (dir == SORT_DESC)
-end
-
 local function DrawFilterRow()
   im.TableNextRow(ctx)
   for i, c in ipairs(COLUMNS) do
@@ -3834,14 +3761,7 @@ end
 
 local function DrawTableBody()
   for _, c in ipairs(COLUMNS) do
-    local flags = im.TableColumnFlags_WidthFixed
-    -- A column with no accessor has nothing to sort on, so ImGui must not
-    -- offer its header as a sort target.
-    if not (c.text or c.num) then
-      local nosort = Api('TableColumnFlags_NoSort')
-      if nosort then flags = flags | nosort end
-    end
-    im.TableSetupColumn(ctx, c.label, flags, c.width)
+    im.TableSetupColumn(ctx, c.label, im.TableColumnFlags_WidthFixed, c.width)
   end
   -- Both the header and the filter boxes stay put while the rows scroll.
   im.TableSetupScrollFreeze(ctx, 0, state.filter_row and 2 or 1)
@@ -3863,7 +3783,6 @@ local function DrawTableBody()
   else
     im.TableHeadersRow(ctx)
   end
-  ReadSortSpec()
 
   if state.filter_row then DrawFilterRow() end
 
@@ -4288,16 +4207,12 @@ local function DrawTableBody()
 end
 
 local function DrawTable(height)
+  -- Not Sortable, on purpose: the table is always in script order. Arranging
+  -- the TIMELINE is the Sort panel's job, and display sorting a tree of
+  -- parents and children has no honest meaning anyway.
   local flags = im.TableFlags_Borders | im.TableFlags_Resizable
               | im.TableFlags_Reorderable
               | im.TableFlags_ScrollY | im.TableFlags_RowBg
-  -- Tristate so a third click on a header clears the sort and returns the
-  -- table to script order, which is the order the session was written in.
-  if SORT_SPECS and NEED_SORT then
-    flags = flags | im.TableFlags_Sortable
-    local tristate = Api('TableFlags_SortTristate')
-    if tristate then flags = flags | tristate end
-  end
   -- With restore off ImGui neither reads nor writes this table's widths and
   -- order, so it opens at the widths COLUMNS declares. ImGui keys table
   -- settings by (table id, column count) anyway, so adding a column in a later
