@@ -92,8 +92,14 @@ test("an empty column takes the defaults", function()
   assert(c.font == "medium", "Got font " .. tostring(c.font))
 end)
 
-test("line_text defaults to wrapping, because it is the column that needs it", function()
-  assert(view.NormalizeColumn("line_text", nil).wrap == true, "line_text should wrap by default")
+test("text column wraps by default, old keys no longer special", function()
+  assert(view.NormalizeColumn("text", nil).wrap == true, "text should wrap by default")
+  assert(view.NormalizeColumn("line_text", nil).wrap == false, "line_text is not a column any more")
+  assert(view.NormalizeColumn("transcript", nil).wrap == false, "transcript is not a column any more")
+end)
+
+test("mirror API is gone", function()
+  assert(view.LoadMirror == nil and view.SaveMirror == nil, "mirror should be removed")
 end)
 
 test("valid values survive normalisation", function()
@@ -108,7 +114,7 @@ test("unrecognised values fall back to the defaults without erroring", function(
 end)
 
 test("an explicit false overrides a wrapping default", function()
-  local c = view.NormalizeColumn("line_text", { wrap = false })
+  local c = view.NormalizeColumn("text", { wrap = false })
   assert(c.wrap == false, "An explicit false must win over the default")
 end)
 
@@ -128,16 +134,16 @@ end)
 
 test("an unsaved column loads its defaults", function()
   mock.reset()
-  local c = view.LoadColumn("line_text")
+  local c = view.LoadColumn("text")
   assert(c.align == "middle" and c.wrap == true and c.font == "medium",
          "Unsaved column did not take defaults")
 end)
 
 test("a saved wrap of off overrides a wrapping default", function()
   mock.reset()
-  view.SaveColumn("line_text", { wrap = false })
-  assert(view.LoadColumn("line_text").wrap == false,
-         "A stored 0 must beat the line_text default")
+  view.SaveColumn("text", { wrap = false })
+  assert(view.LoadColumn("text").wrap == false,
+         "A stored 0 must beat the text default")
 end)
 
 test("a corrupt stored value loads as the default", function()
@@ -149,10 +155,10 @@ end)
 test("ClearColumns removes every stored column key", function()
   mock.reset()
   view.SaveColumn("notes", { align = "top", wrap = true, font = "small" })
-  view.SaveColumn("line_text", { align = "bottom", wrap = false, font = "large" })
-  view.ClearColumns({ "notes", "line_text" })
+  view.SaveColumn("text", { align = "bottom", wrap = false, font = "large" })
+  view.ClearColumns({ "notes", "text" })
   assert(reaper.GetExtState("ajsfx_vo", "view_col_notes_align") == "", "notes align survived")
-  assert(reaper.GetExtState("ajsfx_vo", "view_col_line_text_wrap") == "", "line_text wrap survived")
+  assert(reaper.GetExtState("ajsfx_vo", "view_col_text_wrap") == "", "text wrap survived")
   assert(view.LoadColumn("notes").align == "middle", "Cleared column should read as default")
 end)
 
@@ -163,15 +169,6 @@ test("restore defaults to on and round-trips", function()
   assert(view.LoadRestore() == false, "Restore did not round-trip")
   view.SaveRestore(true)
   assert(view.LoadRestore() == true, "Restore did not round-trip back")
-end)
-
-test("the text mirror defaults to off and round-trips", function()
-  mock.reset()
-  assert(view.LoadMirror() == false, "Mirror should default to off")
-  view.SaveMirror(true)
-  assert(view.LoadMirror() == true, "Mirror did not round-trip")
-  view.SaveMirror(false)
-  assert(view.LoadMirror() == false, "Mirror did not round-trip back")
 end)
 
 test("font sizes default to 11/13/16 and round-trip clamped", function()

@@ -333,7 +333,7 @@ local state = {
 
   -- Presentation. Loaded once at startup and written through on every change;
   -- nothing reads ExtState per frame.
-  view          = { restore = true, mirror = false, sizes = {}, cols = {} },
+  view          = { restore = true, sizes = {}, cols = {} },
   settings_open = false,
 }
 
@@ -1824,7 +1824,6 @@ end
 
 local function LoadViewSettings()
   state.view.restore = view.LoadRestore()
-  state.view.mirror  = view.LoadMirror()
   state.view.sizes   = view.LoadFontSizes()
   state.view.cols    = {}
   for _, key in ipairs(ColumnKeys()) do
@@ -1833,17 +1832,6 @@ local function LoadViewSettings()
     -- the defaults explicitly keeps that true even if a key survives somehow.
     state.view.cols[key] = state.view.restore and view.LoadColumn(key)
                            or view.NormalizeColumn(key, nil)
-  end
-
-  -- The mirror is an invariant, not a one-off copy, so it is enforced on load
-  -- too: a store edited by hand, or written by a version that did not have the
-  -- setting, must not open with the two columns disagreeing while the box says
-  -- they match.
-  if state.view.mirror then
-    local src, dst = state.view.cols.line_text, state.view.cols.transcript
-    if src and dst then
-      dst.align, dst.wrap, dst.font = src.align, src.wrap, src.font
-    end
   end
 end
 
@@ -1858,38 +1846,13 @@ local function WriteColumnView(key, field, value)
   if state.view.restore then view.SaveColumn(key, col) end
 end
 
--- Line text and Transcript are read against each other — having both columns is
--- only useful for comparing what the script says with what was said — so they
--- can be pinned together. Enforced on write and on switching the mirror on,
--- which keeps ColumnView a plain lookup rather than something that has to
--- resolve a pairing on every cell of every row.
---
--- Column WIDTH is not mirrored, and cannot be: ReaImGui exposes no
--- TableSetColumnWidth, widths live in ImGui's own saved table state, and
--- TableSetupColumn's initial width is ignored once a layout exists.
-local MIRROR_PAIR = { line_text = "transcript", transcript = "line_text" }
-
 local function SetColumnView(key, field, value)
   WriteColumnView(key, field, value)
-  local twin = state.view.mirror and MIRROR_PAIR[key]
-  if twin then WriteColumnView(twin, field, value) end
 end
 
 local function SetAllAlign(align)
   for _, key in ipairs(ColumnKeys()) do
     WriteColumnView(key, "align", align)
-  end
-end
-
-local function SetMirror(on)
-  state.view.mirror = on
-  view.SaveMirror(on)
-  if not on then return end
-  -- Line text is the reference: it is the column the user has usually already
-  -- set up, and the one Transcript is being checked against.
-  local src = ColumnView("line_text")
-  for _, field in ipairs({ "align", "wrap", "font" }) do
-    WriteColumnView("transcript", field, src[field])
   end
 end
 
@@ -4642,18 +4605,6 @@ local function DrawSettingsWindow()
       im.SameLine(ctx)
       local label = a:sub(1, 1):upper() .. a:sub(2)
       if im.Button(ctx, label .. "##align_all_" .. a) then SetAllAlign(a) end
-    end
-
-    local mchanged, mon = im.Checkbox(ctx, "Match Transcript to Line text", state.view.mirror)
-    if mchanged then SetMirror(mon) end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx,
-        "Keep the two columns' alignment, word wrap and font size identical, so\n" ..
-        "the script and what was actually said line up while you read across.\n" ..
-        "Changing either column changes both. Line text is copied to Transcript\n" ..
-        "when this is switched on.\n\n" ..
-        "Column WIDTH is not included: ReaImGui gives no way to set a table\n" ..
-        "column's width from a script. Drag the two to match by hand.")
     end
 
     im.End(ctx)
