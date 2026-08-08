@@ -3829,6 +3829,62 @@ function vo.ProjectEntriesFromRows(rows)
 end
 
 -- Counts for the header summary line.
+-- The Overview table's draw list. Flat overview rows (already in script
+-- order, adopted/extra rows already inserted beside their lines) become a
+-- typed node list: character headers, line parents with their takes nested,
+-- and one trailing section for orphans. Pure, so the shape the window draws
+-- is testable without ImGui.
+--
+-- rollup.got is NOT computed here: it reads the live project's item names
+-- (DELIVERY in the window), which this layer must not touch.
+function vo.GroupOverview(rows)
+  local nodes, orphans = {}, {}
+  local current_char, open_line = nil, nil
+
+  local function line_key_of(row)
+    return row.script_row or ("asset:" .. tostring(row.asset))
+  end
+
+  for _, row in ipairs(rows or {}) do
+    if row.status == "orphan" then
+      orphans[#orphans + 1] = row
+    else
+      local key = line_key_of(row)
+      if not (open_line and open_line._key == key) then
+        local char = row.character or ""
+        if char ~= "" and char ~= current_char then
+          nodes[#nodes + 1] = { kind = "character", name = char }
+          current_char = char
+        end
+        open_line = { kind = "line", _key = key, rep = row, takes = {},
+                      rollup = { status = "missing", has_sel = false,
+                                 locks = 0, take_count = 0 } }
+        nodes[#nodes + 1] = open_line
+      end
+      -- A row with no take_index is a line that matched nothing: it IS the
+      -- parent and contributes no child. Everything else is a take.
+      if row.take_index and row.status ~= "missing" then
+        local t = open_line.takes
+        t[#t + 1] = row
+        local rl = open_line.rollup
+        rl.take_count = #t
+        if row.status == "review" then
+          rl.status = "review"
+        elseif rl.status ~= "review" then
+          rl.status = "recorded"
+        end
+        if row.user_select then rl.has_sel = true end
+        if row.user_status == "verified" then rl.locks = rl.locks + 1 end
+      end
+    end
+  end
+
+  if #orphans > 0 then
+    nodes[#nodes + 1] = { kind = "orphans", takes = orphans }
+  end
+  return nodes
+end
+
 function vo.SummarizeOverview(rows)
   local n = { total = 0, recorded = 0, review = 0, missing = 0, orphan = 0,
               verified = 0, flagged = 0, lines = 0 }

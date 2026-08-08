@@ -6116,5 +6116,91 @@ test("an unparseable transcript reads as error with a reason", function()
 end)
 
 --------------------------------
+-- GroupOverview
+--------------------------------
+print("GroupOverview:")
+
+local function mkrow(o)
+  -- Minimal overview row; callers override what the test cares about.
+  local row = {
+    status = "recorded", character = "GRUMBAR", script = "main.csv",
+    asset = "grum_01", deliver = "grum_01", line_text = "Get off my bridge!",
+    script_row = 1, take_index = 1, user_select = false, user_status = nil,
+  }
+  for k, v in pairs(o) do row[k] = v end
+  return row
+end
+
+test("takes group under one line node per script_row", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ script_row = 1, take_index = 1 }),
+    mkrow({ script_row = 1, take_index = 2 }),
+    mkrow({ script_row = 2, asset = "grum_02", take_index = 1 }),
+  })
+  -- character header + two line nodes
+  assert(#nodes == 3, "Expected 3 nodes, got " .. #nodes)
+  assert(nodes[1].kind == "character" and nodes[1].name == "GRUMBAR")
+  assert(nodes[2].kind == "line" and #nodes[2].takes == 2)
+  assert(nodes[3].kind == "line" and #nodes[3].takes == 1)
+end)
+
+test("a missing line has no takes and rollup.status missing", function()
+  local nodes = vo.GroupOverview({ mkrow({ status = "missing" }) })
+  local line = nodes[2]
+  assert(line.kind == "line" and #line.takes == 0, "missing line must be childless")
+  assert(line.rollup.status == "missing")
+  assert(line.rep ~= nil, "rep must still carry the line fields")
+end)
+
+test("any review take makes the line rollup review", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ take_index = 1 }),
+    mkrow({ take_index = 2, status = "review" }),
+  })
+  assert(nodes[2].rollup.status == "review")
+end)
+
+test("rollup counts sel and locks", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ take_index = 1, user_select = true, user_status = "verified" }),
+    mkrow({ take_index = 2 }),
+  })
+  local rl = nodes[2].rollup
+  assert(rl.has_sel == true and rl.locks == 1 and rl.take_count == 2)
+end)
+
+test("character header inserted on change, in row order", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ script_row = 1 }),
+    mkrow({ script_row = 2, character = "VERA", asset = "vera_01" }),
+  })
+  assert(nodes[1].kind == "character" and nodes[1].name == "GRUMBAR")
+  assert(nodes[3].kind == "character" and nodes[3].name == "VERA")
+  assert(#nodes == 4)
+end)
+
+test("orphans collect into one trailing section", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ status = "orphan", script_row = nil, asset = nil, character = nil }),
+    mkrow({ script_row = 1 }),
+    mkrow({ status = "orphan", script_row = nil, asset = nil, character = nil }),
+  })
+  local last = nodes[#nodes]
+  assert(last.kind == "orphans" and #last.takes == 2)
+  -- and no character header was emitted for the orphans' nil character
+  for _, n in ipairs(nodes) do
+    assert(not (n.kind == "character" and n.name == ""), "no blank character header")
+  end
+end)
+
+test("lines without script_row group by asset", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ script_row = nil, asset = "loose_01" }),
+    mkrow({ script_row = nil, asset = "loose_01", take_index = 2 }),
+  })
+  assert(nodes[2].kind == "line" and #nodes[2].takes == 2)
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
