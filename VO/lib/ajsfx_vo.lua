@@ -1241,6 +1241,46 @@ function vo.IsEditedAnchor(anchor, range, tolerance)
       or math.abs((range.to   or 0) - to)   > tol
 end
 
+-- THE TRACK IS THE DECISION, alongside the governing idea that the name is the
+-- assignment: an item on the Selects track IS the select, one on Alts IS a
+-- keep. Pull already writes this direction; this reads it back.
+--
+-- Track placement is the most damage-resistant signal in the system. Marks live
+-- in a source-time key that a re-match can invalidate and item names can be
+-- edited by anything, but "this item sits on Selects" survives all of it -- so
+-- it is what lets scrambled marks heal themselves.
+--
+-- The Review track deliberately maps to nothing: it means "undecided, look at
+-- this", which is the absence of a decision rather than a mark.
+function vo.MarkFromTrack(track_name, cfg)
+  if not track_name or track_name == "" then return nil end
+  cfg = cfg or {}
+  local name = fold(track_name)
+  if name == fold(cfg.track_selects or "Selects") then return "select" end
+  if name == fold(cfg.track_alts    or "Alts")    then return "keep"   end
+  return nil
+end
+
+-- What a take's Sel and Keep actually are, given what the user stored and where
+-- the item sits. ONE function, so the rule cannot drift between the sheet, Pull
+-- and the repair pass.
+--
+--   1. an explicit decision -- including an explicit NO -- always wins
+--   2. otherwise the item's track decides
+--   3. otherwise unticked
+--
+-- Each mark is decided independently: saying "no" to Sel must not stop Keep
+-- following an Alts track.
+function vo.EffectiveMarks(entry, track_name, cfg)
+  local from_track = vo.MarkFromTrack(track_name, cfg)
+  local sel, keep
+  if entry and entry.select ~= nil then sel  = entry.select
+  else                                  sel  = (from_track == "select") end
+  if entry and entry.keep   ~= nil then keep = entry.keep
+  else                                  keep = (from_track == "keep")   end
+  return { select = sel, keep = keep }
+end
+
 --------------------------------
 -- Pure layer: transcript gap repair
 --------------------------------

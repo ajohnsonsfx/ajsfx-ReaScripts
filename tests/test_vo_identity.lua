@@ -151,5 +151,63 @@ test("a missing range is not edited", function()
 end)
 
 --------------------------------
+print("MarkFromTrack:")
+
+test("the configured Selects and Alts tracks map to their marks", function()
+  assert(vo.MarkFromTrack("Selects", {}) == "select")
+  assert(vo.MarkFromTrack("Alts", {}) == "keep")
+end)
+
+test("custom track names from config are honoured", function()
+  local cfg = { track_selects = "PICKED", track_alts = "SPARES" }
+  assert(vo.MarkFromTrack("PICKED", cfg) == "select")
+  assert(vo.MarkFromTrack("SPARES", cfg) == "keep")
+  assert(vo.MarkFromTrack("Selects", cfg) == nil, "default name still matched")
+end)
+
+test("the Review track sets no mark", function()
+  -- Review means "undecided, look at this" -- the absence of a decision.
+  assert(vo.MarkFromTrack("Review", {}) == nil)
+end)
+
+test("an unrelated or missing track sets no mark", function()
+  assert(vo.MarkFromTrack("Grumbar REC", {}) == nil)
+  assert(vo.MarkFromTrack("", {}) == nil)
+  assert(vo.MarkFromTrack(nil, {}) == nil)
+end)
+
+--------------------------------
+print("EffectiveMarks:")
+
+test("a blank mark defers to the item's track", function()
+  local m = vo.EffectiveMarks({}, "Selects", {})
+  assert(m.select == true, "track did not tick Sel")
+  assert(m.keep == false, "Alts tick invented")
+end)
+
+test("an explicit yes wins over a track that says nothing", function()
+  local m = vo.EffectiveMarks({ select = true }, "Grumbar REC", {})
+  assert(m.select == true)
+end)
+
+test("an explicit no beats the track", function()
+  -- The regression that makes the tri-state worth having: without it the
+  -- un-tick springs back on the next rebuild.
+  local m = vo.EffectiveMarks({ select = false }, "Selects", {})
+  assert(m.select == false, "the track overrode an explicit no")
+end)
+
+test("an explicit no on one mark leaves the other free to follow its track", function()
+  local m = vo.EffectiveMarks({ select = false }, "Alts", {})
+  assert(m.select == false, "select no was lost")
+  assert(m.keep == true, "keep did not follow the Alts track")
+end)
+
+test("no entry and no track is unticked", function()
+  local m = vo.EffectiveMarks(nil, nil, {})
+  assert(m.select == false and m.keep == false)
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
