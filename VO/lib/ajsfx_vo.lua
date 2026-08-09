@@ -1,7 +1,7 @@
 -- @description ajsfx VO Shared Library
 -- @author ajsfx
 -- @version 0.7
--- @changelog Take identity: anchors bind a take row to its REAPER item by GUID so hand-edits cannot detach its marks, Sel/Keep become tri-state so a blank can defer to the track the item sits on, and PlanReconcile reports where the sheet and the timeline disagree. Also, from 0.6: transcript gap repair for whisper's swallowed-window failure.
+-- @changelog Take identity via ranged take markers: the TKM chunk line's undocumented length field becomes the tool's substrate (ParseTKMChunk / PatchTKMChunk / FormatTKMLine), CountingMarkers applies the coverage rule that absorbs split residue, and BuildOverview builds a marked line's takes from its markers instead of the match. Sel/Keep become tri-state so a blank can defer to the track the item sits on, and PlanReconcile reports where the sheet and the timeline disagree. Also, from 0.6: transcript gap repair for whisper's swallowed-window failure.
 -- @noindex
 -- @about Shared logic for the ajsfx VO windows.
 --        Split into a pure layer (parsing, normalization, matching, naming —

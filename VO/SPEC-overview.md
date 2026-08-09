@@ -172,20 +172,36 @@ Item zone drops to a tooltip and below ~540px the Note zone follows, because
 at those widths they were unreadable slivers and the text is why the window is
 open.
 
-### Take identity
+### Take identity: ranged take markers
 
-A take row's link to its item is an **anchor**: the item's GUID plus the
-source-time edges Cut gave it. Anchored rows resolve by GUID before any
-inference runs, so an edge dragged in REAPER cannot detach a take's marks —
-which the source-time row key (`vo.OverviewKey`) could not survive, since it
-*is* a start time.
+A recorded take's identity is a **ranged take marker** — one `TKM` line in the
+owning item's state chunk, `TKM <srcpos> <name> <color> <length>`. The fourth
+field is undocumented but real: REAPER renders it as a range, dragging the
+marker moves the start with the length intact, alt-dragging moves the end, and
+API edits leave it alone (verified in v7.78, 2026-08-09; the substrate facts
+live in SoundDesignDocs `Workflow/reaper-session-automation.md` §4). The name
+is `<asset> ~<id>` — the visible half says which script line, the 2–3-char id
+is what the project file keys marks on (`tkm|<id>`), so no drag, trim or split
+can detach them. Markers without the ` ~id` suffix belong to the user and are
+never touched.
 
-Anchors are written automatically by Cut (`vo.ApplyPlan` returns the item it
-made for each span, keyed by a row key stamped *before* boundary padding
-mutates the span) and manually from a take row's right-click menu. An anchored
-take whose item edges have moved more than `vo.ANCHOR_EDIT_TOLERANCE` is
-**edited**: Cut skips it and offers *Re-cut anyway*, which clears those anchors
-first.
+**Markers are the truth.** The sheet re-reads them every rebuild
+(`vo.CollectTakeMarkers` → `vo.CountingMarkers` → marker-built rows in
+`vo.BuildOverview`); a line with counting markers ignores the match entirely —
+the match is a one-time generator, not a live authority. The **coverage rule**
+absorbs split residue: a marker counts only where its range intersects the
+source window of the item holding it, and when two items genuinely cover one
+marker the better-covering item wins.
+
+Cut writes markers first, splits at their bounds, and split propagation gives
+each cut piece its identity from birth. **Cut never touches audio covered by a
+counting marker** — the skip is reported, and *Re-cut anyway* deletes those
+takes' markers first, the same gesture the user could do by hand. The take-row
+menu carries the verbs native gestures don't cover: *Add take marker from
+selected item*, *Snap marker to item* (the trimmed-head fix), *Delete take
+marker*. **Mark takes** migrates a pre-marker session by banking each take's
+current item edges as marker truth; **Clean stray take markers** prunes
+off-window split copies.
 
 **The track is the decision.** Sel and Keep are tri-state in the project file —
 `yes`, `no`, or blank meaning no opinion. A blank defers to where the item
@@ -203,8 +219,8 @@ read. Keeping them apart is what stops a tick *inferred* from a track being
 written back as an explicit decision nobody made.
 
 The **Repair** panel reconciles the two: disagreements between sheet and
-timeline (with *Adopt timeline* / *Adopt sheet*), anchors whose item is gone,
-items claimed by two takes, and marks with no audio left to attach to.
+timeline (with *Adopt timeline* / *Adopt sheet*), markers whose audio is gone,
+and marks with no audio left to attach to.
 
 **Folded is the default**, and the project file stores which lines are OPEN
 (`View,expanded,<line key>` rows) rather than which are shut — a fresh project
