@@ -1004,13 +1004,36 @@ local function SetSelect(row, on)
       end
     end
   end
-  Mutate(row, function(e) e.select = on or nil end)
+  -- Ticking stores yes. UN-ticking stores an explicit NO when the item's track
+  -- would otherwise re-tick it (vo.EffectiveMarks rule 2), and nothing at all
+  -- when it would not -- so files do not grow rows that say nothing.
+  local cfg = vo.LoadConfig()
+  Mutate(row, function(e)
+    if on then
+      e.select = true
+    elseif vo.MarkFromTrack(row.track_name, cfg) == "select" then
+      e.select = false
+    else
+      e.select = nil
+    end
+  end)
 end
 
 -- Any number of takes may be KEPT, so this has no exclusivity at all. A keep
 -- is an extra delivery, not a competing answer to which take the delivery is.
 local function SetKeep(row, on)
-  Mutate(row, function(e) e.keep = on or nil end)
+  -- Same tri-state rule as SetSelect: an explicit no only where the track
+  -- would otherwise speak for this mark.
+  local cfg = vo.LoadConfig()
+  Mutate(row, function(e)
+    if on then
+      e.keep = true
+    elseif vo.MarkFromTrack(row.track_name, cfg) == "keep" then
+      e.keep = false
+    else
+      e.keep = nil
+    end
+  end)
 end
 
 -- Renaming is the one edit that reaches into the project. It is recorded in
