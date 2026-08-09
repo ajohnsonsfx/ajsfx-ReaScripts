@@ -3385,6 +3385,14 @@ function vo.SerializeProjectFile(entries, meta)
     end
     table.sort(keys)
     for _, key in ipairs(keys) do row("column", key, v.col_filters[key]) end
+    -- Which lines were folded shut. Sorted for the same diff-stability reason
+    -- as the column filters above.
+    local expanded = {}
+    for _, k in ipairs(v.expanded or {}) do
+      if k ~= "" then expanded[#expanded + 1] = tostring(k) end
+    end
+    table.sort(expanded)
+    for _, k in ipairs(expanded) do row("expanded", k) end
   end
 
   local rest = {
@@ -3437,7 +3445,7 @@ function vo.ParseProjectFile(text)
   end
 
   local parsed = { version = version, scripts = {}, appends = {},
-                   entries = {}, pins = {}, view = { col_filters = {} } }
+                   entries = {}, pins = {}, view = { col_filters = {}, expanded = {} } }
   -- The pre-multi-script format, folded in below only if no Script row appears.
   local legacy_path, legacy_mapping = nil, nil
 
@@ -3474,6 +3482,8 @@ function vo.ParseProjectFile(text)
       elseif what == "filter_row" then parsed.view.filter_row = a ~= ""
       elseif what == "column" and a ~= "" and b ~= "" then
         parsed.view.col_filters[a] = b
+      elseif what == "expanded" and a ~= "" then
+        parsed.view.expanded[#parsed.view.expanded + 1] = a
       end
     elseif key == "Pin" then
       local asset, source = rows[i][2] or "", rows[i][3] or ""
@@ -3826,6 +3836,109 @@ function vo.ProjectEntriesFromRows(rows)
     }
   end
   return entries
+end
+
+-- The Overview table's draw list. Flat overview rows (already in script
+-- order, adopted/extra rows already inserted beside their lines) become a
+-- typed node list: character headers, line parents with their takes nested,
+-- and one trailing section for orphans. Pure, so the shape the window draws
+-- is testable without ImGui.
+--
+-- rollup.got is NOT computed here: it reads the live project's item names
+-- (DELIVERY in the window), which this layer must not touch.
+function vo.GroupOverview(rows)
+  local nodes, orphans = {}, {}
+  local current_char, open_line = nil, nil
+
+  local function line_key_of(row)
+    return row.script_row or ("asset:" .. tostring(row.asset))
+  end
+
+  for _, row in ipairs(rows or {}) do
+    if row.status == "orphan" then
+      orphans[#orphans + 1] = row
+    else
+      local key = line_key_of(row)
+      if not (open_line and open_line._key == key) then
+        local char = row.character or ""
+        if char ~= "" and char ~= current_char then
+          nodes[#nodes + 1] = { kind = "character", name = char }
+          current_char = char
+        end
+        open_line = { kind = "line", _key = key, rep = row, takes = {},
+                      rollup = { status = "missing", has_sel = false,
+                                 locks = 0, take_count = 0 } }
+        nodes[#nodes + 1] = open_line
+      end
+      -- A row with no take_index is a line that matched nothing: it IS the
+      -- parent and contributes no child. Everything else is a take.
+      if row.take_index and row.status ~= "missing" then
+        local t = open_line.takes
+        t[#t + 1] = row
+        local rl = open_line.rollup
+        rl.take_count = #t
+        if row.status == "review" then
+          rl.status = "review"
+        elseif rl.status ~= "review" then
+          rl.status = "recorded"
+        end
+        if row.user_select then rl.has_sel = true end
+        if row.user_status == "verified" then rl.locks = rl.locks + 1 end
+      end
+    end
+  end
+
+  if #orphans > 0 then
+    nodes[#nodes + 1] = { kind = "orphans", takes = orphans }
+  end
+  return nodes
+end
+
+-- Take rows are lettered, not numbered: A, B, C ... Z, AA, AB (spreadsheet
+-- columns -- bijective base 26). Letters read as "which take" where a bare
+-- number beside the line's # would read as another position.
+function vo.TakeLetter(n)
+  n = math.floor(tonumber(n) or 0)
+  if n < 1 then return "" end
+  local out = ""
+  while n > 0 do
+    local rem = (n - 1) % 26
+    out = string.char(65 + rem) .. out
+    n = math.floor((n - 1) / 26)
+  end
+  return out
+end
+
+-- Line-level visibility: filters choose LINES, and a line travels whole.
+-- `match` sees take rows and line reps alike -- both are overview rows, so
+-- one predicate (character, search, per-column needles) serves both.
+function vo.FilterGroups(nodes, match)
+  local out, pending_char = {}, nil
+  for _, node in ipairs(nodes or {}) do
+    if node.kind == "character" then
+      pending_char = node
+    elseif node.kind == "line" then
+      local visible = match(node.rep)
+      if not visible then
+        for _, t in ipairs(node.takes) do
+          if match(t) then visible = true break end
+        end
+      end
+      if visible then
+        if pending_char then out[#out + 1] = pending_char; pending_char = nil end
+        out[#out + 1] = node
+      end
+    elseif node.kind == "orphans" then
+      local kept = {}
+      for _, t in ipairs(node.takes) do
+        if match(t) then kept[#kept + 1] = t end
+      end
+      if #kept > 0 then
+        out[#out + 1] = { kind = "orphans", takes = kept }
+      end
+    end
+  end
+  return out
 end
 
 -- Counts for the header summary line.

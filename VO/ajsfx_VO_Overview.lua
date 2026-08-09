@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.14
--- @changelog A line's Sel could sit on the wrong take, and both takes were then delivered under the same filename. Cut pulls every take's edges in to the silence around it, so takes are separated by a gap rather than abutting -- and a take's recognised start sits inside that gap, touching the END of the take before it. Resolving that instant answered with the neighbour, so the mark, the audition and the item the row pointed at were all one take early on any line read more than once, and Pull then sent both to Selects wearing the same name. The start instant no longer decides at all; the item most fully OCCUPIED by the take does. That one measure settles three ways the instant could lie: the take before it, which merely ends where this one starts; an unnamed remainder that contains the start but holds a sliver of the take; and -- because whisper inflates a final word's end into the pause after it, making a span longer than its own clip -- the remainder that FOLLOWS, which could hold more of the span than the clip did. A leftover is mostly other things; a clip cut for the take is entirely the take. A time past the last item still resolves as it did. The noise floor is also measured differently: it was the quietest gap in the whole recording plus the offset, and a cleaned file has patches the noise reduction took to near-silence, so one of those set a floor the rest of the file could never meet -- -75dB against its own room tone of about -67. Every "is this window quiet?" test then failed, and snapping silently degraded to fixed pads for the entire session. It is now the 25th percentile of the gaps rather than the minimum, which sits under the room tone without chasing an outlier down. On the session that prompted this the floor moved from -75.1dB to -50.5dB. Two more routing faults are fixed with it. A row synthesised for an item the spans did not claim -- the rendered-file and hand-comped case -- was copied from another row of the same line, and copied its TICKS with it: whenever the template happened to be the line's Sel, every adopted item was born ticked, and Pull sent them all to Selects under the one delivered name. Such a row now starts undecided, and carries a key of its own so a tick put on it later is stored against that take instead of overwriting the take it was copied from. Separately, a row could resolve to one of the unnamed remainders left on the recording track rather than to its own clip, because the remainder happened to contain the take's start instant while holding a few milliseconds of it -- so the line's Sel silently never reached Selects. On the session that prompted this, 44 lines had two or three items on Selects wearing the same filename; after both fixes, 140 items and 140 distinct names. Finally, the remote seam gains a `rows` command: it dumps the sheet as the window actually holds it -- mark, take number, source time and resolved item, filtered by asset. Diagnosing either fault from outside meant rebuilding the sheet through the pure layer and comparing, which answers a different question the moment the two disagree; that disagreement WAS both bugs.
+-- @version 0.15beta1
+-- @changelog PRE-RELEASE: the sheet is no longer a table, and this build exists so the new layout can be tried in real sessions before 0.15 -- opt in to pre-releases in ReaPack to receive it. The 18-column table is gone, and so is the column grid itself. Every script line is now a CARD. Its title band carries the line: the script position, a status dot, the speaker, the delivered name on its own full-width row, and the line text under it -- with badges on the right showing how many items in the project already carry that name, and an amber ! while a line has takes but none ticked as the Sel. Click anywhere on the band to unfold it. Unfolding reveals the take rows, on their own colour so parent and child can never be confused, each with plain Sel / Keep / Lock checkboxes under a header that names them, the transcript sitting directly beneath the line text it is checked against, the item's own editable name, and where in which recording it came from. A card also opens a drawer for the quieter per-line properties (which script CSV, a note on the line itself) and a + Add take button that assigns whatever is selected in REAPER to that line -- the answer to finding a take that belongs somewhere. Takes are lettered A, B, C so a take can never be misread as a script position. Cards are folded by default, fold state is remembered per project, and Unfold all / Fold all do the lot. Folding is tidiness, not scoping: a folded line's takes still count for Cut and Name, while leaving the selection so a shift-range matches what the eye actually sees. The window is usable at half a laptop screen now, because nothing is repeated per take and the zones that would become unreadable slivers (where a take sits, its note) drop out instead of squeezing the words. Display sorting is gone entirely -- the sheet is always in script order, and arranging the TIMELINE is still the Sort panel's job, unchanged. The status line at the top is one line: coverage first, then the match summary, then only the warnings that are actually nonzero, with the detail in tooltips; the old row-count line under the sheet is gone. Notes exist at both levels, and a note on the line itself is kept under a key of its own in the project file. The per-field filter boxes moved to their own line under the toolbar, behind the Filters toggle. The old "match Transcript to Line text" mirror setting went with the paired columns that needed it, and per-column alignment went with the table header menu that was the only way to set it. Cut pulls every take's edges in to the silence around it, so takes are separated by a gap rather than abutting -- and a take's recognised start sits inside that gap, touching the END of the take before it. Resolving that instant answered with the neighbour, so the mark, the audition and the item the row pointed at were all one take early on any line read more than once, and Pull then sent both to Selects wearing the same name. The start instant no longer decides at all; the item most fully OCCUPIED by the take does. That one measure settles three ways the instant could lie: the take before it, which merely ends where this one starts; an unnamed remainder that contains the start but holds a sliver of the take; and -- because whisper inflates a final word's end into the pause after it, making a span longer than its own clip -- the remainder that FOLLOWS, which could hold more of the span than the clip did. A leftover is mostly other things; a clip cut for the take is entirely the take. A time past the last item still resolves as it did. The noise floor is also measured differently: it was the quietest gap in the whole recording plus the offset, and a cleaned file has patches the noise reduction took to near-silence, so one of those set a floor the rest of the file could never meet -- -75dB against its own room tone of about -67. Every "is this window quiet?" test then failed, and snapping silently degraded to fixed pads for the entire session. It is now the 25th percentile of the gaps rather than the minimum, which sits under the room tone without chasing an outlier down. On the session that prompted this the floor moved from -75.1dB to -50.5dB. Two more routing faults are fixed with it. A row synthesised for an item the spans did not claim -- the rendered-file and hand-comped case -- was copied from another row of the same line, and copied its TICKS with it: whenever the template happened to be the line's Sel, every adopted item was born ticked, and Pull sent them all to Selects under the one delivered name. Such a row now starts undecided, and carries a key of its own so a tick put on it later is stored against that take instead of overwriting the take it was copied from. Separately, a row could resolve to one of the unnamed remainders left on the recording track rather than to its own clip, because the remainder happened to contain the take's start instant while holding a few milliseconds of it -- so the line's Sel silently never reached Selects. On the session that prompted this, 44 lines had two or three items on Selects wearing the same filename; after both fixes, 140 items and 140 distinct names. Finally, the remote seam gains a `rows` command: it dumps the sheet as the window actually holds it -- mark, take number, source time and resolved item, filtered by asset. Diagnosing either fault from outside meant rebuilding the sheet through the pure layer and comparing, which answers a different question the moment the two disagree; that disagreement WAS both bugs.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -67,12 +67,6 @@ local KEY_LSUPER     = Api('Key_LeftSuper')
 local HEADER_ROW_FLAGS = Api('TableRowFlags_Headers')
 local KEY_RSUPER     = Api('Key_RightSuper')
 
--- Header-click sorting. Absent on an older binding, in which case the table
--- simply stays in script order and the headers do nothing when clicked.
-local SORT_SPECS  = Api('TableGetColumnSortSpecs')
-local NEED_SORT   = Api('TableNeedSort')
-local SORT_DESC   = Api('SortDirection_Descending')
-
 -- Transcripts and the project file are read off disk, and matching is linear
 -- in the project's whole word count, so the rebuild cannot sit on the
 -- per-frame path. A project-state counter decides WHETHER to rebuild; this
@@ -96,123 +90,55 @@ local function FormatTime(t)
   return string.format("%d:%06.3f", m, t - m * 60)
 end
 
-local SORT_RANK = { missing = 1, review = 2, orphan = 3, recorded = 4 }
-
-local function StatusLabel(row)
-  if row.user_status == "flagged" then return "Flagged" end
-  local s = STATUS_STYLE[row.status]
-  return s and s.label or (row.status or "")
-end
-
-local function ItemName(row)
-  return row.take_name or row.name_override or row.deliver or row.asset or ""
-end
-
--- Sorting and filtering are one mechanism across every column, driven by two
--- optional accessors rather than a switch statement per feature.
---   text  what a column's filter box matches against, and what an alphabetical
---         sort compares. A column without it is neither sorted nor filtered:
---         there is nothing there a user could have meant.
---   num   overrides text for columns that are really numbers, so Time sorts
---         9:59 before 10:00 and # sorts 2 before 10.
--- Either may return nil or "" for a row that has no value; such rows sort last
--- in BOTH directions, because reversing a sort should not fill the top of the
--- table with blanks.
--- Forward-declared: the column accessors below close over it, and `state` is
--- not built until after this table. Assigned once state exists.
+-- Six questions across the top; the parent row answers each for the LINE and
+-- the take rows answer it for the TAKE, so every cell is correlated with the
+-- cell above it. State is one visual group over four physical columns: the
+-- status dot plus the Sel/Keep/Lock checkboxes, labelled once per expanded
+-- line by a slim sub-header row rather than in the frozen header.
+--
+--   text  what a column's filter box (and the search) matches against. It sees
+--         take rows and line reps alike, so it folds both levels' fields.
+--         A column without it has no filter box: there is nothing there a
+--         user could have meant.
+-- Display sorting is gone on purpose: the table is always in script order,
+-- and the timeline is arranged by the Sort tool, not by the display.
+-- Forward-declared: accessors close over it; assigned once state exists.
 local DELIVERY
 
 local COLUMNS = {
-  { key = "order",      label = "#",          width =  36, nofilter = true,
-    num  = function(row) return row.order end,
-    text = function(row) return tostring(row.order or "") end,
-    tip = "Position in the script CSV. Sort by this column to put the\n" ..
-          "table back into script order." },
-  { key = "verify",     label = "Lock",       width =  40,
-    text = function(row) return row.user_status == "verified" and "yes" or "no" end,
-    tip = "A locked line keeps the placement it has.\nRematching leaves it alone." },
-  { key = "status",     label = "Status",     width =  74,
-    num  = function(row) return SORT_RANK[row.status] or 9 end,
-    text = StatusLabel },
-  -- Answered from the project's item names, not from the match: this is the
-  -- "have I got everything" column, and it is true whether the take was cut
-  -- here, comped by hand, or delivered by somebody else.
-  { key = "delivered",  label = "Got",        width =  56,
-    num  = function(row)
-      local rec = row.script_row and DELIVERY(row.script_row)
-      return rec and rec.count or 0
+  { key = "order", label = "#",     width =  48, nofilter = true,
+    tip = "Line: its position in the script, and the arrow that folds its\n" ..
+          "takes. Take: the take number." },
+  { key = "state", label = "State", width =  24, nofilter = true,
+    tip = "Line: status dot, delivered count, and what still needs deciding.\n" ..
+          "Take: status dot. Hover any dot for the words." },
+  { key = "sel",   label = "",      width =  30, nofilter = true },
+  { key = "keep",  label = "",      width =  30, nofilter = true },
+  { key = "lock",  label = "",      width =  30, nofilter = true },
+  { key = "text",  label = "Text",  width = 260, stretch = 2.0,
+    text = function(row) return (row.line_text or "") .. " " .. (row.transcript or "") end,
+    tip = "Line: what the script says. Take: what was actually said,\n" ..
+          "directly beneath it for comparison." },
+  { key = "name",  label = "Name",  width = 190,
+    text = function(row)
+      return (row.take_name or row.name_override or "") .. " "
+          .. (row.deliver or row.asset or "")
     end,
+    tip = "Line: the delivered name (CSV filename + Append, dimmed).\n" ..
+          "Take: the item's own name. Editable on takes; right-click the\n" ..
+          "line's name to edit its Append." },
+  { key = "where", label = "Where", width = 140,
     text = function(row)
-      local rec = row.script_row and DELIVERY(row.script_row)
-      if not rec then return "no" end
-      return tostring(rec.count)
+      return (row.script or "") .. " "
+          .. (row.source_path and vo.Basename(row.source_path) or "")
     end,
-    tip = "How many items in the project carry this line's name.\n" ..
-          "Read from the names themselves, so it counts takes this tool\n" ..
-          "never cut. Hover a cell for the tracks they sit on." },
-  { key = "select",     label = "Sel",        width =  40,
-    text = function(row)
-      if row.status == "missing" or row.status == "orphan" then return "" end
-      return row.user_select and "yes" or "no"
-    end },
-  -- Two independent ticks, not one cycling mark. Marking a take as an alt used
-  -- to mean passing through "select" on the way, which stole the select from
-  -- whichever take already had it.
-  { key = "keep",       label = "Keep",       width =  46,
-    text = function(row)
-      if row.status == "missing" or row.status == "orphan" then return "" end
-      return row.user_keep and "yes" or "no"
-    end },
-  { key = "character",  label = "Character",  width =  90,
-    text = function(row) return row.character or "" end },
-  { key = "script",     label = "Script",     width =  90,
-    text = function(row) return row.script or "" end,
-    tip = "Which script CSV this line came from." },
-  -- Two names, deliberately. "Item name" is what the user is changing and what
-  -- REAPER's render patterns read; "CSV filename" is the script's own name for
-  -- the line, kept visible and read-only so a rename never loses the original.
-  { key = "item_name",  label = "Item name",  width = 190,
-    text = ItemName,
-    tip = "The take's name in REAPER. Editable, and what the stock render\n" ..
-          "patterns read. Nothing here renames a file on disk." },
-  { key = "asset",      label = "CSV filename", width = 160,
-    text = function(row) return row.asset or "" end,
-    tip = "The filename from the script CSV. Not editable.\n" ..
-          "Right-click a cell to copy it or to put it back on the item." },
-  { key = "append",     label = "Append",     width = 110,
-    text = function(row) return row.append or "" end,
-    tip = "Added to the end of the CSV filename to make the delivered name.\n" ..
-          "No separator is inserted -- type the one you want. Use it to tell\n" ..
-          "apart two lines that ask for the same filename." },
-  { key = "take",       label = "Take",       width =  44,
-    num  = function(row) return row.take_index end,
-    text = function(row)
-      if not row.take_index then return "" end
-      return string.format("%d/%d", row.take_index, row.take_count or 1)
-    end },
-  { key = "line_text",  label = "Line text",  width = 240,
-    text = function(row) return row.line_text or "" end },
-  { key = "transcript", label = "Transcript", width = 240,
-    text = function(row) return row.transcript or "" end },
-  { key = "source",     label = "Source",     width = 120,
-    text = function(row)
-      return row.source_path and vo.Basename(row.source_path) or ""
-    end },
-  { key = "time",       label = "Time",       width =  76,
-    num  = function(row) return row.proj_time end,
-    text = function(row) return FormatTime(row.proj_time) end },
-  { key = "notes",      label = "Notes",      width = 200,
+    tip = "Line: which script CSV, and its row.\nTake: which recording, and when." },
+  { key = "notes", label = "Notes", width = 170, stretch = 1.0,
     text = function(row) return row.notes or "" end },
 }
 
 local COLUMN_BY_KEY = {}
 for _, c in ipairs(COLUMNS) do COLUMN_BY_KEY[c.key] = c end
-
--- Column index by key, 0-based for ImGui. DrawTableBody addresses cells through
--- this rather than by literal number, so inserting a column is one edit to
--- COLUMNS instead of a renumbering of every call site below.
-local CI = {}
-for i, c in ipairs(COLUMNS) do CI[c.key] = i - 1 end
 
 -- Every column key, in declaration order. Used to load, save and clear the
 -- per-column settings without anything having to restate the list.
@@ -304,12 +230,14 @@ local state = {
   layout_gap     = 2.0,
   layout_src_gap = 60.0,
 
-  -- nil means script order. ImGui owns the header clicks and the arrow; these
-  -- two fields are all we keep of the spec it hands back.
-  sort_col      = nil,        -- a COLUMNS key
-  sort_desc     = false,
-
   auto_select_take = "last",  -- which take "Select takes" marks; from the config
+
+  -- Lines unfolded OPEN, keyed by LineNodeKey -- folded is the default, so
+  -- the sheet opens as a tidy list of title bands. Persisted in the project
+  -- file's view section: a reopened project looks the way it was left.
+  expanded      = {},
+  nodes         = {},         -- the filtered draw list: vo.FilterGroups output
+  filtered      = {},         -- every take the filters admit; tool scope
 
   filter_row    = false,      -- the per-column filter boxes under the header
   col_filters   = {},         -- column key -> needle
@@ -333,7 +261,7 @@ local state = {
 
   -- Presentation. Loaded once at startup and written through on every change;
   -- nothing reads ExtState per frame.
-  view          = { restore = true, mirror = false, sizes = {}, cols = {} },
+  view          = { restore = true, sizes = {}, cols = {} },
   settings_open = false,
 }
 
@@ -452,6 +380,7 @@ end
 local function LoadProjectFile()
   state.entries, state.project_error, state.parse_failed = {}, "", false
   state.scripts, state.appends, state.pins = {}, {}, {}
+  state.expanded = {}
   -- Everything below describes the PREVIOUS project. A message like "Pulled 27
   -- select" surviving a tab switch reads as a claim about the new project.
   state.message, state.message_kind = nil, nil
@@ -490,6 +419,8 @@ local function LoadProjectFile()
       if COLUMN_BY_KEY[key] then state.col_filters[key] = needle end
     end
     state.check_character = (v.character ~= nil)
+    state.expanded = {}
+    for _, k in ipairs(v.expanded or {}) do state.expanded[k] = true end
   else
     -- The file is NOT overwritten on a parse failure: writing would destroy
     -- whatever the user still has in there. Saving stays off until they fix or
@@ -521,14 +452,27 @@ local function SaveProjectFile()
   end
   state.project_path = path
 
+  -- Entries are rebuilt from the rows, and line-level notes back onto
+  -- entries no row ever claims ("linenote|" keys) -- carried over here or a
+  -- save would silently drop every line note.
+  local entries = vo.ProjectEntriesFromRows(state.overview)
+  for _, e in ipairs(state.entries) do
+    if e.key and e.key:sub(1, 9) == "linenote|" then entries[#entries + 1] = e end
+  end
   local ok = WriteFileAtomic(path, vo.SerializeProjectFile(
-    vo.ProjectEntriesFromRows(state.overview),
+    entries,
     { scripts = state.scripts, appends = state.appends, pins = state.pins,
       view = {
         character   = state.character,
         search      = state.search,
         filter_row  = state.filter_row,
         col_filters = state.col_filters,
+        expanded    = (function()
+          local out = {}
+          for k in pairs(state.expanded or {}) do out[#out + 1] = k end
+          table.sort(out)
+          return out
+        end)(),
       } }))
   if not ok then
     state.message, state.message_kind = "Cannot write " .. tostring(path), "error"
@@ -1716,9 +1660,6 @@ local function AnyColumnFilter()
   return false
 end
 
--- nil and "" both mean "this row has no value in this column".
-local function Absent(v) return v == nil or v == "" end
-
 -- A character filter restored from the project file names a character the rows
 -- had when the file was written. If the script has since changed, or its
 -- Character column is no longer mapped, that name is now in nothing -- and an
@@ -1735,31 +1676,42 @@ local function CheckRestoredCharacter()
   state.character = nil
 end
 
+local function LineNodeKey(node)
+  return tostring(node.rep.script_row or ("asset:" .. tostring(node.rep.asset)))
+end
+
 local function ApplyFilters()
   CheckRestoredCharacter()
-  local out = {}
-  for i, row in ipairs(state.overview) do
-    row.order = i     -- script position: the # column, and every sort's tiebreak
-    if Matches(row) then out[#out + 1] = row end
-  end
+  for i, row in ipairs(state.overview) do row.order = i end
 
-  local col = state.sort_col and COLUMN_BY_KEY[state.sort_col]
-  if col then
-    local desc = state.sort_desc
-    local key = col.num or function(row) return col.text(row):lower() end
-    table.sort(out, function(a, b)
-      local ka, kb = key(a), key(b)
-      local ma, mb = Absent(ka), Absent(kb)
-      -- Valueless rows sink to the bottom in both directions.
-      if ma ~= mb then return mb end
-      if not ma and ka ~= kb then
-        if desc then return kb < ka end
-        return ka < kb
+  state.nodes = vo.FilterGroups(vo.GroupOverview(state.overview), Matches)
+
+  -- Two flat take lists, deliberately distinct:
+  --   state.filtered  every take of every line the FILTERS admit. Tool scope
+  --                   (AffectedRows) reads this: folding a line shut is
+  --                   tidiness, and must not silently shrink what Cut acts on.
+  --   state.visible   what the eye can actually see -- filtered minus the
+  --                   takes of folded lines. Selection, ranges and the
+  --                   timeline follow read this, so a shift-range matches the
+  --                   screen and the selection never outlives visibility.
+  -- Parents and headers are in neither: only takes are selectable/actionable.
+  local filtered, out = {}, {}
+  for _, node in ipairs(state.nodes) do
+    if node.kind == "line" then
+      local open = state.expanded[LineNodeKey(node)] == true
+      for _, t in ipairs(node.takes) do
+        filtered[#filtered + 1] = t
+        if open then out[#out + 1] = t end
       end
-      return a.order < b.order
-    end)
+    elseif node.kind == "orphans" then
+      for _, t in ipairs(node.takes) do
+        filtered[#filtered + 1] = t
+        out[#out + 1] = t
+      end
+    end
   end
 
+  state.filtered = filtered
   state.visible = out
 
   -- The selection never outlives the filter. Keeping hidden rows selected would
@@ -1824,7 +1776,6 @@ end
 
 local function LoadViewSettings()
   state.view.restore = view.LoadRestore()
-  state.view.mirror  = view.LoadMirror()
   state.view.sizes   = view.LoadFontSizes()
   state.view.cols    = {}
   for _, key in ipairs(ColumnKeys()) do
@@ -1834,63 +1785,10 @@ local function LoadViewSettings()
     state.view.cols[key] = state.view.restore and view.LoadColumn(key)
                            or view.NormalizeColumn(key, nil)
   end
-
-  -- The mirror is an invariant, not a one-off copy, so it is enforced on load
-  -- too: a store edited by hand, or written by a version that did not have the
-  -- setting, must not open with the two columns disagreeing while the box says
-  -- they match.
-  if state.view.mirror then
-    local src, dst = state.view.cols.line_text, state.view.cols.transcript
-    if src and dst then
-      dst.align, dst.wrap, dst.font = src.align, src.wrap, src.font
-    end
-  end
 end
 
 local function ColumnView(key)
   return state.view.cols[key] or view.NormalizeColumn(key, nil)
-end
-
-local function WriteColumnView(key, field, value)
-  local col = ColumnView(key)
-  col[field] = value
-  state.view.cols[key] = col
-  if state.view.restore then view.SaveColumn(key, col) end
-end
-
--- Line text and Transcript are read against each other — having both columns is
--- only useful for comparing what the script says with what was said — so they
--- can be pinned together. Enforced on write and on switching the mirror on,
--- which keeps ColumnView a plain lookup rather than something that has to
--- resolve a pairing on every cell of every row.
---
--- Column WIDTH is not mirrored, and cannot be: ReaImGui exposes no
--- TableSetColumnWidth, widths live in ImGui's own saved table state, and
--- TableSetupColumn's initial width is ignored once a layout exists.
-local MIRROR_PAIR = { line_text = "transcript", transcript = "line_text" }
-
-local function SetColumnView(key, field, value)
-  WriteColumnView(key, field, value)
-  local twin = state.view.mirror and MIRROR_PAIR[key]
-  if twin then WriteColumnView(twin, field, value) end
-end
-
-local function SetAllAlign(align)
-  for _, key in ipairs(ColumnKeys()) do
-    WriteColumnView(key, "align", align)
-  end
-end
-
-local function SetMirror(on)
-  state.view.mirror = on
-  view.SaveMirror(on)
-  if not on then return end
-  -- Line text is the reference: it is the column the user has usually already
-  -- set up, and the one Transcript is being checked against.
-  local src = ColumnView("line_text")
-  for _, field in ipairs({ "align", "wrap", "font" }) do
-    WriteColumnView("transcript", field, src[field])
-  end
 end
 
 -- Turning restore OFF clears the stored per-column settings outright rather
@@ -2020,7 +1918,9 @@ local function AffectedRows()
     local sel = SelectedRows()
     if #sel > 0 then return sel, true end
   end
-  return state.visible, false
+  -- Filtered, not visible: a line folded shut is still in scope. Folding is
+  -- how the table is tidied, not how a run is narrowed.
+  return state.filtered, false
 end
 
 -- The items Pull and Sort may act on, in timeline order, each carrying the name
@@ -2295,7 +2195,7 @@ local function DrawScopeToggle(id)
       "Off: act on every row the filters are showing (%d).\n" ..
       "On: act on the rows selected in the table (%d).\n\n" ..
       "Off by default because clicking a row to listen to it also selects it.",
-      #state.visible, #SelectedRows()))
+      #(state.filtered or {}), #SelectedRows()))
   end
 end
 
@@ -3405,8 +3305,9 @@ local function DrawFilters()
     state.dirty = true
   end
   if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Show a filter box under each column header.\n" ..
-                       "Click a header to sort by that column.")
+    im.SetTooltip(ctx, "Show a box per field, to narrow the sheet by what a\n" ..
+                       "field contains. Filters pick LINES: a match on any take\n" ..
+                       "keeps its whole card.")
   end
   if filtering then
     im.SameLine(ctx)
@@ -3414,6 +3315,26 @@ local function DrawFilters()
       state.col_filters = {}
       state.dirty = true
     end
+  end
+  im.SameLine(ctx)
+
+  -- Fold every line at once. Folding is per line and persisted; these two
+  -- are just the bulk versions of clicking every arrow.
+  if im.Button(ctx, "Unfold all") then
+    for _, node in ipairs(vo.GroupOverview(state.overview)) do
+      if node.kind == "line" then
+        state.expanded[LineNodeKey(node)] = true
+      end
+    end
+    state.dirty = true
+  end
+  im.SameLine(ctx)
+  if im.Button(ctx, "Fold all") then
+    state.expanded = {}
+    state.dirty = true
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Fold every line down to its title band.")
   end
   im.SameLine(ctx)
 
@@ -3466,6 +3387,25 @@ local function DrawFilters()
       "only, so speech is never lost; hand-trimmed items (custom fades)\n" ..
       "are left alone. Works on the REAPER selection, or everything on\n" ..
       "Selects + Alts when nothing is selected.")
+  end
+
+  -- The per-field boxes, on their own line under the toolbar. In the sheet
+  -- these lived under the column headers; cards have no headers to live
+  -- under, so each box wears its field's name as its hint.
+  if state.filter_row then
+    local first = true
+    for _, c in ipairs(COLUMNS) do
+      if c.text and not c.nofilter then
+        if first then first = false else im.SameLine(ctx) end
+        im.PushID(ctx, "flt_" .. c.key)
+        im.SetNextItemWidth(ctx, 150)
+        local fchanged, ftext = im.InputTextWithHint(ctx, "##f", c.label,
+                                                     state.col_filters[c.key] or "")
+        if fchanged then state.col_filters[c.key] = ftext; state.dirty = true end
+        if im.IsItemHovered(ctx) and c.tip then im.SetTooltip(ctx, c.tip) end
+        im.PopID(ctx)
+      end
+    end
   end
 end
 
@@ -3626,732 +3566,656 @@ end
 -- PushID/PopID" instead, which buries the real error under a second one.
 local id_depth = 0
 
--- -----------------------------------------------------------------------
--- Row heights
---
--- ImGui has no TableGetColumnWidth: a cell's usable width is only knowable from
--- inside that cell, which is a frame too late to size the row it belongs to.
--- So cells record their width as they draw, and the NEXT frame measures with
--- it. While a column edge is being dragged the heights are therefore one frame
--- stale; they settle on the following frame, which at frame rate is not
--- perceptible. The alternative — a hidden measuring pass — costs a whole extra
--- table every frame.
--- -----------------------------------------------------------------------
-
--- Heights are MEASURED, never predicted.
---
--- The obvious approach — CalcTextSize(text, wrap_width) with a width taken from
--- GetContentRegionAvail — does not work: inside a table cell that call reports
--- more than the column's own width, so the prediction wraps the text into fewer
--- lines than ImGui goes on to draw. The row comes out genuinely taller than the
--- estimate, and every offset computed from the estimate is short by the
--- difference. Reading back what was actually drawn cannot be wrong in that way,
--- and costs one GetItemRectSize per text cell instead of a CalcTextSize.
---
--- The cost is a frame of lag, which this file already accepts elsewhere, and
--- which is not perceptible at frame rate.
---
--- Rows carry their own measurements:
---   row._h        the tallest cell drawn last frame — the row's content height
---   row._ch[i]    the height column i drew last frame
--- Both are absent on a row's first frame and after a rebuild, where the frame
--- height stands in until the first measurement lands.
-
--- What alignment is computed against. Floored at the frame height so a row
--- holding an InputText is never treated as shorter than the widget in it.
-local function RowHeight(row)
-  local floor_h = im.GetFrameHeight(ctx)
-  local h = row._h or floor_h
-  return (h > floor_h) and h or floor_h
-end
-
--- Start of a row: the accumulator is seeded with the frame height, so widget
--- cells need no measuring of their own — none of them is taller than that,
--- except the filled fields, which are exactly RowHeight by construction and so
--- cannot make the row grow.
-local function BeginRowMeasure(row)
-  row._ch  = row._ch or {}
-  row._acc = im.GetFrameHeight(ctx)
-end
-
-local function EndRowMeasure(row)
-  row._h = row._acc
-end
-
--- Read back what the cell just drew. Called only from CellText: it is the only
--- helper whose content can exceed one line.
-local function MeasureCell(row, index)
-  local _, h = im.GetItemRectSize(ctx)
-  row._ch[index] = h
-  if h > row._acc then row._acc = h end
-end
-
--- Depth of the text-wrap stack, unwound by DrawTable for the same reason the ID
+-- Depth of the text-wrap stack, unwound by DrawCards for the same reason the ID
 -- and font stacks are.
 local wrap_depth = 0
 
--- Move the caret down so this cell sits where its column's alignment says. The
--- height of what is about to be drawn has to be passed in: ImGui cannot be
--- asked after the fact without having already drawn it in the wrong place.
--- Moved in SCREEN coordinates, not window-local ones. GetCursorPosY/SetCursorPosY
--- are relative to the window origin and go through a Pos/Scroll conversion; the
--- window here is the table's inner scrolling child, and that round trip is the
--- only non-trivial arithmetic in this path. Screen coordinates have no
--- conversion to get wrong.
-local function AlignCell(key, row_h, cell_h)
-  local offset = view.AlignOffset(row_h, cell_h, ColumnView(key).align)
-  if offset <= 0 then return end
-  local x, y = im.GetCursorScreenPos(ctx)
-  im.SetCursorScreenPos(ctx, x, y + offset)
-end
-
--- One text cell: right font, right vertical position, wrapped or not.
--- `kind` is "plain" | "disabled" | a colour integer.
-local function CellText(row, key, index, row_h, text, kind)
-  text = text or ""
-  local col = ColumnView(key)
-  local f = PushCellFont(key)
-
-  -- A wrapped cell's height is whatever it drew last frame; an unwrapped one is
-  -- always a single line, which needs no measuring.
-  local cell_h
-  if col.wrap and text ~= "" then
-    cell_h = row._ch[index] or im.GetTextLineHeight(ctx)
-  else
-    cell_h = im.GetTextLineHeight(ctx)
+-- The take row's right-click menu, shared by every renderer that draws take
+-- rows. Assumes it is called between BeginPopupContextItem and EndPopup.
+-- Right-click acts on the whole selection when this row is part of it, and
+-- on this row alone when it is not -- so right-clicking somewhere else never
+-- silently operates on rows you had selected earlier.
+local function DrawTakeRowMenu(row)
+  local targets = state.selection[row.uid] and SelectedRows() or { row }
+  local label = (#targets > 1)
+    and string.format("Find candidates for %d lines", #targets)
+    or  "Find candidates"
+  if im.MenuItem(ctx, label) then
+    pending_action = function() RunCandidateSearch(targets) end
   end
-  AlignCell(key, row_h, cell_h)
-
-  if col.wrap then
-    -- 0.0 means "wrap at the end of the content region", which inside a table
-    -- cell is the column edge.
-    im.PushTextWrapPos(ctx, 0.0)
-    wrap_depth = wrap_depth + 1
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Every place in the transcripts this line could sit,\n" ..
+                       "with what is around it. Looks only -- changes nothing.")
   end
 
-  if kind == "disabled" then
-    im.TextDisabled(ctx, text)
-  elseif type(kind) == "number" then
-    im.TextColored(ctx, kind, text)
-  else
-    im.Text(ctx, text)
+  im.Separator(ctx)
+
+  -- Assigning is naming. An item named for a line IS that line's take --
+  -- that is what every tool here reads -- so "this item is for that line"
+  -- needs no pin, no stored mapping and no time selection. It uses what is
+  -- already selected in REAPER, which is what you have in your hand after
+  -- cutting or comping something.
+  local n_sel = r.CountSelectedMediaItems(0)
+  local can_assign = (#targets == 1) and n_sel > 0
+                     and row.asset and row.asset ~= ""
+  local assign_label = (n_sel > 1)
+    and string.format("Assign %d selected items to this line", n_sel)
+    or  "Assign selected item to this line"
+  if im.MenuItem(ctx, assign_label, nil, nil, can_assign) then
+    local target, name = row, (row.deliver or row.asset)
+    pending_action = function() AssignSelectedItems(target, name) end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, n_sel > 0
+      and ("Names the item(s) selected in REAPER \"" ..
+           tostring(row.deliver or row.asset) .. "\".\n\n" ..
+           "Several at once are numbered with the alt pattern, so the\n" ..
+           "first is the line and the rest are its alts.")
+      or  "Select the item in REAPER first.")
   end
 
-  if col.wrap then
-    im.PopTextWrapPos(ctx)
-    wrap_depth = wrap_depth - 1
+  -- Changing your mind after a pull is a SWAP, driven from the sheet:
+  -- this take gets the plain name and the Selects track, the old select
+  -- gets a free alt name and the Alts track. (Moving items between
+  -- tracks by hand decides nothing -- the name is the assignment.)
+  local can_make = (#targets == 1) and row.item
+                   and row.asset and row.asset ~= ""
+  if im.MenuItem(ctx, "Make this take the Select", nil, nil, can_make) then
+    local target = row
+    pending_action = function() MakeSelect(target) end
   end
-  -- Measured under the cell's own font, before it is popped.
-  MeasureCell(row, index)
-  PopCellFont(f)
-end
-
--- A widget cell. Widgets never wrap: a single-line InputText cannot, and making
--- these multiline would change what Enter means in a field where Enter commits
--- a rename. They take the vertical offset all the same.
-local function CellWidget(key, row_h)
-  AlignCell(key, row_h, im.GetFrameHeight(ctx))
-end
-
--- Depth of the style-colour stack, unwound by DrawTable alongside the ID, font
--- and wrap stacks.
-local colour_depth = 0
-
--- An editable cell, shaded across its whole area. The shading is the affordance
--- that says "you can type here"; on a tall row a one-line-high field floating
--- in a three-line-high cell reads as a gap between fields rather than as the
--- field itself.
---
--- Shade the CELL, not the widget.
---
--- Growing the widget's own frame to fill the cell was the first attempt, and
--- it could not be made to land: the frame reaches its height through
--- FramePadding, which is applied above and below in whole pixels, so on some
--- row heights it fell a pixel short of the border and on others it spilled
--- past. TableSetBgColor paints the cell rectangle ImGui already computed, so
--- the edges are exact at every row height by construction, and there is no
--- geometry here to get wrong.
---
--- The field then draws its text only. All three frame colours go transparent:
--- with the whole cell shaded, an inset hover box would read as the field
--- shrinking under the cursor. The caret and the selection highlight still
--- appear on click, which is where the feedback actually matters.
-local FIELD_COLOURS = { 'Col_FrameBg', 'Col_FrameBgHovered', 'Col_FrameBgActive' }
-
-local function PushFilledField(key, row_h)
-  im.TableSetBgColor(ctx, im.TableBgTarget_CellBg,
-                     im.GetStyleColor(ctx, im.Col_FrameBg), -1)
-  for _, name in ipairs(FIELD_COLOURS) do
-    im.PushStyleColor(ctx, im[name], 0x00000000)
-    colour_depth = colour_depth + 1
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx,
+      "This take gets the line's delivered name and the Selects track;\n" ..
+      "the current select becomes an alt. One undo step.")
   end
-  -- Now that the shading is the cell itself, the text inside can honour the
-  -- column's own vertical alignment like every other cell does.
-  AlignCell(key, row_h, im.GetFrameHeight(ctx))
-  im.SetNextItemWidth(ctx, -1)
-end
 
-local function PopFilledField()
-  im.PopStyleColor(ctx, #FIELD_COLOURS)
-  colour_depth = colour_depth - #FIELD_COLOURS
-end
+  im.Separator(ctx)
 
--- The header menu.
---
--- BeginPopupContextItem is not used. TableHeader opens ImGui's OWN column menu
--- on right-click as soon as the table is Reorderable, and two popups cannot be
--- open at one level. Opening ours explicitly in the same frame, AFTER
--- TableHeader has opened ImGui's, replaces it — which is the behaviour wanted:
--- the built-in menu offers only column visibility, which this window does not
--- support.
-local function DrawHeaderMenu(c)
-  local popup_id = "hdr_" .. c.key
-  if im.IsItemClicked(ctx, 1) then im.OpenPopup(ctx, popup_id) end
-  if not im.BeginPopup(ctx, popup_id) then return end
-
-  local col = ColumnView(c.key)
-
-  if im.BeginMenu(ctx, "Vertical align") then
-    for _, a in ipairs(view.ALIGNS) do
-      local label = a:sub(1, 1):upper() .. a:sub(2)
-      if im.MenuItem(ctx, label, nil, col.align == a) then
-        SetColumnView(c.key, "align", a)
+  -- Pinning is one line at a time on purpose: a time selection is one
+  -- stretch of audio, and it cannot be several lines at once.
+  local can_lock = (#targets == 1) and row.asset and row.asset ~= ""
+  if im.MenuItem(ctx, "Lock to time selection", nil, nil, can_lock) then
+    pending_action = function()
+      local at, why = TimeSelectionAsSource()
+      if at then
+        LockHere(row, at.source, at.start, at.stop)
+      else
+        state.message, state.message_kind = why, "error"
       end
     end
-    im.EndMenu(ctx)
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, #targets > 1
+      and "Select one row to lock: a time selection is one stretch of audio."
+      or  "Say that THIS stretch of audio is this take, whatever\n" ..
+          "identification thinks. Select the audio in REAPER first.\n\n" ..
+          "Untick Lock to hand it back.")
+  end
+end
+
+-- Line-level notes back onto an entry of their own, keyed to the LINE: no
+-- overview row ever claims a "linenote|" key, so SaveProjectFile carries
+-- these entries over explicitly rather than rebuilding them from rows.
+local function LineNoteKeyOf(rep)
+  return "linenote|" .. tostring(rep.script_row or rep.asset or "")
+end
+
+local function LineNote(rep)
+  local key = LineNoteKeyOf(rep)
+  for _, e in ipairs(state.entries) do
+    if e.key == key then return e.notes or "" end
+  end
+  return ""
+end
+
+-- -----------------------------------------------------------------------
+-- Cards (prototype renderer)
+--
+-- The same node list the table drew, drawn as one CARD per script line
+-- instead: a header band answering for the LINE, take rows beneath
+-- answering for the TAKE. No ImGui table -- alignment is shared x-offsets
+-- (the ZONES below), and the card chrome, not cell borders, says where a
+-- line begins and ends. Vertical correlation survives: transcript sits in
+-- the same zone as the line text above it, the item name under the
+-- delivered name, the recording position under the script origin.
+--
+-- Heights are measured, never predicted, exactly like the table rows: a
+-- card paints its background from LAST frame's measurement, so a card's
+-- first frame paints slightly short and settles on the next -- invisible
+-- at frame rate, and the price the table already paid for the same answer.
+-- -----------------------------------------------------------------------
+
+local CARD_BG      = 0x26262CFF
+local CARD_OUTLINE = 0x3A3A44FF
+local BAND_BG      = 0x31313CFF
+-- Take rows sit on their own colour, cooler and darker than the band, so
+-- parent and child can never be mistaken for one another.
+local TAKE_BG      = 0x1B2026FF
+local CARD_ROUND   = 4.0
+local CARD_MARGIN  = 5.0   -- vertical space between cards
+local CARD_PAD     = 6.0   -- inner padding
+
+-- Shared x-offsets, computed once per frame from the available width. Every
+-- zone is used by band and take rows alike, which is what keeps the two
+-- levels correlated without a table's grid.
+local function CardZones(w)
+  local z = { lead = 0, marks = 78, text = 186 }
+  local name_w  = 180
+  local where_w = 150
+  -- Prose gets what is left, split between the text being read and the
+  -- notes beside it. Below ~720px the Where zone drops to a tooltip, below
+  -- ~540 the Notes zone goes too: at those widths they were unreadable
+  -- slivers, and the text is why the window is open.
+  z.show_where = w >= 720
+  z.show_notes = w >= 540
+  local fixed = z.text + name_w + (z.show_where and where_w or 0) + CARD_PAD * 2
+  local free  = math.max(160, w - fixed)
+  local notes_w = z.show_notes and math.floor(free * 0.32) or 0
+  z.text_w  = free - notes_w
+  z.name    = z.text + z.text_w + 6
+  z.where   = z.name + name_w + 6
+  z.where_w = where_w
+  z.notes   = z.show_where and (z.where + where_w + 6) or (z.name + name_w + 6)
+  z.notes_w = notes_w
+  z.name_w  = name_w
+  return z
+end
+
+-- A dot with the status behind it. `words` is the tooltip.
+local function CardDot(colour, words)
+  im.TextColored(ctx, colour, "●")
+  if words and words ~= "" and im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, words)
+  end
+end
+
+-- One take row inside a card. The row spans the card, a click anywhere that
+-- is not a widget selects, and the widgets sit at the zone offsets.
+local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
+  local dl = im.GetWindowDrawList(ctx)
+  local row_h = row._card_h or im.GetFrameHeight(ctx)
+  local rx, ry = im.GetCursorScreenPos(ctx)
+
+  -- The child's own colour, behind everything: parent band and take rows
+  -- must never read as the same kind of thing.
+  im.DrawList_AddRectFilled(dl, rx + 12, ry - 1,
+    rx + (inner_w or 600), ry + row_h + 1, TAKE_BG, 3.0)
+
+  -- The spanning selectable first, so widgets drawn after it win the click.
+  local sel_flags = 0
+  local overlap = Api('SelectableFlags_AllowOverlap')
+  if overlap then sel_flags = overlap end
+  if im.Selectable(ctx, "##take", state.selection[row.uid] == true, sel_flags, 0, row_h) then
+    local captured = ReadModifiers()
+    local at = vis_index
+    pending_action = function() ClickRow(row, at, captured) end
+  end
+  if state.scroll_to_uid == row.uid then
+    im.SetScrollHereY(ctx, 0.4)
+    state.scroll_to_uid = nil
+  end
+  if im.IsItemHovered(ctx) and not row.item then
+    im.SetTooltip(ctx, "The audio for this row is not in this project.")
+  end
+  if im.BeginPopupContextItem(ctx, "##take_menu") then
+    DrawTakeRowMenu(row)
+    im.EndPopup(ctx)
   end
 
-  if im.MenuItem(ctx, "Word wrap", nil, col.wrap) then
-    SetColumnView(c.key, "wrap", not col.wrap)
-  end
+  -- Now the content, drawn back at the row's own top.
+  im.SetCursorScreenPos(ctx, rx, ry)
+  im.BeginGroup(ctx)
 
-  if im.BeginMenu(ctx, "Font size") then
-    for _, f in ipairs(view.FONT_KEYS) do
-      local label = f:sub(1, 1):upper() .. f:sub(2)
-      local size  = state.view.sizes[f] or view.FONT_DEFAULTS[f]
-      if im.MenuItem(ctx, string.format("%s (%d)", label, size), nil, col.font == f) then
-        SetColumnView(c.key, "font", f)
+  -- Lead: take letter, dim, then the status dot.
+  im.SetCursorScreenPos(ctx, rx + 18, ry)
+  im.TextDisabled(ctx, vo.TakeLetter and vo.TakeLetter(row._take_no or 0) or "")
+  im.SameLine(ctx)
+  local style = STATUS_STYLE[row.status]
+  local words = row.user_status == "flagged" and "Flagged" or (style and style.label or "")
+  if row.score and row.status == "review" then
+    words = string.format("%s -- match confidence %.0f%%", words, row.score * 100)
+    if row.in_sequence == false then
+      words = words .. "\nAnd it does not sit where the rest of the read says\nthis line should be."
+    end
+  end
+  CardDot(row.user_status == "flagged" and 0xDD6666FF or (style and style.colour or 0x9999AAFF), words)
+
+  -- Marks: three checkboxes on the shared offsets.
+  local orphan = row.status == "orphan"
+  if not orphan then
+    local function MarkTargets()
+      if not state.selection[row.uid] then return { row } end
+      local out = {}
+      for _, r2 in ipairs(SelectedRows()) do
+        if r2.status ~= "orphan" then out[#out + 1] = r2 end
+      end
+      return out
+    end
+    im.SetCursorScreenPos(ctx, rx + z.marks, ry)
+    local hit, now = im.Checkbox(ctx, "##sel", row.user_select == true)
+    if hit then
+      local targets = MarkTargets()
+      pending_action = function()
+        for _, r2 in ipairs(targets) do SetSelect(r2, now) end
       end
     end
-    im.EndMenu(ctx)
-  end
-
-  im.EndPopup(ctx)
-end
-
--- ImGui owns the header click, the arrow and the spec; all we do is read which
--- column it settled on. The read has to happen inside the table, which is the
--- only place the spec exists, so the re-sort lands on the NEXT frame — one
--- frame of lag, and in exchange the list is never mutated mid-draw.
-local function ReadSortSpec()
-  if not (SORT_SPECS and NEED_SORT) then return end
-  if not NEED_SORT(ctx) then return end
-  local ok, index, _, dir = SORT_SPECS(ctx, 0)
-  local c = ok and COLUMNS[(index or 0) + 1] or nil
-  -- Tristate: the third click clears the spec, which puts the table back into
-  -- script order rather than leaving it wherever the last sort left it.
-  state.sort_col  = c and c.key or nil
-  state.sort_desc = (dir == SORT_DESC)
-end
-
-local function DrawFilterRow()
-  im.TableNextRow(ctx)
-  for i, c in ipairs(COLUMNS) do
-    im.TableSetColumnIndex(ctx, i - 1)
-    if c.text and not c.nofilter then
-      im.PushID(ctx, "flt_" .. c.key)
-      im.SetNextItemWidth(ctx, -1)
-      local changed, text = im.InputTextWithHint(ctx, "##f", "filter",
-                                                 state.col_filters[c.key] or "")
-      if changed then state.col_filters[c.key] = text; state.dirty = true end
-      im.PopID(ctx)
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Sel: the take you are delivering. One per line.\n" ..
+                         "On a highlighted row, every highlighted row follows.")
+    end
+    im.SameLine(ctx)
+    im.SetCursorScreenPos(ctx, rx + z.marks + 34, ry)
+    local khit, know = im.Checkbox(ctx, "##keep", row.user_keep == true)
+    if khit then
+      local targets = MarkTargets()
+      pending_action = function()
+        for _, r2 in ipairs(targets) do SetKeep(r2, know) end
+      end
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Keep: a read worth keeping; Pull delivers it as an alt.\n" ..
+                         "Independent of Sel. Any number per line.")
+    end
+    im.SameLine(ctx)
+    im.SetCursorScreenPos(ctx, rx + z.marks + 68, ry)
+    local checked = row.user_status == "verified"
+    local lhit, lnow = im.Checkbox(ctx, "##lock", checked)
+    if lhit then pending_action = function() SetLock(row, lnow) end end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, checked and "Locked here. Rematching will not move it."
+                                  or "Lock: rematching leaves this take where it is.")
     end
   end
+
+  -- Text: the transcript, wrapped inside its zone.
+  im.SetCursorScreenPos(ctx, rx + z.text, ry)
+  im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + z.text_w)
+  wrap_depth = wrap_depth + 1
+  if row.score and row.status == "review" then
+    im.TextColored(ctx, 0xDDAA33FF, row.transcript or "")
+  else
+    im.TextDisabled(ctx, row.transcript or "")
+  end
+  im.PopTextWrapPos(ctx)
+  wrap_depth = wrap_depth - 1
+
+  -- Name: the item's own name, editable.
+  im.SetCursorScreenPos(ctx, rx + z.name, ry)
+  local shown = row.take_name or row.name_override or row.deliver or row.asset or ""
+  if not row.item then
+    im.TextDisabled(ctx, "(no item)")
+    TooltipEvenWhenDisabled(
+      "This take matched the transcript, but no item in this project plays\n" ..
+      "that stretch of " .. vo.Basename(row.source_path or "the source") .. ".")
+  else
+    im.SetNextItemWidth(ctx, z.name_w)
+    local fchanged, fname = im.InputText(ctx, "##fn", shown,
+                                         im.InputTextFlags_EnterReturnsTrue)
+    if fchanged or im.IsItemDeactivatedAfterEdit(ctx) then
+      if fname ~= shown then
+        local captured = fname
+        pending_action = function() Rename(row, captured) end
+      end
+    end
+    if im.BeginPopupContextItem(ctx, "##take_name_menu") then
+      if im.MenuItem(ctx, "Copy") then Copy(shown) end
+      local can_reset = shown ~= (row.deliver or row.asset or "")
+      if im.MenuItem(ctx, "Reset item name", nil, nil, can_reset) then
+        pending_action = function() ResetName(row) end
+      end
+      im.EndPopup(ctx)
+    end
+  end
+
+  -- Where: which recording, and when. Dropped to the name tooltip when the
+  -- window is too narrow for it to be legible.
+  local place = row.source_path
+    and (vo.Basename(row.source_path) .. " @ " .. FormatTime(row.proj_time)) or ""
+  if z.show_where then
+    im.SetCursorScreenPos(ctx, rx + z.where, ry)
+    im.PushClipRect(ctx, rx + z.where, ry, rx + z.where + z.where_w - 4, ry + 200, true)
+    im.TextDisabled(ctx, place)
+    im.PopClipRect(ctx)
+    if row.source_path and im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, row.source_path .. "\n\nDouble-click to open in ajsfx VO Sources.")
+      if im.IsMouseDoubleClicked(ctx, 0) then
+        local captured = row.source_path
+        pending_action = function()
+          r.SetExtState(vo.EXT_SECTION, "focus_source", captured, false)
+          local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
+          if not ok then state.message, state.message_kind = tostring(why), "error" end
+        end
+      end
+    end
+  end
+
+  -- Notes.
+  if z.show_notes then
+    im.SetCursorScreenPos(ctx, rx + z.notes, ry)
+    im.SetNextItemWidth(ctx, z.notes_w)
+    local nchanged, notes = im.InputText(ctx, "##notes", row.notes or "")
+    if nchanged then
+      local captured = notes
+      pending_action = function() SetNotes(row, captured) end
+    end
+  end
+
+  im.EndGroup(ctx)
+  local _, gh = im.GetItemRectSize(ctx)
+  row._card_h = math.max(gh, im.GetFrameHeight(ctx))
 end
 
-local function DrawTableBody()
-  for _, c in ipairs(COLUMNS) do
-    local flags = im.TableColumnFlags_WidthFixed
-    -- A column with no accessor has nothing to sort on, so ImGui must not
-    -- offer its header as a sort target.
-    if not (c.text or c.num) then
-      local nosort = Api('TableColumnFlags_NoSort')
-      if nosort then flags = flags | nosort end
-    end
-    im.TableSetupColumn(ctx, c.label, flags, c.width)
+-- The card's header band: the line's TITLE, three stacked rows --
+--   who:   fold arrow, line number, status dot, speaker chip, badges right
+--   file:  the delivered name, full width, clash-red, Append on right-click
+--   said:  the line text, bright, wrapped to the card
+-- Everything noisy (script name, line note) lives behind the fold; the band
+-- stays a clean answer to "which line is this and where does it stand".
+local function DrawCardBand(node, z, key, open, x0, band_w)
+  local rep = node.rep
+  local dl = im.GetWindowDrawList(ctx)
+  local rx, ry = im.GetCursorScreenPos(ctx)
+  local line_h = im.GetTextLineHeightWithSpacing(ctx)
+  local band_h = rep._band_h or (line_h * 3)
+  local inner_w = band_w - CARD_PAD * 2
+
+  im.DrawList_AddRectFilled(dl, rx - CARD_PAD, ry - 3,
+    rx - CARD_PAD + band_w, ry + band_h + 3, BAND_BG, CARD_ROUND)
+
+  -- The hover surface spans the card's inner width, and the WHOLE band is
+  -- the fold control -- the arrow is an indicator, not the only target.
+  local overlap = Api('SelectableFlags_AllowOverlap')
+  if im.Selectable(ctx, "##band", false, overlap or 0, inner_w, band_h) then
+    if state.expanded[key] then state.expanded[key] = nil
+    else state.expanded[key] = true end
+    state.dirty = true
   end
-  -- Both the header and the filter boxes stay put while the rows scroll.
-  im.TableSetupScrollFreeze(ctx, 0, state.filter_row and 2 or 1)
-  -- Headers drawn by hand rather than with TableHeadersRow, which draws them
-  -- all in one call and leaves nothing to hang a per-column tooltip on. The
-  -- explanation of a column belongs on its header, read once, not under the
-  -- cursor on every row of the table.
-  if HEADER_ROW_FLAGS then
-    im.TableNextRow(ctx, HEADER_ROW_FLAGS)
-    for i, c in ipairs(COLUMNS) do
-      im.TableSetColumnIndex(ctx, i - 1)
-      im.TableHeader(ctx, c.label)
-      if c.tip and im.IsItemHovered(ctx) then im.SetTooltip(ctx, c.tip) end
-      -- The TableHeadersRow fallback below gets no menu: that branch only runs
-      -- on a binding too old to expose TableRowFlags_Headers, and there is no
-      -- per-column item there to hang a popup on.
-      DrawHeaderMenu(c)
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, #node.takes > 0
+      and string.format("%d take%s. Click to %s.",
+            #node.takes, #node.takes == 1 and "" or "s",
+            open and "fold" or "unfold")
+      or  ("Click to " .. (open and "fold" or "unfold") .. " the line's details."))
+  end
+
+  im.SetCursorScreenPos(ctx, rx, ry)
+  im.BeginGroup(ctx)
+
+  -- Row 1: arrow, number, dot, speaker -- and the badges at the right edge.
+  if im.Selectable(ctx, (open and "v" or ">") .. "##fold", false, 0, 16, line_h) then
+    if state.expanded[key] then state.expanded[key] = nil
+    else state.expanded[key] = true end
+    state.dirty = true
+  end
+  im.SameLine(ctx)
+  im.SetCursorScreenPos(ctx, rx + 22, ry)
+  im.TextDisabled(ctx, tostring(rep.order or ""))
+  im.SameLine(ctx)
+
+  local style = STATUS_STYLE[node.rollup.status] or STATUS_STYLE.missing
+  local rec = rep.script_row and DELIVERY(rep.script_row)
+  local bits = { style.label }
+  bits[#bits + 1] = rec and (tostring(rec.count) .. " delivered") or "Nothing delivered yet."
+  if node.rollup.take_count > 0 and not node.rollup.has_sel then
+    bits[#bits + 1] = "No Sel chosen yet."
+  end
+  if node.rollup.locks > 0 then bits[#bits + 1] = node.rollup.locks .. " locked." end
+  CardDot(style.colour, table.concat(bits, "\n"))
+
+  -- Speaker chip, where the mark labels used to float: the line's character,
+  -- read at the same glance as its number and status.
+  if rep.character and rep.character ~= "" then
+    im.SameLine(ctx)
+    im.SetCursorScreenPos(ctx, rx + z.marks, ry)
+    im.TextColored(ctx, 0x9FB4C8FF, rep.character)
+  end
+
+  -- Badges, right-aligned on the first row.
+  im.SetCursorScreenPos(ctx, rx + inner_w - 52, ry)
+  if rep.script_row then
+    if rec then im.TextColored(ctx, 0x66BB66FF, "✓" .. tostring(rec.count))
+    else im.TextColored(ctx, 0xDD6666FF, "–") end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, rec
+        and string.format("%d item%s in the project named %s.\n" ..
+              "Read from the item names, so a take cut by hand or delivered\n" ..
+              "as a rendered file counts just the same.",
+              rec.count, rec.count == 1 and "" or "s", rep.deliver or rep.asset or "?")
+        or  string.format("No item in the project is named %s yet.\n" ..
+              "Cut and Name, or name an item yourself.",
+              rep.deliver or rep.asset or "?"))
+    end
+    im.SameLine(ctx)
+  end
+  if node.rollup.take_count > 0 and not node.rollup.has_sel then
+    im.TextColored(ctx, 0xDDAA33FF, " !")
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "No Sel chosen yet: no take is ticked as the delivery.")
+    end
+  end
+
+  -- Row 2: the delivered name, full width -- the card's title.
+  im.SetCursorScreenPos(ctx, rx + 22, ry + line_h)
+  local base = rep.asset or ""
+  local shown = rep.deliver or base
+  local clash = rep.line_key ~= nil and shown ~= ""
+                and state.dupe_names[shown] == true
+  if clash then im.TextColored(ctx, 0xDD6666FF, shown)
+  else im.TextDisabled(ctx, shown) end
+  if clash and im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Another script line is delivered under this same name.\n" ..
+                       "Edit the Append (right-click) to tell them apart.")
+  end
+  local open_append = false
+  if rep.line_key and im.IsItemHovered(ctx) and im.IsMouseDoubleClicked(ctx, 0) then
+    open_append = true
+  end
+  if base ~= "" and im.BeginPopupContextItem(ctx, "##band_name_menu") then
+    if im.MenuItem(ctx, "Copy") then Copy(shown) end
+    if im.MenuItem(ctx, "Edit Append", nil, nil, rep.line_key ~= nil) then
+      open_append = true
+    end
+    im.EndPopup(ctx)
+  end
+  if open_append then im.OpenPopup(ctx, "##append_edit") end
+  if im.BeginPopup(ctx, "##append_edit") then
+    im.Text(ctx, "Append to " .. base .. ":")
+    im.SetNextItemWidth(ctx, 200)
+    local achanged, atext = im.InputText(ctx, "##append", rep.append or "")
+    if achanged then
+      local captured = atext
+      pending_action = function() SetAppend(rep, captured) end
+    end
+    im.EndPopup(ctx)
+  end
+
+  -- Row 3: the line text, wrapped to the card.
+  im.SetCursorScreenPos(ctx, rx + 22, ry + line_h * 2)
+  im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + inner_w - 26)
+  wrap_depth = wrap_depth + 1
+  im.Text(ctx, rep.line_text or "")
+  im.PopTextWrapPos(ctx)
+  wrap_depth = wrap_depth - 1
+
+  im.EndGroup(ctx)
+  local _, gh = im.GetItemRectSize(ctx)
+  rep._band_h = math.max(gh, line_h * 3)
+end
+
+-- The drawer: fold-only details between the band and the takes. Noisy
+-- properties live here so the band can stay a title.
+local function DrawCardDrawer(node, z, rx)
+  local rep = node.rep
+  local _, y = im.GetCursorScreenPos(ctx)
+  im.SetCursorScreenPos(ctx, rx + 22, y + 2)
+  im.TextDisabled(ctx, "script: " .. ((rep.script and rep.script ~= "") and rep.script or "—"))
+  im.SameLine(ctx)
+  im.TextDisabled(ctx, "   note:")
+  im.SameLine(ctx)
+  im.SetNextItemWidth(ctx, -CARD_PAD)
+  local changed, text = im.InputText(ctx, "##linenote", LineNote(rep))
+  if changed then
+    local captured = text
+    local target = { key = LineNoteKeyOf(rep), source_path = nil,
+                     source_start = nil, asset = rep.asset }
+    pending_action = function() SetNotes(target, captured) end
+  end
+end
+
+-- Column labels for the take list, drawn once per open card, directly above
+-- the inputs they name.
+local function DrawTakeHeaderRow(z, rx)
+  local _, y = im.GetCursorScreenPos(ctx)
+  local sf = PushCellFont("state")
+  for i, l in ipairs({ "Sel", "Keep", "Lock" }) do
+    im.SetCursorScreenPos(ctx, rx + z.marks + (i - 1) * 34 - 2, y)
+    im.TextDisabled(ctx, l)
+  end
+  im.SetCursorScreenPos(ctx, rx + z.text, y)
+  im.TextDisabled(ctx, "Transcript")
+  im.SetCursorScreenPos(ctx, rx + z.name, y)
+  im.TextDisabled(ctx, "Item name")
+  if z.show_where then
+    im.SetCursorScreenPos(ctx, rx + z.where, y)
+    im.TextDisabled(ctx, "Where")
+  end
+  if z.show_notes then
+    im.SetCursorScreenPos(ctx, rx + z.notes, y)
+    im.TextDisabled(ctx, "Note")
+  end
+  PopCellFont(sf)
+end
+
+-- "I found a take for this line": names the item(s) selected in REAPER for
+-- the line, which IS adding a take here -- the name is the assignment.
+local function DrawAddTakeRow(rep, rx)
+  local _, y = im.GetCursorScreenPos(ctx)
+  im.SetCursorScreenPos(ctx, rx + 22, y + 2)
+  local n_sel = r.CountSelectedMediaItems(0)
+  if n_sel > 0 and rep.asset and rep.asset ~= "" then
+    local label = (n_sel > 1)
+      and string.format("+ Add %d takes from REAPER selection", n_sel)
+      or  "+ Add take from REAPER selection"
+    if im.SmallButton(ctx, label) then
+      local target, name = rep, (rep.deliver or rep.asset)
+      pending_action = function() AssignSelectedItems(target, name) end
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Names the selected item(s) for this line. Several at\n" ..
+                         "once are numbered with the alt pattern.")
     end
   else
-    im.TableHeadersRow(ctx)
+    im.TextDisabled(ctx, "+ Add take: select the item in REAPER first")
   end
-  ReadSortSpec()
+end
 
-  if state.filter_row then DrawFilterRow() end
+-- One card: chrome from last frame's height, band, then (open) the drawer,
+-- the take list under its header, and the add-take affordance.
+local function DrawLineCard(node, z, flat_index, avail_w)
+  local rep = node.rep
+  local key = LineNodeKey(node)
+  local open = state.expanded[key] == true
+  local dl = im.GetWindowDrawList(ctx)
+  local cx, cy = im.GetCursorScreenPos(ctx)
+  local card_h = rep._card_full_h or (im.GetFrameHeight(ctx) + CARD_PAD * 2)
 
-  if #state.visible == 0 then
-    im.TableNextRow(ctx)
-    im.TableSetColumnIndex(ctx, 0)
+  im.DrawList_AddRectFilled(dl, cx, cy, cx + avail_w, cy + card_h, CARD_BG, CARD_ROUND)
+  im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + card_h, CARD_OUTLINE, CARD_ROUND)
+
+  im.SetCursorScreenPos(ctx, cx + CARD_PAD, cy + CARD_PAD)
+  im.BeginGroup(ctx)
+  DrawCardBand(node, z, key, open, cx + CARD_PAD, avail_w)
+
+  if open then
+    DrawCardDrawer(node, z, cx + CARD_PAD)
+    if #node.takes > 0 then
+      DrawTakeHeaderRow(z, cx + CARD_PAD)
+      for ti, t in ipairs(node.takes) do
+        t._take_no = ti
+        im.PushID(ctx, ti)
+        id_depth = id_depth + 1
+        DrawCardTakeRow(t, z, flat_index[t.uid], cx + CARD_PAD, avail_w - CARD_PAD * 2)
+        im.PopID(ctx)
+        id_depth = id_depth - 1
+      end
+    end
+    DrawAddTakeRow(rep, cx + CARD_PAD)
+  end
+  im.EndGroup(ctx)
+  local _, gh = im.GetItemRectSize(ctx)
+  rep._card_full_h = gh + CARD_PAD * 2
+
+  -- The card's footprint is a real ITEM, not a bare cursor move: ImGui only
+  -- grows the scrolling child from submitted items, and EndChild raises if
+  -- the last thing before it was a SetCursorScreenPos.
+  im.SetCursorScreenPos(ctx, cx, cy)
+  im.Dummy(ctx, 1, rep._card_full_h + CARD_MARGIN)
+end
+
+
+-- The orphan section is one card of its own: audio the script cannot name.
+local function DrawOrphanCard(node, z, flat_index, avail_w)
+  local dl = im.GetWindowDrawList(ctx)
+  local cx, cy = im.GetCursorScreenPos(ctx)
+  local card_h = state._orphan_card_h or (im.GetFrameHeight(ctx) + CARD_PAD * 2)
+
+  im.DrawList_AddRectFilled(dl, cx, cy, cx + avail_w, cy + card_h, 0x2C2228FF, CARD_ROUND)
+  im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + card_h, 0x55404AFF, CARD_ROUND)
+
+  im.SetCursorScreenPos(ctx, cx + CARD_PAD, cy + CARD_PAD)
+  im.BeginGroup(ctx)
+  im.TextDisabled(ctx, "Not on the script")
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Recorded audio whose transcript matches no script line.")
+  end
+  for ti, t in ipairs(node.takes) do
+    t._take_no = ti
+    im.PushID(ctx, ti)
+    id_depth = id_depth + 1
+    DrawCardTakeRow(t, z, flat_index[t.uid], cx + CARD_PAD, avail_w - CARD_PAD * 2)
+    im.PopID(ctx)
+    id_depth = id_depth - 1
+  end
+  im.EndGroup(ctx)
+  local _, gh = im.GetItemRectSize(ctx)
+  state._orphan_card_h = gh + CARD_PAD * 2
+
+  im.SetCursorScreenPos(ctx, cx, cy)
+  im.Dummy(ctx, 1, state._orphan_card_h + CARD_MARGIN)
+end
+
+local function DrawCardsBody(avail_w)
+  local z = CardZones(avail_w)
+  if #state.nodes == 0 then
     im.TextDisabled(ctx, #state.overview == 0
       and "Nothing to show yet. Load a script CSV, or transcribe a recording in ajsfx VO Sources."
       or  "No rows match the current filters.")
     return
   end
-
-  -- Every row is emitted; ImGui's own table clipping keeps off-screen rows out
-  -- of the draw list. ListClipper is deliberately NOT used: ReaImGui rejects it
-  -- here as excessive creation of short-lived resources.
-  for i, row in ipairs(state.visible) do
-    -- No min_row_height: ImGui already sizes the row from its tallest cell,
-    -- and row_h is the measurement of that from last frame.
-    local row_h = RowHeight(row)
-    BeginRowMeasure(row)
-    im.TableNextRow(ctx)
-    im.PushID(ctx, i)
-    id_depth = id_depth + 1
-
-    -- # ---------------------------------------------------------------------
-    -- Script position, not row position: it stays with the line through every
-    -- sort and filter, so it is also how a user gets back to where they were.
-    im.TableSetColumnIndex(ctx, CI.order)
-    CellText(row, "order", CI.order, row_h, tostring(row.order or ""), "disabled")
-
-    -- Verified ------------------------------------------------------------
-    im.TableSetColumnIndex(ctx, CI.verify)
-    CellWidget("verify", row_h)
-    local checked = row.user_status == "verified"
-    local hit, now = im.Checkbox(ctx, "##ok", checked)
-    if hit then pending_action = function() SetLock(row, now) end end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, checked
-        and "Locked here. Rematching will not move it."
-        or  "Lock this line where it is, so rematching leaves it alone.")
-    end
-
-    -- Status --------------------------------------------------------------
-    im.TableSetColumnIndex(ctx, CI.status)
-    -- Drawn first in the row and spanning it, so a click anywhere that is not a
-    -- widget navigates. AllowOverlap lets the inputs drawn afterwards win.
-    -- Given the row's full height so a click anywhere in a TALL row still
-    -- selects, rather than only in its top FrameHeight pixels.
-    local sel_flags = im.SelectableFlags_SpanAllColumns
-    local overlap = Api('SelectableFlags_AllowOverlap')
-    if overlap then sel_flags = sel_flags | overlap end
-    local style = STATUS_STYLE[row.status]
-    if im.Selectable(ctx, "##row", state.selection[row.uid] == true, sel_flags, 0, row_h) then
-      -- Read the modifiers now, inside the frame that saw the click; by the time
-      -- the deferred action runs the key could already be up.
-      local captured = ReadModifiers()
-      local at = i
-      pending_action = function() ClickRow(row, at, captured) end
-    end
-    -- The timeline->table follow asked for this row; consumed once, so the
-    -- user can scroll away afterwards without the table yanking them back.
-    if state.scroll_to_uid == row.uid then
-      im.SetScrollHereY(ctx, 0.4)
-      state.scroll_to_uid = nil
-    end
-    if im.IsItemHovered(ctx) and not row.item then
-      im.SetTooltip(ctx, row.status == "missing"
-        and "This line has no audio in the project yet."
-        or  "The audio for this row is not in this project.")
-    end
-    -- Right-click acts on the whole selection when this row is part of it, and
-    -- on this row alone when it is not -- so right-clicking somewhere else
-    -- never silently operates on rows you had selected earlier.
-    if im.BeginPopupContextItem(ctx, "##row_menu") then
-      local targets = state.selection[row.uid] and SelectedRows() or { row }
-      local label = (#targets > 1)
-        and string.format("Find candidates for %d lines", #targets)
-        or  "Find candidates"
-      if im.MenuItem(ctx, label) then
-        pending_action = function() RunCandidateSearch(targets) end
-      end
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, "Every place in the transcripts this line could sit,\n" ..
-                           "with what is around it. Looks only -- changes nothing.")
-      end
-
-      im.Separator(ctx)
-
-      -- Assigning is naming. An item named for a line IS that line's take --
-      -- that is what every tool here reads -- so "this item is for that line"
-      -- needs no pin, no stored mapping and no time selection. It uses what is
-      -- already selected in REAPER, which is what you have in your hand after
-      -- cutting or comping something.
-      local n_sel = r.CountSelectedMediaItems(0)
-      local can_assign = (#targets == 1) and n_sel > 0
-                         and row.asset and row.asset ~= ""
-      local assign_label = (n_sel > 1)
-        and string.format("Assign %d selected items to this line", n_sel)
-        or  "Assign selected item to this line"
-      if im.MenuItem(ctx, assign_label, nil, nil, can_assign) then
-        local target, name = row, (row.deliver or row.asset)
-        pending_action = function() AssignSelectedItems(target, name) end
-      end
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, n_sel > 0
-          and ("Names the item(s) selected in REAPER \"" ..
-               tostring(row.deliver or row.asset) .. "\".\n\n" ..
-               "Several at once are numbered with the alt pattern, so the\n" ..
-               "first is the line and the rest are its alts.")
-          or  "Select the item in REAPER first.")
-      end
-
-      -- Changing your mind after a pull is a SWAP, driven from the sheet:
-      -- this take gets the plain name and the Selects track, the old select
-      -- gets a free alt name and the Alts track. (Moving items between
-      -- tracks by hand decides nothing -- the name is the assignment.)
-      local can_make = (#targets == 1) and row.item
-                       and row.asset and row.asset ~= ""
-      if im.MenuItem(ctx, "Make this take the Select", nil, nil, can_make) then
-        local target = row
-        pending_action = function() MakeSelect(target) end
-      end
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx,
-          "This take gets the line's delivered name and the Selects track;\n" ..
-          "the current select becomes an alt. One undo step.")
-      end
-
-      im.Separator(ctx)
-
-      -- Pinning is one line at a time on purpose: a time selection is one
-      -- stretch of audio, and it cannot be several lines at once.
-      local can_lock = (#targets == 1) and row.asset and row.asset ~= ""
-      if im.MenuItem(ctx, "Lock to time selection", nil, nil, can_lock) then
-        pending_action = function()
-          local at, why = TimeSelectionAsSource()
-          if at then
-            LockHere(row, at.source, at.start, at.stop)
-          else
-            state.message, state.message_kind = why, "error"
-          end
-        end
-      end
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, #targets > 1
-          and "Select one row to lock: a time selection is one stretch of audio."
-          or  "Say that THIS stretch of audio is this take, whatever\n" ..
-              "identification thinks. Select the audio in REAPER first.\n\n" ..
-              "Untick Lock to hand it back.")
-      end
-
-      im.EndPopup(ctx)
-    end
-    im.SameLine(ctx)
-    -- SameLine returns the caret to the TOP of the tall selectable, so the
-    -- status word needs its own offset.
-    local sf = PushCellFont("status")
-    AlignCell("status", row_h, im.GetTextLineHeight(ctx))
-    if row.user_status == "flagged" then
-      im.TextColored(ctx, 0xDD6666FF, "Flagged")
-    elseif style then
-      im.TextColored(ctx, style.colour, style.label)
-    end
-    PopCellFont(sf)
-
-    -- Got ------------------------------------------------------------------
-    -- Whether the project actually holds an item named for this line. Green
-    -- when it does, red when it does not, and it does not care how the item got
-    -- there -- cut here, comped by hand, or delivered by somebody else.
-    im.TableSetColumnIndex(ctx, CI.delivered)
-    if row.status ~= "orphan" and row.script_row then
-      local rec = DELIVERY(row.script_row)
-      local gf = PushCellFont("delivered")
-      AlignCell("delivered", row_h, im.GetTextLineHeight(ctx))
-      if rec then
-        im.TextColored(ctx, 0x66BB66FF, tostring(rec.count))
+  local flat_index = {}
+  for i, row in ipairs(state.visible) do flat_index[row.uid] = i end
+  for ni, node in ipairs(state.nodes) do
+    if node.kind == "line" or node.kind == "orphans" then
+      im.PushID(ctx, ni)
+      id_depth = id_depth + 1
+      if node.kind == "line" then
+        DrawLineCard(node, z, flat_index, avail_w)
       else
-        im.TextColored(ctx, 0xDD6666FF, "no")
+        DrawOrphanCard(node, z, flat_index, avail_w)
       end
-      PopCellFont(gf)
-      if im.IsItemHovered(ctx) then
-        if rec then
-          local where = {}
-          for track, n in pairs(rec.tracks) do
-            where[#where + 1] = string.format("  %s x%d",
-              track ~= "" and track or "(unnamed track)", n)
-          end
-          table.sort(where)
-          im.SetTooltip(ctx, string.format(
-            "%d item%s in the project named %s:\n%s",
-            rec.count, rec.count == 1 and "" or "s",
-            row.deliver or row.asset or "?", table.concat(where, "\n")))
-        else
-          im.SetTooltip(ctx, string.format(
-            "No item in the project is named %s.\n\n" ..
-            "This is read from the item names, so it stays true however the\n" ..
-            "audio got there. Cut and Name, or name an item yourself.",
-            row.deliver or row.asset or "?"))
-        end
-      end
+      im.PopID(ctx)
+      id_depth = id_depth - 1
     end
-
-    -- Sel and Keep ---------------------------------------------------------
-    local markable = row.status ~= "missing" and row.status ~= "orphan"
-                     and (row.take_count or 0) > 0
-
-    -- Ticking a box on a row that is part of the sheet's highlight snaps
-    -- every highlighted row to the same value -- marking thirty keeps is one
-    -- shift-click and one tick, not thirty ticks. A row outside the
-    -- highlight is just itself, same as the rename targeting above.
-    local function MarkTargets()
-      if not state.selection[row.uid] then return { row } end
-      local out = {}
-      for _, r2 in ipairs(SelectedRows()) do
-        if r2.status ~= "missing" and r2.status ~= "orphan"
-           and (r2.take_count or 0) > 0 then
-          out[#out + 1] = r2
-        end
-      end
-      return out
-    end
-
-    im.TableSetColumnIndex(ctx, CI.select)
-    if markable then
-      CellWidget("select", row_h)
-      local hit, now = im.Checkbox(ctx, "##sel", row.user_select == true)
-      if hit then
-        local targets = MarkTargets()
-        pending_action = function()
-          for _, r2 in ipairs(targets) do SetSelect(r2, now) end
-        end
-      end
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx,
-          "The take you are delivering. One per line —\n" ..
-          "ticking this one unticks the line's other takes.\n\n" ..
-          "On a highlighted row, every highlighted row follows.")
-      end
-    end
-
-    im.TableSetColumnIndex(ctx, CI.keep)
-    if markable then
-      CellWidget("keep", row_h)
-      local hit, now = im.Checkbox(ctx, "##keep", row.user_keep == true)
-      if hit then
-        local targets = MarkTargets()
-        pending_action = function()
-          for _, r2 in ipairs(targets) do SetKeep(r2, now) end
-        end
-      end
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx,
-          "A read worth keeping. Any number per line, and\n" ..
-          "independent of Sel — ticking this steals nothing.\n\n" ..
-          "Pull delivers a kept take that is not the Sel as an ALT.\n" ..
-          "Takes with neither tick stay on the Review track.\n\n" ..
-          "On a highlighted row, every highlighted row follows.")
-      end
-    end
-
-    im.TableSetColumnIndex(ctx, CI.character)
-    CellText(row, "character", CI.character, row_h, row.character, "plain")
-
-    im.TableSetColumnIndex(ctx, CI.script)
-    CellText(row, "script", CI.script, row_h, row.script, "disabled")
-
-    -- Filename ------------------------------------------------------------
-    im.TableSetColumnIndex(ctx, CI.item_name)
-    -- The live take name where there is a take, so a rename made anywhere else
-    -- in REAPER shows up here too. The project file's override is the fallback, so a
-    -- name chosen for a line whose audio is not loaded is not lost.
-    local shown = row.take_name or row.name_override or row.deliver or row.asset or ""
-    if row.status == "missing" then
-      -- Nothing to rename: there is no take at all.
-      CellText(row, "item_name", CI.item_name, row_h, shown, "disabled")
-      TooltipEvenWhenDisabled("This line has no take yet, so there is no item to name.")
-    elseif not row.item then
-      -- Matched audio whose item this project does not have -- the source is
-      -- not loaded, or the span falls outside what the loaded item covers.
-      -- Without this the cell falls back to the DELIVERED name and reads as an
-      -- item that exists under that name, when nothing has been cut at all.
-      CellText(row, "item_name", CI.item_name, row_h, "(no item)", "disabled")
-      TooltipEvenWhenDisabled(
-        "This take matched the transcript, but no item in this project plays\n" ..
-        "that stretch of " .. vo.Basename(row.source_path or "the source") .. ".\n\n" ..
-        "Either the recording is not in the project, or the item has been\n" ..
-        "trimmed past this point. Cut and Name will skip it and say so.")
-    else
-      PushFilledField("item_name", row_h)
-      local fchanged, fname = im.InputText(ctx, "##fn", shown,
-                                           im.InputTextFlags_EnterReturnsTrue)
-      PopFilledField()
-      -- Committed on Enter or on losing focus after an edit, never per
-      -- keystroke: each commit is its own undo point in the project.
-      if fchanged or im.IsItemDeactivatedAfterEdit(ctx) then
-        if fname ~= shown then
-          local captured = fname
-          pending_action = function() Rename(row, captured) end
-        end
-      end
-    end
-
-    -- CSV filename ---------------------------------------------------------
-    -- Read-only on purpose: this is the script's own name for the line, and the
-    -- reason a rename can never leave the user wondering what it used to be.
-    im.TableSetColumnIndex(ctx, CI.asset)
-    local csv_name = row.asset or ""
-    -- Red until this line's delivered name is its own. The name being compared
-    -- is the RESOLVED one, so the moment an Append (or a rename) separates the
-    -- two lines, both go back to normal.
-    local resolved = (row.name_override ~= nil and row.name_override ~= "")
-                     and row.name_override or row.deliver
-    local clash = row.line_key ~= nil and resolved ~= nil
-                  and state.dupe_names[resolved] == true
-    CellText(row, "asset", CI.asset, row_h, csv_name, clash and 0xDD6666FF or "disabled")
-    if clash and im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, "Another script line is delivered under this same name.\n" ..
-                         "The clips cut fine, but they will overwrite each other\n" ..
-                         "when rendered to files. Type something in Append to\n" ..
-                         "tell them apart.")
-    end
-    -- No per-cell tooltip otherwise: the explanation belongs on the header,
-    -- where it is read once, not under the cursor on every row. An explicit
-    -- popup ID is what lets a plain Text item own a context menu.
-    if csv_name ~= "" and im.BeginPopupContextItem(ctx, "##csv_menu") then
-      if im.MenuItem(ctx, "Copy") then Copy(csv_name) end
-      local can_reset = row.status ~= "missing" and shown ~= (row.deliver or csv_name)
-      if im.MenuItem(ctx, "Reset item name", nil, nil, can_reset) then
-        pending_action = function() ResetName(row) end
-      end
-      if not can_reset then
-        TooltipEvenWhenDisabled("The item is already named " .. csv_name .. ".")
-      end
-      im.EndPopup(ctx)
-    end
-
-    -- Append --------------------------------------------------------------
-    im.TableSetColumnIndex(ctx, CI.append)
-    if row.line_key then
-      PushFilledField("append", row_h)
-      -- AFTER PushFilledField, never before: that helper sets this cell's own
-      -- background to the editable-field shade, so a red set first would simply
-      -- be overwritten.
-      --
-      -- A row whose name comes from a hand-typed override is not the Append's
-      -- problem to fix, so there only the filename goes red.
-      if clash and (row.name_override == nil or row.name_override == "") then
-        im.TableSetBgColor(ctx, im.TableBgTarget_CellBg, 0x66222240, -1)
-      end
-      local achanged, atext = im.InputText(ctx, "##append", row.append or "")
-      PopFilledField()
-      if achanged then
-        local captured = atext
-        pending_action = function() SetAppend(row, captured) end
-      end
-      if im.IsItemHovered(ctx) and (row.append or "") == "" then
-        im.SetTooltip(ctx, "Type something here to tell this line apart from\n" ..
-                           "another that asks for the same filename.")
-      end
-    end
-
-    im.TableSetColumnIndex(ctx, CI.take)
-    if (row.take_count or 0) > 1 then
-      CellText(row, "take", CI.take, row_h,
-               string.format("%d/%d", row.take_index or 0, row.take_count), "plain")
-    elseif row.take_index then
-      CellText(row, "take", CI.take, row_h, "1/1", "disabled")
-    end
-
-    im.TableSetColumnIndex(ctx, CI.line_text)
-    CellText(row, "line_text", CI.line_text, row_h, row.line_text, "plain")
-
-    im.TableSetColumnIndex(ctx, CI.transcript)
-    if row.score and row.status == "review" then
-      CellText(row, "transcript", CI.transcript, row_h, row.transcript, 0xDDAA33FF)
-      if im.IsItemHovered(ctx) then
-        local why = string.format("Match confidence %.0f%%.", row.score * 100)
-        if row.in_sequence == false then
-          why = why .. "\n\nBut it does not sit where the rest of the read says\n" ..
-                       "this line should be. A line this short matches wherever\n" ..
-                       "its words happen to fall, so its position is the only\n" ..
-                       "evidence there is."
-        end
-        im.SetTooltip(ctx, why)
-      end
-    else
-      CellText(row, "transcript", CI.transcript, row_h, row.transcript, "disabled")
-    end
-
-    im.TableSetColumnIndex(ctx, CI.source)
-    CellText(row, "source", CI.source, row_h,
-             row.source_path and vo.Basename(row.source_path) or "", "disabled")
-    if row.source_path and im.IsItemHovered(ctx) and im.IsMouseDoubleClicked(ctx, 0) then
-      local captured = row.source_path
-      pending_action = function()
-        -- Written BEFORE the launch and read every frame by Sources, so an
-        -- already-open Sources window picks the handoff up too, rather than
-        -- only a freshly launched one.
-        r.SetExtState(vo.EXT_SECTION, "focus_source", captured, false)
-        local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
-        if not ok then state.message, state.message_kind = tostring(why), "error" end
-      end
-    end
-
-    im.TableSetColumnIndex(ctx, CI.time)
-    CellText(row, "time", CI.time, row_h, FormatTime(row.proj_time), "disabled")
-
-    -- Notes ---------------------------------------------------------------
-    im.TableSetColumnIndex(ctx, CI.notes)
-    PushFilledField("notes", row_h)
-    local nchanged, notes = im.InputText(ctx, "##notes", row.notes or "")
-    PopFilledField()
-    if nchanged then
-      local captured = notes
-      pending_action = function() SetNotes(row, captured) end
-    end
-
-    im.PopID(ctx)
-    id_depth = id_depth - 1
-    EndRowMeasure(row)
+    -- Character nodes draw nothing: the character rides each band's Where
+    -- zone instead of spending a row.
   end
 end
 
-local function DrawTable(height)
-  local flags = im.TableFlags_Borders | im.TableFlags_Resizable
-              | im.TableFlags_Reorderable
-              | im.TableFlags_ScrollY | im.TableFlags_RowBg
-  -- Tristate so a third click on a header clears the sort and returns the
-  -- table to script order, which is the order the session was written in.
-  if SORT_SPECS and NEED_SORT then
-    flags = flags | im.TableFlags_Sortable
-    local tristate = Api('TableFlags_SortTristate')
-    if tristate then flags = flags | tristate end
-  end
-  -- With restore off ImGui neither reads nor writes this table's widths and
-  -- order, so it opens at the widths COLUMNS declares. ImGui keys table
-  -- settings by (table id, column count) anyway, so adding a column in a later
-  -- version invalidates a saved layout by itself — which is correct.
-  if not state.view.restore then
-    local no_saved = Api('TableFlags_NoSavedSettings')
-    if no_saved then flags = flags | no_saved end
-  end
-  if not im.BeginTable(ctx, "vo_overview", #COLUMNS, flags, 0, height) then
-    return
-  end
-  -- The body runs inside pcall for the reason every table here does: an error
-  -- escaping between BeginTable and EndTable leaves ImGui's stack corrupted for
-  -- every later frame. Nothing here pushes a combo or a disabled scope, but the
-  -- per-row PushID has to be unwound by hand — EndTable raises on an unbalanced
-  -- ID stack, which would replace the real error with a useless one.
-  local ok, err = pcall(DrawTableBody)
+local function DrawCards(height)
+  if not im.BeginChild(ctx, "vo_cards", 0, height) then return end
+  local avail_w = select(1, im.GetContentRegionAvail(ctx)) - 2
+  local ok, err = pcall(DrawCardsBody, avail_w)
   while id_depth > 0 do
     im.PopID(ctx)
     id_depth = id_depth - 1
@@ -4364,39 +4228,48 @@ local function DrawTable(height)
     im.PopTextWrapPos(ctx)
     wrap_depth = wrap_depth - 1
   end
-  while colour_depth > 0 do
-    im.PopStyleColor(ctx)
-    colour_depth = colour_depth - 1
-  end
-  im.EndTable(ctx)
+  im.EndChild(ctx)
   if not ok then state.message, state.message_kind = tostring(err), "error" end
 end
 
 local function DrawSummary()
   local n = state.summary
-
-  -- The headline is COVERAGE, not matching: how many script lines the project
-  -- actually holds an item for. That is the question the job is judged on, and
-  -- it is read from the item names, so it stays true no matter how the audio
-  -- got there or what the matcher thinks.
   local c = state.check or {}
   local total = #(state.lines or {})
-  local got   = c.delivered or 0
-  im.TextColored(ctx, (got >= total and total > 0) and 0x66BB66FF or 0xDDAA33FF,
-    string.format("%d of %d lines in the project", got, total))
-  if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx,
-      "Script lines with at least one item named for them.\n" ..
-      "Counted from the item names, so a take you cut by hand\n" ..
-      "or were sent as a rendered file counts just the same.")
+
+  local first = true
+  local function seg(colour, text, tip)
+    if first then first = false
+    else im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx) end
+    if colour then im.TextColored(ctx, colour, text)
+    else im.TextDisabled(ctx, text) end
+    if tip and im.IsItemHovered(ctx) then im.SetTooltip(ctx, tip) end
   end
-  if (c.missing or 0) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDD6666FF, string.format("%d not there yet", c.missing))
+
+  local got = c.delivered or 0
+  seg((got >= total and total > 0) and 0x66BB66FF or 0xDDAA33FF,
+    string.format("%d of %d lines in the project", got, total),
+    "Script lines with at least one item named for them.\n" ..
+    "Counted from the item names, so a take you cut by hand\n" ..
+    "or were sent as a rendered file counts just the same.")
+  seg(nil, string.format("%d recorded", n.delivered or 0),
+    "Lines the transcript match found audio for.")
+  seg(0x66BB66FF, string.format("%d verified", n.verified or 0),
+    "Takes locked in place. Rematching leaves them alone.")
+  if (n.review or 0) > 0 then
+    seg(0xDDAA33FF, string.format("%d to review", n.review))
   end
+  if (n.flagged or 0) > 0 then
+    seg(0xDD6666FF, string.format("%d flagged", n.flagged))
+  end
+  if (n.orphan or 0) > 0 then
+    seg(nil, string.format("%d orphan", n.orphan),
+      "Recorded audio whose transcript matches no script line.\n" ..
+      "Listed in the card at the bottom of the sheet.")
+  end
+
   if #(c.extra or {}) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDDAA33FF, string.format("%d name(s) not on the script", #c.extra))
+    seg(0xDDAA33FF, string.format("%d name(s) not on the script", #c.extra))
     if im.IsItemHovered(ctx) then
       local list = {}
       for i, name in ipairs(c.extra) do
@@ -4408,14 +4281,10 @@ local function DrawSummary()
     end
   end
   if (c.ambiguous or 0) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDDAA33FF,
-      string.format("%d item(s) named for two lines at once", c.ambiguous))
+    seg(0xDDAA33FF, string.format("%d item(s) named for two lines at once", c.ambiguous))
   end
   if #(state.name_drift or {}) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDDAA33FF,
-      string.format("%d name(s) changed outside this window", #state.name_drift))
+    seg(0xDDAA33FF, string.format("%d name(s) changed outside this window", #state.name_drift))
     if im.IsItemHovered(ctx) then
       local list = {}
       for i, d in ipairs(state.name_drift) do
@@ -4429,9 +4298,7 @@ local function DrawSummary()
     end
   end
   if #(state.orphan_appends or {}) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDD6666FF,
-      string.format("%d Append(s) match no loaded line", #state.orphan_appends))
+    seg(0xDD6666FF, string.format("%d Append(s) match no loaded line", #state.orphan_appends))
     if im.IsItemHovered(ctx) then
       local list = {}
       for i, a in ipairs(state.orphan_appends) do
@@ -4446,34 +4313,9 @@ local function DrawSummary()
         table.concat(list, "\n"))
     end
   end
-
-  im.Spacing(ctx)
-  im.TextDisabled(ctx, string.format("%d of %d lines recorded", n.delivered or 0, n.lines or 0))
-  im.SameLine(ctx)
-  im.TextDisabled(ctx, "·")
-  im.SameLine(ctx)
-  im.TextColored(ctx, 0x66BB66FF, string.format("%d verified", n.verified or 0))
-  if (n.review or 0) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDDAA33FF, string.format("%d to review", n.review))
-  end
-  if (n.missing or 0) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDD6666FF, string.format("%d missing", n.missing))
-  end
-  if (n.flagged or 0) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDD6666FF, string.format("%d flagged", n.flagged))
-  end
-  if (n.orphan or 0) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextDisabled(ctx, string.format("%d orphan", n.orphan))
-  end
-
   local dupes = state.dupe_assets
   if dupes and #dupes > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDDAA33FF, string.format(
+    seg(0xDDAA33FF, string.format(
       "%d duplicate filename%s", #dupes, #dupes == 1 and "" or "s"))
     if im.IsItemHovered(ctx) then
       local tip = { "These filenames are used by more than one script line.",
@@ -4494,6 +4336,18 @@ local function DrawSummary()
       end
       im.SetTooltip(ctx, table.concat(tip, "\n"))
     end
+  end
+
+  -- Filter feedback, in LINES (cards), shown only while something is hidden
+  -- -- this replaces the old always-on "rows shown" line under the sheet.
+  local shown = 0
+  for _, node in ipairs(state.nodes or {}) do
+    if node.kind == "line" then shown = shown + 1 end
+  end
+  if total > 0 and shown < total then
+    seg(0xDDAA33FF, string.format("showing %d of %d", shown, total),
+      "Filters are hiding the rest: clear the search, the character\n" ..
+      "combo or the filter boxes to see every line.")
   end
 end
 
@@ -4626,34 +4480,6 @@ local function DrawSettingsWindow()
         view.SaveFontSizes(state.view.sizes)
         fonts_dirty = true
       end
-    end
-
-    im.Spacing(ctx)
-    if SeparatorText then SeparatorText(ctx, "Columns") else im.Separator(ctx) end
-
-    im.Text(ctx, "Align every column:")
-    -- Checked here rather than after the loop, where it would have described
-    -- the last button instead of the group.
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, "Set every column at once, instead of one header at a time.\n" ..
-                         "Individual columns can still be changed afterwards.")
-    end
-    for _, a in ipairs(view.ALIGNS) do
-      im.SameLine(ctx)
-      local label = a:sub(1, 1):upper() .. a:sub(2)
-      if im.Button(ctx, label .. "##align_all_" .. a) then SetAllAlign(a) end
-    end
-
-    local mchanged, mon = im.Checkbox(ctx, "Match Transcript to Line text", state.view.mirror)
-    if mchanged then SetMirror(mon) end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx,
-        "Keep the two columns' alignment, word wrap and font size identical, so\n" ..
-        "the script and what was actually said line up while you read across.\n" ..
-        "Changing either column changes both. Line text is copied to Transcript\n" ..
-        "when this is switched on.\n\n" ..
-        "Column WIDTH is not included: ReaImGui gives no way to set a table\n" ..
-        "column's width from a script. Drag the two to match by hand.")
     end
 
     im.End(ctx)
@@ -5140,17 +4966,14 @@ local function loop()
     im.Spacing(ctx)
 
     -- Reserve room for whatever notices are showing; the table takes the rest.
-    local rows = 1                                     -- the count line below
+    local rows = 0
     if state.message ~= ""       then rows = rows + vo.CountLines(state.message, 4) end
     if state.project_error ~= "" then rows = rows + vo.CountLines(state.project_error, 4) end
     if not state.project_path    then rows = rows + 1 end
 
     -- GetContentRegionAvail returns width first, so height is the SECOND value.
     local _, avail_h = im.GetContentRegionAvail(ctx)
-    DrawTable(math.max(120, avail_h - im.GetFrameHeightWithSpacing(ctx) * rows))
-
-    im.TextDisabled(ctx, string.format("%d of %d rows shown.",
-      #state.visible, #state.overview))
+    DrawCards(math.max(120, avail_h - im.GetFrameHeightWithSpacing(ctx) * rows))
 
     if not state.project_path then
       im.TextColored(ctx, 0xDDAA33FF,

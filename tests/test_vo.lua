@@ -6116,5 +6116,204 @@ test("an unparseable transcript reads as error with a reason", function()
 end)
 
 --------------------------------
+-- GroupOverview
+--------------------------------
+print("GroupOverview:")
+
+local function mkrow(o)
+  -- Minimal overview row; callers override what the test cares about.
+  local row = {
+    status = "recorded", character = "GRUMBAR", script = "main.csv",
+    asset = "grum_01", deliver = "grum_01", line_text = "Get off my bridge!",
+    script_row = 1, take_index = 1, user_select = false, user_status = nil,
+  }
+  for k, v in pairs(o) do row[k] = v end
+  return row
+end
+
+test("takes group under one line node per script_row", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ script_row = 1, take_index = 1 }),
+    mkrow({ script_row = 1, take_index = 2 }),
+    mkrow({ script_row = 2, asset = "grum_02", take_index = 1 }),
+  })
+  -- character header + two line nodes
+  assert(#nodes == 3, "Expected 3 nodes, got " .. #nodes)
+  assert(nodes[1].kind == "character" and nodes[1].name == "GRUMBAR")
+  assert(nodes[2].kind == "line" and #nodes[2].takes == 2)
+  assert(nodes[3].kind == "line" and #nodes[3].takes == 1)
+end)
+
+test("a missing line has no takes and rollup.status missing", function()
+  local nodes = vo.GroupOverview({ mkrow({ status = "missing" }) })
+  local line = nodes[2]
+  assert(line.kind == "line" and #line.takes == 0, "missing line must be childless")
+  assert(line.rollup.status == "missing")
+  assert(line.rep ~= nil, "rep must still carry the line fields")
+end)
+
+test("any review take makes the line rollup review", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ take_index = 1 }),
+    mkrow({ take_index = 2, status = "review" }),
+  })
+  assert(nodes[2].rollup.status == "review")
+end)
+
+test("rollup counts sel and locks", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ take_index = 1, user_select = true, user_status = "verified" }),
+    mkrow({ take_index = 2 }),
+  })
+  local rl = nodes[2].rollup
+  assert(rl.has_sel == true and rl.locks == 1 and rl.take_count == 2)
+end)
+
+test("character header inserted on change, in row order", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ script_row = 1 }),
+    mkrow({ script_row = 2, character = "VERA", asset = "vera_01" }),
+  })
+  assert(nodes[1].kind == "character" and nodes[1].name == "GRUMBAR")
+  assert(nodes[3].kind == "character" and nodes[3].name == "VERA")
+  assert(#nodes == 4)
+end)
+
+test("orphans collect into one trailing section", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ status = "orphan", script_row = nil, asset = nil, character = nil }),
+    mkrow({ script_row = 1 }),
+    mkrow({ status = "orphan", script_row = nil, asset = nil, character = nil }),
+  })
+  local last = nodes[#nodes]
+  assert(last.kind == "orphans" and #last.takes == 2)
+  -- and no character header was emitted for the orphans' nil character
+  for _, n in ipairs(nodes) do
+    assert(not (n.kind == "character" and n.name == ""), "no blank character header")
+  end
+end)
+
+test("lines without script_row group by asset", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ script_row = nil, asset = "loose_01" }),
+    mkrow({ script_row = nil, asset = "loose_01", take_index = 2 }),
+  })
+  assert(nodes[2].kind == "line" and #nodes[2].takes == 2)
+end)
+
+--------------------------------
+-- FilterGroups
+--------------------------------
+print("FilterGroups:")
+
+test("a take match keeps the whole line with all takes", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ take_index = 1, transcript = "alpha" }),
+    mkrow({ take_index = 2, transcript = "bravo" }),
+    mkrow({ script_row = 2, asset = "grum_02", transcript = "charlie" }),
+  })
+  local out = vo.FilterGroups(nodes, function(row)
+    return (row.transcript or "") == "bravo"
+  end)
+  local lines = {}
+  for _, n in ipairs(out) do if n.kind == "line" then lines[#lines + 1] = n end end
+  assert(#lines == 1, "one line expected, got " .. #lines)
+  assert(#lines[1].takes == 2, "the matching line keeps BOTH takes")
+end)
+
+test("a rep-only match keeps a childless line", function()
+  local nodes = vo.GroupOverview({ mkrow({ status = "missing", line_text = "needle" }) })
+  local out = vo.FilterGroups(nodes, function(row)
+    return (row.line_text or ""):find("needle", 1, true) ~= nil
+  end)
+  assert(#out == 2 and out[2].kind == "line")
+end)
+
+test("character header dropped when none of its lines survive", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ script_row = 1 }),
+    mkrow({ script_row = 2, character = "VERA", asset = "vera_01", line_text = "pay him" }),
+  })
+  local out = vo.FilterGroups(nodes, function(row)
+    return (row.line_text or ""):find("pay", 1, true) ~= nil
+  end)
+  assert(#out == 2, "expected VERA header + line, got " .. #out)
+  assert(out[1].kind == "character" and out[1].name == "VERA")
+end)
+
+test("orphan takes filter individually and empty section vanishes", function()
+  local nodes = vo.GroupOverview({
+    mkrow({ status = "orphan", script_row = nil, asset = nil, character = nil,
+            transcript = "keep me" }),
+    mkrow({ status = "orphan", script_row = nil, asset = nil, character = nil,
+            transcript = "drop me" }),
+  })
+  local out = vo.FilterGroups(nodes, function(row)
+    return (row.transcript or "") == "keep me"
+  end)
+  assert(#out == 1 and out[1].kind == "orphans" and #out[1].takes == 1)
+  local none = vo.FilterGroups(nodes, function() return false end)
+  assert(#none == 0)
+end)
+
+--------------------------------
+-- TakeLetter
+--------------------------------
+print("TakeLetter:")
+
+test("takes letter A through Z then AA, AB, BA", function()
+  assert(vo.TakeLetter(1) == "A", "1 -> " .. vo.TakeLetter(1))
+  assert(vo.TakeLetter(2) == "B")
+  assert(vo.TakeLetter(26) == "Z")
+  assert(vo.TakeLetter(27) == "AA", "27 -> " .. vo.TakeLetter(27))
+  assert(vo.TakeLetter(28) == "AB")
+  assert(vo.TakeLetter(52) == "AZ")
+  assert(vo.TakeLetter(53) == "BA", "53 -> " .. vo.TakeLetter(53))
+end)
+
+test("zero, negative and nil letter as empty", function()
+  assert(vo.TakeLetter(0) == "")
+  assert(vo.TakeLetter(-3) == "")
+  assert(vo.TakeLetter(nil) == "")
+end)
+
+--------------------------------
+-- Collapsed persistence
+--------------------------------
+print("Collapsed persistence:")
+
+test("view.expanded round-trips", function()
+  local text = vo.SerializeProjectFile({}, {
+    scripts = {}, appends = {}, pins = {},
+    view = { character = nil, search = "", filter_row = false,
+             col_filters = {}, expanded = { "3", "asset:grum_01" } },
+  })
+  local parsed = assert(vo.ParseProjectFile(text))
+  local got = (parsed.view or {}).expanded or {}
+  assert(#got == 2, "expected 2 expanded keys, got " .. #got)
+  assert(got[1] == "3" and got[2] == "asset:grum_01")
+end)
+
+test("absent expanded parses as nil/empty without error", function()
+  local text = vo.SerializeProjectFile({}, { scripts = {}, appends = {}, pins = {}, view = {} })
+  local parsed = assert(vo.ParseProjectFile(text))
+  local got = (parsed.view or {}).expanded
+  assert(got == nil or #got == 0)
+end)
+
+test("a linenote entry round-trips through the project file", function()
+  local text = vo.SerializeProjectFile(
+    { { key = "linenote|3", asset = "grum_01", notes = "line-level note" } },
+    { scripts = {}, appends = {}, pins = {}, view = {} })
+  local parsed = assert(vo.ParseProjectFile(text))
+  local found = nil
+  for _, e in ipairs(parsed.entries) do
+    if e.key == "linenote|3" then found = e end
+  end
+  assert(found, "linenote entry was dropped")
+  assert(found.notes == "line-level note", "note lost: " .. tostring(found and found.notes))
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

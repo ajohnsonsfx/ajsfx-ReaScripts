@@ -34,9 +34,10 @@ view.FONT_DEFAULTS = { small = 11, medium = 13, large = 16 }
 view.DEFAULT_ALIGN = "middle"
 view.DEFAULT_FONT  = "medium"
 
--- The one column long enough to be worth wrapping out of the box. Everything
--- else is a name, a number or a status and reads better clipped to one line.
-view.WRAP_DEFAULTS = { line_text = true }
+-- The one column long enough to be worth wrapping out of the box: the shared
+-- Text column (line text on parents, transcript on takes). Everything else is
+-- a name, a number or a status and reads better clipped to one line.
+view.WRAP_DEFAULTS = { text = true }
 
 local ALIGN_FACTOR = { top = 0, middle = 0.5, bottom = 1 }
 
@@ -138,17 +139,6 @@ end
 
 function view.SaveRestore(on)
   Set("view_restore", on and "1" or "0")
-end
-
--- Line text and Transcript pinned to one another. Off by default: it is a
--- reading aid for people who compare the two, not something to spring on
--- someone who has set the columns up differently on purpose.
-function view.LoadMirror()
-  return Get("view_mirror_text") == "1"
-end
-
-function view.SaveMirror(on)
-  Set("view_mirror_text", on and "1" or "0")
 end
 
 function view.LoadFontSizes()
