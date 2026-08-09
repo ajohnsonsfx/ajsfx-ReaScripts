@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.15beta2
--- @changelog PRE-RELEASE: Sources now detects and repairs transcripts with a swallowed whisper window. Confirmed failure mode: a slate ("Actor reading Character.") followed by a pause at the head of a recording makes whisper emit a gap token that swallows the rest of its first 30-second window -- speech from ~1.4s to the window boundary never decoded, at normal levels, with nothing reported anywhere. After every transcription (fresh or cached), the transcript is scanned for holes of 5 seconds or more; each hole is probed against the recording's own measured noise floor, and a hole that holds speech-level audio -- a swallowed read, not a long silence -- is re-run through whisper on just that span, starting after the word that caused the swallow, and the recovered words are merged into the sidecar before it is written. The end-of-run summary names each repaired file and how many words came back; a repair that fails leaves the transcript as the first pass made it and says so. Everything else is unchanged from 0.15beta1: the card sheet, occupancy-based take resolution, the percentile noise floor, the adopted-row and Sel-routing fixes, and the remote rows command. Also: a take selected in the ARRANGE view is now outlined in the sheet at both levels -- the take row itself and the card that holds it -- and a folded card scrolls into view when its take is selected from the timeline; before, the selection landed on a row a folded card never draws, so clicking an item in the timeline showed nothing in the Overview at all. The timeline follow is fixed at the root: it matched only rows the sheet was showing, so clicking an item whose line was FOLDED selected nothing at all -- it now matches every filtered take, unfolds the line that holds it, scrolls there, and the outline is drawn after the card content instead of before it, where the band background was painting over its sides. The take list header says Item instead of Where. + Add Take now always shows: with items selected in REAPER it names them for the line as before, with nothing selected it adds a PLANNED take -- an empty row stored in the project file, with notes and marks of its own, whose Item column carries a + that links the REAPER selection to it later (linking names the item and retires the planned row in one stroke). A planned take counts as a take but never makes an unrecorded line read as recorded, and one orphaned by a script edit surfaces in the Not-on-the-script card rather than vanishing. The script name and line note moved out of the fold-only drawer onto the band itself, visible without unfolding; the drawer is gone.
+-- @changelog PRE-RELEASE: Sources now detects and repairs transcripts with a swallowed whisper window. Confirmed failure mode: a slate ("Actor reading Character.") followed by a pause at the head of a recording makes whisper emit a gap token that swallows the rest of its first 30-second window -- speech from ~1.4s to the window boundary never decoded, at normal levels, with nothing reported anywhere. After every transcription (fresh or cached), the transcript is scanned for holes of 5 seconds or more; each hole is probed against the recording's own measured noise floor, and a hole that holds speech-level audio -- a swallowed read, not a long silence -- is re-run through whisper on just that span, starting after the word that caused the swallow, and the recovered words are merged into the sidecar before it is written. The end-of-run summary names each repaired file and how many words came back; a repair that fails leaves the transcript as the first pass made it and says so. Everything else is unchanged from 0.15beta1: the card sheet, occupancy-based take resolution, the percentile noise floor, the adopted-row and Sel-routing fixes, and the remote rows command. Also: a take selected in the ARRANGE view is now outlined in the sheet at both levels -- the take row itself and the card that holds it -- and a folded card scrolls into view when its take is selected from the timeline; before, the selection landed on a row a folded card never draws, so clicking an item in the timeline showed nothing in the Overview at all. The timeline follow is fixed at the root: it matched only rows the sheet was showing, so clicking an item whose line was FOLDED selected nothing at all -- it now matches every filtered take, unfolds the line that holds it, scrolls there, and the outline is drawn after the card content instead of before it, where the band background was painting over its sides. The take list header says Item instead of Where. + Add Take now always shows: with items selected in REAPER it names them for the line as before, with nothing selected it adds a PLANNED take -- an empty row stored in the project file, with notes and marks of its own, whose Item column carries a + that links the REAPER selection to it later (linking names the item and retires the planned row in one stroke). A planned take counts as a take but never makes an unrecorded line read as recorded, and one orphaned by a script edit surfaces in the Not-on-the-script card rather than vanishing. The script name and line note moved out of the fold-only drawer onto the band itself, visible without unfolding; the drawer is gone. A Follow menu on the toolbar governs all of it with three saved toggles: auto scroll, auto unfold, and auto fold on deselect (which only ever folds lines the follow itself opened, and leaves a line alone while any of its takes is selected). The scroll is minimal and directional: it moves only when the take is actually off screen, a take below lands at the bottom edge and a take above at the top -- so which edge it arrived at tells you which way the sheet went, and selecting something already visible never nudges the view.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -227,6 +227,21 @@ local state = {
   selection     = {},         -- set of row UIDs, spreadsheet-style
   focus_key     = nil,        -- the row the caret is on
   anchor        = nil,        -- row UID a shift-range extends from
+
+  -- How the sheet follows clicks in the ARRANGE view (the Follow menu).
+  -- Loaded from ExtState below; these are user preferences, not project state.
+  follow_scroll = true,       -- bring the selected take on screen
+  follow_unfold = true,       -- unfold the line that holds it
+  follow_fold   = false,      -- fold it back again once deselected
+  -- Which lines the FOLLOW unfolded (vs the user), keyed by line key: the
+  -- auto-fold option folds only these, so a card the user opened by hand is
+  -- never snapped shut under them.
+  auto_unfolded = {},
+  -- How many more frames the scroll-to may fire. Two, not one: the frame that
+  -- unfolds a line draws its rows at fallback heights, so a scroll computed
+  -- then can land a little off; the second frame corrects against measured
+  -- heights, and is a no-op when the first already got it right.
+  scroll_to_frames = 0,
 
   layout_order   = "script",  -- "script" | "record"
   layout_spacing = "fixed",   -- "fixed"  | "original"
@@ -1547,23 +1562,49 @@ local function FollowTimelineSelection()
     end
   end
 
-  -- Unfold the lines holding the matches, so the row the user just asked
-  -- about is actually on screen to be outlined and scrolled to. Only unfold,
-  -- never fold: the click is a request to SEE this take, not a judgement on
-  -- the rest of the sheet.
+  -- Which lines hold a selected take now -- the unit both fold options work
+  -- in, because folding is per line, not per take.
+  local lines_with_sel = {}
   if next(found) then
     for _, node in ipairs(state.nodes or {}) do
       if node.kind == "line" then
         for _, t in ipairs(node.takes) do
           if found[t.uid] then
-            local k = tostring(node._key)
-            if not state.expanded[k] then
-              state.expanded[k] = true
-              state.dirty = true
-            end
+            lines_with_sel[tostring(node._key)] = true
             break
           end
         end
+      end
+    end
+  end
+
+  -- Unfold the lines holding the matches, so the row the user just asked
+  -- about is actually on screen to be outlined and scrolled to. What THIS
+  -- follow opened is remembered in auto_unfolded, which is the whole of what
+  -- auto-fold below is allowed to close.
+  if state.follow_unfold then
+    for k in pairs(lines_with_sel) do
+      if not state.expanded[k] then
+        state.expanded[k] = true
+        state.auto_unfolded[k] = true
+        state.dirty = true
+      end
+    end
+  end
+
+  -- Fold back what the follow itself opened once its take is deselected --
+  -- and ONLY that. A card the user unfolded by hand is their decision, and
+  -- snapping it shut because they clicked elsewhere in the arrange view would
+  -- be the tool fighting them. Selecting another take of the same line keeps
+  -- the line in lines_with_sel, so it never flaps.
+  if state.follow_fold then
+    for k in pairs(state.auto_unfolded) do
+      if not lines_with_sel[k] then
+        if state.expanded[k] then
+          state.expanded[k] = nil
+          state.dirty = true
+        end
+        state.auto_unfolded[k] = nil
       end
     end
   end
@@ -1572,7 +1613,10 @@ local function FollowTimelineSelection()
   if first then
     state.focus_key  = first
     state.anchor_key = first
-    state.scroll_to_uid = first
+    if state.follow_scroll then
+      state.scroll_to_uid    = first
+      state.scroll_to_frames = 2
+    end
   end
 end
 
@@ -1794,6 +1838,23 @@ local function SaveLayoutSettings()
   for field, key in pairs(LAYOUT_KEYS) do
     r.SetExtState(vo.EXT_SECTION, "layout_" .. key, tostring(state[field]), true)
   end
+end
+
+-- The Follow menu's toggles: user preferences like the layout settings above,
+-- so ExtState, not the project file.
+local FOLLOW_KEYS = { "follow_scroll", "follow_unfold", "follow_fold" }
+
+local function LoadFollowSettings()
+  for _, key in ipairs(FOLLOW_KEYS) do
+    local raw = r.GetExtState(vo.EXT_SECTION, key)
+    if raw == "1" then state[key] = true
+    elseif raw == "0" then state[key] = false end
+  end
+end
+
+local function SetFollowSetting(key, value)
+  state[key] = value
+  r.SetExtState(vo.EXT_SECTION, key, value and "1" or "0", true)
 end
 
 -- -----------------------------------------------------------------------
@@ -3386,6 +3447,38 @@ local function DrawFilters()
   end
   im.SameLine(ctx)
 
+  -- How the sheet follows the ARRANGE view. Three independent toggles, all
+  -- user preferences (ExtState), none project state.
+  if im.Button(ctx, "Follow") then im.OpenPopup(ctx, "##follow_menu") end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "What the sheet does when you select items in the arrange view.")
+  end
+  if im.BeginPopup(ctx, "##follow_menu") then
+    local hit, v = im.Checkbox(ctx, "Auto scroll to the selected take", state.follow_scroll)
+    if hit then SetFollowSetting("follow_scroll", v) end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Scrolls only when the take is off screen, and only the\n" ..
+                         "minimum: a take below lands at the bottom edge, a take\n" ..
+                         "above at the top, so the direction tells you which way\n" ..
+                         "the sheet went.")
+    end
+    hit, v = im.Checkbox(ctx, "Auto unfold the selected take's line", state.follow_unfold)
+    if hit then SetFollowSetting("follow_unfold", v) end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "A folded line shows no take rows, so without this a\n" ..
+                         "timeline click can only outline the card itself.")
+    end
+    hit, v = im.Checkbox(ctx, "Auto fold it again when deselected", state.follow_fold)
+    if hit then SetFollowSetting("follow_fold", v) end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Only folds lines the follow itself unfolded -- never one\n" ..
+                         "you opened by hand. Selecting another take of the same\n" ..
+                         "line keeps it open.")
+    end
+    im.EndPopup(ctx)
+  end
+  im.SameLine(ctx)
+
   im.SetNextItemWidth(ctx, 200)
   local changed, text = im.InputTextWithHint(ctx, "##search", "Search…", state.search)
   if changed then state.search = text; state.dirty = true end
@@ -3759,6 +3852,30 @@ local function SelectedTakeOf(node)
   return nil
 end
 
+-- Scroll the cards child the MINIMUM needed to put the last submitted item
+-- fully on screen -- and not at all when it already is. The direction is the
+-- information: a target below lands at the BOTTOM edge (the sheet visibly
+-- scrolled down to find it), a target above lands at the TOP edge, and a
+-- target already visible does not move the sheet under the user's eyes.
+local function ScrollToLastItemMinimally()
+  local _, y0 = im.GetItemRectMin(ctx)
+  local _, y1 = im.GetItemRectMax(ctx)
+  local wy = select(2, im.GetWindowPos(ctx))
+  local wh = im.GetWindowHeight(ctx)
+  if y1 > wy + wh then
+    im.SetScrollHereY(ctx, 1.0)
+  elseif y0 < wy then
+    im.SetScrollHereY(ctx, 0.0)
+  end
+end
+
+-- The scroll-to target burns down over frames rather than firing once: see
+-- scroll_to_frames in the state table.
+local function ConsumeScrollTo()
+  state.scroll_to_frames = (state.scroll_to_frames or 1) - 1
+  if state.scroll_to_frames <= 0 then state.scroll_to_uid = nil end
+end
+
 -- Shared x-offsets, computed once per frame from the available width. Every
 -- zone is used by band and take rows alike, which is what keeps the two
 -- levels correlated without a table's grid.
@@ -3815,8 +3932,8 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
     pending_action = function() ClickRow(row, at, captured) end
   end
   if state.scroll_to_uid == row.uid then
-    im.SetScrollHereY(ctx, 0.4)
-    state.scroll_to_uid = nil
+    ScrollToLastItemMinimally()
+    ConsumeScrollTo()
   end
   if im.IsItemHovered(ctx) and not row.item then
     im.SetTooltip(ctx, "The audio for this row is not in this project.")
@@ -4249,14 +4366,14 @@ local function DrawLineCard(node, z, flat_index, avail_w)
   DrawCardBand(node, z, key, open, cx + CARD_PAD, avail_w)
 
   -- A folded card never draws its take rows, so the row-level scroll-to in
-  -- DrawCardTakeRow can never fire for it -- the timeline handoff would light
-  -- a card somewhere off screen and look like it did nothing. The band stands
-  -- in for its hidden children.
+  -- DrawCardTakeRow can never fire for it -- with auto-unfold off, the
+  -- timeline handoff would light a card somewhere off screen and look like it
+  -- did nothing. The band stands in for its hidden children.
   if not open and state.scroll_to_uid then
     for _, t in ipairs(node.takes) do
       if t.uid == state.scroll_to_uid then
-        im.SetScrollHereY(ctx, 0.4)
-        state.scroll_to_uid = nil
+        ScrollToLastItemMinimally()
+        ConsumeScrollTo()
         break
       end
     end
@@ -4985,6 +5102,7 @@ end
 
 LoadProjectFile()
 LoadLayoutSettings()
+LoadFollowSettings()
 LoadViewSettings()
 Reload()
 
