@@ -1387,6 +1387,49 @@ function vo.ParseMarkerName(name)
   return name, nil
 end
 
+-- The COVERAGE RULE: a marker counts only where its range intersects the
+-- source window of the item holding it. Split copies land everywhere, but
+-- after a cut only the piece covering the span keeps an intersecting window
+-- -- so this one rule absorbs split residue without bookkeeping. When two
+-- items genuinely cover one marker (overlaps, comps), the one covering more
+-- of the range wins; ids make "same take seen twice" unambiguous.
+-- Markers without our ` ~id` suffix belong to the user, not the tool.
+--
+-- `per_item` is an array of { coverage = {from,to}, markers = ParseTKMChunk
+-- result }; item_index in the output indexes back into it.
+function vo.CountingMarkers(per_item)
+  local best = {}
+  for idx, rec in ipairs(per_item or {}) do
+    local cov = rec.coverage
+    if cov then
+      for _, m in ipairs(rec.markers or {}) do
+        local asset, id = vo.ParseMarkerName(m.name)
+        if id then
+          local start, stop = m.pos, m.pos + (m.length or 0)
+          local overlap = math.min(stop, cov.to) - math.max(start, cov.from)
+          if overlap > 0 then
+            local cur = best[id]
+            if not cur or overlap > cur.overlap then
+              best[id] = { id = id, asset = asset, start = start, stop = stop,
+                           item_index = idx, overlap = overlap }
+            end
+          end
+        end
+      end
+    end
+  end
+  local out = {}
+  for _, rec in pairs(best) do
+    rec.overlap = nil
+    out[#out + 1] = rec
+  end
+  table.sort(out, function(a, b)
+    if a.start ~= b.start then return a.start < b.start end
+    return tostring(a.id) < tostring(b.id)
+  end)
+  return out
+end
+
 -- What the sheet and the timeline disagree about, and what is simply broken.
 --
 -- Pure: it reads rows that already carry their resolved item's GUID and track
@@ -4081,6 +4124,19 @@ function vo.BuildOverview(input)
   input = input or {}
   local lines   = input.lines or {}
   local entries = input.entries
+  -- Takes defined by MARKERS (vo.CountingMarkers output grouped by asset).
+  -- A line that appears here builds its rows from the markers and the match's
+  -- opinion of it is ignored: markers are the truth, the match was only ever
+  -- the generator.
+  local takes_by_asset = input.takes_by_asset or {}
+
+  -- Plain key lookup for marker-keyed marks. NOT via index_tracker: tkm keys
+  -- have no source bucket, and letting them into by_asset would shadow the
+  -- line-level "|<asset>" entry -- the same hazard planned keys hit.
+  local by_key = {}
+  for _, e in ipairs(entries or {}) do
+    if e.key then by_key[e.key] = e end
+  end
 
   -- Sources in a stable order, so take numbers do not shuffle between openings.
   local by_source = {}
@@ -4240,13 +4296,74 @@ function vo.BuildOverview(input)
     }
   end
 
+  -- A take defined by its MARKER: the row carries the marker's own span and
+  -- keys its marks by the marker id -- a key no drag can move, which is the
+  -- whole point.
+  local function marker_row(mk, line, take_index, take_count)
+    local t = by_key["tkm|" .. mk.id]
+    return {
+      key           = "tkm|" .. mk.id,
+      marker_id     = mk.id,
+      status        = "recorded",
+      asset         = line.asset,
+      deliver       = line.deliver or line.asset,
+      script        = line.script,
+      append_key    = line.append_key,
+      append_nth    = line.append_nth,
+      line_key      = line.append_key,
+      character     = line.speaker,
+      line_text     = line.text,
+      source_start  = mk.start,
+      source_stop   = mk.stop,
+      take_index    = take_index,
+      take_count    = take_count,
+      script_row    = line.index or line.row,
+      user_status   = t and t.status or nil,
+      name_override = t and t.name_override or nil,
+      notes         = t and t.notes or nil,
+      is_primary    = false,
+      mark_select   = t and t.select,
+      mark_keep     = t and t.keep,
+      user_select   = (t and t.select) == true,
+      user_keep     = (t and t.keep) == true,
+    }
+  end
+
   local rows = {}
 
   -- Script order first: this is a script-shaped spreadsheet, so a line's takes
   -- sit together under it whether they were recorded in one session or five.
   for line_row, line in ipairs(lines) do
     local g = groups[line_row]
-    if g and #g > 0 then
+    local mks = takes_by_asset[line.asset]
+    if mks and #mks > 0 then
+      -- Markers own this line. Numbering follows marker start order; the Sel
+      -- primary is the user's explicit tick, same no-fallback rule as below.
+      local ordered = {}
+      for _, mk in ipairs(mks) do ordered[#ordered + 1] = mk end
+      table.sort(ordered, function(a, b)
+        if a.start ~= b.start then return (a.start or 0) < (b.start or 0) end
+        return tostring(a.id) < tostring(b.id)
+      end)
+      local built = {}
+      for i, mk in ipairs(ordered) do
+        built[#built + 1] = marker_row(mk, line, i, #ordered)
+      end
+      local chosen
+      for _, row in ipairs(built) do
+        if row.user_select then chosen = row break end
+      end
+      for _, row in ipairs(built) do
+        row.is_primary = (row == chosen)
+        rows[#rows + 1] = row
+      end
+      local p = planned_by_row[line_row]
+      if p then
+        for i, e in ipairs(p) do
+          rows[#rows + 1] = planned_row(e, line, #ordered + i, #ordered + #p)
+        end
+      end
+    elseif g and #g > 0 then
       table.sort(g, function(a, b)
         if a.source_order ~= b.source_order then return a.source_order < b.source_order end
         return (a.span.start or 0) < (b.span.start or 0)

@@ -133,5 +133,119 @@ test("a tilde inside the asset does not fake an id", function()
 end)
 
 --------------------------------
+print("CountingMarkers:")
+
+local function pi(from, to, markers)
+  return { coverage = { from = from, to = to }, markers = markers }
+end
+local function mk(pos, asset, id, len)
+  return { pos = pos, name = vo.FormatMarkerName(asset, id), color = 0, length = len }
+end
+
+test("a marker counts where its range intersects the item window", function()
+  local out = vo.CountingMarkers({ pi(0, 10, { mk(2, "A", "k1", 3) }) })
+  assert(#out == 1, "count: " .. #out)
+  assert(out[1].id == "k1" and out[1].start == 2 and out[1].stop == 5)
+end)
+
+test("split residue is ignored: off-window copies do not count", function()
+  local out = vo.CountingMarkers({
+    pi(0, 6,  { mk(2, "A", "k1", 3) }),   -- covers the span: counts
+    pi(6, 10, { mk(2, "A", "k1", 3) }),   -- residue: range 2-5 misses 6-10
+  })
+  assert(#out == 1, "residue counted: " .. #out)
+  assert(out[1].item_index == 1)
+end)
+
+test("two items covering one marker: the better-covering one wins", function()
+  local out = vo.CountingMarkers({
+    pi(0, 4,  { mk(2, "A", "k1", 4) }),   -- covers 2-4 of 2-6
+    pi(0, 10, { mk(2, "A", "k1", 4) }),   -- covers all of it
+  })
+  assert(#out == 1 and out[1].item_index == 2, "wrong winner")
+end)
+
+test("markers without our id suffix are not ours and are ignored", function()
+  local out = vo.CountingMarkers({ pi(0, 10, {
+    { pos = 1, name = "user note", color = 0, length = 0 } }) })
+  assert(#out == 0, "claimed a foreign marker")
+end)
+
+--------------------------------
+print("BuildOverview with markers:")
+
+local MK_LINES = {
+  { asset = "grum_01", text = "Hello.", speaker = "Grumbar", index = 1 },
+}
+
+test("a line with markers builds its takes from them, not the match", function()
+  local rows = vo.BuildOverview({
+    lines = MK_LINES,
+    matches = { { path = "sess.wav", spans = {
+      { kind = "match", asset = "grum_01", start = 90.0, stop = 92.0, line_idx = 1 },
+    } } },
+    entries = {},
+    takes_by_asset = { grum_01 = {
+      { id = "k1", start = 10.0, stop = 12.5, item_index = 3 },
+      { id = "k2", start = 20.0, stop = 22.0, item_index = 7 },
+    } },
+  })
+  local takes = {}
+  for _, row in ipairs(rows) do
+    if row.take_index and row.asset == "grum_01" then takes[#takes + 1] = row end
+  end
+  assert(#takes == 2, "takes: " .. #takes)
+  assert(takes[1].key == "tkm|k1", "key: " .. tostring(takes[1].key))
+  assert(takes[1].source_start == 10.0, "marker start lost")
+  assert(takes[2].take_index == 2, "ordering broken")
+  for _, row in ipairs(rows) do
+    assert(row.source_start ~= 90.0, "a match row leaked through")
+  end
+end)
+
+test("marker takes attach their stored marks by tkm key", function()
+  local rows = vo.BuildOverview({
+    lines = MK_LINES, matches = {},
+    entries = { { key = "tkm|k1", asset = "grum_01", notes = "the good one" } },
+    takes_by_asset = { grum_01 = { { id = "k1", start = 10.0, stop = 12.5 } } },
+  })
+  local found
+  for _, row in ipairs(rows) do
+    if row.key == "tkm|k1" then found = row end
+  end
+  assert(found, "marker row missing")
+  assert(found.notes == "the good one", "marks did not attach")
+end)
+
+test("a line with no markers still builds from the match", function()
+  local rows = vo.BuildOverview({
+    lines = MK_LINES,
+    matches = { { path = "sess.wav", spans = {
+      { kind = "match", asset = "grum_01", start = 90.0, stop = 92.0, line_idx = 1 },
+    } } },
+    entries = {}, takes_by_asset = {},
+  })
+  local found
+  for _, row in ipairs(rows) do
+    if row.source_start == 90.0 then found = row end
+  end
+  assert(found, "match fallback lost")
+end)
+
+test("planned takes still append after marker takes", function()
+  local rows = vo.BuildOverview({
+    lines = MK_LINES, matches = {},
+    entries = { { key = vo.PlannedKey("grum_01", "p1"), asset = "grum_01" } },
+    takes_by_asset = { grum_01 = { { id = "k1", start = 10.0, stop = 12.5 } } },
+  })
+  local planned
+  for _, row in ipairs(rows) do
+    if row.planned then planned = row end
+  end
+  assert(planned, "planned take vanished")
+  assert(planned.take_index == 2, "planned numbering: " .. tostring(planned.take_index))
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
