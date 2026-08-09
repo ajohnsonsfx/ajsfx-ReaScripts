@@ -175,7 +175,7 @@ local state = {
   -- Which inline panel is open, or nil for none. One at a time: they all draw
   -- in the same space above the table, and two at once would push it off the
   -- window. "script" opens itself when a script fails to load.
-  panel         = nil,        -- "script" | "cut" | "pull" | "sort"
+  panel         = nil,        -- "script" | "cut" | "pull" | "repair" | "sort"
   -- Whether the tools narrow to the table's selection. Off by default: see
   -- AffectedRows for why selection makes a poor default scope here.
   selection_only = false,
@@ -3634,6 +3634,200 @@ local function DrawPullPanel()
   im.Separator(ctx)
 end
 
+-- Reconciliation, not repair-by-magic: two sources of truth for what a take is
+-- and where it belongs, and a button for each direction. Nothing here acts
+-- without a press, and every finding can be clicked to go and look at it.
+local REPAIR_LIST_CAP = 12
+
+local function DrawRepairPanel()
+  local cfg  = vo.LoadConfig()
+  local plan = vo.PlanReconcile(state.overview, cfg)
+  local total = #plan.disagree + #plan.missing_anchor
+              + #plan.doubled + #plan.orphan_marks
+
+  if total == 0 then
+    im.TextColored(ctx, 0x66BB66FF,
+      "Nothing to repair: every take agrees with the timeline.")
+    im.SameLine(ctx)
+    if im.Button(ctx, "Close##repair") then state.panel = nil end
+    im.Separator(ctx)
+    return
+  end
+
+  local function GoTo(row)
+    state.selection        = { [row.uid] = true }
+    state.focus_key        = row.uid
+    state.scroll_to_uid    = row.uid
+    state.scroll_to_frames = 2
+  end
+
+  -- 1. The sheet and the timeline disagree.
+  if #plan.disagree > 0 then
+    im.TextColored(ctx, 0xDDAA33FF, string.format(
+      "%d take(s) disagree with where their item sits:", #plan.disagree))
+    for i, f in ipairs(plan.disagree) do
+      if i > REPAIR_LIST_CAP then
+        im.TextDisabled(ctx, string.format("   ...and %d more",
+          #plan.disagree - REPAIR_LIST_CAP))
+        break
+      end
+      im.Bullet(ctx)
+      im.SameLine(ctx)
+      if im.SmallButton(ctx, string.format("%s -- %s##dis%d",
+          f.row.deliver or f.row.asset or "(unnamed)", f.detail, i)) then
+        local captured = f.row
+        pending_action = function() GoTo(captured) end
+      end
+    end
+    if im.Button(ctx, "Adopt timeline") then
+      local findings = plan.disagree
+      pending_action = function()
+        -- The tracks win: write the mark each item's placement implies as an
+        -- EXPLICIT decision, so the result is stable and not re-inferred.
+        for _, f in ipairs(findings) do
+          local want = vo.MarkFromTrack(f.row.track_name, cfg)
+          Mutate(f.row, function(e)
+            e.select = (want == "select") or nil
+            e.keep   = (want == "keep")   or nil
+          end)
+        end
+        state.message, state.message_kind = string.format(
+          "Adopted the timeline for %d take(s).", #findings), "ok"
+      end
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Set each take's Sel/Keep to match the track its item is on.")
+    end
+    im.SameLine(ctx)
+    if im.Button(ctx, "Adopt sheet") then
+      state.panel = "pull"
+      state.message, state.message_kind =
+        "The marks are right -- run Pull to move the items to match them.", "info"
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "The marks are right; the items are in the wrong place.\n" ..
+                         "Opens the Pull panel, which is what moves them.")
+    end
+    im.Separator(ctx)
+  end
+
+  -- 2. Anchors pointing at items that are gone.
+  if #plan.missing_anchor > 0 then
+    im.TextColored(ctx, 0xDD6666FF, string.format(
+      "%d take(s) anchored to an item this project no longer has:",
+      #plan.missing_anchor))
+    for i, f in ipairs(plan.missing_anchor) do
+      if i > REPAIR_LIST_CAP then
+        im.TextDisabled(ctx, string.format("   ...and %d more",
+          #plan.missing_anchor - REPAIR_LIST_CAP))
+        break
+      end
+      im.Bullet(ctx)
+      im.SameLine(ctx)
+      im.TextDisabled(ctx, f.row.deliver or f.row.asset or "(unnamed)")
+      im.SameLine(ctx)
+      if im.SmallButton(ctx, "Relink##rel" .. i) then
+        local captured = f.row
+        pending_action = function() AnchorRowToSelection(captured) end
+      end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Bind it to the item selected in REAPER.")
+      end
+    end
+    if im.Button(ctx, "Clear all dead anchors") then
+      local findings = plan.missing_anchor
+      pending_action = function()
+        local n = 0
+        for _, f in ipairs(findings) do
+          for _, e in ipairs(state.entries) do
+            if e.key == f.row.key then
+              e.anchor, e.anchor_start, e.anchor_stop = nil, nil, nil
+              n = n + 1
+            end
+          end
+        end
+        state.dirty = true
+        Reload()
+        state.message, state.message_kind = string.format(
+          "Cleared %d dead anchor(s). Those takes resolve by match again.", n), "ok"
+      end
+    end
+    im.Separator(ctx)
+  end
+
+  -- 3. Two rows claiming one item.
+  if #plan.doubled > 0 then
+    im.TextColored(ctx, 0xDDAA33FF, string.format(
+      "%d item(s) claimed by more than one take:", #plan.doubled))
+    for gi, g in ipairs(plan.doubled) do
+      for ri, row in ipairs(g.rows) do
+        im.Bullet(ctx)
+        im.SameLine(ctx)
+        im.TextDisabled(ctx, row.deliver or row.asset or "(unnamed)")
+        im.SameLine(ctx)
+        if im.SmallButton(ctx, string.format("Keep this one##keep%d_%d", gi, ri)) then
+          local keeper, group = row, g.rows
+          pending_action = function()
+            for _, other in ipairs(group) do
+              if other.key ~= keeper.key then
+                for _, e in ipairs(state.entries) do
+                  if e.key == other.key then
+                    e.anchor, e.anchor_start, e.anchor_stop = nil, nil, nil
+                  end
+                end
+              end
+            end
+            state.dirty = true
+            Reload()
+            state.message, state.message_kind =
+              "Anchor kept on one take; the others were cleared.", "ok"
+          end
+        end
+      end
+    end
+    im.Separator(ctx)
+  end
+
+  -- 4. Marks with nothing to attach to.
+  if #plan.orphan_marks > 0 then
+    im.TextColored(ctx, 0xDDAA33FF, string.format(
+      "%d take(s) carry marks but have no audio in this project:",
+      #plan.orphan_marks))
+    for i, f in ipairs(plan.orphan_marks) do
+      if i > REPAIR_LIST_CAP then
+        im.TextDisabled(ctx, string.format("   ...and %d more",
+          #plan.orphan_marks - REPAIR_LIST_CAP))
+        break
+      end
+      im.Bullet(ctx)
+      im.SameLine(ctx)
+      im.TextDisabled(ctx, f.row.deliver or f.row.asset or "(unnamed)")
+      im.SameLine(ctx)
+      if im.SmallButton(ctx, "Relink##orph" .. i) then
+        local captured = f.row
+        pending_action = function() AnchorRowToSelection(captured) end
+      end
+    end
+    im.TextDisabled(ctx,
+      "These are usually a re-match that moved a boundary further than the\n" ..
+      "half-second rematch window. Relink one to the item it belongs to, or\n" ..
+      "clear its marks on the row itself.")
+    im.Separator(ctx)
+  end
+
+  -- The fifth thing worth knowing about is computed elsewhere: items named for
+  -- a line that no row claims are already counted by vo.CheckCoverage and
+  -- adopted by Rebuild, so this points at that rather than recomputing it.
+  if #(state.check.extra or {}) > 0 then
+    im.TextDisabled(ctx, string.format(
+      "%d item name(s) are not on the script -- see the summary line above.",
+      #state.check.extra))
+  end
+
+  if im.Button(ctx, "Close##repair") then state.panel = nil end
+  im.Separator(ctx)
+end
+
 local function DrawFilters()
   -- Every control here writes state.dirty: the filters are stored in the project
   -- file so the table opens the way it was left. The flush is throttled, so a
@@ -5543,11 +5737,17 @@ local function loop()
       "Lays the items out on the timeline in script order or record\n" ..
       "order, on fresh child tracks so nothing lands on anything.")
 
+    PanelButton("repair", "Repair",
+      "Where the sheet and the timeline disagree, and what is broken:\n" ..
+      "marks that contradict the track their item sits on, anchors whose\n" ..
+      "item is gone, and items claimed by two takes at once.")
+
     if im.Button(ctx, "Settings") then state.settings_open = true end
 
     if     state.panel == "script" then DrawScriptPanel()
     elseif state.panel == "cut"    then DrawCutPanel()
     elseif state.panel == "pull"   then DrawPullPanel()
+    elseif state.panel == "repair" then DrawRepairPanel()
     elseif state.panel == "sort"   then DrawLayoutBar() end
 
     local bad = BadScriptCount()
