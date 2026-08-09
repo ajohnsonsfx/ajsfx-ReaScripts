@@ -2901,6 +2901,21 @@ local function CutCandidates()
   local counts = { spans = #all_spans, cuttable = 0, in_range = 0, stale = 0, edited = 0 }
   local candidates = {}
   local edited_names = {}
+
+  -- The counting markers per source, so a span can ask "does a marker already
+  -- own this audio?" Markers are the user's tracked takes; Cut re-slicing one
+  -- would overwrite their work, so those spans are skipped (below) unless the
+  -- run is a deliberate Re-cut anyway.
+  local markers_by_path = {}
+  for path, group in pairs(state.take_markers or {}) do
+    markers_by_path[path] = vo.CountingMarkers(group)
+  end
+  local function marker_owning(s)
+    for _, mk in ipairs(markers_by_path[s.source_path] or {}) do
+      if mk.start < (s.stop or 0) and mk.stop > (s.start or 0) then return mk end
+    end
+    return nil
+  end
   for _, s in ipairs(all_spans) do
     local key = start_key(s.source_path, s.start)
     local row = by_start[key]
@@ -2910,12 +2925,12 @@ local function CutCandidates()
       counts.cuttable = counts.cuttable + 1
       if in_range[key] then
         counts.in_range = counts.in_range + 1
-        -- A take whose item the user has moved is THEIR edit, and re-cutting
-        -- would silently throw it away. Skipped unless the run is a deliberate
-        -- Re-cut anyway, which clears the anchors first.
-        if row and row.edited and not state.force_recut then
+        -- Markers own this audio: a span overlapping a counting marker is a
+        -- take the user is already tracking, and cutting it would overwrite
+        -- their work. Re-cut anyway deletes those markers first, explicitly.
+        if marker_owning(s) and not state.force_recut then
           counts.edited = counts.edited + 1
-          edited_names[#edited_names + 1] = row.deliver or row.asset or "(unnamed)"
+          edited_names[#edited_names + 1] = s.deliver or s.asset or "(unnamed)"
         -- Cutting to word timings the audio no longer matches would put the
         -- edges in the wrong places, so a stale source is skipped -- per
         -- source, so one re-recorded file cannot stop the others.
@@ -3055,6 +3070,50 @@ local function DoCut()
   -- One transaction around every split and rename, so the run is one undo step.
   local applied, failures = 0, {}
   core.Transaction("VO Overview: cut and name", function()
+    -- MARKERS FIRST, then the splits at their bounds: split propagation
+    -- carries each marker into the piece cut for it, so every clip is born
+    -- knowing which performance it is. Same transaction, so one undo reverts
+    -- markers and splits together.
+    local taken = TakenMarkerIds()
+    local marker_fails = 0
+    for _, g in pairs(by_item) do
+      local list = {}
+      -- Existing tool markers on this item (takes cut earlier, or skipped
+      -- this run) ride along: WriteTakeMarkers replaces the tool's lines
+      -- wholesale, and dropping them would orphan those takes.
+      local ok0, chunk0 = r.GetItemStateChunk(g.item, "", false)
+      if ok0 then
+        for _, m in ipairs(vo.ParseTKMChunk(chunk0)) do
+          local asset0, id0 = vo.ParseMarkerName(m.name)
+          if id0 then
+            list[#list + 1] = { start = m.pos, stop = m.pos + (m.length or 0),
+                                asset = asset0, id = id0 }
+          end
+        end
+      end
+      -- The spans hold PROJECT time after resolution and padding; markers
+      -- live in SOURCE time, so each converts back through its own item.
+      for _, span in ipairs(g.spans) do
+        if span.dest ~= vo.DEST_IN_PLACE then
+          local from = vo.ProjectTimeToSource(span.start, g.info)
+          local to   = vo.ProjectTimeToSource(span.stop,  g.info)
+          if to > from then
+            list[#list + 1] = { start = from, stop = to,
+                                asset = span.asset or span.deliver or span.name,
+                                id = vo.MintMarkerId(taken) }
+          end
+        end
+      end
+      if #list > 0 then
+        local okw = vo.WriteTakeMarkers(g.item, list)
+        if not okw then marker_fails = marker_fails + 1 end
+      end
+    end
+    if marker_fails > 0 then
+      failures[#failures + 1] = string.format(
+        "%d item(s): take markers could not be written", marker_fails)
+    end
+
     for _, g in pairs(by_item) do
       local a, f = vo.ApplyPlan(g.spans, g.info.track)
       applied = applied + a
@@ -3067,7 +3126,7 @@ local function DoCut()
   if #state.cut_skipped_edited > 0 then
     table.insert(state.cut_summary, {
       text = string.format(
-        "%d take(s) skipped -- you had edited them: %s",
+        "%d take(s) skipped -- their markers own that audio: %s",
         #state.cut_skipped_edited,
         table.concat(state.cut_skipped_edited, ", ")),
       warn = true,
@@ -3177,21 +3236,32 @@ local function DrawCutPanel()
     im.SameLine(ctx)
     if im.Button(ctx, "Re-cut anyway") then
       pending_action = function()
-        -- Clear the anchors of exactly the skipped takes, so they cut as
-        -- unbound spans and are re-anchored to their new items. Rows the user
-        -- did not edit keep theirs.
+        -- Delete the markers of exactly the skipped takes -- by delivered
+        -- name, the same identity the skip reported -- so their audio is
+        -- unowned again and the re-run cuts it fresh with new markers. Takes
+        -- the run did not skip keep theirs untouched.
         local doomed = {}
         for _, name in ipairs(state.cut_skipped_edited) do doomed[name] = true end
-        for _, row in ipairs(state.overview) do
-          if row.edited and doomed[row.deliver or row.asset or ""] then
-            for _, e in ipairs(state.entries) do
-              if e.key == row.key then
-                e.anchor, e.anchor_start, e.anchor_stop = nil, nil, nil
+        core.Transaction("VO Overview: delete take markers for re-cut", function()
+          for _, group in pairs(state.take_markers or {}) do
+            for _, rec in ipairs(group) do
+              local survivors, changed = {}, false
+              for _, m in ipairs(vo.ParseTKMChunk(select(2,
+                  r.GetItemStateChunk(rec.info.item, "", false)) or "")) do
+                local asset, id = vo.ParseMarkerName(m.name)
+                if id and doomed[asset] then
+                  changed = true
+                else
+                  if id then
+                    survivors[#survivors + 1] = { start = m.pos,
+                      stop = m.pos + (m.length or 0), asset = asset, id = id }
+                  end
+                end
               end
+              if changed then vo.WriteTakeMarkers(rec.info.item, survivors) end
             end
           end
-        end
-        state.dirty = true
+        end)
         state.force_recut = true
         local ok, err = pcall(DoCut)
         if not ok then
@@ -3201,8 +3271,8 @@ local function DrawCutPanel()
       end
     end
     if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, "Re-cut the takes you had edited, discarding those edits.\n" ..
-                         "Their anchors are cleared and rebound to the new clips.")
+      im.SetTooltip(ctx, "Delete those takes' markers and cut their audio fresh.\n" ..
+                         "The same thing as deleting the markers by hand, then Cut.")
     end
   end
 
