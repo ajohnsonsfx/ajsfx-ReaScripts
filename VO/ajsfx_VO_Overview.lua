@@ -1029,6 +1029,175 @@ local function AddTakeMarkerFromSelection(row)
     "Marked %s on the selected item.", row.deliver or row.asset or "take"), "ok"
 end
 
+-- Rewrite ONE tool marker on the item that owns it. `mutate(mk)` edits the
+-- { start, stop, asset, id } in place; returning false drops the marker.
+-- Every other tool marker on the item rides along unchanged, and user markers
+-- are preserved by vo.WriteTakeMarkers itself.
+local function RewriteMarker(row, mutate)
+  local info = state.marker_info and state.marker_info[row.marker_id]
+  local item = (info and info.item) or row.item
+  if not item then return false end
+  local ok, chunk = r.GetItemStateChunk(item, "", false)
+  if not ok then return false end
+  local list, hit = {}, false
+  for _, m in ipairs(vo.ParseTKMChunk(chunk)) do
+    local asset, id = vo.ParseMarkerName(m.name)
+    if id then
+      local mk = { start = m.pos, stop = m.pos + (m.length or 0),
+                   asset = asset, id = id }
+      if id == row.marker_id then
+        hit = true
+        if mutate(mk) ~= false then list[#list + 1] = mk end
+      else
+        list[#list + 1] = mk
+      end
+    end
+  end
+  if not hit then return false end
+  return vo.WriteTakeMarkers(item, list)
+end
+
+-- The user's rule for "I trimmed the head past the marker start": the row's
+-- own marker snaps to its item's current source coverage. That row's marker
+-- is by construction the counting marker of that item, so this IS the
+-- earliest-intersecting-marker rule from the design.
+local function SnapMarkerToItem(row)
+  local span = row.item_info and vo.SourceCoverageRanges({ row.item_info })[1]
+  if not span then
+    state.message, state.message_kind = "No item coverage to snap to.", "warn"
+    return
+  end
+  if RewriteMarker(row, function(mk) mk.start, mk.stop = span.from, span.to end) then
+    state.dirty = true
+    Reload()
+    state.message, state.message_kind = string.format(
+      "Marker snapped to the item (%.2fs-%.2fs).", span.from, span.to), "ok"
+  else
+    state.message, state.message_kind = "Could not rewrite that marker.", "error"
+  end
+end
+
+local function DeleteTakeMarker(row)
+  if RewriteMarker(row, function() return false end) then
+    state.dirty = true
+    Reload()
+    state.message, state.message_kind =
+      "Marker deleted. The take left the sheet; any marks surface in Repair.", "ok"
+  else
+    state.message, state.message_kind = "Could not delete that marker.", "error"
+  end
+end
+
+-- Bank the session as marker truth: every take row that resolves to an item
+-- but has no marker yet gets one spanning the item's CURRENT source coverage
+-- -- hand-fixed edges captured as stored fact, reviewable in the arrange
+-- view. Match rows whose audio is still uncut get their marker from the
+-- match span, on the recording item covering it. The migration for sessions
+-- cut before markers existed; new sessions never need it, Cut writes its own.
+local function MarkTakesFromSession()
+  Reload()
+  local taken = TakenMarkerIds()
+  local per_item = {}   -- item -> { list = markers to add }
+  local rekey = {}      -- old entry key -> new tkm key
+  local marked, no_audio = 0, 0
+
+  for _, row in ipairs(state.overview) do
+    if row.take_index and not row.marker_id and not row.planned
+       and row.status ~= "orphan" then
+      local item, span
+      if row.item and row.item_info then
+        item = row.item
+        span = vo.SourceCoverageRanges({ row.item_info })[1]
+      elseif row.source_path and row.source_start and row.source_stop then
+        item = vo.ResolveSourceSpanForCut(
+          row.source_path, row.source_start, row.source_stop, state.items)
+        span = item and { from = row.source_start, to = row.source_stop } or nil
+      end
+      if item and span and span.to > span.from then
+        local id = vo.MintMarkerId(taken)
+        local rec = per_item[item]
+        if not rec then rec = { list = {} }; per_item[item] = rec end
+        rec.list[#rec.list + 1] =
+          { start = span.from, stop = span.to, asset = row.asset, id = id }
+        rekey[row.key] = "tkm|" .. id
+        marked = marked + 1
+      else
+        no_audio = no_audio + 1
+      end
+    end
+  end
+
+  if marked == 0 then
+    state.message, state.message_kind =
+      "Nothing to mark: every take already has a marker.", "info"
+    return
+  end
+
+  core.Transaction("VO Overview: mark takes", function()
+    for item, rec in pairs(per_item) do
+      -- Existing tool markers ride along, same rule as Cut's writes.
+      local ok0, chunk0 = r.GetItemStateChunk(item, "", false)
+      if ok0 then
+        for _, m in ipairs(vo.ParseTKMChunk(chunk0)) do
+          local asset0, id0 = vo.ParseMarkerName(m.name)
+          if id0 then
+            rec.list[#rec.list + 1] = { start = m.pos,
+              stop = m.pos + (m.length or 0), asset = asset0, id = id0 }
+          end
+        end
+      end
+      vo.WriteTakeMarkers(item, rec.list)
+    end
+  end)
+
+  -- The marks ride along: each rekeyed entry now lives under the marker id,
+  -- which no drag can move.
+  for _, e in ipairs(state.entries) do
+    if e.key and rekey[e.key] then e.key = rekey[e.key] end
+  end
+  state.dirty = true
+  Reload()
+  state.message, state.message_kind = string.format(
+    "Marked %d take(s).%s", marked,
+    no_audio > 0
+      and string.format(" %d row(s) had no audio to mark.", no_audio) or ""), "ok"
+end
+
+-- Split residue and hand-copied leftovers: tool markers whose range does not
+-- intersect the item holding them never count (the coverage rule) -- this
+-- deletes them so the timeline stops showing dead labels. User markers are
+-- never touched.
+local function CleanStrayTakeMarkers()
+  local removed = 0
+  core.Transaction("VO Overview: clean stray take markers", function()
+    for _, group in pairs(state.take_markers or {}) do
+      for _, rec in ipairs(group) do
+        local cov = rec.coverage
+        local list, changed = {}, false
+        for _, m in ipairs(rec.markers or {}) do
+          local asset, id = vo.ParseMarkerName(m.name)
+          if id then
+            local start, stop = m.pos, m.pos + (m.length or 0)
+            if cov and stop > cov.from and start < cov.to then
+              list[#list + 1] = { start = start, stop = stop,
+                                  asset = asset, id = id }
+            else
+              changed = true
+              removed = removed + 1
+            end
+          end
+        end
+        if changed then vo.WriteTakeMarkers(rec.info.item, list) end
+      end
+    end
+  end)
+  Reload()
+  state.message, state.message_kind = (removed > 0)
+    and (string.format("Removed %d stray marker cop%s.", removed,
+         removed == 1 and "y" or "ies")) or "No stray markers found.",
+    "ok"
+end
+
 local function SetStatus(row, status)
   Mutate(row, function(e) e.status = status end)
 end
@@ -3277,6 +3446,16 @@ local function DrawCutPanel()
   end
 
   im.SameLine(ctx)
+  if im.Button(ctx, "Mark takes") then
+    pending_action = MarkTakesFromSession
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Write a take marker for every take that has none, spanning its\n" ..
+                       "item's CURRENT edges -- banks hand-fixed cut points as marker\n" ..
+                       "truth. The migration for sessions cut before markers existed.")
+  end
+
+  im.SameLine(ctx)
   if im.Button(ctx, "Close##cut") then state.panel = nil end
   im.SameLine(ctx)
 
@@ -4172,6 +4351,23 @@ local function DrawTakeRowMenu(row)
            "REAPER, spanning it. The marker is the take's identity: visible in\n" ..
            "the arrange view, draggable, and Cut leaves its audio alone.")
       or  "Select exactly one item in REAPER first.")
+  end
+  if im.MenuItem(ctx, "Snap marker to item", nil, nil,
+                 row.marker_id ~= nil and row.item ~= nil) then
+    local captured = row
+    pending_action = function() SnapMarkerToItem(captured) end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Set this take's marker to the item's current edges --\n" ..
+                       "the fix for trimming the head past the marker start.")
+  end
+  if im.MenuItem(ctx, "Delete take marker", nil, nil, row.marker_id ~= nil) then
+    local captured = row
+    pending_action = function() DeleteTakeMarker(captured) end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "The take leaves the sheet with the marker; native\n" ..
+                       "gestures (drag the marker, alt-drag its end) edit it.")
   end
 
   im.Separator(ctx)
