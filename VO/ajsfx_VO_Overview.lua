@@ -707,37 +707,6 @@ local function Rebuild()
     alt_pattern  = cfg.alt_append_pattern,
   })
 
-  -- Anchored rows resolve by GUID, before any inference runs.
-  --
-  -- This is the whole point of anchors: vo.ResolveSourceSpan picks whichever
-  -- item is most occupied by the take's span, which is a good guess but still a
-  -- guess -- and after a hand-edit it can answer with a neighbour, a leftover,
-  -- or nothing. A GUID cannot be wrong.
-  local by_guid = {}
-  for _, info in ipairs(state.items or {}) do
-    if info.item then
-      local got, guid = r.GetSetMediaItemInfo_String(info.item, "GUID", "", false)
-      if got and guid ~= "" then by_guid[guid] = info end
-    end
-  end
-  for _, row in ipairs(state.overview) do
-    if row.anchor then
-      local info = by_guid[row.anchor]
-      if info then
-        row.item      = info.item
-        row.item_info = info
-        -- A take whose item's edges no longer match what Cut wrote has been
-        -- hand-edited. Cut must not overwrite it, and the repair pass reports it.
-        row.edited = vo.IsEditedAnchor(row, vo.SourceCoverageRanges({ info })[1])
-      else
-        -- The anchor names an item this project no longer has: deleted,
-        -- re-recorded, or split so the GUID moved. Left unresolved for the
-        -- fallbacks below and flagged for the repair pass.
-        row.anchor_missing = true
-      end
-    end
-  end
-
   -- Name-based fallback for the rows: an item carrying a line's delivered
   -- name IS that line's take, even when the transcript span no longer finds
   -- it -- hand-trimmed edges and renamed comps break the span lookup but not
@@ -966,32 +935,39 @@ local function Mutate(row, fn)
   Rebuild()
 end
 
--- Bind a take row to the item selected in REAPER.
+-- All marker ids currently in the project, so minting can never collide.
+local function TakenMarkerIds()
+  local taken = {}
+  for _, group in pairs(state.take_markers or {}) do
+    for _, rec in ipairs(group) do
+      for _, m in ipairs(rec.markers or {}) do
+        local _, id = vo.ParseMarkerName(m.name)
+        if id then taken[id] = true end
+      end
+    end
+  end
+  return taken
+end
+
+-- Write a take marker for this row's line onto the item selected in REAPER,
+-- spanning that item's current source coverage. The manual counterpart to the
+-- markers kickstart writes: for audio this tool did not create -- a hand-comp,
+-- a rendered file, a re-record -- and the repair panel's Relink.
 --
--- The manual counterpart to the anchoring Cut does automatically: for audio
--- this tool did not create -- a hand-comp, a rendered file, a re-record -- and
--- the fix the repair panel offers for a row whose anchor has gone stale.
---
--- The recorded edges are the item's CURRENT ones, so a freshly anchored take
--- reads as unedited: the user has just declared this geometry correct.
+-- If the row was marker-keyed or planned, its marks move onto the new marker's
+-- key so nothing the user decided is lost in the transfer.
 --
 -- Defined HERE, beside EntryFor rather than beside the take-row menu that calls
 -- it, because the repair panel calls it too and sits above that menu in the
 -- file. A local declared below its caller resolves as a nil GLOBAL, and the
 -- failure would surface only on the button press.
-local function AnchorRowToSelection(row)
+local function AddTakeMarkerFromSelection(row)
   if r.CountSelectedMediaItems(0) ~= 1 then
     state.message, state.message_kind =
-      "Select exactly one item in REAPER to anchor this take to.", "warn"
+      "Select exactly one item in REAPER to mark this take on.", "warn"
     return
   end
   local item = r.GetSelectedMediaItem(0, 0)
-  local got, guid = r.GetSetMediaItemInfo_String(item, "GUID", "", false)
-  if not got or guid == "" then
-    state.message, state.message_kind = "That item has no GUID to anchor to.", "error"
-    return
-  end
-
   local take = r.GetActiveTake(item)
   local info = {
     start_offs = take and r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS") or 0,
@@ -999,15 +975,29 @@ local function AnchorRowToSelection(row)
     playrate   = take and r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE") or 1.0,
   }
   local range = vo.SourceCoverageRanges({ info })[1]
+  if not range then
+    state.message, state.message_kind = "That item has no source coverage to span.", "error"
+    return
+  end
 
-  local e = EntryFor(row)
-  e.anchor       = guid
-  e.anchor_start = range and range.from or nil
-  e.anchor_stop  = range and range.to   or nil
+  local id = vo.MintMarkerId(TakenMarkerIds())
+  local ok, why = vo.WriteTakeMarkers(item, {
+    { start = range.from, stop = range.to, asset = row.asset, id = id },
+  })
+  if not ok then
+    state.message, state.message_kind = "Could not write the marker: " .. tostring(why), "error"
+    return
+  end
+
+  -- Move the row's marks onto the marker's key, so a planned take's notes or
+  -- an orphaned row's decisions ride along rather than being stranded.
+  for _, e in ipairs(state.entries) do
+    if e.key == row.key then e.key = "tkm|" .. id end
+  end
   state.dirty = true
   Reload()
   state.message, state.message_kind = string.format(
-    "Anchored %s to the selected item.", row.deliver or row.asset or "take"), "ok"
+    "Marked %s on the selected item.", row.deliver or row.asset or "take"), "ok"
 end
 
 local function SetStatus(row, status)
@@ -2885,14 +2875,7 @@ local function CutCandidates()
   for _, s in ipairs(all_spans) do
     local key = start_key(s.source_path, s.start)
     local row = by_start[key]
-    if row then
-      s.select = row.user_select == true
-      -- The row this span belongs to, captured HERE and not later: ApplyPadding
-      -- mutates s.start on its way to ApplyPlan, so a key derived downstream
-      -- would name a row that does not exist. Taken from the row itself rather
-      -- than recomputed, so it cannot disagree with the row's own identity.
-      s.row_key = row.key
-    end
+    if row then s.select = row.user_select == true end
 
     if s.kind == "match" or s.kind == "review" then
       counts.cuttable = counts.cuttable + 1
@@ -3042,41 +3025,13 @@ local function DoCut()
 
   -- One transaction around every split and rename, so the run is one undo step.
   local applied, failures = 0, {}
-  local anchors = {}
   core.Transaction("VO Overview: cut and name", function()
     for _, g in pairs(by_item) do
-      local a, f, anc = vo.ApplyPlan(g.spans, g.info.track)
+      local a, f = vo.ApplyPlan(g.spans, g.info.track)
       applied = applied + a
       for _, msg in ipairs(f) do failures[#failures + 1] = msg end
-      for key, rec in pairs(anc or {}) do anchors[key] = rec end
     end
   end)
-
-  -- Bind each cut take to the item it became. Written straight to the entries
-  -- rather than through Mutate, which rebuilds the whole match per call: forty
-  -- rebuilds for one press, each invalidating the rows still to be anchored.
-  --
-  -- Through EntryFor and its ROW, never as a bare { key = key }: index_tracker
-  -- buckets entries by source path, so an entry carrying only a key and an
-  -- anchor is filed nowhere, resolve_tracker never finds it, and the anchor is
-  -- written and then invisible.
-  local row_by_key = {}
-  for _, row in ipairs(state.overview) do
-    if row.key and not row_by_key[row.key] then row_by_key[row.key] = row end
-  end
-
-  local anchored = 0
-  for key, rec in pairs(anchors) do
-    local row = row_by_key[key]
-    if row then
-      local entry = EntryFor(row)
-      entry.anchor       = rec.guid
-      entry.anchor_start = rec.start
-      entry.anchor_stop  = rec.stop
-      anchored = anchored + 1
-    end
-  end
-  if anchored > 0 then state.dirty = true end
 
   state.cut_summary = vo.FormatCutSummary(all_spans, applied, skipped_msgs, failures)
 
@@ -3711,82 +3666,8 @@ local function DrawRepairPanel()
     im.Separator(ctx)
   end
 
-  -- 2. Anchors pointing at items that are gone.
-  if #plan.missing_anchor > 0 then
-    im.TextColored(ctx, 0xDD6666FF, string.format(
-      "%d take(s) anchored to an item this project no longer has:",
-      #plan.missing_anchor))
-    for i, f in ipairs(plan.missing_anchor) do
-      if i > REPAIR_LIST_CAP then
-        im.TextDisabled(ctx, string.format("   ...and %d more",
-          #plan.missing_anchor - REPAIR_LIST_CAP))
-        break
-      end
-      im.Bullet(ctx)
-      im.SameLine(ctx)
-      im.TextDisabled(ctx, f.row.deliver or f.row.asset or "(unnamed)")
-      im.SameLine(ctx)
-      if im.SmallButton(ctx, "Relink##rel" .. i) then
-        local captured = f.row
-        pending_action = function() AnchorRowToSelection(captured) end
-      end
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, "Bind it to the item selected in REAPER.")
-      end
-    end
-    if im.Button(ctx, "Clear all dead anchors") then
-      local findings = plan.missing_anchor
-      pending_action = function()
-        local n = 0
-        for _, f in ipairs(findings) do
-          for _, e in ipairs(state.entries) do
-            if e.key == f.row.key then
-              e.anchor, e.anchor_start, e.anchor_stop = nil, nil, nil
-              n = n + 1
-            end
-          end
-        end
-        state.dirty = true
-        Reload()
-        state.message, state.message_kind = string.format(
-          "Cleared %d dead anchor(s). Those takes resolve by match again.", n), "ok"
-      end
-    end
-    im.Separator(ctx)
-  end
-
-  -- 3. Two rows claiming one item.
-  if #plan.doubled > 0 then
-    im.TextColored(ctx, 0xDDAA33FF, string.format(
-      "%d item(s) claimed by more than one take:", #plan.doubled))
-    for gi, g in ipairs(plan.doubled) do
-      for ri, row in ipairs(g.rows) do
-        im.Bullet(ctx)
-        im.SameLine(ctx)
-        im.TextDisabled(ctx, row.deliver or row.asset or "(unnamed)")
-        im.SameLine(ctx)
-        if im.SmallButton(ctx, string.format("Keep this one##keep%d_%d", gi, ri)) then
-          local keeper, group = row, g.rows
-          pending_action = function()
-            for _, other in ipairs(group) do
-              if other.key ~= keeper.key then
-                for _, e in ipairs(state.entries) do
-                  if e.key == other.key then
-                    e.anchor, e.anchor_start, e.anchor_stop = nil, nil, nil
-                  end
-                end
-              end
-            end
-            state.dirty = true
-            Reload()
-            state.message, state.message_kind =
-              "Anchor kept on one take; the others were cleared.", "ok"
-          end
-        end
-      end
-    end
-    im.Separator(ctx)
-  end
+  -- Categories 2 and 3 (dead anchors, doubled items) were retired with the
+  -- GUID-anchor mechanism; M7 rewires this panel to marker findings.
 
   -- 4. Marks with nothing to attach to.
   if #plan.orphan_marks > 0 then
@@ -3805,7 +3686,7 @@ local function DrawRepairPanel()
       im.SameLine(ctx)
       if im.SmallButton(ctx, "Relink##orph" .. i) then
         local captured = f.row
-        pending_action = function() AnchorRowToSelection(captured) end
+        pending_action = function() AddTakeMarkerFromSelection(captured) end
       end
     end
     im.TextDisabled(ctx,
@@ -4182,29 +4063,16 @@ local function DrawTakeRowMenu(row)
   im.Separator(ctx)
 
   local n_sel = r.CountSelectedMediaItems(0)
-  if im.MenuItem(ctx, "Anchor to selected item", nil, nil, n_sel == 1) then
+  if im.MenuItem(ctx, "Add take marker from selected item", nil, nil, n_sel == 1) then
     local captured = row
-    pending_action = function() AnchorRowToSelection(captured) end
+    pending_action = function() AddTakeMarkerFromSelection(captured) end
   end
   if im.IsItemHovered(ctx) then
     im.SetTooltip(ctx, n_sel == 1
-      and ("Bind this take to the item selected in REAPER. It will then follow\n" ..
-           "that item wherever you move or trim it, and Cut will leave it alone.")
+      and ("Writes this line's ranged take marker onto the item selected in\n" ..
+           "REAPER, spanning it. The marker is the take's identity: visible in\n" ..
+           "the arrange view, draggable, and Cut leaves its audio alone.")
       or  "Select exactly one item in REAPER first.")
-  end
-  if im.MenuItem(ctx, "Clear anchor", nil, nil, row.anchor ~= nil) then
-    local captured = row
-    pending_action = function()
-      for _, e in ipairs(state.entries) do
-        if e.key == captured.key then
-          e.anchor, e.anchor_start, e.anchor_stop = nil, nil, nil
-        end
-      end
-      state.dirty = true
-      Reload()
-      state.message, state.message_kind =
-        "Anchor cleared. That take resolves by match again.", "ok"
-    end
   end
 
   im.Separator(ctx)

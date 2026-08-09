@@ -1209,37 +1209,14 @@ function vo.DetectRepetitionLoop(words)
 end
 
 --------------------------------
--- Pure layer: anchors
+-- Pure layer: take identity
 --------------------------------
 
--- An ANCHOR binds a take row to one specific REAPER item by the item's GUID,
--- plus the source-time edges Cut gave that item.
---
--- The GUID is the durable half: dragging an edge, moving an item between
--- tracks, and saving and reloading all preserve it, while the source-time key
--- every other part of this tool uses (vo.OverviewKey) changes the moment an
--- edge moves. The EDGES are what make "has the user touched this?" answerable.
---
--- They are the edges the cut PLAN wrote, never the row's own source_start --
--- boundary snapping moves the edges away from the raw match, so comparing
--- against the match would report every untouched item as edited.
-vo.ANCHOR_EDIT_TOLERANCE = 0.010  -- seconds at either edge
-
--- Has the user moved this item's edges since Cut made it?
---
--- `range` is the item's CURRENT source coverage, from vo.SourceCoverageRanges.
--- Returns false when there is nothing to compare -- an anchor with no recorded
--- edges, or an item that is gone. Neither is evidence of an edit: a missing
--- item is a repair-pass finding (see vo.PlanReconcile), and treating it as an
--- edit would make Cut skip takes it should be free to re-cut.
-function vo.IsEditedAnchor(anchor, range, tolerance)
-  if not anchor or not range then return false end
-  local from, to = anchor.anchor_start, anchor.anchor_stop
-  if not from or not to then return false end
-  local tol = tolerance or vo.ANCHOR_EDIT_TOLERANCE
-  return math.abs((range.from or 0) - from) > tol
-      or math.abs((range.to   or 0) - to)   > tol
-end
+-- Take identity lives in RANGED TAKE MARKERS (the section below), not in
+-- item GUIDs: a marker is a source-time fact about the performance, visible
+-- and draggable in the arrange view, and it survives any item surgery via
+-- split propagation. The GUID-anchor mechanism that briefly lived here was
+-- retired before ever being published.
 
 -- THE TRACK IS THE DECISION, alongside the governing idea that the name is the
 -- assignment: an item on the Selects track IS the select, one on Alts IS a
@@ -1440,25 +1417,15 @@ end
 -- different fix and the panel shows only the non-empty ones:
 --
 --   disagree       -- the sheet says one thing, the item's track says another
---   missing_anchor -- the anchor names an item this project no longer has
---   doubled        -- two rows claim the same item
---   orphan_marks   -- marks on a row with no item and no anchor: damage done
---                     before anchors existed, or by a re-match that moved a
---                     boundary past the rematch tolerance
+--   missing_anchor -- placeholder, rewired to markers in the repair rework
+--                     (Task M7); currently always empty
+--   doubled        -- placeholder, same
+--   orphan_marks   -- marks on a row with no audio left to attach to: usually
+--                     a deleted marker, or damage from before markers existed
 function vo.PlanReconcile(rows, cfg)
   local plan = { disagree = {}, missing_anchor = {}, doubled = {}, orphan_marks = {} }
-  local by_anchor = {}
 
   for _, row in ipairs(rows or {}) do
-    if row.anchor_missing then
-      plan.missing_anchor[#plan.missing_anchor + 1] =
-        { row = row, detail = "anchored item is gone" }
-    end
-
-    if row.anchor then
-      by_anchor[row.anchor] = by_anchor[row.anchor] or {}
-      table.insert(by_anchor[row.anchor], row)
-    end
 
     -- Only rows that HAVE an item can disagree with where it sits.
     if row.item_guid then
@@ -1474,19 +1441,12 @@ function vo.PlanReconcile(rows, cfg)
           and "on the Alts track but not ticked Keep"
           or  "ticked Keep but the item is not on the Alts track" }
       end
-    elseif not row.anchor
-           and (row.mark_select ~= nil or row.mark_keep ~= nil
-                or (row.notes and row.notes ~= "") or row.user_status) then
+    elseif row.mark_select ~= nil or row.mark_keep ~= nil
+           or (row.notes and row.notes ~= "") or row.user_status then
       -- Marks with nothing to attach to. An UNMARKED row with no item is just
       -- a line nobody has recorded yet, which is not a finding.
       plan.orphan_marks[#plan.orphan_marks + 1] =
         { row = row, detail = "marks with no item" }
-    end
-  end
-
-  for guid, list in pairs(by_anchor) do
-    if #list > 1 then
-      plan.doubled[#plan.doubled + 1] = { guid = guid, rows = list }
     end
   end
 
@@ -3697,7 +3657,7 @@ vo.PROJECT_VERSION = 1
 
 vo.PROJECT_HEADER = {
   "Key", "Filename", "Source", "Source start", "Select", "Status",
-  "Name override", "Notes", "Keep", "Anchor", "Anchor start", "Anchor stop",
+  "Name override", "Notes", "Keep",
 }
 
 -- Statuses the USER sets. Derived statuses (missing/recorded/review/orphan) are
@@ -3859,9 +3819,6 @@ function vo.SerializeProjectFile(entries, meta)
                   or (e.status and e.status ~= "")
                   or (e.name_override and e.name_override ~= "")
                   or (e.notes and e.notes ~= "")
-                  -- An anchor is the whole of what binds a take to its item;
-                  -- dropping it would unbind every cut take on the next save.
-                  or (e.anchor and e.anchor ~= "")
                   -- A planned take's existence IS the work: it derives from
                   -- nothing else, so dropping a bare one would delete the row.
                   or vo.IsPlannedKey(e.key)
@@ -3876,9 +3833,6 @@ function vo.SerializeProjectFile(entries, meta)
         e.name_override or "",
         e.notes or "",
         mark_to_field(e.keep),
-        e.anchor or "",
-        e.anchor_start and string.format("%.3f", e.anchor_start) or "",
-        e.anchor_stop  and string.format("%.3f", e.anchor_stop)  or "",
       })
     end
   end
@@ -3995,11 +3949,6 @@ function vo.ParseProjectFile(text)
         status        = vo.TRACKER_STATUSES[status] and status or nil,
         name_override = row[7] ~= "" and row[7] or nil,
         notes         = row[8] ~= "" and row[8] or nil,
-        -- Absent in files written before anchors existed; nil is correct there
-        -- and means "this take is not bound to an item".
-        anchor        = (row[10] and row[10] ~= "") and row[10] or nil,
-        anchor_start  = tonumber(row[11] or ""),
-        anchor_stop   = tonumber(row[12] or ""),
       }
     end
   end
@@ -4227,9 +4176,6 @@ function vo.BuildOverview(input)
       mark_keep     = e.keep,
       user_select   = e.select == true,
       user_keep     = e.keep == true,
-      anchor        = e.anchor,
-      anchor_start  = e.anchor_start,
-      anchor_stop   = e.anchor_stop,
     }
   end
 
@@ -4290,9 +4236,6 @@ function vo.BuildOverview(input)
       -- knows which track the item sits on; this is the no-item answer.
       user_select   = (t and t.select) == true,
       user_keep     = (t and t.keep) == true,
-      anchor        = t and t.anchor,
-      anchor_start  = t and t.anchor_start,
-      anchor_stop   = t and t.anchor_stop,
     }
   end
 
@@ -4417,9 +4360,6 @@ function vo.BuildOverview(input)
         mark_keep     = t and t.keep,
         user_select   = (t and t.select) == true,
         user_keep     = (t and t.keep) == true,
-        anchor        = t and t.anchor,
-        anchor_start  = t and t.anchor_start,
-        anchor_stop   = t and t.anchor_stop,
       }
 
       local p = planned_by_row[line_row]
@@ -4468,9 +4408,6 @@ function vo.ProjectEntriesFromRows(rows)
       status        = row.user_status,
       name_override = row.name_override,
       notes         = row.notes,
-      anchor        = row.anchor,
-      anchor_start  = row.anchor_start,
-      anchor_stop   = row.anchor_stop,
     }
   end
   return entries
@@ -5746,6 +5683,54 @@ function vo.RepairTranscriptGaps(cfg, source_path, scratch, prefix, words, on_do
   run()
 end
 
+--------------------------------
+-- Coupled layer: take marker I/O
+--------------------------------
+
+-- Mint a marker id: 3 base36 chars, unique against `taken`. Entropy comes
+-- from os.clock and a stride, and uniqueness from the check, not the source.
+function vo.MintMarkerId(taken)
+  local chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+  local seed = math.floor((os.clock() * 1e6) % 46656)
+  for tries = 0, 46655 do
+    local v = (seed + tries * 7 + 13) % 46656
+    local id = chars:sub(math.floor(v / 1296) + 1, math.floor(v / 1296) + 1)
+             .. chars:sub(math.floor(v / 36) % 36 + 1, math.floor(v / 36) % 36 + 1)
+             .. chars:sub(v % 36 + 1, v % 36 + 1)
+    if not (taken and taken[id]) then
+      if taken then taken[id] = true end
+      return id
+    end
+  end
+  return nil
+end
+
+-- Write `markers` (source-time { start, stop, asset, id }) into the item's
+-- take, replacing the tool's previous lines but PRESERVING the user's own
+-- markers (no ` ~id` suffix): the tool never deletes what it did not write.
+-- UNVERIFIED outside REAPER — see SPEC.md §10.
+function vo.WriteTakeMarkers(item, markers)
+  local ok, chunk = r.GetItemStateChunk(item, "", false)
+  if not ok then return false, "cannot read item chunk" end
+  local keep = {}
+  for _, m in ipairs(vo.ParseTKMChunk(chunk)) do
+    local _, id = vo.ParseMarkerName(m.name)
+    if not id then keep[#keep + 1] = m end
+  end
+  for _, mk in ipairs(markers or {}) do
+    keep[#keep + 1] = {
+      pos    = mk.start,
+      name   = vo.FormatMarkerName(mk.asset, mk.id),
+      color  = 0,
+      length = (mk.stop or mk.start) - mk.start,
+    }
+  end
+  local patched, did = vo.PatchTKMChunk(chunk, keep)
+  if not did then return false, "item has multiple takes" end
+  r.SetItemStateChunk(item, patched, false)
+  return true
+end
+
 -- Transcribe a list of unique source files in sequence, reusing cached
 -- transcripts.
 --
@@ -6456,10 +6441,6 @@ vo.MIN_SPLIT_LENGTH = 0.001  -- seconds
 function vo.ApplyPlan(plan, source_track)
   local applied = 0
   local failures = {}
-  -- Which item each span became, keyed by the row key stamped before padding.
-  -- This is the ONLY moment the binding is known for certain -- afterwards it
-  -- can only be inferred by occupancy, which is what anchors exist to replace.
-  local anchors = {}
   local cfg = vo.LoadConfig()
   local fade_in  = vo.Opt(cfg, "cut_fade_in")
   local fade_out = vo.Opt(cfg, "cut_fade_out")
@@ -6501,15 +6482,6 @@ function vo.ApplyPlan(plan, source_track)
         r.GetSetMediaItemTakeInfo_String(take, "P_NAME",
           span.deliver or span.asset or span.name or "", true)
       end
-      -- Anchor the take to the item just made for it. Read after the splits, so
-      -- the GUID is the piece's own and not the item it was cut from.
-      if span.row_key then
-        local got, guid = r.GetSetMediaItemInfo_String(piece, "GUID", "", false)
-        if got and guid ~= "" then
-          anchors[span.row_key] =
-            { guid = guid, start = span.start, stop = span.stop }
-        end
-      end
       -- Protective fades, shorter in than out, sitting inside the head/tail
       -- room the boundary placement just guaranteed.
       if fade_in  and fade_in  > 0 then
@@ -6523,7 +6495,7 @@ function vo.ApplyPlan(plan, source_track)
   end
 
   r.UpdateArrange()
-  return applied, failures, anchors
+  return applied, failures
 end
 
 -- Build the inline, non-modal summary shown after a Cut (Task 8: popups ask,

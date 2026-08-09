@@ -33,36 +33,6 @@ end
 local EMPTY_META = { scripts = {}, appends = {}, pins = {}, view = {} }
 
 --------------------------------
-print("Project file — anchors:")
-
-test("an anchor round-trips through serialize and parse", function()
-  local text = vo.SerializeProjectFile({
-    { key = "a.wav|1400", asset = "grum_01",
-      anchor = "{ABC-123}", anchor_start = 1.4, anchor_stop = 3.25 },
-  }, EMPTY_META)
-  local e = assert(only_entry(text, "a.wav|1400"), "entry dropped")
-  assert(e.anchor == "{ABC-123}", "anchor: " .. tostring(e.anchor))
-  assert(math.abs(e.anchor_start - 1.4) < 1e-6, "start: " .. tostring(e.anchor_start))
-  assert(math.abs(e.anchor_stop - 3.25) < 1e-6, "stop: " .. tostring(e.anchor_stop))
-end)
-
-test("an anchor alone counts as work and is not dropped", function()
-  local text = vo.SerializeProjectFile({
-    { key = "a.wav|1400", anchor = "{ABC-123}", anchor_start = 1.0, anchor_stop = 2.0 },
-  }, EMPTY_META)
-  assert(only_entry(text, "a.wav|1400"), "anchor-only entry dropped as workless")
-end)
-
-test("a file written without the new columns parses with no anchor", function()
-  local text = vo.SerializeProjectFile({
-    { key = "a.wav|1400", asset = "grum_01", notes = "hi" },
-  }, EMPTY_META)
-  local e = assert(only_entry(text, "a.wav|1400"))
-  assert(e.anchor == nil, "anchor invented: " .. tostring(e.anchor))
-  assert(e.anchor_start == nil and e.anchor_stop == nil, "anchor times invented")
-end)
-
---------------------------------
 print("Project file — tri-state marks:")
 
 test("an explicit no round-trips as false, not nil", function()
@@ -114,40 +84,6 @@ test("an explicit keep=no is not overwritten by the legacy alt rule", function()
   }, "\n") .. "\n"
   local e = assert(only_entry(text, "a.wav|1400"))
   assert(e.keep == false, "explicit no was overwritten: " .. tostring(e.keep))
-end)
-
---------------------------------
-print("IsEditedAnchor:")
-
-local function anchor(from, to) return { anchor_start = from, anchor_stop = to } end
-local function range(from, to)  return { from = from, to = to } end
-
-test("an untouched item is not edited", function()
-  assert(not vo.IsEditedAnchor(anchor(1.0, 3.0), range(1.0, 3.0)))
-end)
-
-test("a head dragged past the tolerance is edited", function()
-  assert(vo.IsEditedAnchor(anchor(1.0, 3.0), range(1.2, 3.0)))
-end)
-
-test("a tail dragged past the tolerance is edited", function()
-  assert(vo.IsEditedAnchor(anchor(1.0, 3.0), range(1.0, 2.7)))
-end)
-
-test("a sub-tolerance nudge is not edited", function()
-  -- Rounding through "%.3f" and REAPER's own float noise must not read as a
-  -- hand-edit, or every take would report edited after one save cycle.
-  assert(not vo.IsEditedAnchor(anchor(1.0, 3.0), range(1.005, 2.996)))
-end)
-
-test("an anchor with no recorded edges is not edited", function()
-  -- Nothing to compare against is not evidence of an edit.
-  assert(not vo.IsEditedAnchor({}, range(1.0, 3.0)))
-end)
-
-test("a missing range is not edited", function()
-  -- The item is gone, which is a repair-pass finding, not an edit.
-  assert(not vo.IsEditedAnchor(anchor(1.0, 3.0), nil))
 end)
 
 --------------------------------
@@ -236,18 +172,6 @@ end
 -- buckets entries by source path, and resolve_tracker only ever looks in those
 -- buckets -- an entry without them can never attach to a span row.
 -- vo.ProjectEntriesFromRows always writes them, so real files always have them.
-test("a take row carries its anchor out of the entry", function()
-  local rows = one_take_overview({
-    { key = "sess.wav|1000", asset = "grum_01",
-      source = "sess.wav", source_start = 1.0,
-      anchor = "{G1}", anchor_start = 0.9, anchor_stop = 2.1 },
-  })
-  local row = assert(row_for_key(rows, "sess.wav|1000"), "row missing")
-  assert(row.anchor == "{G1}", "anchor: " .. tostring(row.anchor))
-  assert(math.abs(row.anchor_start - 0.9) < 1e-6, "anchor_start lost")
-  assert(math.abs(row.anchor_stop - 2.1) < 1e-6, "anchor_stop lost")
-end)
-
 test("an explicit no survives as mark_select false, not nil", function()
   local rows = one_take_overview({
     { key = "sess.wav|1000", asset = "grum_01",
@@ -270,22 +194,11 @@ test("ProjectEntriesFromRows writes the stored mark, never the effective one", f
   -- freeze an inference into an explicit decision nobody made.
   local entries = vo.ProjectEntriesFromRows({
     { key = "sess.wav|1000", mark_select = nil, user_select = true,
-      mark_keep = false, user_keep = false,
-      anchor = "{G1}", anchor_start = 0.9, anchor_stop = 2.1 },
+      mark_keep = false, user_keep = false },
   })
   assert(#entries == 1, "entry count: " .. #entries)
   assert(entries[1].select == nil, "inferred tick was persisted: " .. tostring(entries[1].select))
   assert(entries[1].keep == false, "explicit no lost: " .. tostring(entries[1].keep))
-  assert(entries[1].anchor == "{G1}", "anchor lost")
-  assert(math.abs(entries[1].anchor_start - 0.9) < 1e-6, "anchor_start lost")
-end)
-
-test("an anchor survives a full row round trip", function()
-  local text = vo.SerializeProjectFile(vo.ProjectEntriesFromRows({
-    { key = "sess.wav|1000", anchor = "{G1}", anchor_start = 0.9, anchor_stop = 2.1 },
-  }), EMPTY_META)
-  local e = assert(only_entry(text, "sess.wav|1000"), "entry dropped")
-  assert(e.anchor == "{G1}", "anchor lost in round trip")
 end)
 
 --------------------------------
@@ -324,23 +237,7 @@ test("a row with no item is not a disagreement", function()
   assert(#plan.disagree == 0, "a row with no item was called a disagreement")
 end)
 
-test("a missing anchor is reported", function()
-  local plan = vo.PlanReconcile({
-    { key = "a|1", anchor = "{GONE}", anchor_missing = true },
-  }, {})
-  assert(#plan.missing_anchor == 1, "missing: " .. #plan.missing_anchor)
-end)
-
-test("two rows anchored to one item are reported together", function()
-  local plan = vo.PlanReconcile({
-    { key = "a|1", anchor = "{A}", item_guid = "{A}" },
-    { key = "a|2", anchor = "{A}", item_guid = "{A}" },
-  }, {})
-  assert(#plan.doubled == 1, "doubled groups: " .. #plan.doubled)
-  assert(#plan.doubled[1].rows == 2, "rows in group: " .. #plan.doubled[1].rows)
-end)
-
-test("marks with no item and no anchor are reported as damage", function()
+test("marks with no item are reported as damage", function()
   local plan = vo.PlanReconcile({
     { key = "a|1", mark_select = true },
   }, {})
