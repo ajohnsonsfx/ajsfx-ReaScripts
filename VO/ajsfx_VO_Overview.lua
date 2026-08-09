@@ -702,6 +702,37 @@ local function Rebuild()
     alt_pattern  = cfg.alt_append_pattern,
   })
 
+  -- Anchored rows resolve by GUID, before any inference runs.
+  --
+  -- This is the whole point of anchors: vo.ResolveSourceSpan picks whichever
+  -- item is most occupied by the take's span, which is a good guess but still a
+  -- guess -- and after a hand-edit it can answer with a neighbour, a leftover,
+  -- or nothing. A GUID cannot be wrong.
+  local by_guid = {}
+  for _, info in ipairs(state.items or {}) do
+    if info.item then
+      local got, guid = r.GetSetMediaItemInfo_String(info.item, "GUID", "", false)
+      if got and guid ~= "" then by_guid[guid] = info end
+    end
+  end
+  for _, row in ipairs(state.overview) do
+    if row.anchor then
+      local info = by_guid[row.anchor]
+      if info then
+        row.item      = info.item
+        row.item_info = info
+        -- A take whose item's edges no longer match what Cut wrote has been
+        -- hand-edited. Cut must not overwrite it, and the repair pass reports it.
+        row.edited = vo.IsEditedAnchor(row, vo.SourceCoverageRanges({ info })[1])
+      else
+        -- The anchor names an item this project no longer has: deleted,
+        -- re-recorded, or split so the GUID moved. Left unresolved for the
+        -- fallbacks below and flagged for the repair pass.
+        row.anchor_missing = true
+      end
+    end
+  end
+
   -- Name-based fallback for the rows: an item carrying a line's delivered
   -- name IS that line's take, even when the transcript span no longer finds
   -- it -- hand-trimmed edges and renamed comps break the span lookup but not
@@ -781,6 +812,32 @@ local function Rebuild()
         table.insert(state.overview, at + 1, row)
       end
     end
+  end
+
+  -- Where each row's item actually sits, and what that says about its marks.
+  --
+  -- Runs last, after every path that can give a row an item (anchor, span,
+  -- name adoption, extra rows), so no row is judged on a track it has not been
+  -- resolved onto yet.
+  local track_name_of = {}
+  for _, row in ipairs(state.overview) do
+    if row.item then
+      local gok, gguid = r.GetSetMediaItemInfo_String(row.item, "GUID", "", false)
+      if gok and gguid ~= "" then row.item_guid = gguid end
+      local track = r.GetMediaItem_Track(row.item)
+      if track then
+        local cached = track_name_of[track]
+        if cached == nil then
+          local _, tname = r.GetSetMediaTrackInfo_String(track, "P_NAME", "", false)
+          cached = tname or ""
+          track_name_of[track] = cached
+        end
+        row.track_name = cached
+      end
+    end
+    local marks = vo.EffectiveMarks(
+      { select = row.mark_select, keep = row.mark_keep }, row.track_name, cfg)
+    row.user_select, row.user_keep = marks.select, marks.keep
   end
 
   -- Out-of-band rename detection: the name IS the assignment, and anything --
