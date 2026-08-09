@@ -210,7 +210,7 @@ test("a clean sheet produces no findings", function()
     { key = "a|2", user_select = false, track_name = "Review", item_guid = "{B}" },
   }, {})
   assert(#plan.disagree == 0, "disagree: " .. #plan.disagree)
-  assert(#plan.missing_anchor == 0 and #plan.doubled == 0 and #plan.orphan_marks == 0)
+  assert(#plan.unbacked_markers == 0 and #plan.orphan_marks == 0)
 end)
 
 test("ticked Sel with the item off the Selects track is a disagreement", function()
@@ -242,6 +242,23 @@ test("marks with no item are reported as damage", function()
     { key = "a|1", mark_select = true },
   }, {})
   assert(#plan.orphan_marks == 1, "orphan_marks: " .. #plan.orphan_marks)
+end)
+
+test("a marker row with no item under it is reported as unbacked", function()
+  -- The marker survived (it is in some chunk) but nothing in the project
+  -- plays that audio any more -- the item was deleted or trimmed away.
+  local plan = vo.PlanReconcile({
+    { key = "tkm|k1", marker_id = "k1" },
+  }, {})
+  assert(#plan.unbacked_markers == 1, "unbacked: " .. #plan.unbacked_markers)
+  assert(#plan.orphan_marks == 0, "double-reported as orphan marks too")
+end)
+
+test("a marker row WITH an item is not unbacked", function()
+  local plan = vo.PlanReconcile({
+    { key = "tkm|k1", marker_id = "k1", item_guid = "{A}", track_name = "Review" },
+  }, {})
+  assert(#plan.unbacked_markers == 0, "a backed marker was reported")
 end)
 
 test("an unmarked row with no item is not damage", function()

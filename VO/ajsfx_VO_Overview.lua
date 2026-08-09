@@ -3875,8 +3875,7 @@ local REPAIR_LIST_CAP = 12
 local function DrawRepairPanel()
   local cfg  = vo.LoadConfig()
   local plan = vo.PlanReconcile(state.overview, cfg)
-  local total = #plan.disagree + #plan.missing_anchor
-              + #plan.doubled + #plan.orphan_marks
+  local total = #plan.disagree + #plan.unbacked_markers + #plan.orphan_marks
 
   if total == 0 then
     im.TextColored(ctx, 0x66BB66FF,
@@ -3944,8 +3943,33 @@ local function DrawRepairPanel()
     im.Separator(ctx)
   end
 
-  -- Categories 2 and 3 (dead anchors, doubled items) were retired with the
-  -- GUID-anchor mechanism; M7 rewires this panel to marker findings.
+  -- 2. Markers whose audio is gone.
+  if #plan.unbacked_markers > 0 then
+    im.TextColored(ctx, 0xDD6666FF, string.format(
+      "%d take marker(s) with no audio under them:", #plan.unbacked_markers))
+    for i, f in ipairs(plan.unbacked_markers) do
+      if i > REPAIR_LIST_CAP then
+        im.TextDisabled(ctx, string.format("   ...and %d more",
+          #plan.unbacked_markers - REPAIR_LIST_CAP))
+        break
+      end
+      im.Bullet(ctx)
+      im.SameLine(ctx)
+      im.TextDisabled(ctx, f.row.deliver or f.row.asset or "(unnamed)")
+      im.SameLine(ctx)
+      if im.SmallButton(ctx, "Relink##unb" .. i) then
+        local captured = f.row
+        pending_action = function() AddTakeMarkerFromSelection(captured) end
+      end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Write this take's marker onto the item selected in REAPER.")
+      end
+    end
+    im.TextDisabled(ctx,
+      "The item this marker lived in was deleted or trimmed past it. Relink\n" ..
+      "to the right item, or Clean stray take markers to drop the leftovers.")
+    im.Separator(ctx)
+  end
 
   -- 4. Marks with nothing to attach to.
   if #plan.orphan_marks > 0 then
@@ -3968,9 +3992,9 @@ local function DrawRepairPanel()
       end
     end
     im.TextDisabled(ctx,
-      "These are usually a re-match that moved a boundary further than the\n" ..
-      "half-second rematch window. Relink one to the item it belongs to, or\n" ..
-      "clear its marks on the row itself.")
+      "These are usually a deleted take marker, or marks from before markers\n" ..
+      "existed. Relink one to the item it belongs to, or clear its marks on\n" ..
+      "the row itself.")
     im.Separator(ctx)
   end
 
@@ -3983,6 +4007,23 @@ local function DrawRepairPanel()
       #state.check.extra))
   end
 
+  if im.Button(ctx, "Mark takes##repair") then
+    pending_action = MarkTakesFromSession
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Write a take marker for every take that has none, spanning its\n" ..
+                       "item's CURRENT edges. The migration for sessions cut before\n" ..
+                       "markers existed.")
+  end
+  im.SameLine(ctx)
+  if im.Button(ctx, "Clean stray take markers") then
+    pending_action = CleanStrayTakeMarkers
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Delete tool markers whose range does not intersect the item\n" ..
+                       "holding them -- split residue. Your own markers are never touched.")
+  end
+  im.SameLine(ctx)
   if im.Button(ctx, "Close##repair") then state.panel = nil end
   im.Separator(ctx)
 end

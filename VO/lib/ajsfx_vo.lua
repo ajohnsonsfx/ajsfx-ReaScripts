@@ -1417,15 +1417,20 @@ end
 -- different fix and the panel shows only the non-empty ones:
 --
 --   disagree       -- the sheet says one thing, the item's track says another
---   missing_anchor -- placeholder, rewired to markers in the repair rework
---                     (Task M7); currently always empty
---   doubled        -- placeholder, same
---   orphan_marks   -- marks on a row with no audio left to attach to: usually
---                     a deleted marker, or damage from before markers existed
+--   unbacked_markers -- a marker row with no item under it: the marker line
+--                       survives in some chunk, but nothing in the project
+--                       plays that audio any more
+--   orphan_marks     -- marks on a row with no audio left to attach to:
+--                       usually a deleted marker, or damage from before
+--                       markers existed
 function vo.PlanReconcile(rows, cfg)
-  local plan = { disagree = {}, missing_anchor = {}, doubled = {}, orphan_marks = {} }
+  local plan = { disagree = {}, unbacked_markers = {}, orphan_marks = {} }
 
   for _, row in ipairs(rows or {}) do
+    if row.marker_id and not row.item_guid and not row.item then
+      plan.unbacked_markers[#plan.unbacked_markers + 1] =
+        { row = row, detail = "marker with no audio under it" }
+    end
 
     -- Only rows that HAVE an item can disagree with where it sits.
     if row.item_guid then
@@ -1441,10 +1446,12 @@ function vo.PlanReconcile(rows, cfg)
           and "on the Alts track but not ticked Keep"
           or  "ticked Keep but the item is not on the Alts track" }
       end
-    elseif row.mark_select ~= nil or row.mark_keep ~= nil
-           or (row.notes and row.notes ~= "") or row.user_status then
+    elseif not row.marker_id
+           and (row.mark_select ~= nil or row.mark_keep ~= nil
+                or (row.notes and row.notes ~= "") or row.user_status) then
       -- Marks with nothing to attach to. An UNMARKED row with no item is just
-      -- a line nobody has recorded yet, which is not a finding.
+      -- a line nobody has recorded yet, which is not a finding -- and a
+      -- marker row with no item is the unbacked_markers case above, not this.
       plan.orphan_marks[#plan.orphan_marks + 1] =
         { row = row, detail = "marks with no item" }
     end
