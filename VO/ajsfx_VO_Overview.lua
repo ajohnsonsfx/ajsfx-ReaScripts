@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.15beta2
--- @changelog PRE-RELEASE: Sources now detects and repairs transcripts with a swallowed whisper window. Confirmed failure mode: a slate ("Actor reading Character.") followed by a pause at the head of a recording makes whisper emit a gap token that swallows the rest of its first 30-second window -- speech from ~1.4s to the window boundary never decoded, at normal levels, with nothing reported anywhere. After every transcription (fresh or cached), the transcript is scanned for holes of 5 seconds or more; each hole is probed against the recording's own measured noise floor, and a hole that holds speech-level audio -- a swallowed read, not a long silence -- is re-run through whisper on just that span, starting after the word that caused the swallow, and the recovered words are merged into the sidecar before it is written. The end-of-run summary names each repaired file and how many words came back; a repair that fails leaves the transcript as the first pass made it and says so. Everything else is unchanged from 0.15beta1: the card sheet, occupancy-based take resolution, the percentile noise floor, the adopted-row and Sel-routing fixes, and the remote rows command. Also: a take selected in the ARRANGE view is now outlined in the sheet at both levels -- the take row itself and the card that holds it -- and a folded card scrolls into view when its take is selected from the timeline; before, the selection landed on a row a folded card never draws, so clicking an item in the timeline showed nothing in the Overview at all.
+-- @changelog PRE-RELEASE: Sources now detects and repairs transcripts with a swallowed whisper window. Confirmed failure mode: a slate ("Actor reading Character.") followed by a pause at the head of a recording makes whisper emit a gap token that swallows the rest of its first 30-second window -- speech from ~1.4s to the window boundary never decoded, at normal levels, with nothing reported anywhere. After every transcription (fresh or cached), the transcript is scanned for holes of 5 seconds or more; each hole is probed against the recording's own measured noise floor, and a hole that holds speech-level audio -- a swallowed read, not a long silence -- is re-run through whisper on just that span, starting after the word that caused the swallow, and the recovered words are merged into the sidecar before it is written. The end-of-run summary names each repaired file and how many words came back; a repair that fails leaves the transcript as the first pass made it and says so. Everything else is unchanged from 0.15beta1: the card sheet, occupancy-based take resolution, the percentile noise floor, the adopted-row and Sel-routing fixes, and the remote rows command. Also: a take selected in the ARRANGE view is now outlined in the sheet at both levels -- the take row itself and the card that holds it -- and a folded card scrolls into view when its take is selected from the timeline; before, the selection landed on a row a folded card never draws, so clicking an item in the timeline showed nothing in the Overview at all. The timeline follow is fixed at the root: it matched only rows the sheet was showing, so clicking an item whose line was FOLDED selected nothing at all -- it now matches every filtered take, unfolds the line that holds it, scrolls there, and the outline is drawn after the card content instead of before it, where the band background was painting over its sides. The take list header says Item instead of Where. + Add Take now always shows: with items selected in REAPER it names them for the line as before, with nothing selected it adds a PLANNED take -- an empty row stored in the project file, with notes and marks of its own, whose Item column carries a + that links the REAPER selection to it later (linking names the item and retires the planned row in one stroke). A planned take counts as a take but never makes an unrecorded line read as recorded, and one orphaned by a script edit surfaces in the Not-on-the-script card rather than vanishing. The script name and line note moved out of the fold-only drawer onto the band itself, visible without unfolding; the drawer is gone.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -80,6 +80,9 @@ local STATUS_STYLE = {
   review   = { label = "Review",   colour = 0xDDAA33FF },
   missing  = { label = "Missing",  colour = 0xDD6666FF },
   orphan   = { label = "Orphan",   colour = 0x9999AAFF },
+  -- A take added by hand before its audio exists (see vo.PlannedKey): a place
+  -- to hang notes and marks until an item is linked to it.
+  planned  = { label = "Planned",  colour = 0x7FA0C0FF },
 }
 
 -- Defined here rather than beside the other UI helpers because the column
@@ -1530,11 +1533,38 @@ local function FollowTimelineSelection()
   -- the selected items -- and deselecting everything in the arrange view
   -- deselects here too. Rows resolve their items on rebuild; a pointer gone
   -- stale simply misses, which under-selects rather than lighting a wrong row.
+  --
+  -- Matched against FILTERED, not visible: the clicked take may sit inside a
+  -- folded card, whose rows are exactly the ones missing from state.visible.
+  -- Matching only what was on screen meant a timeline click on a folded line
+  -- selected nothing, scrolled nowhere and outlined nothing -- the one case
+  -- this follow exists for.
   local found, first = {}, nil
-  for _, row in ipairs(state.visible or {}) do
+  for _, row in ipairs(state.filtered or {}) do
     if row.item and selected[row.item] then
       found[row.uid] = true
       first = first or row.uid
+    end
+  end
+
+  -- Unfold the lines holding the matches, so the row the user just asked
+  -- about is actually on screen to be outlined and scrolled to. Only unfold,
+  -- never fold: the click is a request to SEE this take, not a judgement on
+  -- the rest of the sheet.
+  if next(found) then
+    for _, node in ipairs(state.nodes or {}) do
+      if node.kind == "line" then
+        for _, t in ipairs(node.takes) do
+          if found[t.uid] then
+            local k = tostring(node._key)
+            if not state.expanded[k] then
+              state.expanded[k] = true
+              state.dirty = true
+            end
+            break
+          end
+        end
+      end
     end
   end
 
@@ -1902,6 +1932,24 @@ local function AssignSelectedItems(row, base_name)
     "Named %d item%s for %s.%s", named, named == 1 and "" or "s", base_name,
     named > 1 and " The first is the line; the rest are its alts." or ""), "ok"
   Reload()
+end
+
+-- Link a real item to a PLANNED take: the rename IS the link (the name is the
+-- assignment), and the planned row has served its purpose -- it is removed in
+-- the same stroke, and the named item's own row takes its place on the next
+-- rebuild. Notes on the planned row go with it; they described the intention,
+-- and the recorded take's row has a Note field of its own.
+local function LinkPlannedTake(row)
+  if r.CountSelectedMediaItems(0) == 0 then
+    state.message, state.message_kind =
+      "Select the item in REAPER first, then press + again.", "warn"
+    return
+  end
+  for i, e in ipairs(state.entries) do
+    if e.key == row.key then table.remove(state.entries, i) break end
+  end
+  state.dirty = true
+  AssignSelectedItems(row, row.deliver or row.asset)
 end
 
 -- The rows a tool acts on: every row currently visible, unless the user has
@@ -3855,10 +3903,33 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
   im.PopTextWrapPos(ctx)
   wrap_depth = wrap_depth - 1
 
+  -- The link affordance of a PLANNED row, shared between the two spots it can
+  -- draw in (the Item zone normally; beside the name when the window is too
+  -- narrow to show that zone at all).
+  local function DrawLinkButton()
+    if im.SmallButton(ctx, "+##link") then
+      local captured = row
+      pending_action = function() LinkPlannedTake(captured) end
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Link the item selected in REAPER to this take:\n" ..
+                         "names it for this line and retires the planned row.")
+    end
+  end
+
   -- Name: the item's own name, editable.
   im.SetCursorScreenPos(ctx, rx + z.name, ry)
   local shown = row.take_name or row.name_override or row.deliver or row.asset or ""
-  if not row.item then
+  if row.planned and not row.item then
+    im.TextDisabled(ctx, "(planned)")
+    TooltipEvenWhenDisabled(
+      "An empty take added by hand -- no audio is linked yet.\n" ..
+      "Select the item in REAPER, then press its + button.")
+    if not z.show_where then
+      im.SameLine(ctx)
+      DrawLinkButton()
+    end
+  elseif not row.item then
     im.TextDisabled(ctx, "(no item)")
     TooltipEvenWhenDisabled(
       "This take matched the transcript, but no item in this project plays\n" ..
@@ -3883,11 +3954,15 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
     end
   end
 
-  -- Where: which recording, and when. Dropped to the name tooltip when the
-  -- window is too narrow for it to be legible.
+  -- Item: which recording, and when. Dropped to the name tooltip when the
+  -- window is too narrow for it to be legible. On a planned row the zone
+  -- holds the link button instead: there is no recording to name yet.
   local place = row.source_path
     and (vo.Basename(row.source_path) .. " @ " .. FormatTime(row.proj_time)) or ""
-  if z.show_where then
+  if z.show_where and row.planned then
+    im.SetCursorScreenPos(ctx, rx + z.where, ry)
+    DrawLinkButton()
+  elseif z.show_where then
     im.SetCursorScreenPos(ctx, rx + z.where, ry)
     im.PushClipRect(ctx, rx + z.where, ry, rx + z.where + z.where_w - 4, ry + 200, true)
     im.TextDisabled(ctx, place)
@@ -4060,30 +4135,34 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   im.PopTextWrapPos(ctx)
   wrap_depth = wrap_depth - 1
 
-  im.EndGroup(ctx)
-  local _, gh = im.GetItemRectSize(ctx)
-  rep._band_h = math.max(gh, line_h * 3)
-end
-
--- The drawer: fold-only details between the band and the takes. Noisy
--- properties live here so the band can stay a title.
-local function DrawCardDrawer(node, z, rx)
-  local rep = node.rep
-  local _, y = im.GetCursorScreenPos(ctx)
-  im.SetCursorScreenPos(ctx, rx + 22, y + 2)
+  -- Row 4: the quiet per-line properties, promoted out of the old fold-only
+  -- drawer -- the card has the room, and a note you can only see by unfolding
+  -- is a note you forget you wrote. Drawn in flow (row 3's wrap height is not
+  -- knowable up front), inside the band group so the band's own measure and
+  -- fold-click surface grow to hold it.
+  local _, y4 = im.GetCursorScreenPos(ctx)
+  im.SetCursorScreenPos(ctx, rx + 22, y4 + 2)
   im.TextDisabled(ctx, "script: " .. ((rep.script and rep.script ~= "") and rep.script or "—"))
   im.SameLine(ctx)
   im.TextDisabled(ctx, "   note:")
   im.SameLine(ctx)
   im.SetNextItemWidth(ctx, -CARD_PAD)
-  local changed, text = im.InputText(ctx, "##linenote", LineNote(rep))
-  if changed then
-    local captured = text
+  local nchanged, ntext = im.InputText(ctx, "##linenote", LineNote(rep))
+  if nchanged then
+    local captured = ntext
     local target = { key = LineNoteKeyOf(rep), source_path = nil,
                      source_start = nil, asset = rep.asset }
     pending_action = function() SetNotes(target, captured) end
   end
+
+  im.EndGroup(ctx)
+  local _, gh = im.GetItemRectSize(ctx)
+  rep._band_h = math.max(gh, line_h * 3)
 end
+
+-- (The old fold-only drawer is gone: its whole content -- the script name and
+-- the line note -- now lives on the band's fourth row, visible without
+-- unfolding. See DrawCardBand.)
 
 -- Column labels for the take list, drawn once per open card, directly above
 -- the inputs they name.
@@ -4100,7 +4179,7 @@ local function DrawTakeHeaderRow(z, rx)
   im.TextDisabled(ctx, "Item name")
   if z.show_where then
     im.SetCursorScreenPos(ctx, rx + z.where, y)
-    im.TextDisabled(ctx, "Where")
+    im.TextDisabled(ctx, "Item")
   end
   if z.show_notes then
     im.SetCursorScreenPos(ctx, rx + z.notes, y)
@@ -4109,26 +4188,46 @@ local function DrawTakeHeaderRow(z, rx)
   PopCellFont(sf)
 end
 
--- "I found a take for this line": names the item(s) selected in REAPER for
--- the line, which IS adding a take here -- the name is the assignment.
+-- "This line has another take": with items selected in REAPER, names them for
+-- the line -- the name is the assignment. With nothing selected, adds a
+-- PLANNED row (vo.PlannedKey): an empty take to hang notes and marks on,
+-- linked to a real item later via the + in its Item column.
+local function AddPlannedTake(rep)
+  local id = (r.genGuid and r.genGuid("")) or tostring(r.time_precise())
+  state.entries[#state.entries + 1] = {
+    key = vo.PlannedKey(rep.asset, id), asset = rep.asset,
+  }
+  state.dirty = true
+  Rebuild()
+end
+
 local function DrawAddTakeRow(rep, rx)
   local _, y = im.GetCursorScreenPos(ctx)
   im.SetCursorScreenPos(ctx, rx + 22, y + 2)
+  if not (rep.asset and rep.asset ~= "") then
+    im.TextDisabled(ctx, "+ Add Take")
+    TooltipEvenWhenDisabled("This line has no filename to deliver under,\n" ..
+                            "so a take cannot be named for it.")
+    return
+  end
+
   local n_sel = r.CountSelectedMediaItems(0)
-  if n_sel > 0 and rep.asset and rep.asset ~= "" then
-    local label = (n_sel > 1)
-      and string.format("+ Add %d takes from REAPER selection", n_sel)
-      or  "+ Add take from REAPER selection"
-    if im.SmallButton(ctx, label) then
+  local label = (n_sel > 1) and string.format("+ Add %d Takes", n_sel) or "+ Add Take"
+  if im.SmallButton(ctx, label) then
+    if n_sel > 0 then
       local target, name = rep, (rep.deliver or rep.asset)
       pending_action = function() AssignSelectedItems(target, name) end
+    else
+      local target = rep
+      pending_action = function() AddPlannedTake(target) end
     end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, "Names the selected item(s) for this line. Several at\n" ..
-                         "once are numbered with the alt pattern.")
-    end
-  else
-    im.TextDisabled(ctx, "+ Add take: select the item in REAPER first")
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, n_sel > 0
+      and ("Names the selected item(s) for this line. Several at\n" ..
+           "once are numbered with the alt pattern.")
+      or  ("Adds an empty planned take -- nothing is selected in REAPER.\n" ..
+           "Link an item to it later with the + in its Item column."))
   end
 end
 
@@ -4143,9 +4242,7 @@ local function DrawLineCard(node, z, flat_index, avail_w)
   local card_h = rep._card_full_h or (im.GetFrameHeight(ctx) + CARD_PAD * 2)
 
   im.DrawList_AddRectFilled(dl, cx, cy, cx + avail_w, cy + card_h, CARD_BG, CARD_ROUND)
-  local sel_take = SelectedTakeOf(node)
-  im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + card_h,
-    sel_take and SEL_OUTLINE or CARD_OUTLINE, CARD_ROUND, 0, sel_take and 2.0 or 1.0)
+  im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + card_h, CARD_OUTLINE, CARD_ROUND)
 
   im.SetCursorScreenPos(ctx, cx + CARD_PAD, cy + CARD_PAD)
   im.BeginGroup(ctx)
@@ -4166,7 +4263,6 @@ local function DrawLineCard(node, z, flat_index, avail_w)
   end
 
   if open then
-    DrawCardDrawer(node, z, cx + CARD_PAD)
     if #node.takes > 0 then
       DrawTakeHeaderRow(z, cx + CARD_PAD)
       for ti, t in ipairs(node.takes) do
@@ -4184,6 +4280,14 @@ local function DrawLineCard(node, z, flat_index, avail_w)
   local _, gh = im.GetItemRectSize(ctx)
   rep._card_full_h = gh + CARD_PAD * 2
 
+  -- The parent half of the selection outline, drawn LAST: the band's own
+  -- background spans the card's full width, so an outline drawn with the
+  -- chrome had its sides painted over and read as no outline at all.
+  if SelectedTakeOf(node) then
+    im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + rep._card_full_h,
+      SEL_OUTLINE, CARD_ROUND, 0, 2.0)
+  end
+
   -- The card's footprint is a real ITEM, not a bare cursor move: ImGui only
   -- grows the scrolling child from submitted items, and EndChild raises if
   -- the last thing before it was a SetCursorScreenPos.
@@ -4199,9 +4303,7 @@ local function DrawOrphanCard(node, z, flat_index, avail_w)
   local card_h = state._orphan_card_h or (im.GetFrameHeight(ctx) + CARD_PAD * 2)
 
   im.DrawList_AddRectFilled(dl, cx, cy, cx + avail_w, cy + card_h, 0x2C2228FF, CARD_ROUND)
-  local sel_take = SelectedTakeOf(node)
-  im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + card_h,
-    sel_take and SEL_OUTLINE or 0x55404AFF, CARD_ROUND, 0, sel_take and 2.0 or 1.0)
+  im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + card_h, 0x55404AFF, CARD_ROUND)
 
   im.SetCursorScreenPos(ctx, cx + CARD_PAD, cy + CARD_PAD)
   im.BeginGroup(ctx)
@@ -4220,6 +4322,12 @@ local function DrawOrphanCard(node, z, flat_index, avail_w)
   im.EndGroup(ctx)
   local _, gh = im.GetItemRectSize(ctx)
   state._orphan_card_h = gh + CARD_PAD * 2
+
+  -- Same late accent outline as DrawLineCard, for the same reason.
+  if SelectedTakeOf(node) then
+    im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + state._orphan_card_h,
+      SEL_OUTLINE, CARD_ROUND, 0, 2.0)
+  end
 
   im.SetCursorScreenPos(ctx, cx, cy)
   im.Dummy(ctx, 1, state._orphan_card_h + CARD_MARGIN)

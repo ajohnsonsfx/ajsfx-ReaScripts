@@ -141,27 +141,34 @@ an unfolded parent and its neighbour ambiguous. A card's own chrome answers
 "where does this line end", and take rows sit on their own colour inside it,
 so the two levels can never be mistaken for one another.
 
-Each card is a **title band**, always visible, of three stacked rows:
+Each card is a **title band**, always visible, of four stacked rows:
 
 | | |
 |---|---|
 | **who** | fold arrow · script position · status dot · speaker · badges, right-aligned: `✓N` delivered, `!` when the line has takes but no Sel |
 | **file** | the delivered name (CSV filename + Append), full width, red on a clash — the line's identity, so it reads before the words |
 | **said** | the line text, wrapped to the card |
+| **props** | source script name · the line note, editable in place — promoted from the old fold-only drawer, because a note you can only see by unfolding is a note you forget you wrote |
 
 Clicking **anywhere on the band** folds or unfolds; the arrow is an indicator,
-not the only target. Unfolding adds, in order: a **drawer** carrying the noisy
-per-line properties (source script, line note), a header row naming the take
+not the only target. Unfolding adds, in order: a header row naming the take
 fields, the **take rows** (lettered `A, B, C … Z, AA, AB`, `vo.TakeLetter`),
-and a **`+ Add take`** button that names the item(s) selected in REAPER for
+and a **`+ Add Take`** button. With items selected in REAPER it names them for
 this line — the only honest "add" under the name-is-the-assignment model
-(§4a.1), and the answer to "I found a take that belongs here".
+(§4a.1), and the answer to "I found a take that belongs here". With nothing
+selected it adds a **planned take**: an empty row (`vo.PlannedKey`, stored in
+the project file — the one row kind derived from nothing else) to hang notes
+and marks on, whose Item zone carries a `+` that later links the REAPER
+selection to it. Linking names the item and retires the planned row in the
+same stroke. A planned take counts in the band's take count but never makes an
+unrecorded line read as recorded, and one whose asset no longer names any
+script line surfaces in the orphans card rather than vanishing.
 
 A take row answers, at shared x-offsets so it stays correlated with its
 neighbours: letter · status dot · `Sel` `Keep` `Lock` checkboxes · transcript ·
-the item's own editable name · recording @ time · take note. The offsets are
-the alignment mechanism a table's columns used to provide; below ~720px the
-Where zone drops to a tooltip and below ~540px the Note zone follows, because
+the item's own editable name · item (recording @ time) · take note. The offsets
+are the alignment mechanism a table's columns used to provide; below ~720px the
+Item zone drops to a tooltip and below ~540px the Note zone follows, because
 at those widths they were unreadable slivers and the text is why the window is
 open.
 

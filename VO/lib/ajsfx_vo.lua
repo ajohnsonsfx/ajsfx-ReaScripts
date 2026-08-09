@@ -3439,6 +3439,25 @@ function vo.OverviewKey(source_path, source_start, asset)
        .. string.format("%d", math.floor((source_start or 0) * 1000 + 0.5))
 end
 
+-- A PLANNED take: a row the user added before any audio exists for it, to hang
+-- notes and marks on until an item is linked. Every other row is DERIVED --
+-- from a span or from an item's name -- so a planned row can only live in the
+-- project file, and the key prefix is what says so: it is why the entry
+-- survives serialization with no other work on it, why index_tracker keeps it
+-- out of the line-marks bucket, and how BuildOverview knows to grow a row from
+-- it. `id` only needs to be unique within the project file (the caller uses a
+-- GUID).
+vo.PLANNED_PREFIX = "planned|"
+
+function vo.PlannedKey(asset, id)
+  return vo.PLANNED_PREFIX .. tostring(asset or "") .. "|" .. tostring(id or "")
+end
+
+function vo.IsPlannedKey(key)
+  return type(key) == "string"
+     and key:sub(1, #vo.PLANNED_PREFIX) == vo.PLANNED_PREFIX
+end
+
 -- `meta` carries the script side of a project's VO state:
 -- { scripts = { { path, mapping, enabled }, ... }, appends = { ... }, pins = { ... } }.
 -- It lives here rather than in ProjExtState so the project file is the WHOLE of
@@ -3533,6 +3552,9 @@ function vo.SerializeProjectFile(entries, meta)
                   or (e.status and e.status ~= "")
                   or (e.name_override and e.name_override ~= "")
                   or (e.notes and e.notes ~= "")
+                  -- A planned take's existence IS the work: it derives from
+                  -- nothing else, so dropping a bare one would delete the row.
+                  or vo.IsPlannedKey(e.key)
     if has_work then
       out[#out + 1] = vo.FormatCSVRow({
         e.key or "",
@@ -3673,7 +3695,10 @@ local function index_tracker(entries)
       local b = basename(e.source)
       by_base[b] = by_base[b] or {}
       table.insert(by_base[b], e)
-    elseif e.asset then
+    elseif e.asset and not vo.IsPlannedKey(e.key) then
+      -- Planned entries share the asset but are TAKES, not the line's own
+      -- marks; letting one in here would shadow the "|<asset>" entry that
+      -- carries a missing line's notes.
       by_asset[e.asset] = e
     end
   end
@@ -3819,6 +3844,52 @@ function vo.BuildOverview(input)
     return first_row_using[s.asset]
   end
 
+  -- Planned entries grow rows here, beside their line, ordered by key so the
+  -- numbering cannot shuffle between rebuilds. One whose asset no longer names
+  -- any line surfaces as an orphan rather than vanishing: it is user work, and
+  -- silently dropping it on a script edit is exactly the kind of loss the
+  -- orphan section exists to prevent.
+  local planned_by_row, planned_orphans = {}, {}
+  for _, e in ipairs(entries or {}) do
+    if vo.IsPlannedKey(e.key) then
+      local li = e.asset and first_row_using[e.asset]
+      if li then
+        planned_by_row[li] = planned_by_row[li] or {}
+        table.insert(planned_by_row[li], e)
+      else
+        planned_orphans[#planned_orphans + 1] = e
+      end
+    end
+  end
+  for _, list in pairs(planned_by_row) do
+    table.sort(list, function(a, b) return tostring(a.key) < tostring(b.key) end)
+  end
+
+  local function planned_row(e, line, take_index, take_count)
+    return {
+      key           = e.key,
+      status        = line and "planned" or "orphan",
+      planned       = true,
+      asset         = e.asset,
+      deliver       = (line and line.deliver) or e.asset,
+      script        = line and line.script or nil,
+      append_key    = line and line.append_key or nil,
+      append_nth    = line and line.append_nth or nil,
+      line_key      = line and line.append_key or nil,
+      character     = line and line.speaker or nil,
+      line_text     = line and line.text or nil,
+      take_index    = take_index,
+      take_count    = take_count,
+      script_row    = line and (line.index or line.row) or nil,
+      user_status   = e.status,
+      name_override = e.name_override,
+      notes         = e.notes,
+      is_primary    = false,
+      user_select   = e.select or false,
+      user_keep     = e.keep or false,
+    }
+  end
+
   -- Group the spans that claim a script line, so takes can be numbered.
   local groups = {}
   for _, rec in ipairs(spans) do
@@ -3901,6 +3972,13 @@ function vo.BuildOverview(input)
         row.is_primary = (row == chosen)
         rows[#rows + 1] = row
       end
+
+      local p = planned_by_row[line_row]
+      if p then
+        for i, e in ipairs(p) do
+          rows[#rows + 1] = planned_row(e, line, #g + i, #g + #p)
+        end
+      end
     else
       local key = vo.OverviewKey(nil, nil, line.asset)
       local t = index.by_asset[line.asset]
@@ -3924,6 +4002,13 @@ function vo.BuildOverview(input)
         user_select   = t and t.select or false,
       user_keep     = t and t.keep or false,
       }
+
+      local p = planned_by_row[line_row]
+      if p then
+        for i, e in ipairs(p) do
+          rows[#rows + 1] = planned_row(e, line, i, #p)
+        end
+      end
     end
   end
 
@@ -3936,6 +4021,9 @@ function vo.BuildOverview(input)
       row.is_primary = false
       rows[#rows + 1] = row
     end
+  end
+  for _, e in ipairs(planned_orphans) do
+    rows[#rows + 1] = planned_row(e, nil, nil, nil)
   end
 
   return rows
@@ -4004,7 +4092,9 @@ function vo.GroupOverview(rows)
         rl.take_count = #t
         if row.status == "review" then
           rl.status = "review"
-        elseif rl.status ~= "review" then
+        elseif row.status ~= "planned" and rl.status ~= "review" then
+          -- A planned take is an intention, not audio: it counts as a take
+          -- but must not make an unrecorded line read as recorded.
           rl.status = "recorded"
         end
         if row.user_select then rl.has_sel = true end
