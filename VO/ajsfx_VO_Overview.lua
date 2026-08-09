@@ -5059,31 +5059,49 @@ local function DrawTable(height)
   if not ok then state.message, state.message_kind = tostring(err), "error" end
 end
 
+-- The whole state of the job on ONE line. The headline is COVERAGE --
+-- script lines with a named item in the project, the count the job is
+-- judged on, read from the item names -- then the match summary, then only
+-- the warnings that are currently nonzero. Detail lives in the tooltips;
+-- per-line truth lives on the cards, so this line never repeats it.
 local function DrawSummary()
   local n = state.summary
-
-  -- The headline is COVERAGE, not matching: how many script lines the project
-  -- actually holds an item for. That is the question the job is judged on, and
-  -- it is read from the item names, so it stays true no matter how the audio
-  -- got there or what the matcher thinks.
   local c = state.check or {}
   local total = #(state.lines or {})
-  local got   = c.delivered or 0
-  im.TextColored(ctx, (got >= total and total > 0) and 0x66BB66FF or 0xDDAA33FF,
-    string.format("%d of %d lines in the project", got, total))
-  if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx,
-      "Script lines with at least one item named for them.\n" ..
-      "Counted from the item names, so a take you cut by hand\n" ..
-      "or were sent as a rendered file counts just the same.")
+
+  local first = true
+  local function seg(colour, text, tip)
+    if first then first = false
+    else im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx) end
+    if colour then im.TextColored(ctx, colour, text)
+    else im.TextDisabled(ctx, text) end
+    if tip and im.IsItemHovered(ctx) then im.SetTooltip(ctx, tip) end
   end
-  if (c.missing or 0) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDD6666FF, string.format("%d not there yet", c.missing))
+
+  local got = c.delivered or 0
+  seg((got >= total and total > 0) and 0x66BB66FF or 0xDDAA33FF,
+    string.format("%d of %d lines in the project", got, total),
+    "Script lines with at least one item named for them.\n" ..
+    "Counted from the item names, so a take you cut by hand\n" ..
+    "or were sent as a rendered file counts just the same.")
+  seg(nil, string.format("%d recorded", n.delivered or 0),
+    "Lines the transcript match found audio for.")
+  seg(0x66BB66FF, string.format("%d verified", n.verified or 0),
+    "Takes locked in place. Rematching leaves them alone.")
+  if (n.review or 0) > 0 then
+    seg(0xDDAA33FF, string.format("%d to review", n.review))
   end
+  if (n.flagged or 0) > 0 then
+    seg(0xDD6666FF, string.format("%d flagged", n.flagged))
+  end
+  if (n.orphan or 0) > 0 then
+    seg(nil, string.format("%d orphan", n.orphan),
+      "Recorded audio whose transcript matches no script line.\n" ..
+      "Listed in the card at the bottom of the sheet.")
+  end
+
   if #(c.extra or {}) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDDAA33FF, string.format("%d name(s) not on the script", #c.extra))
+    seg(0xDDAA33FF, string.format("%d name(s) not on the script", #c.extra))
     if im.IsItemHovered(ctx) then
       local list = {}
       for i, name in ipairs(c.extra) do
@@ -5095,14 +5113,10 @@ local function DrawSummary()
     end
   end
   if (c.ambiguous or 0) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDDAA33FF,
-      string.format("%d item(s) named for two lines at once", c.ambiguous))
+    seg(0xDDAA33FF, string.format("%d item(s) named for two lines at once", c.ambiguous))
   end
   if #(state.name_drift or {}) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDDAA33FF,
-      string.format("%d name(s) changed outside this window", #state.name_drift))
+    seg(0xDDAA33FF, string.format("%d name(s) changed outside this window", #state.name_drift))
     if im.IsItemHovered(ctx) then
       local list = {}
       for i, d in ipairs(state.name_drift) do
@@ -5116,9 +5130,7 @@ local function DrawSummary()
     end
   end
   if #(state.orphan_appends or {}) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDD6666FF,
-      string.format("%d Append(s) match no loaded line", #state.orphan_appends))
+    seg(0xDD6666FF, string.format("%d Append(s) match no loaded line", #state.orphan_appends))
     if im.IsItemHovered(ctx) then
       local list = {}
       for i, a in ipairs(state.orphan_appends) do
@@ -5133,34 +5145,9 @@ local function DrawSummary()
         table.concat(list, "\n"))
     end
   end
-
-  im.Spacing(ctx)
-  im.TextDisabled(ctx, string.format("%d of %d lines recorded", n.delivered or 0, n.lines or 0))
-  im.SameLine(ctx)
-  im.TextDisabled(ctx, "·")
-  im.SameLine(ctx)
-  im.TextColored(ctx, 0x66BB66FF, string.format("%d verified", n.verified or 0))
-  if (n.review or 0) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDDAA33FF, string.format("%d to review", n.review))
-  end
-  if (n.missing or 0) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDD6666FF, string.format("%d missing", n.missing))
-  end
-  if (n.flagged or 0) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDD6666FF, string.format("%d flagged", n.flagged))
-  end
-  if (n.orphan or 0) > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextDisabled(ctx, string.format("%d orphan", n.orphan))
-  end
-
   local dupes = state.dupe_assets
   if dupes and #dupes > 0 then
-    im.SameLine(ctx); im.TextDisabled(ctx, "·"); im.SameLine(ctx)
-    im.TextColored(ctx, 0xDDAA33FF, string.format(
+    seg(0xDDAA33FF, string.format(
       "%d duplicate filename%s", #dupes, #dupes == 1 and "" or "s"))
     if im.IsItemHovered(ctx) then
       local tip = { "These filenames are used by more than one script line.",
@@ -5181,6 +5168,18 @@ local function DrawSummary()
       end
       im.SetTooltip(ctx, table.concat(tip, "\n"))
     end
+  end
+
+  -- Filter feedback, in LINES (cards), shown only while something is hidden
+  -- -- this replaces the old always-on "rows shown" line under the sheet.
+  local shown = 0
+  for _, node in ipairs(state.nodes or {}) do
+    if node.kind == "line" then shown = shown + 1 end
+  end
+  if total > 0 and shown < total then
+    seg(0xDDAA33FF, string.format("showing %d of %d", shown, total),
+      "Filters are hiding the rest: clear the search, the character\n" ..
+      "combo or the filter boxes to see every line.")
   end
 end
 
@@ -5815,7 +5814,7 @@ local function loop()
     im.Spacing(ctx)
 
     -- Reserve room for whatever notices are showing; the table takes the rest.
-    local rows = 1                                     -- the count line below
+    local rows = 0
     if state.message ~= ""       then rows = rows + vo.CountLines(state.message, 4) end
     if state.project_error ~= "" then rows = rows + vo.CountLines(state.project_error, 4) end
     if not state.project_path    then rows = rows + 1 end
@@ -5823,9 +5822,6 @@ local function loop()
     -- GetContentRegionAvail returns width first, so height is the SECOND value.
     local _, avail_h = im.GetContentRegionAvail(ctx)
     DrawCards(math.max(120, avail_h - im.GetFrameHeightWithSpacing(ctx) * rows))
-
-    im.TextDisabled(ctx, string.format("%d of %d rows shown.",
-      #state.visible, #state.overview))
 
     if not state.project_path then
       im.TextColored(ctx, 0xDDAA33FF,
