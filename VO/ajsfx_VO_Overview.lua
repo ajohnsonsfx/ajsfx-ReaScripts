@@ -4256,7 +4256,9 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   -- Left column, rows 2 and 3: the delivered name and the source script,
   -- labelled. The note field sits beside them on the right, double height so
   -- the two columns stay parallel.
-  local note_w = math.max(140, math.floor(inner_w * 0.30))
+  -- Notes run short, so the box stays modest: a fifth of the card, capped,
+  -- leaving the width to the filename it was crowding.
+  local note_w = math.min(220, math.max(120, math.floor(inner_w * 0.20)))
   local note_x = rx + inner_w - note_w
 
   im.SetCursorScreenPos(ctx, rx + 22, y2)
