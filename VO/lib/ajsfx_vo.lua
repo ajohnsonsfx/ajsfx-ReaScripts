@@ -1281,6 +1281,112 @@ function vo.EffectiveMarks(entry, track_name, cfg)
   return { select = sel, keep = keep }
 end
 
+--------------------------------
+-- Pure layer: ranged take markers
+--------------------------------
+
+-- The item state chunk stores take markers as `TKM <srcpos> <name> <color>
+-- <length>` -- the fourth field is UNDOCUMENTED and API-invisible, but REAPER
+-- renders it as a range, native mouse gestures edit it (drag moves the start
+-- with length intact, alt-drag moves the end), and API edits leave it alone.
+-- Verified in v7.78, 2026-08-09; see SoundDesignDocs
+-- Workflow/reaper-session-automation.md §4. All range I/O is chunk I/O, so
+-- this whole layer is string work and unit-testable.
+
+function vo.ParseTKMChunk(chunk)
+  local out = {}
+  for line in tostring(chunk or ""):gmatch("[^\n]+") do
+    local body = line:match("^%s*TKM%s+(.*)$")
+    if body then
+      local pos_s, rest = body:match("^(%S+)%s+(.*)$")
+      local pos = tonumber(pos_s)
+      if pos and rest then
+        local name, tail
+        local q = rest:sub(1, 1)
+        if q == '"' or q == "'" or q == "`" then
+          name, tail = rest:match("^" .. q .. "(.-)" .. q .. "%s*(.*)$")
+        else
+          name, tail = rest:match("^(%S+)%s*(.*)$")
+        end
+        if name then
+          local color_s, len_s = (tail or ""):match("^(%S*)%s*(%S*)")
+          out[#out + 1] = {
+            pos    = pos,
+            name   = name,
+            color  = tonumber(color_s) or 0,
+            length = tonumber(len_s) or 0,
+          }
+        end
+      end
+    end
+  end
+  return out
+end
+
+-- REAPER's chunk quoting: bare when the token has no whitespace or quotes,
+-- else wrapped in whichever of " ' ` the token does not contain.
+local function tkm_quote(name)
+  name = tostring(name or "")
+  if name ~= "" and not name:find("[%s\"'`]") then return name end
+  for _, q in ipairs({ '"', "'", "`" }) do
+    if not name:find(q, 1, true) then return q .. name .. q end
+  end
+  return '"' .. name:gsub('"', "'") .. '"'
+end
+
+function vo.FormatTKMLine(m)
+  return string.format("TKM %.14g %s %d %.14g",
+    m.pos or 0, tkm_quote(m.name), math.floor(m.color or 0), m.length or 0)
+end
+
+-- Replace ALL TKM lines in an item chunk with `markers`. Existing lines are
+-- stripped; new ones are inserted where the old ones sat, or before the
+-- take's <SOURCE block when there were none. v1 refuses multi-take items
+-- (second TAKE block): the VO session shape is single-take, and guessing
+-- which take owns which line is exactly the ambiguity this tool is built to
+-- avoid. Returns the (possibly unchanged) chunk and whether it patched.
+function vo.PatchTKMChunk(chunk, markers)
+  chunk = tostring(chunk or "")
+  if chunk:find("\n%s*TAKE%s*\n") or chunk:find("\n%s*TAKE%s+%S") then
+    return chunk, false
+  end
+
+  local lines, insert_at = {}, nil
+  for line in chunk:gmatch("[^\n]+") do
+    if line:match("^%s*TKM%s") then
+      insert_at = insert_at or (#lines + 1)
+    else
+      if not insert_at and line:match("^%s*<SOURCE") then
+        insert_at = #lines + 1
+      end
+      lines[#lines + 1] = line
+    end
+  end
+  insert_at = insert_at or #lines  -- last resort: before the closing '>'
+
+  local add = {}
+  for _, m in ipairs(markers or {}) do add[#add + 1] = vo.FormatTKMLine(m) end
+  for i = #add, 1, -1 do table.insert(lines, insert_at, add[i]) end
+  return table.concat(lines, "\n"), true
+end
+
+-- Marker names are `<asset> ~<id>`: the visible half says which script line,
+-- the id is what the project file keys marks on, so a drag can never detach
+-- them. The id is strictly ` ~` + base36 at the END of the name -- a tilde
+-- anywhere else is just a character in an asset.
+function vo.FormatMarkerName(asset, id)
+  return tostring(asset or "") .. " ~" .. tostring(id or "")
+end
+
+function vo.ParseMarkerName(name)
+  name = tostring(name or "")
+  local asset, id = name:match("^(.-)%s+~(%w+)$")
+  if asset and id and id:match("^[0-9a-z]+$") and #id <= 4 then
+    return asset, id
+  end
+  return name, nil
+end
+
 -- What the sheet and the timeline disagree about, and what is simply broken.
 --
 -- Pure: it reads rows that already carry their resolved item's GUID and track
