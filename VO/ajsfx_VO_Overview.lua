@@ -630,12 +630,41 @@ local function Rebuild()
   -- like every other setting and survives a Settings change made mid-session.
   state.auto_select_take = cfg.auto_select_take or "last"
 
+  -- Markers are the truth: whatever they say a line's takes are, the sheet
+  -- shows, and the match's opinion of that line is ignored. Collected before
+  -- BuildOverview so marker rows are first-class.
+  state.take_markers = vo.CollectTakeMarkers(state.items)
+  local takes_by_asset, marker_info = {}, {}
+  for _, group in pairs(state.take_markers) do
+    for _, mk in ipairs(vo.CountingMarkers(group)) do
+      takes_by_asset[mk.asset] = takes_by_asset[mk.asset] or {}
+      table.insert(takes_by_asset[mk.asset], mk)
+      marker_info[mk.id] = group[mk.item_index] and group[mk.item_index].info
+    end
+  end
+  state.marker_info = marker_info
+
   state.overview = vo.BuildOverview({
     lines   = state.lines,
     matches = LoadMatches(cfg),
     entries = state.entries,
     cfg     = cfg,
+    takes_by_asset = takes_by_asset,
   })
+
+  -- Marker rows resolve straight to the item holding their counting marker:
+  -- no occupancy guessing, which is the point. Before the adoption pass so an
+  -- already-resolved row never adopts a name-match it does not need.
+  for _, row in ipairs(state.overview) do
+    if row.marker_id then
+      local info = marker_info[row.marker_id]
+      if info then
+        row.item        = info.item
+        row.item_info   = info
+        row.source_path = info.path
+      end
+    end
+  end
   state.summary = vo.SummarizeOverview(state.overview)
 
   -- Row-level, so a per-take name override can clear a clash or create one.

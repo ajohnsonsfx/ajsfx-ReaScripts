@@ -5687,6 +5687,31 @@ end
 -- Coupled layer: take marker I/O
 --------------------------------
 
+-- Read every item's take markers, paired with the item's source coverage --
+-- the input shape vo.CountingMarkers wants. Chunk reads are the only way at
+-- the ranges (the API cannot see the length); a few hundred items times a few
+-- KB at the rebuild throttle is fine, and the result is grouped per source
+-- path so markers from one recording can never claim a line in another.
+-- UNVERIFIED outside REAPER — see SPEC.md §10.
+function vo.CollectTakeMarkers(items)
+  local by_path = {}
+  for _, info in ipairs(items or {}) do
+    if info.item and info.path and not info.skip then
+      local ok, chunk = r.GetItemStateChunk(info.item, "", false)
+      if ok then
+        local group = by_path[info.path]
+        if not group then group = {}; by_path[info.path] = group end
+        group[#group + 1] = {
+          coverage = vo.SourceCoverageRanges({ info })[1],
+          markers  = vo.ParseTKMChunk(chunk),
+          info     = info,
+        }
+      end
+    end
+  end
+  return by_path
+end
+
 -- Mint a marker id: 3 base36 chars, unique against `taken`. Entropy comes
 -- from os.clock and a stride, and uniqueness from the check, not the source.
 function vo.MintMarkerId(taken)
