@@ -995,19 +995,31 @@ end
 -- one line and BuildOverview would silently pick whichever the build order put
 -- first (see vo.BuildOverview's "no first/last fallback").
 local function SetSelect(row, on)
+  local cfg = vo.LoadConfig()
   if on then
     local mine = LineKeyOf(row)
     for _, other in ipairs(state.overview) do
       if other ~= row and other.status ~= "orphan" and other.user_select
          and LineKeyOf(other) == mine then
-        Mutate(other, function(e) e.select = nil end)
+        -- An explicit NO where the sibling's own track would otherwise speak
+        -- for it. Clearing to nil was right when nil simply meant unticked,
+        -- but a sibling sitting on the Selects track would now re-tick itself
+        -- on the very next rebuild -- two Sels on one line, which is the exact
+        -- state this exclusivity exists to prevent.
+        local sibling = other
+        Mutate(sibling, function(e)
+          if vo.MarkFromTrack(sibling.track_name, cfg) == "select" then
+            e.select = false
+          else
+            e.select = nil
+          end
+        end)
       end
     end
   end
   -- Ticking stores yes. UN-ticking stores an explicit NO when the item's track
   -- would otherwise re-tick it (vo.EffectiveMarks rule 2), and nothing at all
   -- when it would not -- so files do not grow rows that say nothing.
-  local cfg = vo.LoadConfig()
   Mutate(row, function(e)
     if on then
       e.select = true
