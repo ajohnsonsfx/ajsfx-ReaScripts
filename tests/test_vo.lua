@@ -6280,6 +6280,19 @@ test("absent collapsed parses as nil/empty without error", function()
   assert(got == nil or #got == 0)
 end)
 
+test("a linenote entry round-trips through the project file", function()
+  local text = vo.SerializeProjectFile(
+    { { key = "linenote|3", asset = "grum_01", notes = "line-level note" } },
+    { scripts = {}, appends = {}, pins = {}, view = {} })
+  local parsed = assert(vo.ParseProjectFile(text))
+  local found = nil
+  for _, e in ipairs(parsed.entries) do
+    if e.key == "linenote|3" then found = e end
+  end
+  assert(found, "linenote entry was dropped")
+  assert(found.notes == "line-level note", "note lost: " .. tostring(found and found.notes))
+end)
+
 --------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

@@ -3838,7 +3838,6 @@ function vo.ProjectEntriesFromRows(rows)
   return entries
 end
 
--- Counts for the header summary line.
 -- The Overview table's draw list. Flat overview rows (already in script
 -- order, adopted/extra rows already inserted beside their lines) become a
 -- typed node list: character headers, line parents with their takes nested,
@@ -3927,6 +3926,7 @@ function vo.FilterGroups(nodes, match)
   return out
 end
 
+-- Counts for the header summary line.
 function vo.SummarizeOverview(rows)
   local n = { total = 0, recorded = 0, review = 0, missing = 0, orphan = 0,
               verified = 0, flagged = 0, lines = 0 }
