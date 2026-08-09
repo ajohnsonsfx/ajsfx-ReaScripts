@@ -289,5 +289,70 @@ test("an anchor survives a full row round trip", function()
 end)
 
 --------------------------------
+print("PlanReconcile:")
+
+test("a clean sheet produces no findings", function()
+  local plan = vo.PlanReconcile({
+    { key = "a|1", user_select = true, track_name = "Selects", item_guid = "{A}" },
+    { key = "a|2", user_select = false, track_name = "Review", item_guid = "{B}" },
+  }, {})
+  assert(#plan.disagree == 0, "disagree: " .. #plan.disagree)
+  assert(#plan.missing_anchor == 0 and #plan.doubled == 0 and #plan.orphan_marks == 0)
+end)
+
+test("ticked Sel with the item off the Selects track is a disagreement", function()
+  local plan = vo.PlanReconcile({
+    { key = "a|1", user_select = true, track_name = "Review", item_guid = "{A}" },
+  }, {})
+  assert(#plan.disagree == 1, "disagree: " .. #plan.disagree)
+  assert(plan.disagree[1].row.key == "a|1")
+end)
+
+test("an item on Selects whose row says an explicit no is a disagreement", function()
+  local plan = vo.PlanReconcile({
+    { key = "a|1", mark_select = false, user_select = false,
+      track_name = "Selects", item_guid = "{A}" },
+  }, {})
+  assert(#plan.disagree == 1, "disagree: " .. #plan.disagree)
+end)
+
+test("a row with no item is not a disagreement", function()
+  -- Nothing to disagree WITH. This is the orphan_marks case at most.
+  local plan = vo.PlanReconcile({
+    { key = "a|1", user_select = true },
+  }, {})
+  assert(#plan.disagree == 0, "a row with no item was called a disagreement")
+end)
+
+test("a missing anchor is reported", function()
+  local plan = vo.PlanReconcile({
+    { key = "a|1", anchor = "{GONE}", anchor_missing = true },
+  }, {})
+  assert(#plan.missing_anchor == 1, "missing: " .. #plan.missing_anchor)
+end)
+
+test("two rows anchored to one item are reported together", function()
+  local plan = vo.PlanReconcile({
+    { key = "a|1", anchor = "{A}", item_guid = "{A}" },
+    { key = "a|2", anchor = "{A}", item_guid = "{A}" },
+  }, {})
+  assert(#plan.doubled == 1, "doubled groups: " .. #plan.doubled)
+  assert(#plan.doubled[1].rows == 2, "rows in group: " .. #plan.doubled[1].rows)
+end)
+
+test("marks with no item and no anchor are reported as damage", function()
+  local plan = vo.PlanReconcile({
+    { key = "a|1", mark_select = true },
+  }, {})
+  assert(#plan.orphan_marks == 1, "orphan_marks: " .. #plan.orphan_marks)
+end)
+
+test("an unmarked row with no item is not damage", function()
+  -- A script line nobody has recorded yet is the normal case, not a finding.
+  local plan = vo.PlanReconcile({ { key = "a|1" } }, {})
+  assert(#plan.orphan_marks == 0, "an unrecorded line was reported as damage")
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

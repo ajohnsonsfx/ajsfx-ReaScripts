@@ -1281,6 +1281,69 @@ function vo.EffectiveMarks(entry, track_name, cfg)
   return { select = sel, keep = keep }
 end
 
+-- What the sheet and the timeline disagree about, and what is simply broken.
+--
+-- Pure: it reads rows that already carry their resolved item's GUID and track
+-- name (the coupled layer puts those there), so the whole reconciliation is
+-- testable without REAPER.
+--
+-- Returns four independent lists rather than one flat one, because each has a
+-- different fix and the panel shows only the non-empty ones:
+--
+--   disagree       -- the sheet says one thing, the item's track says another
+--   missing_anchor -- the anchor names an item this project no longer has
+--   doubled        -- two rows claim the same item
+--   orphan_marks   -- marks on a row with no item and no anchor: damage done
+--                     before anchors existed, or by a re-match that moved a
+--                     boundary past the rematch tolerance
+function vo.PlanReconcile(rows, cfg)
+  local plan = { disagree = {}, missing_anchor = {}, doubled = {}, orphan_marks = {} }
+  local by_anchor = {}
+
+  for _, row in ipairs(rows or {}) do
+    if row.anchor_missing then
+      plan.missing_anchor[#plan.missing_anchor + 1] =
+        { row = row, detail = "anchored item is gone" }
+    end
+
+    if row.anchor then
+      by_anchor[row.anchor] = by_anchor[row.anchor] or {}
+      table.insert(by_anchor[row.anchor], row)
+    end
+
+    -- Only rows that HAVE an item can disagree with where it sits.
+    if row.item_guid then
+      local from_track = vo.MarkFromTrack(row.track_name, cfg)
+      local wants_sel  = (from_track == "select")
+      local wants_keep = (from_track == "keep")
+      if (row.user_select == true) ~= wants_sel then
+        plan.disagree[#plan.disagree + 1] = { row = row, detail = wants_sel
+          and "on the Selects track but not ticked Sel"
+          or  "ticked Sel but the item is not on the Selects track" }
+      elseif (row.user_keep == true) ~= wants_keep then
+        plan.disagree[#plan.disagree + 1] = { row = row, detail = wants_keep
+          and "on the Alts track but not ticked Keep"
+          or  "ticked Keep but the item is not on the Alts track" }
+      end
+    elseif not row.anchor
+           and (row.mark_select ~= nil or row.mark_keep ~= nil
+                or (row.notes and row.notes ~= "") or row.user_status) then
+      -- Marks with nothing to attach to. An UNMARKED row with no item is just
+      -- a line nobody has recorded yet, which is not a finding.
+      plan.orphan_marks[#plan.orphan_marks + 1] =
+        { row = row, detail = "marks with no item" }
+    end
+  end
+
+  for guid, list in pairs(by_anchor) do
+    if #list > 1 then
+      plan.doubled[#plan.doubled + 1] = { guid = guid, rows = list }
+    end
+  end
+
+  return plan
+end
+
 --------------------------------
 -- Pure layer: transcript gap repair
 --------------------------------
