@@ -966,6 +966,50 @@ local function Mutate(row, fn)
   Rebuild()
 end
 
+-- Bind a take row to the item selected in REAPER.
+--
+-- The manual counterpart to the anchoring Cut does automatically: for audio
+-- this tool did not create -- a hand-comp, a rendered file, a re-record -- and
+-- the fix the repair panel offers for a row whose anchor has gone stale.
+--
+-- The recorded edges are the item's CURRENT ones, so a freshly anchored take
+-- reads as unedited: the user has just declared this geometry correct.
+--
+-- Defined HERE, beside EntryFor rather than beside the take-row menu that calls
+-- it, because the repair panel calls it too and sits above that menu in the
+-- file. A local declared below its caller resolves as a nil GLOBAL, and the
+-- failure would surface only on the button press.
+local function AnchorRowToSelection(row)
+  if r.CountSelectedMediaItems(0) ~= 1 then
+    state.message, state.message_kind =
+      "Select exactly one item in REAPER to anchor this take to.", "warn"
+    return
+  end
+  local item = r.GetSelectedMediaItem(0, 0)
+  local got, guid = r.GetSetMediaItemInfo_String(item, "GUID", "", false)
+  if not got or guid == "" then
+    state.message, state.message_kind = "That item has no GUID to anchor to.", "error"
+    return
+  end
+
+  local take = r.GetActiveTake(item)
+  local info = {
+    start_offs = take and r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS") or 0,
+    length     = r.GetMediaItemInfo_Value(item, "D_LENGTH"),
+    playrate   = take and r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE") or 1.0,
+  }
+  local range = vo.SourceCoverageRanges({ info })[1]
+
+  local e = EntryFor(row)
+  e.anchor       = guid
+  e.anchor_start = range and range.from or nil
+  e.anchor_stop  = range and range.to   or nil
+  state.dirty = true
+  Reload()
+  state.message, state.message_kind = string.format(
+    "Anchored %s to the selected item.", row.deliver or row.asset or "take"), "ok"
+end
+
 local function SetStatus(row, status)
   Mutate(row, function(e) e.status = status end)
 end
@@ -3939,6 +3983,34 @@ local function DrawTakeRowMenu(row)
   if im.IsItemHovered(ctx) then
     im.SetTooltip(ctx, "Every place in the transcripts this line could sit,\n" ..
                        "with what is around it. Looks only -- changes nothing.")
+  end
+
+  im.Separator(ctx)
+
+  local n_sel = r.CountSelectedMediaItems(0)
+  if im.MenuItem(ctx, "Anchor to selected item", nil, nil, n_sel == 1) then
+    local captured = row
+    pending_action = function() AnchorRowToSelection(captured) end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, n_sel == 1
+      and ("Bind this take to the item selected in REAPER. It will then follow\n" ..
+           "that item wherever you move or trim it, and Cut will leave it alone.")
+      or  "Select exactly one item in REAPER first.")
+  end
+  if im.MenuItem(ctx, "Clear anchor", nil, nil, row.anchor ~= nil) then
+    local captured = row
+    pending_action = function()
+      for _, e in ipairs(state.entries) do
+        if e.key == captured.key then
+          e.anchor, e.anchor_start, e.anchor_stop = nil, nil, nil
+        end
+      end
+      state.dirty = true
+      Reload()
+      state.message, state.message_kind =
+        "Anchor cleared. That take resolves by match again.", "ok"
+    end
   end
 
   im.Separator(ctx)
