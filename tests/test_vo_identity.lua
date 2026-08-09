@@ -209,5 +209,85 @@ test("no entry and no track is unticked", function()
 end)
 
 --------------------------------
+print("Row model:")
+
+local ID_LINES = {
+  { asset = "grum_01", text = "Hello there.", speaker = "Grumbar", index = 1 },
+}
+
+local function row_for_key(rows, key)
+  for _, row in ipairs(rows) do
+    if row.key == key then return row end
+  end
+  return nil
+end
+
+local function one_take_overview(entries)
+  return vo.BuildOverview({
+    lines = ID_LINES,
+    matches = { { path = "sess.wav", spans = {
+      { kind = "match", asset = "grum_01", start = 1.0, stop = 2.0, line_idx = 1 },
+    } } },
+    entries = entries,
+  })
+end
+
+-- `source` and `source_start` are not optional decoration: index_tracker
+-- buckets entries by source path, and resolve_tracker only ever looks in those
+-- buckets -- an entry without them can never attach to a span row.
+-- vo.ProjectEntriesFromRows always writes them, so real files always have them.
+test("a take row carries its anchor out of the entry", function()
+  local rows = one_take_overview({
+    { key = "sess.wav|1000", asset = "grum_01",
+      source = "sess.wav", source_start = 1.0,
+      anchor = "{G1}", anchor_start = 0.9, anchor_stop = 2.1 },
+  })
+  local row = assert(row_for_key(rows, "sess.wav|1000"), "row missing")
+  assert(row.anchor == "{G1}", "anchor: " .. tostring(row.anchor))
+  assert(math.abs(row.anchor_start - 0.9) < 1e-6, "anchor_start lost")
+  assert(math.abs(row.anchor_stop - 2.1) < 1e-6, "anchor_stop lost")
+end)
+
+test("an explicit no survives as mark_select false, not nil", function()
+  local rows = one_take_overview({
+    { key = "sess.wav|1000", asset = "grum_01",
+      source = "sess.wav", source_start = 1.0, select = false },
+  })
+  local row = assert(row_for_key(rows, "sess.wav|1000"))
+  assert(row.mark_select == false, "mark_select: " .. tostring(row.mark_select))
+  assert(row.user_select == false, "user_select: " .. tostring(row.user_select))
+end)
+
+test("an absent mark is nil on the row, not false", function()
+  local rows = one_take_overview({})
+  local row = assert(row_for_key(rows, "sess.wav|1000"))
+  assert(row.mark_select == nil, "mark_select: " .. tostring(row.mark_select))
+  assert(row.user_select == false, "user_select should be a boolean for the UI")
+end)
+
+test("ProjectEntriesFromRows writes the stored mark, never the effective one", function()
+  -- The row's user_select is what the TRACK inferred; persisting that would
+  -- freeze an inference into an explicit decision nobody made.
+  local entries = vo.ProjectEntriesFromRows({
+    { key = "sess.wav|1000", mark_select = nil, user_select = true,
+      mark_keep = false, user_keep = false,
+      anchor = "{G1}", anchor_start = 0.9, anchor_stop = 2.1 },
+  })
+  assert(#entries == 1, "entry count: " .. #entries)
+  assert(entries[1].select == nil, "inferred tick was persisted: " .. tostring(entries[1].select))
+  assert(entries[1].keep == false, "explicit no lost: " .. tostring(entries[1].keep))
+  assert(entries[1].anchor == "{G1}", "anchor lost")
+  assert(math.abs(entries[1].anchor_start - 0.9) < 1e-6, "anchor_start lost")
+end)
+
+test("an anchor survives a full row round trip", function()
+  local text = vo.SerializeProjectFile(vo.ProjectEntriesFromRows({
+    { key = "sess.wav|1000", anchor = "{G1}", anchor_start = 0.9, anchor_stop = 2.1 },
+  }), EMPTY_META)
+  local e = assert(only_entry(text, "sess.wav|1000"), "entry dropped")
+  assert(e.anchor == "{G1}", "anchor lost in round trip")
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

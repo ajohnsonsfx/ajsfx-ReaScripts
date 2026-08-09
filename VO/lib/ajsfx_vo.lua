@@ -3998,8 +3998,13 @@ function vo.BuildOverview(input)
       name_override = e.name_override,
       notes         = e.notes,
       is_primary    = false,
-      user_select   = e.select or false,
-      user_keep     = e.keep or false,
+      mark_select   = e.select,
+      mark_keep     = e.keep,
+      user_select   = e.select == true,
+      user_keep     = e.keep == true,
+      anchor        = e.anchor,
+      anchor_start  = e.anchor_start,
+      anchor_stop   = e.anchor_stop,
     }
   end
 
@@ -4051,8 +4056,18 @@ function vo.BuildOverview(input)
       user_status   = t and t.status or nil,
       name_override = t and t.name_override or nil,
       notes         = t and t.notes or nil,
-      user_select   = t and t.select or false,
-      user_keep     = t and t.keep or false,
+      -- The STORED marks, tri-state: true / false / nil for "no opinion".
+      -- Written back by vo.ProjectEntriesFromRows.
+      mark_select   = t and t.select,
+      mark_keep     = t and t.keep,
+      -- The EFFECTIVE marks, always boolean, for the checkbox and for Pull.
+      -- The coupled layer recomputes these through vo.EffectiveMarks once it
+      -- knows which track the item sits on; this is the no-item answer.
+      user_select   = (t and t.select) == true,
+      user_keep     = (t and t.keep) == true,
+      anchor        = t and t.anchor,
+      anchor_start  = t and t.anchor_start,
+      anchor_stop   = t and t.anchor_stop,
     }
   end
 
@@ -4112,8 +4127,13 @@ function vo.BuildOverview(input)
         name_override = t and t.name_override or nil,
         notes         = t and t.notes or nil,
         is_primary    = false,
-        user_select   = t and t.select or false,
-      user_keep     = t and t.keep or false,
+        mark_select   = t and t.select,
+        mark_keep     = t and t.keep,
+        user_select   = (t and t.select) == true,
+        user_keep     = (t and t.keep) == true,
+        anchor        = t and t.anchor,
+        anchor_start  = t and t.anchor_start,
+        anchor_stop   = t and t.anchor_stop,
       }
 
       local p = planned_by_row[line_row]
@@ -4154,11 +4174,17 @@ function vo.ProjectEntriesFromRows(rows)
       source        = row.source_path,
       source_start  = row.source_start,
       asset         = row.asset,
-      select        = row.user_select or nil,
-      keep          = row.user_keep or nil,
+      -- The STORED mark, never row.user_select: that one may have been
+      -- inferred from the item's track, and writing an inference down as an
+      -- explicit decision would make it permanent and unclearable.
+      select        = row.mark_select,
+      keep          = row.mark_keep,
       status        = row.user_status,
       name_override = row.name_override,
       notes         = row.notes,
+      anchor        = row.anchor,
+      anchor_start  = row.anchor_start,
+      anchor_stop   = row.anchor_stop,
     }
   end
   return entries
