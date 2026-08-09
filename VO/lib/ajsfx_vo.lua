@@ -6170,6 +6170,10 @@ vo.MIN_SPLIT_LENGTH = 0.001  -- seconds
 function vo.ApplyPlan(plan, source_track)
   local applied = 0
   local failures = {}
+  -- Which item each span became, keyed by the row key stamped before padding.
+  -- This is the ONLY moment the binding is known for certain -- afterwards it
+  -- can only be inferred by occupancy, which is what anchors exist to replace.
+  local anchors = {}
   local cfg = vo.LoadConfig()
   local fade_in  = vo.Opt(cfg, "cut_fade_in")
   local fade_out = vo.Opt(cfg, "cut_fade_out")
@@ -6211,6 +6215,15 @@ function vo.ApplyPlan(plan, source_track)
         r.GetSetMediaItemTakeInfo_String(take, "P_NAME",
           span.deliver or span.asset or span.name or "", true)
       end
+      -- Anchor the take to the item just made for it. Read after the splits, so
+      -- the GUID is the piece's own and not the item it was cut from.
+      if span.row_key then
+        local got, guid = r.GetSetMediaItemInfo_String(piece, "GUID", "", false)
+        if got and guid ~= "" then
+          anchors[span.row_key] =
+            { guid = guid, start = span.start, stop = span.stop }
+        end
+      end
       -- Protective fades, shorter in than out, sitting inside the head/tail
       -- room the boundary placement just guaranteed.
       if fade_in  and fade_in  > 0 then
@@ -6224,7 +6237,7 @@ function vo.ApplyPlan(plan, source_track)
   end
 
   r.UpdateArrange()
-  return applied, failures
+  return applied, failures, anchors
 end
 
 -- Build the inline, non-modal summary shown after a Cut (Task 8: popups ask,

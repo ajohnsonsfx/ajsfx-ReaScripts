@@ -886,9 +886,13 @@ local function EntryFor(row)
   for _, e in ipairs(state.entries) do
     if e.key == row.key and (e.source or "") == (row.source_path or "") then return e end
   end
+  -- No `select = false` here. Marks are tri-state now: false is an explicit NO
+  -- the user typed, and a fresh entry has no opinion at all -- being born with
+  -- one would stop the item's own track from ever speaking for it
+  -- (vo.EffectiveMarks), which is the whole self-healing mechanism.
   local e = {
     key = row.key, source = row.source_path, source_start = row.source_start,
-    asset = row.asset, select = false,
+    asset = row.asset,
   }
   state.entries[#state.entries + 1] = e
   return e
@@ -2739,7 +2743,14 @@ local function CutCandidates()
   for _, s in ipairs(all_spans) do
     local key = start_key(s.source_path, s.start)
     local row = by_start[key]
-    if row then s.select = row.user_select == true end
+    if row then
+      s.select = row.user_select == true
+      -- The row this span belongs to, captured HERE and not later: ApplyPadding
+      -- mutates s.start on its way to ApplyPlan, so a key derived downstream
+      -- would name a row that does not exist. Taken from the row itself rather
+      -- than recomputed, so it cannot disagree with the row's own identity.
+      s.row_key = row.key
+    end
 
     if s.kind == "match" or s.kind == "review" then
       counts.cuttable = counts.cuttable + 1
@@ -2880,13 +2891,41 @@ local function DoCut()
 
   -- One transaction around every split and rename, so the run is one undo step.
   local applied, failures = 0, {}
+  local anchors = {}
   core.Transaction("VO Overview: cut and name", function()
     for _, g in pairs(by_item) do
-      local a, f = vo.ApplyPlan(g.spans, g.info.track)
+      local a, f, anc = vo.ApplyPlan(g.spans, g.info.track)
       applied = applied + a
       for _, msg in ipairs(f) do failures[#failures + 1] = msg end
+      for key, rec in pairs(anc or {}) do anchors[key] = rec end
     end
   end)
+
+  -- Bind each cut take to the item it became. Written straight to the entries
+  -- rather than through Mutate, which rebuilds the whole match per call: forty
+  -- rebuilds for one press, each invalidating the rows still to be anchored.
+  --
+  -- Through EntryFor and its ROW, never as a bare { key = key }: index_tracker
+  -- buckets entries by source path, so an entry carrying only a key and an
+  -- anchor is filed nowhere, resolve_tracker never finds it, and the anchor is
+  -- written and then invisible.
+  local row_by_key = {}
+  for _, row in ipairs(state.overview) do
+    if row.key and not row_by_key[row.key] then row_by_key[row.key] = row end
+  end
+
+  local anchored = 0
+  for key, rec in pairs(anchors) do
+    local row = row_by_key[key]
+    if row then
+      local entry = EntryFor(row)
+      entry.anchor       = rec.guid
+      entry.anchor_start = rec.start
+      entry.anchor_stop  = rec.stop
+      anchored = anchored + 1
+    end
+  end
+  if anchored > 0 then state.dirty = true end
 
   state.cut_summary = vo.FormatCutSummary(all_spans, applied, skipped_msgs, failures)
 
