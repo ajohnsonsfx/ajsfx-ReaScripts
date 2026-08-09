@@ -238,9 +238,10 @@ local state = {
 
   auto_select_take = "last",  -- which take "Select takes" marks; from the config
 
-  -- Lines folded shut, keyed by LineNodeKey. Persisted in the project file's
-  -- view section: a reopened project looks the way it was left.
-  collapsed     = {},
+  -- Lines unfolded OPEN, keyed by LineNodeKey -- folded is the default, so
+  -- the sheet opens as a tidy list of title bands. Persisted in the project
+  -- file's view section: a reopened project looks the way it was left.
+  expanded      = {},
   nodes         = {},         -- the filtered draw list: vo.FilterGroups output
   filtered      = {},         -- every take the filters admit; tool scope
 
@@ -385,7 +386,7 @@ end
 local function LoadProjectFile()
   state.entries, state.project_error, state.parse_failed = {}, "", false
   state.scripts, state.appends, state.pins = {}, {}, {}
-  state.collapsed = {}
+  state.expanded = {}
   -- Everything below describes the PREVIOUS project. A message like "Pulled 27
   -- select" surviving a tab switch reads as a claim about the new project.
   state.message, state.message_kind = nil, nil
@@ -424,8 +425,8 @@ local function LoadProjectFile()
       if COLUMN_BY_KEY[key] then state.col_filters[key] = needle end
     end
     state.check_character = (v.character ~= nil)
-    state.collapsed = {}
-    for _, k in ipairs(v.collapsed or {}) do state.collapsed[k] = true end
+    state.expanded = {}
+    for _, k in ipairs(v.expanded or {}) do state.expanded[k] = true end
   else
     -- The file is NOT overwritten on a parse failure: writing would destroy
     -- whatever the user still has in there. Saving stays off until they fix or
@@ -472,9 +473,9 @@ local function SaveProjectFile()
         search      = state.search,
         filter_row  = state.filter_row,
         col_filters = state.col_filters,
-        collapsed   = (function()
+        expanded    = (function()
           local out = {}
-          for k in pairs(state.collapsed or {}) do out[#out + 1] = k end
+          for k in pairs(state.expanded or {}) do out[#out + 1] = k end
           table.sort(out)
           return out
         end)(),
@@ -1696,14 +1697,14 @@ local function ApplyFilters()
   --                   (AffectedRows) reads this: folding a line shut is
   --                   tidiness, and must not silently shrink what Cut acts on.
   --   state.visible   what the eye can actually see -- filtered minus the
-  --                   takes of collapsed lines. Selection, ranges and the
+  --                   takes of folded lines. Selection, ranges and the
   --                   timeline follow read this, so a shift-range matches the
   --                   screen and the selection never outlives visibility.
   -- Parents and headers are in neither: only takes are selectable/actionable.
   local filtered, out = {}, {}
   for _, node in ipairs(state.nodes) do
     if node.kind == "line" then
-      local open = not state.collapsed[LineNodeKey(node)]
+      local open = state.expanded[LineNodeKey(node)] == true
       for _, t in ipairs(node.takes) do
         filtered[#filtered + 1] = t
         if open then out[#out + 1] = t end
@@ -3340,22 +3341,21 @@ local function DrawFilters()
 
   -- Fold every line at once. Folding is per line and persisted; these two
   -- are just the bulk versions of clicking every arrow.
-  if im.Button(ctx, "+") then
-    state.collapsed = {}
-    state.dirty = true
-  end
-  if im.IsItemHovered(ctx) then im.SetTooltip(ctx, "Unfold every line.") end
-  im.SameLine(ctx)
-  if im.Button(ctx, "-") then
+  if im.Button(ctx, "Unfold all") then
     for _, node in ipairs(vo.GroupOverview(state.overview)) do
-      if node.kind == "line" and #node.takes > 0 then
-        state.collapsed[LineNodeKey(node)] = true
+      if node.kind == "line" then
+        state.expanded[LineNodeKey(node)] = true
       end
     end
     state.dirty = true
   end
+  im.SameLine(ctx)
+  if im.Button(ctx, "Fold all") then
+    state.expanded = {}
+    state.dirty = true
+  end
   if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Fold every line, leaving one row per script line.")
+    im.SetTooltip(ctx, "Fold every line down to its title band.")
   end
   im.SameLine(ctx)
 
@@ -4024,8 +4024,8 @@ local function DrawParentRow(node, key, open)
   local arrow = (#node.takes > 0) and (open and "v" or ">") or " "
   if im.Selectable(ctx, arrow .. " " .. tostring(rep.order or "") .. "##fold", false) then
     if #node.takes > 0 then
-      if state.collapsed[key] then state.collapsed[key] = nil
-      else state.collapsed[key] = true end
+      if state.expanded[key] then state.expanded[key] = nil
+      else state.expanded[key] = true end
       state.dirty = true
     end
   end
@@ -4434,7 +4434,7 @@ local function DrawTableBody()
       end
     else
       local key = LineNodeKey(node)
-      local open = not state.collapsed[key]
+      local open = state.expanded[key] == true
       DrawParentRow(node, key, open)
       if open and #node.takes > 0 then
         DrawSubHeaderRow()
@@ -4681,19 +4681,28 @@ local function DrawCardTakeRow(row, z, vis_index, x0)
   row._card_h = math.max(gh, im.GetFrameHeight(ctx))
 end
 
--- The card's header band: everything that answers for the LINE.
+-- The card's header band: the line's TITLE, three stacked rows --
+--   who:   fold arrow, line number, status dot, speaker chip, badges right
+--   file:  the delivered name, full width, clash-red, Append on right-click
+--   said:  the line text, bright, wrapped to the card
+-- Everything noisy (script name, line note) lives behind the fold; the band
+-- stays a clean answer to "which line is this and where does it stand".
 local function DrawCardBand(node, z, key, open, x0, band_w)
   local rep = node.rep
   local dl = im.GetWindowDrawList(ctx)
   local rx, ry = im.GetCursorScreenPos(ctx)
-  local band_h = rep._band_h or im.GetFrameHeight(ctx)
+  local line_h = im.GetTextLineHeightWithSpacing(ctx)
+  local band_h = rep._band_h or (line_h * 3)
+  local inner_w = band_w - CARD_PAD * 2
 
   im.DrawList_AddRectFilled(dl, rx - CARD_PAD, ry - 3,
     rx - CARD_PAD + band_w, ry + band_h + 3, BAND_BG, CARD_ROUND)
 
-  -- Band click selects the line's takes; the arrow folds.
+  -- The hover/select surface spans the card's inner width -- the whole band
+  -- inside the outline reads as one clickable thing. Clicking selects the
+  -- line's takes; the arrow (drawn after, so it wins) folds.
   local overlap = Api('SelectableFlags_AllowOverlap')
-  if im.Selectable(ctx, "##band", false, overlap or 0, 0, band_h) then
+  if im.Selectable(ctx, "##band", false, overlap or 0, inner_w, band_h) then
     local takes = node.takes
     if #takes > 0 then
       pending_action = function()
@@ -4708,28 +4717,25 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
       end
     end
   end
-  if #node.takes > 0 and im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, string.format("%d take%s. Click selects them; the arrow folds.",
-      #node.takes, #node.takes == 1 and "" or "s"))
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, #node.takes > 0
+      and string.format("%d take%s. Click selects them; the arrow folds.",
+            #node.takes, #node.takes == 1 and "" or "s")
+      or  "No takes yet. The arrow opens the line's details.")
   end
 
   im.SetCursorScreenPos(ctx, rx, ry)
   im.BeginGroup(ctx)
 
-  -- Lead: fold arrow + line number + the line's dot.
-  if #node.takes > 0 then
-    if im.Selectable(ctx, (open and "v" or ">") .. "##fold", false, 0, 14, band_h) then
-      if state.collapsed[key] then state.collapsed[key] = nil
-      else state.collapsed[key] = true end
-      state.dirty = true
-    end
-    im.SameLine(ctx)
-  else
-    im.Dummy(ctx, 14, 1)
-    im.SameLine(ctx)
+  -- Row 1: arrow, number, dot, speaker -- and the badges at the right edge.
+  if im.Selectable(ctx, (open and "v" or ">") .. "##fold", false, 0, 16, line_h) then
+    if state.expanded[key] then state.expanded[key] = nil
+    else state.expanded[key] = true end
+    state.dirty = true
   end
-  im.SetCursorScreenPos(ctx, rx + 18, ry)
-  im.Text(ctx, tostring(rep.order or ""))
+  im.SameLine(ctx)
+  im.SetCursorScreenPos(ctx, rx + 22, ry)
+  im.TextDisabled(ctx, tostring(rep.order or ""))
   im.SameLine(ctx)
 
   local style = STATUS_STYLE[node.rollup.status] or STATUS_STYLE.missing
@@ -4742,43 +4748,46 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   if node.rollup.locks > 0 then bits[#bits + 1] = node.rollup.locks .. " locked." end
   CardDot(style.colour, table.concat(bits, "\n"))
 
-  -- Marks zone on the band: the tick labels, once per card, over the
-  -- checkboxes they name. Only when there ARE boxes below -- on a foldee
-  -- or a missing line the labels would be labelling nothing.
-  if open and #node.takes > 0 then
-    local sf = PushCellFont("state")
-    -- One label per box, at the box's own offset (+4 to sit over its centre)
-    -- -- a single spaced string drifts off the checkbox grid.
-    for i, letter in ipairs({ "S", "K", "L" }) do
-      im.SetCursorScreenPos(ctx, rx + z.marks + (i - 1) * 34 + 4, ry)
-      im.TextDisabled(ctx, letter)
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, "Sel / Keep / Lock, in the order the boxes sit below.")
-      end
-    end
-    PopCellFont(sf)
+  -- Speaker chip, where the mark labels used to float: the line's character,
+  -- read at the same glance as its number and status.
+  if rep.character and rep.character ~= "" then
+    im.SameLine(ctx)
+    im.SetCursorScreenPos(ctx, rx + z.marks, ry)
+    im.TextColored(ctx, 0x9FB4C8FF, rep.character)
   end
 
-  -- Text: the line text, the reason the card exists.
-  im.SetCursorScreenPos(ctx, rx + z.text, ry)
-  im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + z.text_w)
-  wrap_depth = wrap_depth + 1
-  im.Text(ctx, rep.line_text or "")
-  im.PopTextWrapPos(ctx)
-  wrap_depth = wrap_depth - 1
+  -- Badges, right-aligned on the first row.
+  im.SetCursorScreenPos(ctx, rx + inner_w - 52, ry)
+  if rep.script_row then
+    if rec then im.TextColored(ctx, 0x66BB66FF, "✓" .. tostring(rec.count))
+    else im.TextColored(ctx, 0xDD6666FF, "–") end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, rec
+        and string.format("%d item%s in the project named %s.\n" ..
+              "Read from the item names, so a take cut by hand or delivered\n" ..
+              "as a rendered file counts just the same.",
+              rec.count, rec.count == 1 and "" or "s", rep.deliver or rep.asset or "?")
+        or  string.format("No item in the project is named %s yet.\n" ..
+              "Cut and Name, or name an item yourself.",
+              rep.deliver or rep.asset or "?"))
+    end
+    im.SameLine(ctx)
+  end
+  if node.rollup.take_count > 0 and not node.rollup.has_sel then
+    im.TextColored(ctx, 0xDDAA33FF, " !")
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "No Sel chosen yet: no take is ticked as the delivery.")
+    end
+  end
 
-  -- Name: the delivered name + badge, Append behind right-click/double-click.
-  -- The text is CLIPPED to its zone: delivered names are routinely longer
-  -- than the zone, and unclipped they overdraw straight into Where.
-  im.SetCursorScreenPos(ctx, rx + z.name, ry)
+  -- Row 2: the delivered name, full width -- the card's title.
+  im.SetCursorScreenPos(ctx, rx + 22, ry + line_h)
   local base = rep.asset or ""
   local shown = rep.deliver or base
   local clash = rep.line_key ~= nil and shown ~= ""
                 and state.dupe_names[shown] == true
-  im.PushClipRect(ctx, rx + z.name, ry, rx + z.name + z.name_w - 44, ry + 200, true)
   if clash then im.TextColored(ctx, 0xDD6666FF, shown)
   else im.TextDisabled(ctx, shown) end
-  im.PopClipRect(ctx)
   if clash and im.IsItemHovered(ctx) then
     im.SetTooltip(ctx, "Another script line is delivered under this same name.\n" ..
                        "Edit the Append (right-click) to tell them apart.")
@@ -4805,65 +4814,93 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     end
     im.EndPopup(ctx)
   end
-  -- The badge sits at a FIXED offset at the zone's right edge, not SameLine:
-  -- after a clipped text SameLine would still advance past the text's full
-  -- unclipped width and land the badge in the next zone.
-  im.SetCursorScreenPos(ctx, rx + z.name + z.name_w - 40, ry)
-  if rep.script_row then
-    if rec then im.TextColored(ctx, 0x66BB66FF, " ✓" .. tostring(rec.count))
-    else im.TextColored(ctx, 0xDD6666FF, " –") end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, rec
-        and string.format("%d item%s in the project named %s.",
-              rec.count, rec.count == 1 and "" or "s", shown)
-        or  string.format("No item in the project is named %s yet.", shown))
-    end
-  end
-  if node.rollup.take_count > 0 and not node.rollup.has_sel then
-    im.SameLine(ctx)
-    im.TextColored(ctx, 0xDDAA33FF, " !")
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, "No Sel chosen yet: no take is ticked as the delivery.")
-    end
-  end
 
-  -- Where: character chip + script origin, clipped to its zone.
-  if z.show_where then
-    im.SetCursorScreenPos(ctx, rx + z.where, ry)
-    local origin = {}
-    if rep.character and rep.character ~= "" then origin[#origin + 1] = rep.character end
-    if rep.script and rep.script ~= "" then origin[#origin + 1] = rep.script end
-    if rep.script_row then origin[#origin + 1] = tostring(rep.script_row) end
-    local full = table.concat(origin, " · ")
-    im.PushClipRect(ctx, rx + z.where, ry, rx + z.where + z.where_w - 4, ry + 200, true)
-    im.TextDisabled(ctx, full)
-    im.PopClipRect(ctx)
-    if im.IsItemHovered(ctx) then im.SetTooltip(ctx, full) end
-  end
-
-  -- Notes: the line's own note.
-  if z.show_notes then
-    im.SetCursorScreenPos(ctx, rx + z.notes, ry)
-    im.SetNextItemWidth(ctx, z.notes_w)
-    local changed, text = im.InputText(ctx, "##linenote", LineNote(rep))
-    if changed then
-      local captured = text
-      local target = { key = LineNoteKeyOf(rep), source_path = nil,
-                       source_start = nil, asset = rep.asset }
-      pending_action = function() SetNotes(target, captured) end
-    end
-  end
+  -- Row 3: the line text, wrapped to the card.
+  im.SetCursorScreenPos(ctx, rx + 22, ry + line_h * 2)
+  im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + inner_w - 26)
+  wrap_depth = wrap_depth + 1
+  im.Text(ctx, rep.line_text or "")
+  im.PopTextWrapPos(ctx)
+  wrap_depth = wrap_depth - 1
 
   im.EndGroup(ctx)
   local _, gh = im.GetItemRectSize(ctx)
-  rep._band_h = math.max(gh, im.GetFrameHeight(ctx))
+  rep._band_h = math.max(gh, line_h * 3)
 end
 
--- One card: chrome from last frame's height, band, then the open takes.
+-- The drawer: fold-only details between the band and the takes. Noisy
+-- properties live here so the band can stay a title.
+local function DrawCardDrawer(node, z, rx)
+  local rep = node.rep
+  local _, y = im.GetCursorScreenPos(ctx)
+  im.SetCursorScreenPos(ctx, rx + 22, y + 2)
+  im.TextDisabled(ctx, "script: " .. ((rep.script and rep.script ~= "") and rep.script or "—"))
+  im.SameLine(ctx)
+  im.TextDisabled(ctx, "   note:")
+  im.SameLine(ctx)
+  im.SetNextItemWidth(ctx, -CARD_PAD)
+  local changed, text = im.InputText(ctx, "##linenote", LineNote(rep))
+  if changed then
+    local captured = text
+    local target = { key = LineNoteKeyOf(rep), source_path = nil,
+                     source_start = nil, asset = rep.asset }
+    pending_action = function() SetNotes(target, captured) end
+  end
+end
+
+-- Column labels for the take list, drawn once per open card, directly above
+-- the inputs they name.
+local function DrawTakeHeaderRow(z, rx)
+  local _, y = im.GetCursorScreenPos(ctx)
+  local sf = PushCellFont("state")
+  for i, l in ipairs({ "Sel", "Keep", "Lock" }) do
+    im.SetCursorScreenPos(ctx, rx + z.marks + (i - 1) * 34 - 2, y)
+    im.TextDisabled(ctx, l)
+  end
+  im.SetCursorScreenPos(ctx, rx + z.text, y)
+  im.TextDisabled(ctx, "Transcript")
+  im.SetCursorScreenPos(ctx, rx + z.name, y)
+  im.TextDisabled(ctx, "Item name")
+  if z.show_where then
+    im.SetCursorScreenPos(ctx, rx + z.where, y)
+    im.TextDisabled(ctx, "Where")
+  end
+  if z.show_notes then
+    im.SetCursorScreenPos(ctx, rx + z.notes, y)
+    im.TextDisabled(ctx, "Note")
+  end
+  PopCellFont(sf)
+end
+
+-- "I found a take for this line": names the item(s) selected in REAPER for
+-- the line, which IS adding a take here -- the name is the assignment.
+local function DrawAddTakeRow(rep, rx)
+  local _, y = im.GetCursorScreenPos(ctx)
+  im.SetCursorScreenPos(ctx, rx + 22, y + 2)
+  local n_sel = r.CountSelectedMediaItems(0)
+  if n_sel > 0 and rep.asset and rep.asset ~= "" then
+    local label = (n_sel > 1)
+      and string.format("+ Add %d takes from REAPER selection", n_sel)
+      or  "+ Add take from REAPER selection"
+    if im.SmallButton(ctx, label) then
+      local target, name = rep, (rep.deliver or rep.asset)
+      pending_action = function() AssignSelectedItems(target, name) end
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Names the selected item(s) for this line. Several at\n" ..
+                         "once are numbered with the alt pattern.")
+    end
+  else
+    im.TextDisabled(ctx, "+ Add take: select the item in REAPER first")
+  end
+end
+
+-- One card: chrome from last frame's height, band, then (open) the drawer,
+-- the take list under its header, and the add-take affordance.
 local function DrawLineCard(node, z, flat_index, avail_w)
   local rep = node.rep
   local key = LineNodeKey(node)
-  local open = not state.collapsed[key]
+  local open = state.expanded[key] == true
   local dl = im.GetWindowDrawList(ctx)
   local cx, cy = im.GetCursorScreenPos(ctx)
   local card_h = rep._card_full_h or (im.GetFrameHeight(ctx) + CARD_PAD * 2)
@@ -4876,14 +4913,19 @@ local function DrawLineCard(node, z, flat_index, avail_w)
   DrawCardBand(node, z, key, open, cx + CARD_PAD, avail_w)
 
   if open then
-    for ti, t in ipairs(node.takes) do
-      t._take_no = ti
-      im.PushID(ctx, ti)
-      id_depth = id_depth + 1
-      DrawCardTakeRow(t, z, flat_index[t.uid], cx + CARD_PAD)
-      im.PopID(ctx)
-      id_depth = id_depth - 1
+    DrawCardDrawer(node, z, cx + CARD_PAD)
+    if #node.takes > 0 then
+      DrawTakeHeaderRow(z, cx + CARD_PAD)
+      for ti, t in ipairs(node.takes) do
+        t._take_no = ti
+        im.PushID(ctx, ti)
+        id_depth = id_depth + 1
+        DrawCardTakeRow(t, z, flat_index[t.uid], cx + CARD_PAD)
+        im.PopID(ctx)
+        id_depth = id_depth - 1
+      end
     end
+    DrawAddTakeRow(rep, cx + CARD_PAD)
   end
   im.EndGroup(ctx)
   local _, gh = im.GetItemRectSize(ctx)
@@ -4895,6 +4937,7 @@ local function DrawLineCard(node, z, flat_index, avail_w)
   im.SetCursorScreenPos(ctx, cx, cy)
   im.Dummy(ctx, 1, rep._card_full_h + CARD_MARGIN)
 end
+
 
 -- The orphan section is one card of its own: audio the script cannot name.
 local function DrawOrphanCard(node, z, flat_index, avail_w)

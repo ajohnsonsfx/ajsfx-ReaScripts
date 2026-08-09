@@ -3387,12 +3387,12 @@ function vo.SerializeProjectFile(entries, meta)
     for _, key in ipairs(keys) do row("column", key, v.col_filters[key]) end
     -- Which lines were folded shut. Sorted for the same diff-stability reason
     -- as the column filters above.
-    local collapsed = {}
-    for _, k in ipairs(v.collapsed or {}) do
-      if k ~= "" then collapsed[#collapsed + 1] = tostring(k) end
+    local expanded = {}
+    for _, k in ipairs(v.expanded or {}) do
+      if k ~= "" then expanded[#expanded + 1] = tostring(k) end
     end
-    table.sort(collapsed)
-    for _, k in ipairs(collapsed) do row("collapsed", k) end
+    table.sort(expanded)
+    for _, k in ipairs(expanded) do row("expanded", k) end
   end
 
   local rest = {
@@ -3445,7 +3445,7 @@ function vo.ParseProjectFile(text)
   end
 
   local parsed = { version = version, scripts = {}, appends = {},
-                   entries = {}, pins = {}, view = { col_filters = {}, collapsed = {} } }
+                   entries = {}, pins = {}, view = { col_filters = {}, expanded = {} } }
   -- The pre-multi-script format, folded in below only if no Script row appears.
   local legacy_path, legacy_mapping = nil, nil
 
@@ -3482,8 +3482,8 @@ function vo.ParseProjectFile(text)
       elseif what == "filter_row" then parsed.view.filter_row = a ~= ""
       elseif what == "column" and a ~= "" and b ~= "" then
         parsed.view.col_filters[a] = b
-      elseif what == "collapsed" and a ~= "" then
-        parsed.view.collapsed[#parsed.view.collapsed + 1] = a
+      elseif what == "expanded" and a ~= "" then
+        parsed.view.expanded[#parsed.view.expanded + 1] = a
       end
     elseif key == "Pin" then
       local asset, source = rows[i][2] or "", rows[i][3] or ""

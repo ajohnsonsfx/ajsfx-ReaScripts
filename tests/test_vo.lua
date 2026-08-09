@@ -6282,22 +6282,22 @@ end)
 --------------------------------
 print("Collapsed persistence:")
 
-test("view.collapsed round-trips", function()
+test("view.expanded round-trips", function()
   local text = vo.SerializeProjectFile({}, {
     scripts = {}, appends = {}, pins = {},
     view = { character = nil, search = "", filter_row = false,
-             col_filters = {}, collapsed = { "3", "asset:grum_01" } },
+             col_filters = {}, expanded = { "3", "asset:grum_01" } },
   })
   local parsed = assert(vo.ParseProjectFile(text))
-  local got = (parsed.view or {}).collapsed or {}
-  assert(#got == 2, "expected 2 collapsed keys, got " .. #got)
+  local got = (parsed.view or {}).expanded or {}
+  assert(#got == 2, "expected 2 expanded keys, got " .. #got)
   assert(got[1] == "3" and got[2] == "asset:grum_01")
 end)
 
-test("absent collapsed parses as nil/empty without error", function()
+test("absent expanded parses as nil/empty without error", function()
   local text = vo.SerializeProjectFile({}, { scripts = {}, appends = {}, pins = {}, view = {} })
   local parsed = assert(vo.ParseProjectFile(text))
-  local got = (parsed.view or {}).collapsed
+  local got = (parsed.view or {}).expanded
   assert(got == nil or #got == 0)
 end)
 
