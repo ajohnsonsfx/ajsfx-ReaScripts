@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.15beta2
--- @changelog PRE-RELEASE: Sources now detects and repairs transcripts with a swallowed whisper window. Confirmed failure mode: a slate ("Actor reading Character.") followed by a pause at the head of a recording makes whisper emit a gap token that swallows the rest of its first 30-second window -- speech from ~1.4s to the window boundary never decoded, at normal levels, with nothing reported anywhere. After every transcription (fresh or cached), the transcript is scanned for holes of 5 seconds or more; each hole is probed against the recording's own measured noise floor, and a hole that holds speech-level audio -- a swallowed read, not a long silence -- is re-run through whisper on just that span, starting after the word that caused the swallow, and the recovered words are merged into the sidecar before it is written. The end-of-run summary names each repaired file and how many words came back; a repair that fails leaves the transcript as the first pass made it and says so. Everything else is unchanged from 0.15beta1: the card sheet, occupancy-based take resolution, the percentile noise floor, the adopted-row and Sel-routing fixes, and the remote rows command.
+-- @changelog PRE-RELEASE: Sources now detects and repairs transcripts with a swallowed whisper window. Confirmed failure mode: a slate ("Actor reading Character.") followed by a pause at the head of a recording makes whisper emit a gap token that swallows the rest of its first 30-second window -- speech from ~1.4s to the window boundary never decoded, at normal levels, with nothing reported anywhere. After every transcription (fresh or cached), the transcript is scanned for holes of 5 seconds or more; each hole is probed against the recording's own measured noise floor, and a hole that holds speech-level audio -- a swallowed read, not a long silence -- is re-run through whisper on just that span, starting after the word that caused the swallow, and the recovered words are merged into the sidecar before it is written. The end-of-run summary names each repaired file and how many words came back; a repair that fails leaves the transcript as the first pass made it and says so. Everything else is unchanged from 0.15beta1: the card sheet, occupancy-based take resolution, the percentile noise floor, the adopted-row and Sel-routing fixes, and the remote rows command. Also: a take selected in the ARRANGE view is now outlined in the sheet at both levels -- the take row itself and the card that holds it -- and a folded card scrolls into view when its take is selected from the timeline; before, the selection landed on a row a folded card never draws, so clicking an item in the timeline showed nothing in the Overview at all.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -3695,6 +3695,21 @@ local TAKE_BG      = 0x1B2026FF
 local CARD_ROUND   = 4.0
 local CARD_MARGIN  = 5.0   -- vertical space between cards
 local CARD_PAD     = 6.0   -- inner padding
+-- The outline a selected row earns, at BOTH levels: the take row itself and
+-- the card that holds it. The card-level copy is what makes a timeline click
+-- findable in the sheet at all -- the selected take may sit inside a FOLDED
+-- card, where the row (and its highlight) simply does not draw.
+local SEL_OUTLINE  = 0x8FBBE8FF
+
+-- The first of this node's takes that is a selected row, or nil. Selection
+-- lives on take rows (state.selection is keyed by row uid); the card has no
+-- uid of its own, so "is this card selected" is asked of its children.
+local function SelectedTakeOf(node)
+  for _, t in ipairs(node.takes or {}) do
+    if state.selection[t.uid] then return t end
+  end
+  return nil
+end
 
 -- Shared x-offsets, computed once per frame from the available width. Every
 -- zone is used by band and take rows alike, which is what keeps the two
@@ -3904,6 +3919,13 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
   im.EndGroup(ctx)
   local _, gh = im.GetItemRectSize(ctx)
   row._card_h = math.max(gh, im.GetFrameHeight(ctx))
+
+  -- The child half of the selection outline, over the content so the
+  -- Selectable's own fill cannot swallow it.
+  if state.selection[row.uid] then
+    im.DrawList_AddRect(dl, rx + 12, ry - 1,
+      rx + (inner_w or 600), ry + row._card_h + 1, SEL_OUTLINE, 3.0, 0, 1.5)
+  end
 end
 
 -- The card's header band: the line's TITLE, three stacked rows --
@@ -4121,11 +4143,27 @@ local function DrawLineCard(node, z, flat_index, avail_w)
   local card_h = rep._card_full_h or (im.GetFrameHeight(ctx) + CARD_PAD * 2)
 
   im.DrawList_AddRectFilled(dl, cx, cy, cx + avail_w, cy + card_h, CARD_BG, CARD_ROUND)
-  im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + card_h, CARD_OUTLINE, CARD_ROUND)
+  local sel_take = SelectedTakeOf(node)
+  im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + card_h,
+    sel_take and SEL_OUTLINE or CARD_OUTLINE, CARD_ROUND, 0, sel_take and 2.0 or 1.0)
 
   im.SetCursorScreenPos(ctx, cx + CARD_PAD, cy + CARD_PAD)
   im.BeginGroup(ctx)
   DrawCardBand(node, z, key, open, cx + CARD_PAD, avail_w)
+
+  -- A folded card never draws its take rows, so the row-level scroll-to in
+  -- DrawCardTakeRow can never fire for it -- the timeline handoff would light
+  -- a card somewhere off screen and look like it did nothing. The band stands
+  -- in for its hidden children.
+  if not open and state.scroll_to_uid then
+    for _, t in ipairs(node.takes) do
+      if t.uid == state.scroll_to_uid then
+        im.SetScrollHereY(ctx, 0.4)
+        state.scroll_to_uid = nil
+        break
+      end
+    end
+  end
 
   if open then
     DrawCardDrawer(node, z, cx + CARD_PAD)
@@ -4161,7 +4199,9 @@ local function DrawOrphanCard(node, z, flat_index, avail_w)
   local card_h = state._orphan_card_h or (im.GetFrameHeight(ctx) + CARD_PAD * 2)
 
   im.DrawList_AddRectFilled(dl, cx, cy, cx + avail_w, cy + card_h, 0x2C2228FF, CARD_ROUND)
-  im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + card_h, 0x55404AFF, CARD_ROUND)
+  local sel_take = SelectedTakeOf(node)
+  im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + card_h,
+    sel_take and SEL_OUTLINE or 0x55404AFF, CARD_ROUND, 0, sel_take and 2.0 or 1.0)
 
   im.SetCursorScreenPos(ctx, cx + CARD_PAD, cy + CARD_PAD)
   im.BeginGroup(ctx)
