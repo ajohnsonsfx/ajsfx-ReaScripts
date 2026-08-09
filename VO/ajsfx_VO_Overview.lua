@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.15beta2
--- @changelog PRE-RELEASE: Sources now detects and repairs transcripts with a swallowed whisper window. Confirmed failure mode: a slate ("Actor reading Character.") followed by a pause at the head of a recording makes whisper emit a gap token that swallows the rest of its first 30-second window -- speech from ~1.4s to the window boundary never decoded, at normal levels, with nothing reported anywhere. After every transcription (fresh or cached), the transcript is scanned for holes of 5 seconds or more; each hole is probed against the recording's own measured noise floor, and a hole that holds speech-level audio -- a swallowed read, not a long silence -- is re-run through whisper on just that span, starting after the word that caused the swallow, and the recovered words are merged into the sidecar before it is written. The end-of-run summary names each repaired file and how many words came back; a repair that fails leaves the transcript as the first pass made it and says so. Everything else is unchanged from 0.15beta1: the card sheet, occupancy-based take resolution, the percentile noise floor, the adopted-row and Sel-routing fixes, and the remote rows command. Also: a take selected in the ARRANGE view is now outlined in the sheet at both levels -- the take row itself and the card that holds it -- and a folded card scrolls into view when its take is selected from the timeline; before, the selection landed on a row a folded card never draws, so clicking an item in the timeline showed nothing in the Overview at all. The timeline follow is fixed at the root: it matched only rows the sheet was showing, so clicking an item whose line was FOLDED selected nothing at all -- it now matches every filtered take, unfolds the line that holds it, scrolls there, and the outline is drawn after the card content instead of before it, where the band background was painting over its sides. The take list header says Item instead of Where. + Add Take now always shows: with items selected in REAPER it names them for the line as before, with nothing selected it adds a PLANNED take -- an empty row stored in the project file, with notes and marks of its own, whose Item column carries a + that links the REAPER selection to it later (linking names the item and retires the planned row in one stroke). A planned take counts as a take but never makes an unrecorded line read as recorded, and one orphaned by a script edit surfaces in the Not-on-the-script card rather than vanishing. The script name and line note moved out of the fold-only drawer onto the band itself, visible without unfolding; the drawer is gone. A Follow menu on the toolbar governs all of it with three saved toggles: auto scroll, auto unfold, and auto fold on deselect (which only ever folds lines the follow itself opened, and leaves a line alone while any of its takes is selected). The scroll is minimal and directional: it moves only when the take is actually off screen, the WHOLE line card is brought on screen when it fits (a card below lands at the bottom edge, one above at the top), narrowing to the selected take only when the card is taller than the view -- so which edge it arrived at tells you which way the sheet went, and selecting something already visible never nudges the view. And the sheet no longer flickers while you work: cards paint their chrome from last frame's measured heights, and a rebuild -- which any project edit triggers -- replaced every row object and threw the measurements away, so the whole sheet repainted one frame at guessed heights before snapping back. The measurements now survive the rebuild (row uids are stable), and the repaint is seamless.
+-- @changelog PRE-RELEASE: Sources now detects and repairs transcripts with a swallowed whisper window. Confirmed failure mode: a slate ("Actor reading Character.") followed by a pause at the head of a recording makes whisper emit a gap token that swallows the rest of its first 30-second window -- speech from ~1.4s to the window boundary never decoded, at normal levels, with nothing reported anywhere. After every transcription (fresh or cached), the transcript is scanned for holes of 5 seconds or more; each hole is probed against the recording's own measured noise floor, and a hole that holds speech-level audio -- a swallowed read, not a long silence -- is re-run through whisper on just that span, starting after the word that caused the swallow, and the recovered words are merged into the sidecar before it is written. The end-of-run summary names each repaired file and how many words came back; a repair that fails leaves the transcript as the first pass made it and says so. Everything else is unchanged from 0.15beta1: the card sheet, occupancy-based take resolution, the percentile noise floor, the adopted-row and Sel-routing fixes, and the remote rows command. Also: a take selected in the ARRANGE view is now outlined in the sheet at both levels -- the take row itself and the card that holds it -- and a folded card scrolls into view when its take is selected from the timeline; before, the selection landed on a row a folded card never draws, so clicking an item in the timeline showed nothing in the Overview at all. The timeline follow is fixed at the root: it matched only rows the sheet was showing, so clicking an item whose line was FOLDED selected nothing at all -- it now matches every filtered take, unfolds the line that holds it, scrolls there, and the outline is drawn after the card content instead of before it, where the band background was painting over its sides. The take list header says Item instead of Where. + Add Take now always shows: with items selected in REAPER it names them for the line as before, with nothing selected it adds a PLANNED take -- an empty row stored in the project file, with notes and marks of its own, whose Item column carries a + that links the REAPER selection to it later (linking names the item and retires the planned row in one stroke). A planned take counts as a take but never makes an unrecorded line read as recorded, and one orphaned by a script edit surfaces in the Not-on-the-script card rather than vanishing. The script name and line note moved out of the fold-only drawer onto the band itself, visible without unfolding; the drawer is gone. A Follow menu on the toolbar governs all of it with three saved toggles: auto scroll, auto unfold, and auto fold on deselect (which only ever folds lines the follow itself opened, and leaves a line alone while any of its takes is selected). The scroll is minimal and directional: it moves only when the take is actually off screen, the WHOLE line card is brought on screen when it fits (a card below lands at the bottom edge, one above at the top), narrowing to the selected take only when the card is taller than the view -- so which edge it arrived at tells you which way the sheet went, and selecting something already visible never nudges the view. And the sheet no longer flickers while you work: cards paint their chrome from last frame's measured heights, and a rebuild -- which any project edit triggers -- replaced every row object and threw the measurements away, so the whole sheet repainted one frame at guessed heights before snapping back. The measurements now survive the rebuild (row uids are stable), and the repaint is seamless. The band itself is rearranged around the words: the line text now sits quoted on the header row right beside the speaker (4 - Grumbar "Can") instead of two rows down, the delivered name and source script sit labelled (Filename: / Script:) in a left column beneath it, and the line note is a double-height unlabelled box beside them on the right.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -4206,13 +4206,28 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   if node.rollup.locks > 0 then bits[#bits + 1] = node.rollup.locks .. " locked." end
   CardDot(style.colour, table.concat(bits, "\n"))
 
-  -- Speaker chip, where the mark labels used to float: the line's character,
-  -- read at the same glance as its number and status.
+  -- Speaker chip, then the LINE TEXT right beside it: the words are the main
+  -- piece of information on the card, so they read in the same glance as who
+  -- says them -- `4 · Grumbar  "Can"` -- rather than two rows down.
+  local said_x = rx + z.marks
   if rep.character and rep.character ~= "" then
     im.SameLine(ctx)
     im.SetCursorScreenPos(ctx, rx + z.marks, ry)
     im.TextColored(ctx, 0x9FB4C8FF, rep.character)
+    im.SameLine(ctx)
+    said_x = select(1, im.GetCursorScreenPos(ctx)) + 4
   end
+  if rep.line_text and rep.line_text ~= "" then
+    im.SetCursorScreenPos(ctx, said_x, ry)
+    im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + (rx + inner_w - 60 - said_x))
+    wrap_depth = wrap_depth + 1
+    im.Text(ctx, '"' .. rep.line_text .. '"')
+    im.PopTextWrapPos(ctx)
+    wrap_depth = wrap_depth - 1
+  end
+  -- Where the header row actually ended: the line text wraps, so row 2 starts
+  -- below whichever is lower, the wrapped words or the fixed row height.
+  local y2 = math.max(select(2, im.GetCursorScreenPos(ctx)), ry + line_h) + 2
 
   -- Badges, right-aligned on the first row.
   im.SetCursorScreenPos(ctx, rx + inner_w - 52, ry)
@@ -4238,14 +4253,23 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     end
   end
 
-  -- Row 2: the delivered name, full width -- the card's title.
-  im.SetCursorScreenPos(ctx, rx + 22, ry + line_h)
+  -- Left column, rows 2 and 3: the delivered name and the source script,
+  -- labelled. The note field sits beside them on the right, double height so
+  -- the two columns stay parallel.
+  local note_w = math.max(140, math.floor(inner_w * 0.30))
+  local note_x = rx + inner_w - note_w
+
+  im.SetCursorScreenPos(ctx, rx + 22, y2)
+  im.TextDisabled(ctx, "Filename:")
+  im.SameLine(ctx)
   local base = rep.asset or ""
   local shown = rep.deliver or base
   local clash = rep.line_key ~= nil and shown ~= ""
                 and state.dupe_names[shown] == true
+  im.PushClipRect(ctx, rx + 22, y2, note_x - 8, y2 + line_h, true)
   if clash then im.TextColored(ctx, 0xDD6666FF, shown)
   else im.TextDisabled(ctx, shown) end
+  im.PopClipRect(ctx)
   if clash and im.IsItemHovered(ctx) then
     im.SetTooltip(ctx, "Another script line is delivered under this same name.\n" ..
                        "Edit the Append (right-click) to tell them apart.")
@@ -4273,32 +4297,29 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     im.EndPopup(ctx)
   end
 
-  -- Row 3: the line text, wrapped to the card.
-  im.SetCursorScreenPos(ctx, rx + 22, ry + line_h * 2)
-  im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + inner_w - 26)
-  wrap_depth = wrap_depth + 1
-  im.Text(ctx, rep.line_text or "")
-  im.PopTextWrapPos(ctx)
-  wrap_depth = wrap_depth - 1
+  -- Row 3: the source script, under the filename.
+  im.SetCursorScreenPos(ctx, rx + 22, y2 + line_h)
+  local script_name = (rep.script and rep.script ~= "")
+                      and (vo.Basename(rep.script):gsub("%.%w+$", "")) or "—"
+  im.TextDisabled(ctx, "Script: " .. script_name)
+  if rep.script and rep.script ~= "" and im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, rep.script)
+  end
 
-  -- Row 4: the quiet per-line properties, promoted out of the old fold-only
-  -- drawer -- the card has the room, and a note you can only see by unfolding
-  -- is a note you forget you wrote. Drawn in flow (row 3's wrap height is not
-  -- knowable up front), inside the band group so the band's own measure and
-  -- fold-click surface grow to hold it.
-  local _, y4 = im.GetCursorScreenPos(ctx)
-  im.SetCursorScreenPos(ctx, rx + 22, y4 + 2)
-  im.TextDisabled(ctx, "script: " .. ((rep.script and rep.script ~= "") and rep.script or "—"))
-  im.SameLine(ctx)
-  im.TextDisabled(ctx, "   note:")
-  im.SameLine(ctx)
-  im.SetNextItemWidth(ctx, -CARD_PAD)
-  local nchanged, ntext = im.InputText(ctx, "##linenote", LineNote(rep))
+  -- The line note, right column: double height to sit parallel with the
+  -- Filename and Script rows. No label -- the tooltip says what it is, and
+  -- the label was spending the exact space the note wants.
+  im.SetCursorScreenPos(ctx, note_x, y2)
+  local nchanged, ntext = im.InputTextMultiline(ctx, "##linenote", LineNote(rep),
+                                                note_w, line_h * 2)
   if nchanged then
     local captured = ntext
     local target = { key = LineNoteKeyOf(rep), source_path = nil,
                      source_start = nil, asset = rep.asset }
     pending_action = function() SetNotes(target, captured) end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Note on the line itself (a take's note lives on its row).")
   end
 
   im.EndGroup(ctx)

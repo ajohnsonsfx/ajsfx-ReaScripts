@@ -141,14 +141,14 @@ an unfolded parent and its neighbour ambiguous. A card's own chrome answers
 "where does this line end", and take rows sit on their own colour inside it,
 so the two levels can never be mistaken for one another.
 
-Each card is a **title band**, always visible, of four stacked rows:
+Each card is a **title band**, always visible, of a header row and two
+parallel columns:
 
 | | |
 |---|---|
-| **who** | fold arrow · script position · status dot · speaker · badges, right-aligned: `✓N` delivered, `!` when the line has takes but no Sel |
-| **file** | the delivered name (CSV filename + Append), full width, red on a clash — the line's identity, so it reads before the words |
-| **said** | the line text, wrapped to the card |
-| **props** | source script name · the line note, editable in place — promoted from the old fold-only drawer, because a note you can only see by unfolding is a note you forget you wrote |
+| **who + said** | fold arrow · script position · status dot · speaker · **the line text**, quoted, right beside the speaker — the words are the main piece of information on the card, so they read in the same glance as who says them (`4 · Grumbar "Can"`) · badges right-aligned: `✓N` delivered, `!` when the line has takes but no Sel |
+| **left column** | `Filename:` the delivered name (CSV filename + Append), red on a clash · `Script:` the source script |
+| **right column** | the line note, editable in place, double height to sit parallel with Filename + Script, unlabelled — promoted from the old fold-only drawer, because a note you can only see by unfolding is a note you forget you wrote |
 
 Clicking **anywhere on the band** folds or unfolds; the arrow is an indicator,
 not the only target. Unfolding adds, in order: a header row naming the take
