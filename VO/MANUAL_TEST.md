@@ -672,3 +672,33 @@ marker gestures are exactly what the mock cannot reach.
    `tkm|<id>`).
 9. Marker-less lines still resolve through the match, unchanged -- a fresh
    project before any Cut looks exactly as it did.
+
+## Adopt session + gap repair on cut sessions (2026-08-09)
+
+The ingest path for a session that was cut and edited BEFORE this tool
+arrived: transcribe, load the script, **Adopt session**, Pull. Verified
+headlessly against the Grumbar session on 2026-08-09 (items reset to the
+recording's name, sidecars removed, everything re-ingested); the checks
+below are the GUI-side confirmations of the same paths.
+
+1. On a project of already-cut items named after the recording, press
+   **Adopt session** (Cut panel). Every matched item takes its line's
+   delivered name at its CURRENT edges -- no item edge moves, no split
+   happens, and the message counts marked / named / already named / left
+   alone. One Ctrl+Z reverts the whole adoption.
+2. Press it again: "already named" absorbs the previous run, 0 renames.
+3. Rename one item by hand to a DIFFERENT script line's name, then Adopt.
+   That item is counted "named for another line and left alone" -- the
+   match never overwrites an assignment.
+4. Pull after Adopt: the named items route to Selects/Review normally.
+5. **Gap repair now fires on cut sessions.** Delete a transcript sidecar in
+   a project where the recording exists only as clips (no full-length item),
+   re-transcribe: the whisper cache answers instantly, and the repair pass
+   probes the WHOLE file through a temporary full-length item -- watch the
+   track count flicker by one during the scan, and confirm no stray track
+   remains after. A swallowed window (the Grumbar 1.4-30s head) comes back
+   with its words merged and the Sources message reporting the recovery.
+6. Make the source unreadable (rename the wav briefly) and re-run: the
+   report says the hole "could not be checked" and names why, instead of
+   passing it as silence.
+7. The remote seam knows `adopt` and `mark_takes`; `help` lists both.
