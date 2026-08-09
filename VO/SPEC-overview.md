@@ -74,17 +74,17 @@ Clearing a row's marks removes it from the file. See `VO/SPEC.md` §4.2 for the
 full format, which this window owns.
 
 `View` rows in the preamble hold how the table was last left: the character
-filter, the search box, whether the per-column filter row is showing, and each
-column's filter needle. Only what is actually set is written,
-so an unfiltered table adds nothing to the file. They live here rather than in
+filter, the search box, whether the per-column filter row is showing, each
+column's filter needle, and which lines are folded shut
+(`View,collapsed,<line key>`, one row each). Only what is actually set is
+written, so an unfiltered, fully unfolded table adds nothing to the file. They live here rather than in
 the global ExtState that holds the appearance settings because a character
 filter names *this project's* characters. A restored filter naming a status or
 column this version no longer has is dropped on load, and a restored character
 that matches no row — the script changed, or its Character column is no longer
 mapped — is dropped the first time there are rows to check it against, so the
-table can never open empty with no visible reason. The **sort** is not stored
-here: ImGui owns the header clicks and keeps the sort spec in its own ini,
-beside the column widths (§9).
+table can never open empty with no visible reason. There is no **sort** to
+store: since 0.15 the table is always in script order (§4).
 
 `vo.ParseProjectFile` never raises. A file mangled by a spreadsheet round-trip
 returns `nil, reason`, and Overview then **refuses to save** rather than
@@ -132,8 +132,31 @@ matches on its full path.
 
 ### Rows
 
-One unified list. Every script line appears; a line with several takes appears
-once per take, as sibling rows.
+The table is a **tree** (0.15): one parent row per script line, its takes
+nested beneath, lettered `A, B, C … Z, AA, AB` (`vo.TakeLetter`). Six columns
+ask one question each, and every column is answered twice — the parent answers
+for the LINE, the take rows answer for the TAKE, so each cell is correlated
+with the cell directly above it:
+
+| | **#** | **State** | **Text** | **Name** | **Where** | **Notes** |
+|---|---|---|---|---|---|---|
+| **Line** | script position + fold arrow | status dot · Got badge · `!` when no Sel is ticked | line text | delivered name (CSV filename + Append) | script CSV · row | line note |
+| **Take** | take letter | status dot · Sel/Keep/Lock checkboxes | transcript | the item's own name, editable | recording @ time | take note |
+
+The checkbox columns are labelled by a slim **sub-header row drawn once per
+expanded line**, not in the frozen header. A **character group header** row
+appears whenever the character changes (script order makes characters
+contiguous), replacing the old Character column. Text and Notes are the only
+stretch columns, so a narrow window squeezes prose, never checkboxes. There is
+**no display sorting** — the table is always in script order; arranging the
+timeline is the Sort panel's job. Folding is per line, persisted in the
+project file (`View,collapsed,<line key>` rows), with `+`/`-` toolbar buttons
+for all lines at once.
+
+Internally the flat row model survives unchanged: `vo.GroupOverview` folds the
+rows into typed nodes (character / line-with-takes / orphans) and
+`vo.FilterGroups` decides visibility per LINE — a match on any take keeps the
+whole line, takes travelling with it.
 
 | Status | Means |
 |---|---|
@@ -180,6 +203,13 @@ the transport.
 Changing a filter drops now-hidden rows from the selection. That is deliberate,
 not a side effect: it is what stops the layout tool below from moving items the
 user cannot see.
+
+Folding is different from filtering, on purpose. A folded line's takes leave
+the selection and the shift-range walk (`state.visible` — what the eye sees)
+but stay in **tool scope** (`state.filtered` — every take the filters admit):
+folding is how the table is tidied, and tidying must not silently shrink what
+Cut and Name acts on. Clicking a parent's State cell selects the line's takes
+in one go.
 
 ### Laying out the timeline
 
@@ -288,30 +318,33 @@ the Settings dialog.
 
 ### Interactions
 
-- **Click a row** — moves the edit cursor there, seeks playback, selects the item.
-- **OK checkbox** — marks verified. `Space` toggles the selected row, but only
-  when no text field has focus, or typing a space in Notes would fire it.
-- **Select checkbox** — the user's explicit choice of which take of a line
+- **Click a take row** — moves the edit cursor there, seeks playback, selects
+  the item. Parents don't navigate: their arrow folds, their State cell
+  selects their takes.
+- **Lock checkbox** — marks verified; rematching leaves the take where it is.
+- **Sel checkbox** — the user's explicit choice of which take of a line
   Cut should act on; there is no first/last default any more, only what the
   user ticks (`VO/SPEC.md` §7). Ticking one clears the rest of its group, so
   the project file can never hold two selects for one filename.
-- **Item name** — editable, and the only thing Overview writes to the project.
-  It shows the take's *live* name, so a rename made anywhere else in REAPER
-  appears here too. Committed on Enter or on losing focus, never per keystroke,
-  so each commit is one undo point. The name is sanitized, applied to the take
-  inside a `core.Transaction`, and recorded in the project file so it survives
-  the item being deleted. Take name is what REAPER's render patterns read; that
-  is the whole point of editing it here.
-- **CSV filename** — read-only, beside it. The script's own name for the line,
-  kept on screen so a rename never leaves the user unable to find the original.
-  Nothing here renames a file on disk.
-- **Notes** — editable free text, saved to the project file.
+- **Name (take)** — editable, and the only thing Overview writes to the
+  project. It shows the take's *live* name, so a rename made anywhere else in
+  REAPER appears here too. Committed on Enter or on losing focus, never per
+  keystroke, so each commit is one undo point. The name is sanitized, applied
+  to the take inside a `core.Transaction`, and recorded in the project file so
+  it survives the item being deleted. Take name is what REAPER's render
+  patterns read; that is the whole point of editing it here.
+- **Name (line)** — read-only in place: the delivered name, i.e. the script's
+  own filename plus any Append, kept directly above the take names so drift
+  is a visible vertical diff. The **Append** is edited on demand — double-click
+  or right-click the cell — because it is rare; red marks a delivered-name
+  clash until an Append separates the two lines.
+- **Notes** — editable free text at both levels, saved to the project file.
+  Line notes back onto `linenote|`-keyed entries no row claims, carried over
+  explicitly by every save.
 
-Filters: status, character, and a text search across filename, line, transcript
-and notes. Sorting is an explicit droplist rather than clickable headers —
-ImGui's sort-spec API is unused elsewhere in this repo and the version risk was
-not worth it for v1. Script order is the default and the stable tiebreak for
-every other sort.
+Filters: character, per-column boxes, and a text search across filename, line,
+transcript and notes — all selecting LINES, with takes travelling whole. There
+is no display sorting of any kind (0.15): script order is the one order.
 
 ### Refresh
 
@@ -513,16 +546,14 @@ by ImGui itself, into `REAPER/ReaImGui/<hash>.ini`. Everything else lives in
   one thing rather than hiding a layer that reappears when it is turned back on.
 - `view_font_small` / `view_font_medium` / `view_font_large` — the point sizes
   behind the three presets. Medium is 13, the size the table has always drawn at.
-- `view_col_<key>_align` / `_wrap` / `_font` — per column.
-- `view_mirror_text` — pins Line text and Transcript to one another. The two
-  columns exist to be read against each other, so their alignment, wrap and font
-  are kept identical; changing either changes both, and Line text is copied to
-  Transcript when the setting is switched on. Enforced on write AND on load, so
-  a hand-edited store cannot open with the box ticked and the columns
-  disagreeing.
+- `view_col_<key>_align` / `_wrap` / `_font` — per column. Keys are the 0.15
+  column set (`order`, `state`, `sel`, `keep`, `lock`, `text`, `name`, `where`,
+  `notes`); values stored under pre-0.15 keys are simply never read again.
 
-Column WIDTH is deliberately absent from the mirror, and cannot be added:
-ReaImGui exposes no `TableSetColumnWidth` or `TableGetColumnWidth`, widths live
+The pre-0.15 `view_mirror_text` setting is gone with the columns it paired:
+line text and transcript now share the one Text column, so there is nothing
+left to mirror. Column WIDTH cannot be set from a script either way: ReaImGui
+exposes no `TableSetColumnWidth` or `TableGetColumnWidth`, widths live
 entirely in ImGui's own saved table state, and `TableSetupColumn`'s initial
 width is ignored once a layout exists.
 
@@ -548,7 +579,7 @@ cannot fail that way.
 
 The cost is one frame of lag, which is not perceptible at frame rate.
 
-The Item name and Notes cells are shaded across their whole area with
+The take Name and Notes cells are shaded across their whole area with
 `TableSetBgColor`, and their inputs draw with all three `FrameBg` colours
 transparent. Growing each input's own frame to fill its cell was tried first and
 could not be made to land: a frame reaches its height through `FramePadding`,
