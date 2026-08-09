@@ -3796,6 +3796,90 @@ local function DrawFilterRow()
   end
 end
 
+-- The take row's right-click menu, shared by every renderer that draws take
+-- rows. Assumes it is called between BeginPopupContextItem and EndPopup.
+-- Right-click acts on the whole selection when this row is part of it, and
+-- on this row alone when it is not -- so right-clicking somewhere else never
+-- silently operates on rows you had selected earlier.
+local function DrawTakeRowMenu(row)
+  local targets = state.selection[row.uid] and SelectedRows() or { row }
+  local label = (#targets > 1)
+    and string.format("Find candidates for %d lines", #targets)
+    or  "Find candidates"
+  if im.MenuItem(ctx, label) then
+    pending_action = function() RunCandidateSearch(targets) end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Every place in the transcripts this line could sit,\n" ..
+                       "with what is around it. Looks only -- changes nothing.")
+  end
+
+  im.Separator(ctx)
+
+  -- Assigning is naming. An item named for a line IS that line's take --
+  -- that is what every tool here reads -- so "this item is for that line"
+  -- needs no pin, no stored mapping and no time selection. It uses what is
+  -- already selected in REAPER, which is what you have in your hand after
+  -- cutting or comping something.
+  local n_sel = r.CountSelectedMediaItems(0)
+  local can_assign = (#targets == 1) and n_sel > 0
+                     and row.asset and row.asset ~= ""
+  local assign_label = (n_sel > 1)
+    and string.format("Assign %d selected items to this line", n_sel)
+    or  "Assign selected item to this line"
+  if im.MenuItem(ctx, assign_label, nil, nil, can_assign) then
+    local target, name = row, (row.deliver or row.asset)
+    pending_action = function() AssignSelectedItems(target, name) end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, n_sel > 0
+      and ("Names the item(s) selected in REAPER \"" ..
+           tostring(row.deliver or row.asset) .. "\".\n\n" ..
+           "Several at once are numbered with the alt pattern, so the\n" ..
+           "first is the line and the rest are its alts.")
+      or  "Select the item in REAPER first.")
+  end
+
+  -- Changing your mind after a pull is a SWAP, driven from the sheet:
+  -- this take gets the plain name and the Selects track, the old select
+  -- gets a free alt name and the Alts track. (Moving items between
+  -- tracks by hand decides nothing -- the name is the assignment.)
+  local can_make = (#targets == 1) and row.item
+                   and row.asset and row.asset ~= ""
+  if im.MenuItem(ctx, "Make this take the Select", nil, nil, can_make) then
+    local target = row
+    pending_action = function() MakeSelect(target) end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx,
+      "This take gets the line's delivered name and the Selects track;\n" ..
+      "the current select becomes an alt. One undo step.")
+  end
+
+  im.Separator(ctx)
+
+  -- Pinning is one line at a time on purpose: a time selection is one
+  -- stretch of audio, and it cannot be several lines at once.
+  local can_lock = (#targets == 1) and row.asset and row.asset ~= ""
+  if im.MenuItem(ctx, "Lock to time selection", nil, nil, can_lock) then
+    pending_action = function()
+      local at, why = TimeSelectionAsSource()
+      if at then
+        LockHere(row, at.source, at.start, at.stop)
+      else
+        state.message, state.message_kind = why, "error"
+      end
+    end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, #targets > 1
+      and "Select one row to lock: a time selection is one stretch of audio."
+      or  "Say that THIS stretch of audio is this take, whatever\n" ..
+          "identification thinks. Select the audio in REAPER first.\n\n" ..
+          "Untick Lock to hand it back.")
+  end
+end
+
 -- -----------------------------------------------------------------------
 -- Node rows
 --
@@ -4095,83 +4179,7 @@ local function DrawTakeRow(row, take_no, vis_index)
   -- on this row alone when it is not -- so right-clicking somewhere else
   -- never silently operates on rows you had selected earlier.
   if im.BeginPopupContextItem(ctx, "##row_menu") then
-    local targets = state.selection[row.uid] and SelectedRows() or { row }
-    local label = (#targets > 1)
-      and string.format("Find candidates for %d lines", #targets)
-      or  "Find candidates"
-    if im.MenuItem(ctx, label) then
-      pending_action = function() RunCandidateSearch(targets) end
-    end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, "Every place in the transcripts this line could sit,\n" ..
-                         "with what is around it. Looks only -- changes nothing.")
-    end
-
-    im.Separator(ctx)
-
-    -- Assigning is naming. An item named for a line IS that line's take --
-    -- that is what every tool here reads -- so "this item is for that line"
-    -- needs no pin, no stored mapping and no time selection. It uses what is
-    -- already selected in REAPER, which is what you have in your hand after
-    -- cutting or comping something.
-    local n_sel = r.CountSelectedMediaItems(0)
-    local can_assign = (#targets == 1) and n_sel > 0
-                       and row.asset and row.asset ~= ""
-    local assign_label = (n_sel > 1)
-      and string.format("Assign %d selected items to this line", n_sel)
-      or  "Assign selected item to this line"
-    if im.MenuItem(ctx, assign_label, nil, nil, can_assign) then
-      local target, name = row, (row.deliver or row.asset)
-      pending_action = function() AssignSelectedItems(target, name) end
-    end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, n_sel > 0
-        and ("Names the item(s) selected in REAPER \"" ..
-             tostring(row.deliver or row.asset) .. "\".\n\n" ..
-             "Several at once are numbered with the alt pattern, so the\n" ..
-             "first is the line and the rest are its alts.")
-        or  "Select the item in REAPER first.")
-    end
-
-    -- Changing your mind after a pull is a SWAP, driven from the sheet:
-    -- this take gets the plain name and the Selects track, the old select
-    -- gets a free alt name and the Alts track. (Moving items between
-    -- tracks by hand decides nothing -- the name is the assignment.)
-    local can_make = (#targets == 1) and row.item
-                     and row.asset and row.asset ~= ""
-    if im.MenuItem(ctx, "Make this take the Select", nil, nil, can_make) then
-      local target = row
-      pending_action = function() MakeSelect(target) end
-    end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx,
-        "This take gets the line's delivered name and the Selects track;\n" ..
-        "the current select becomes an alt. One undo step.")
-    end
-
-    im.Separator(ctx)
-
-    -- Pinning is one line at a time on purpose: a time selection is one
-    -- stretch of audio, and it cannot be several lines at once.
-    local can_lock = (#targets == 1) and row.asset and row.asset ~= ""
-    if im.MenuItem(ctx, "Lock to time selection", nil, nil, can_lock) then
-      pending_action = function()
-        local at, why = TimeSelectionAsSource()
-        if at then
-          LockHere(row, at.source, at.start, at.stop)
-        else
-          state.message, state.message_kind = why, "error"
-        end
-      end
-    end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, #targets > 1
-        and "Select one row to lock: a time selection is one stretch of audio."
-        or  "Say that THIS stretch of audio is this take, whatever\n" ..
-            "identification thinks. Select the audio in REAPER first.\n\n" ..
-            "Untick Lock to hand it back.")
-    end
-
+    DrawTakeRowMenu(row)
     im.EndPopup(ctx)
   end
   im.SameLine(ctx)
@@ -4442,6 +4450,528 @@ local function DrawTableBody()
     im.PopID(ctx)
     id_depth = id_depth - 1
   end
+end
+
+-- -----------------------------------------------------------------------
+-- Cards (prototype renderer)
+--
+-- The same node list the table drew, drawn as one CARD per script line
+-- instead: a header band answering for the LINE, take rows beneath
+-- answering for the TAKE. No ImGui table -- alignment is shared x-offsets
+-- (the ZONES below), and the card chrome, not cell borders, says where a
+-- line begins and ends. Vertical correlation survives: transcript sits in
+-- the same zone as the line text above it, the item name under the
+-- delivered name, the recording position under the script origin.
+--
+-- Heights are measured, never predicted, exactly like the table rows: a
+-- card paints its background from LAST frame's measurement, so a card's
+-- first frame paints slightly short and settles on the next -- invisible
+-- at frame rate, and the price the table already paid for the same answer.
+-- -----------------------------------------------------------------------
+
+local CARD_BG      = 0x26262CFF
+local CARD_OUTLINE = 0x3A3A44FF
+local BAND_BG      = 0x31313CFF
+local CARD_ROUND   = 4.0
+local CARD_MARGIN  = 5.0   -- vertical space between cards
+local CARD_PAD     = 6.0   -- inner padding
+
+-- Shared x-offsets, computed once per frame from the available width. Every
+-- zone is used by band and take rows alike, which is what keeps the two
+-- levels correlated without a table's grid.
+local function CardZones(w)
+  local z = { lead = 0, marks = 78, text = 186 }
+  local name_w  = 180
+  local where_w = 150
+  -- Prose gets what is left, split between the text being read and the
+  -- notes beside it. Below ~720px the Where zone drops to a tooltip, below
+  -- ~540 the Notes zone goes too: at those widths they were unreadable
+  -- slivers, and the text is why the window is open.
+  z.show_where = w >= 720
+  z.show_notes = w >= 540
+  local fixed = z.text + name_w + (z.show_where and where_w or 0) + CARD_PAD * 2
+  local free  = math.max(160, w - fixed)
+  local notes_w = z.show_notes and math.floor(free * 0.32) or 0
+  z.text_w  = free - notes_w
+  z.name    = z.text + z.text_w + 6
+  z.where   = z.name + name_w + 6
+  z.where_w = where_w
+  z.notes   = z.show_where and (z.where + where_w + 6) or (z.name + name_w + 6)
+  z.notes_w = notes_w
+  z.name_w  = name_w
+  return z
+end
+
+-- A dot with the status behind it. `words` is the tooltip.
+local function CardDot(colour, words)
+  im.TextColored(ctx, colour, "●")
+  if words and words ~= "" and im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, words)
+  end
+end
+
+-- One take row inside a card. The row spans the card, a click anywhere that
+-- is not a widget selects, and the widgets sit at the zone offsets.
+local function DrawCardTakeRow(row, z, vis_index, x0)
+  local dl = im.GetWindowDrawList(ctx)
+  local row_h = row._card_h or im.GetFrameHeight(ctx)
+  local rx, ry = im.GetCursorScreenPos(ctx)
+
+  -- The spanning selectable first, so widgets drawn after it win the click.
+  local sel_flags = 0
+  local overlap = Api('SelectableFlags_AllowOverlap')
+  if overlap then sel_flags = overlap end
+  if im.Selectable(ctx, "##take", state.selection[row.uid] == true, sel_flags, 0, row_h) then
+    local captured = ReadModifiers()
+    local at = vis_index
+    pending_action = function() ClickRow(row, at, captured) end
+  end
+  if state.scroll_to_uid == row.uid then
+    im.SetScrollHereY(ctx, 0.4)
+    state.scroll_to_uid = nil
+  end
+  if im.IsItemHovered(ctx) and not row.item then
+    im.SetTooltip(ctx, "The audio for this row is not in this project.")
+  end
+  if im.BeginPopupContextItem(ctx, "##take_menu") then
+    DrawTakeRowMenu(row)
+    im.EndPopup(ctx)
+  end
+
+  -- Now the content, drawn back at the row's own top.
+  im.SetCursorScreenPos(ctx, rx, ry)
+  im.BeginGroup(ctx)
+
+  -- Lead: take letter, dim, then the status dot.
+  im.SetCursorScreenPos(ctx, rx + 18, ry)
+  im.TextDisabled(ctx, vo.TakeLetter and vo.TakeLetter(row._take_no or 0) or "")
+  im.SameLine(ctx)
+  local style = STATUS_STYLE[row.status]
+  local words = row.user_status == "flagged" and "Flagged" or (style and style.label or "")
+  if row.score and row.status == "review" then
+    words = string.format("%s -- match confidence %.0f%%", words, row.score * 100)
+    if row.in_sequence == false then
+      words = words .. "\nAnd it does not sit where the rest of the read says\nthis line should be."
+    end
+  end
+  CardDot(row.user_status == "flagged" and 0xDD6666FF or (style and style.colour or 0x9999AAFF), words)
+
+  -- Marks: three checkboxes on the shared offsets.
+  local orphan = row.status == "orphan"
+  if not orphan then
+    local function MarkTargets()
+      if not state.selection[row.uid] then return { row } end
+      local out = {}
+      for _, r2 in ipairs(SelectedRows()) do
+        if r2.status ~= "orphan" then out[#out + 1] = r2 end
+      end
+      return out
+    end
+    im.SetCursorScreenPos(ctx, rx + z.marks, ry)
+    local hit, now = im.Checkbox(ctx, "##sel", row.user_select == true)
+    if hit then
+      local targets = MarkTargets()
+      pending_action = function()
+        for _, r2 in ipairs(targets) do SetSelect(r2, now) end
+      end
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Sel: the take you are delivering. One per line.\n" ..
+                         "On a highlighted row, every highlighted row follows.")
+    end
+    im.SameLine(ctx)
+    im.SetCursorScreenPos(ctx, rx + z.marks + 34, ry)
+    local khit, know = im.Checkbox(ctx, "##keep", row.user_keep == true)
+    if khit then
+      local targets = MarkTargets()
+      pending_action = function()
+        for _, r2 in ipairs(targets) do SetKeep(r2, know) end
+      end
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Keep: a read worth keeping; Pull delivers it as an alt.\n" ..
+                         "Independent of Sel. Any number per line.")
+    end
+    im.SameLine(ctx)
+    im.SetCursorScreenPos(ctx, rx + z.marks + 68, ry)
+    local checked = row.user_status == "verified"
+    local lhit, lnow = im.Checkbox(ctx, "##lock", checked)
+    if lhit then pending_action = function() SetLock(row, lnow) end end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, checked and "Locked here. Rematching will not move it."
+                                  or "Lock: rematching leaves this take where it is.")
+    end
+  end
+
+  -- Text: the transcript, wrapped inside its zone.
+  im.SetCursorScreenPos(ctx, rx + z.text, ry)
+  im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + z.text_w)
+  wrap_depth = wrap_depth + 1
+  if row.score and row.status == "review" then
+    im.TextColored(ctx, 0xDDAA33FF, row.transcript or "")
+  else
+    im.TextDisabled(ctx, row.transcript or "")
+  end
+  im.PopTextWrapPos(ctx)
+  wrap_depth = wrap_depth - 1
+
+  -- Name: the item's own name, editable.
+  im.SetCursorScreenPos(ctx, rx + z.name, ry)
+  local shown = row.take_name or row.name_override or row.deliver or row.asset or ""
+  if not row.item then
+    im.TextDisabled(ctx, "(no item)")
+    TooltipEvenWhenDisabled(
+      "This take matched the transcript, but no item in this project plays\n" ..
+      "that stretch of " .. vo.Basename(row.source_path or "the source") .. ".")
+  else
+    im.SetNextItemWidth(ctx, z.name_w)
+    local fchanged, fname = im.InputText(ctx, "##fn", shown,
+                                         im.InputTextFlags_EnterReturnsTrue)
+    if fchanged or im.IsItemDeactivatedAfterEdit(ctx) then
+      if fname ~= shown then
+        local captured = fname
+        pending_action = function() Rename(row, captured) end
+      end
+    end
+    if im.BeginPopupContextItem(ctx, "##take_name_menu") then
+      if im.MenuItem(ctx, "Copy") then Copy(shown) end
+      local can_reset = shown ~= (row.deliver or row.asset or "")
+      if im.MenuItem(ctx, "Reset item name", nil, nil, can_reset) then
+        pending_action = function() ResetName(row) end
+      end
+      im.EndPopup(ctx)
+    end
+  end
+
+  -- Where: which recording, and when. Dropped to the name tooltip when the
+  -- window is too narrow for it to be legible.
+  local place = row.source_path
+    and (vo.Basename(row.source_path) .. " @ " .. FormatTime(row.proj_time)) or ""
+  if z.show_where then
+    im.SetCursorScreenPos(ctx, rx + z.where, ry)
+    im.PushClipRect(ctx, rx + z.where, ry, rx + z.where + z.where_w - 4, ry + 200, true)
+    im.TextDisabled(ctx, place)
+    im.PopClipRect(ctx)
+    if row.source_path and im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, row.source_path .. "\n\nDouble-click to open in ajsfx VO Sources.")
+      if im.IsMouseDoubleClicked(ctx, 0) then
+        local captured = row.source_path
+        pending_action = function()
+          r.SetExtState(vo.EXT_SECTION, "focus_source", captured, false)
+          local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
+          if not ok then state.message, state.message_kind = tostring(why), "error" end
+        end
+      end
+    end
+  end
+
+  -- Notes.
+  if z.show_notes then
+    im.SetCursorScreenPos(ctx, rx + z.notes, ry)
+    im.SetNextItemWidth(ctx, z.notes_w)
+    local nchanged, notes = im.InputText(ctx, "##notes", row.notes or "")
+    if nchanged then
+      local captured = notes
+      pending_action = function() SetNotes(row, captured) end
+    end
+  end
+
+  im.EndGroup(ctx)
+  local _, gh = im.GetItemRectSize(ctx)
+  row._card_h = math.max(gh, im.GetFrameHeight(ctx))
+end
+
+-- The card's header band: everything that answers for the LINE.
+local function DrawCardBand(node, z, key, open, x0, band_w)
+  local rep = node.rep
+  local dl = im.GetWindowDrawList(ctx)
+  local rx, ry = im.GetCursorScreenPos(ctx)
+  local band_h = rep._band_h or im.GetFrameHeight(ctx)
+
+  im.DrawList_AddRectFilled(dl, rx - CARD_PAD, ry - 3,
+    rx - CARD_PAD + band_w, ry + band_h + 3, BAND_BG, CARD_ROUND)
+
+  -- Band click selects the line's takes; the arrow folds.
+  local overlap = Api('SelectableFlags_AllowOverlap')
+  if im.Selectable(ctx, "##band", false, overlap or 0, 0, band_h) then
+    local takes = node.takes
+    if #takes > 0 then
+      pending_action = function()
+        local all = true
+        for _, t in ipairs(takes) do
+          if not state.selection[t.uid] then all = false break end
+        end
+        for _, t in ipairs(takes) do
+          state.selection[t.uid] = (not all) and true or nil
+        end
+        SyncProjectSelection()
+      end
+    end
+  end
+  if #node.takes > 0 and im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, string.format("%d take%s. Click selects them; the arrow folds.",
+      #node.takes, #node.takes == 1 and "" or "s"))
+  end
+
+  im.SetCursorScreenPos(ctx, rx, ry)
+  im.BeginGroup(ctx)
+
+  -- Lead: fold arrow + line number + the line's dot.
+  if #node.takes > 0 then
+    if im.Selectable(ctx, (open and "v" or ">") .. "##fold", false, 0, 14, band_h) then
+      if state.collapsed[key] then state.collapsed[key] = nil
+      else state.collapsed[key] = true end
+      state.dirty = true
+    end
+    im.SameLine(ctx)
+  else
+    im.Dummy(ctx, 14, 1)
+    im.SameLine(ctx)
+  end
+  im.SetCursorScreenPos(ctx, rx + 18, ry)
+  im.Text(ctx, tostring(rep.order or ""))
+  im.SameLine(ctx)
+
+  local style = STATUS_STYLE[node.rollup.status] or STATUS_STYLE.missing
+  local rec = rep.script_row and DELIVERY(rep.script_row)
+  local bits = { style.label }
+  bits[#bits + 1] = rec and (tostring(rec.count) .. " delivered") or "Nothing delivered yet."
+  if node.rollup.take_count > 0 and not node.rollup.has_sel then
+    bits[#bits + 1] = "No Sel chosen yet."
+  end
+  if node.rollup.locks > 0 then bits[#bits + 1] = node.rollup.locks .. " locked." end
+  CardDot(style.colour, table.concat(bits, "\n"))
+
+  -- Marks zone on the band: the tick labels, once per card, over the
+  -- checkboxes they name. Only when there ARE boxes below -- on a foldee
+  -- or a missing line the labels would be labelling nothing.
+  if open and #node.takes > 0 then
+    local sf = PushCellFont("state")
+    -- One label per box, at the box's own offset (+4 to sit over its centre)
+    -- -- a single spaced string drifts off the checkbox grid.
+    for i, letter in ipairs({ "S", "K", "L" }) do
+      im.SetCursorScreenPos(ctx, rx + z.marks + (i - 1) * 34 + 4, ry)
+      im.TextDisabled(ctx, letter)
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Sel / Keep / Lock, in the order the boxes sit below.")
+      end
+    end
+    PopCellFont(sf)
+  end
+
+  -- Text: the line text, the reason the card exists.
+  im.SetCursorScreenPos(ctx, rx + z.text, ry)
+  im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + z.text_w)
+  wrap_depth = wrap_depth + 1
+  im.Text(ctx, rep.line_text or "")
+  im.PopTextWrapPos(ctx)
+  wrap_depth = wrap_depth - 1
+
+  -- Name: the delivered name + badge, Append behind right-click/double-click.
+  -- The text is CLIPPED to its zone: delivered names are routinely longer
+  -- than the zone, and unclipped they overdraw straight into Where.
+  im.SetCursorScreenPos(ctx, rx + z.name, ry)
+  local base = rep.asset or ""
+  local shown = rep.deliver or base
+  local clash = rep.line_key ~= nil and shown ~= ""
+                and state.dupe_names[shown] == true
+  im.PushClipRect(ctx, rx + z.name, ry, rx + z.name + z.name_w - 44, ry + 200, true)
+  if clash then im.TextColored(ctx, 0xDD6666FF, shown)
+  else im.TextDisabled(ctx, shown) end
+  im.PopClipRect(ctx)
+  if clash and im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Another script line is delivered under this same name.\n" ..
+                       "Edit the Append (right-click) to tell them apart.")
+  end
+  local open_append = false
+  if rep.line_key and im.IsItemHovered(ctx) and im.IsMouseDoubleClicked(ctx, 0) then
+    open_append = true
+  end
+  if base ~= "" and im.BeginPopupContextItem(ctx, "##band_name_menu") then
+    if im.MenuItem(ctx, "Copy") then Copy(shown) end
+    if im.MenuItem(ctx, "Edit Append", nil, nil, rep.line_key ~= nil) then
+      open_append = true
+    end
+    im.EndPopup(ctx)
+  end
+  if open_append then im.OpenPopup(ctx, "##append_edit") end
+  if im.BeginPopup(ctx, "##append_edit") then
+    im.Text(ctx, "Append to " .. base .. ":")
+    im.SetNextItemWidth(ctx, 200)
+    local achanged, atext = im.InputText(ctx, "##append", rep.append or "")
+    if achanged then
+      local captured = atext
+      pending_action = function() SetAppend(rep, captured) end
+    end
+    im.EndPopup(ctx)
+  end
+  -- The badge sits at a FIXED offset at the zone's right edge, not SameLine:
+  -- after a clipped text SameLine would still advance past the text's full
+  -- unclipped width and land the badge in the next zone.
+  im.SetCursorScreenPos(ctx, rx + z.name + z.name_w - 40, ry)
+  if rep.script_row then
+    if rec then im.TextColored(ctx, 0x66BB66FF, " ✓" .. tostring(rec.count))
+    else im.TextColored(ctx, 0xDD6666FF, " –") end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, rec
+        and string.format("%d item%s in the project named %s.",
+              rec.count, rec.count == 1 and "" or "s", shown)
+        or  string.format("No item in the project is named %s yet.", shown))
+    end
+  end
+  if node.rollup.take_count > 0 and not node.rollup.has_sel then
+    im.SameLine(ctx)
+    im.TextColored(ctx, 0xDDAA33FF, " !")
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "No Sel chosen yet: no take is ticked as the delivery.")
+    end
+  end
+
+  -- Where: character chip + script origin, clipped to its zone.
+  if z.show_where then
+    im.SetCursorScreenPos(ctx, rx + z.where, ry)
+    local origin = {}
+    if rep.character and rep.character ~= "" then origin[#origin + 1] = rep.character end
+    if rep.script and rep.script ~= "" then origin[#origin + 1] = rep.script end
+    if rep.script_row then origin[#origin + 1] = tostring(rep.script_row) end
+    local full = table.concat(origin, " · ")
+    im.PushClipRect(ctx, rx + z.where, ry, rx + z.where + z.where_w - 4, ry + 200, true)
+    im.TextDisabled(ctx, full)
+    im.PopClipRect(ctx)
+    if im.IsItemHovered(ctx) then im.SetTooltip(ctx, full) end
+  end
+
+  -- Notes: the line's own note.
+  if z.show_notes then
+    im.SetCursorScreenPos(ctx, rx + z.notes, ry)
+    im.SetNextItemWidth(ctx, z.notes_w)
+    local changed, text = im.InputText(ctx, "##linenote", LineNote(rep))
+    if changed then
+      local captured = text
+      local target = { key = LineNoteKeyOf(rep), source_path = nil,
+                       source_start = nil, asset = rep.asset }
+      pending_action = function() SetNotes(target, captured) end
+    end
+  end
+
+  im.EndGroup(ctx)
+  local _, gh = im.GetItemRectSize(ctx)
+  rep._band_h = math.max(gh, im.GetFrameHeight(ctx))
+end
+
+-- One card: chrome from last frame's height, band, then the open takes.
+local function DrawLineCard(node, z, flat_index, avail_w)
+  local rep = node.rep
+  local key = LineNodeKey(node)
+  local open = not state.collapsed[key]
+  local dl = im.GetWindowDrawList(ctx)
+  local cx, cy = im.GetCursorScreenPos(ctx)
+  local card_h = rep._card_full_h or (im.GetFrameHeight(ctx) + CARD_PAD * 2)
+
+  im.DrawList_AddRectFilled(dl, cx, cy, cx + avail_w, cy + card_h, CARD_BG, CARD_ROUND)
+  im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + card_h, CARD_OUTLINE, CARD_ROUND)
+
+  im.SetCursorScreenPos(ctx, cx + CARD_PAD, cy + CARD_PAD)
+  im.BeginGroup(ctx)
+  DrawCardBand(node, z, key, open, cx + CARD_PAD, avail_w)
+
+  if open then
+    for ti, t in ipairs(node.takes) do
+      t._take_no = ti
+      im.PushID(ctx, ti)
+      id_depth = id_depth + 1
+      DrawCardTakeRow(t, z, flat_index[t.uid], cx + CARD_PAD)
+      im.PopID(ctx)
+      id_depth = id_depth - 1
+    end
+  end
+  im.EndGroup(ctx)
+  local _, gh = im.GetItemRectSize(ctx)
+  rep._card_full_h = gh + CARD_PAD * 2
+
+  -- The card's footprint is a real ITEM, not a bare cursor move: ImGui only
+  -- grows the scrolling child from submitted items, and EndChild raises if
+  -- the last thing before it was a SetCursorScreenPos.
+  im.SetCursorScreenPos(ctx, cx, cy)
+  im.Dummy(ctx, 1, rep._card_full_h + CARD_MARGIN)
+end
+
+-- The orphan section is one card of its own: audio the script cannot name.
+local function DrawOrphanCard(node, z, flat_index, avail_w)
+  local dl = im.GetWindowDrawList(ctx)
+  local cx, cy = im.GetCursorScreenPos(ctx)
+  local card_h = state._orphan_card_h or (im.GetFrameHeight(ctx) + CARD_PAD * 2)
+
+  im.DrawList_AddRectFilled(dl, cx, cy, cx + avail_w, cy + card_h, 0x2C2228FF, CARD_ROUND)
+  im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + card_h, 0x55404AFF, CARD_ROUND)
+
+  im.SetCursorScreenPos(ctx, cx + CARD_PAD, cy + CARD_PAD)
+  im.BeginGroup(ctx)
+  im.TextDisabled(ctx, "Not on the script")
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Recorded audio whose transcript matches no script line.")
+  end
+  for ti, t in ipairs(node.takes) do
+    t._take_no = ti
+    im.PushID(ctx, ti)
+    id_depth = id_depth + 1
+    DrawCardTakeRow(t, z, flat_index[t.uid], cx + CARD_PAD)
+    im.PopID(ctx)
+    id_depth = id_depth - 1
+  end
+  im.EndGroup(ctx)
+  local _, gh = im.GetItemRectSize(ctx)
+  state._orphan_card_h = gh + CARD_PAD * 2
+
+  im.SetCursorScreenPos(ctx, cx, cy)
+  im.Dummy(ctx, 1, state._orphan_card_h + CARD_MARGIN)
+end
+
+local function DrawCardsBody(avail_w)
+  local z = CardZones(avail_w)
+  if #state.nodes == 0 then
+    im.TextDisabled(ctx, #state.overview == 0
+      and "Nothing to show yet. Load a script CSV, or transcribe a recording in ajsfx VO Sources."
+      or  "No rows match the current filters.")
+    return
+  end
+  local flat_index = {}
+  for i, row in ipairs(state.visible) do flat_index[row.uid] = i end
+  for ni, node in ipairs(state.nodes) do
+    if node.kind == "line" or node.kind == "orphans" then
+      im.PushID(ctx, ni)
+      id_depth = id_depth + 1
+      if node.kind == "line" then
+        DrawLineCard(node, z, flat_index, avail_w)
+      else
+        DrawOrphanCard(node, z, flat_index, avail_w)
+      end
+      im.PopID(ctx)
+      id_depth = id_depth - 1
+    end
+    -- Character nodes draw nothing: the character rides each band's Where
+    -- zone instead of spending a row.
+  end
+end
+
+local function DrawCards(height)
+  if not im.BeginChild(ctx, "vo_cards", 0, height) then return end
+  local avail_w = select(1, im.GetContentRegionAvail(ctx)) - 2
+  local ok, err = pcall(DrawCardsBody, avail_w)
+  while id_depth > 0 do
+    im.PopID(ctx)
+    id_depth = id_depth - 1
+  end
+  while font_depth > 0 do
+    im.PopFont(ctx)
+    font_depth = font_depth - 1
+  end
+  while wrap_depth > 0 do
+    im.PopTextWrapPos(ctx)
+    wrap_depth = wrap_depth - 1
+  end
+  im.EndChild(ctx)
+  if not ok then state.message, state.message_kind = tostring(err), "error" end
 end
 
 local function DrawTable(height)
@@ -5251,7 +5781,7 @@ local function loop()
 
     -- GetContentRegionAvail returns width first, so height is the SECOND value.
     local _, avail_h = im.GetContentRegionAvail(ctx)
-    DrawTable(math.max(120, avail_h - im.GetFrameHeightWithSpacing(ctx) * rows))
+    DrawCards(math.max(120, avail_h - im.GetFrameHeightWithSpacing(ctx) * rows))
 
     im.TextDisabled(ctx, string.format("%d of %d rows shown.",
       #state.visible, #state.overview))
