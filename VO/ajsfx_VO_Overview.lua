@@ -242,6 +242,7 @@ local state = {
   -- view section: a reopened project looks the way it was left.
   collapsed     = {},
   nodes         = {},         -- the filtered draw list: vo.FilterGroups output
+  filtered      = {},         -- every take the filters admit; tool scope
 
   filter_row    = false,      -- the per-column filter boxes under the header
   col_filters   = {},         -- column key -> needle
@@ -1693,22 +1694,32 @@ local function ApplyFilters()
 
   state.nodes = vo.FilterGroups(vo.GroupOverview(state.overview), Matches)
 
-  -- The flat take list every existing consumer keeps reading: selection
-  -- ranges, SelectedRows, tool scoping, the remote `rows` dump. Parents and
-  -- headers are not in it -- only takes are selectable or actionable. Takes
-  -- of a COLLAPSED line are left out too, so a shift-range matches what the
-  -- eye sees and the selection never outlives visibility.
-  local out = {}
+  -- Two flat take lists, deliberately distinct:
+  --   state.filtered  every take of every line the FILTERS admit. Tool scope
+  --                   (AffectedRows) reads this: folding a line shut is
+  --                   tidiness, and must not silently shrink what Cut acts on.
+  --   state.visible   what the eye can actually see -- filtered minus the
+  --                   takes of collapsed lines. Selection, ranges and the
+  --                   timeline follow read this, so a shift-range matches the
+  --                   screen and the selection never outlives visibility.
+  -- Parents and headers are in neither: only takes are selectable/actionable.
+  local filtered, out = {}, {}
   for _, node in ipairs(state.nodes) do
     if node.kind == "line" then
-      if not state.collapsed[LineNodeKey(node)] then
-        for _, t in ipairs(node.takes) do out[#out + 1] = t end
+      local open = not state.collapsed[LineNodeKey(node)]
+      for _, t in ipairs(node.takes) do
+        filtered[#filtered + 1] = t
+        if open then out[#out + 1] = t end
       end
     elseif node.kind == "orphans" then
-      for _, t in ipairs(node.takes) do out[#out + 1] = t end
+      for _, t in ipairs(node.takes) do
+        filtered[#filtered + 1] = t
+        out[#out + 1] = t
+      end
     end
   end
 
+  state.filtered = filtered
   state.visible = out
 
   -- The selection never outlives the filter. Keeping hidden rows selected would
@@ -1932,7 +1943,9 @@ local function AffectedRows()
     local sel = SelectedRows()
     if #sel > 0 then return sel, true end
   end
-  return state.visible, false
+  -- Filtered, not visible: a line folded shut is still in scope. Folding is
+  -- how the table is tidied, not how a run is narrowed.
+  return state.filtered, false
 end
 
 -- The items Pull and Sort may act on, in timeline order, each carrying the name
@@ -2207,7 +2220,7 @@ local function DrawScopeToggle(id)
       "Off: act on every row the filters are showing (%d).\n" ..
       "On: act on the rows selected in the table (%d).\n\n" ..
       "Off by default because clicking a row to listen to it also selects it.",
-      #state.visible, #SelectedRows()))
+      #(state.filtered or {}), #SelectedRows()))
   end
 end
 
@@ -3317,8 +3330,7 @@ local function DrawFilters()
     state.dirty = true
   end
   if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Show a filter box under each column header.\n" ..
-                       "Click a header to sort by that column.")
+    im.SetTooltip(ctx, "Show a filter box under each column header.")
   end
   if filtering then
     im.SameLine(ctx)
@@ -3326,6 +3338,27 @@ local function DrawFilters()
       state.col_filters = {}
       state.dirty = true
     end
+  end
+  im.SameLine(ctx)
+
+  -- Fold every line at once. Folding is per line and persisted; these two
+  -- are just the bulk versions of clicking every arrow.
+  if im.Button(ctx, "+") then
+    state.collapsed = {}
+    state.dirty = true
+  end
+  if im.IsItemHovered(ctx) then im.SetTooltip(ctx, "Unfold every line.") end
+  im.SameLine(ctx)
+  if im.Button(ctx, "-") then
+    for _, node in ipairs(vo.GroupOverview(state.overview)) do
+      if node.kind == "line" and #node.takes > 0 then
+        state.collapsed[LineNodeKey(node)] = true
+      end
+    end
+    state.dirty = true
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Fold every line, leaving one row per script line.")
   end
   im.SameLine(ctx)
 
@@ -3920,8 +3953,28 @@ local function DrawParentRow(node, key, open)
       #node.takes, #node.takes == 1 and "" or "s", open and "fold" or "unfold"))
   end
 
-  -- State: the dot, and the line's whole story in its tooltip.
+  -- State: the dot, and the line's whole story in its tooltip. A click here
+  -- selects the line's takes (all of them, or none if all were selected) --
+  -- the bulk version of clicking each take row.
   im.TableSetColumnIndex(ctx, CI.state)
+  if #node.takes > 0 then
+    local overlap = Api('SelectableFlags_AllowOverlap')
+    local pflags = overlap or 0
+    if im.Selectable(ctx, "##pline", false, pflags, 0, row_h) then
+      local takes = node.takes
+      pending_action = function()
+        local all = true
+        for _, t in ipairs(takes) do
+          if not state.selection[t.uid] then all = false break end
+        end
+        for _, t in ipairs(takes) do
+          state.selection[t.uid] = (not all) and true or nil
+        end
+        SyncProjectSelection()
+      end
+    end
+    im.SameLine(ctx)
+  end
   local style = STATUS_STYLE[node.rollup.status] or STATUS_STYLE.missing
   local sf = PushCellFont("state")
   AlignCell("state", row_h, im.GetTextLineHeight(ctx))
@@ -4010,9 +4063,10 @@ local function DrawTakeRow(row, take_no, vis_index)
   BeginRowMeasure(row)
   im.TableNextRow(ctx)
 
-  -- # : the take number. The nesting says which line it belongs to.
+  -- # : the take LETTER (A, B, C...). The nesting says which line it
+  -- belongs to; a letter cannot be mistaken for another script position.
   im.TableSetColumnIndex(ctx, CI.order)
-  CellText(row, "order", CI.order, row_h, "  " .. tostring(take_no), "disabled")
+  CellText(row, "order", CI.order, row_h, "  " .. vo.TakeLetter(take_no), "disabled")
 
   -- State ----------------------------------------------------------------
   -- Drawn first in the row and spanning it, so a click anywhere that is not

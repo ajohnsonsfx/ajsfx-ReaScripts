@@ -6257,6 +6257,27 @@ test("orphan takes filter individually and empty section vanishes", function()
 end)
 
 --------------------------------
+-- TakeLetter
+--------------------------------
+print("TakeLetter:")
+
+test("takes letter A through Z then AA, AB, BA", function()
+  assert(vo.TakeLetter(1) == "A", "1 -> " .. vo.TakeLetter(1))
+  assert(vo.TakeLetter(2) == "B")
+  assert(vo.TakeLetter(26) == "Z")
+  assert(vo.TakeLetter(27) == "AA", "27 -> " .. vo.TakeLetter(27))
+  assert(vo.TakeLetter(28) == "AB")
+  assert(vo.TakeLetter(52) == "AZ")
+  assert(vo.TakeLetter(53) == "BA", "53 -> " .. vo.TakeLetter(53))
+end)
+
+test("zero, negative and nil letter as empty", function()
+  assert(vo.TakeLetter(0) == "")
+  assert(vo.TakeLetter(-3) == "")
+  assert(vo.TakeLetter(nil) == "")
+end)
+
+--------------------------------
 -- Collapsed persistence
 --------------------------------
 print("Collapsed persistence:")

@@ -3894,6 +3894,21 @@ function vo.GroupOverview(rows)
   return nodes
 end
 
+-- Take rows are lettered, not numbered: A, B, C ... Z, AA, AB (spreadsheet
+-- columns -- bijective base 26). Letters read as "which take" where a bare
+-- number beside the line's # would read as another position.
+function vo.TakeLetter(n)
+  n = math.floor(tonumber(n) or 0)
+  if n < 1 then return "" end
+  local out = ""
+  while n > 0 do
+    local rem = (n - 1) % 26
+    out = string.char(65 + rem) .. out
+    n = math.floor((n - 1) / 26)
+  end
+  return out
+end
+
 -- Line-level visibility: filters choose LINES, and a line travels whole.
 -- `match` sees take rows and line reps alike -- both are overview rows, so
 -- one predicate (character, search, per-column needles) serves both.
