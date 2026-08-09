@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.15beta3
--- @changelog PRE-RELEASE: recorded takes now live in RANGED TAKE MARKERS -- one visible, draggable marker per performance, drawn inside the items in the arrange view and named for the script line. The marker IS the take: drag it and the sheet follows with every Sel, Keep, note and lock attached; alt-drag its end to resize the take; delete it and the take leaves the sheet. Cut writes the markers first and splits at their bounds, so every clip is born knowing which performance it is -- and Cut refuses to re-slice audio a marker already owns, reporting the skips with a Re-cut anyway that deletes those markers deliberately. The transcript match becomes a one-time generator rather than a live authority: once a line has markers, the match never gets to reinterpret it. A Mark takes button migrates a session cut before markers existed, banking each take at its item's CURRENT edges -- hand-fixed cut points become stored, visible truth. Clean stray take markers prunes the off-window copies item splits leave behind; the tool never touches markers it did not write. Sel and Keep also read the timeline now: an item sitting on the Selects track ticks Sel, one on Alts ticks Keep, so marks scrambled by a re-match heal themselves from where the audio actually is. NOTE ON FIRST OPEN: a blank mark now means "no opinion" rather than "no", so lines whose items already sit on Selects will tick themselves the first time you open an existing project -- those items ARE the selects, Pull is what put them there. Un-ticking one writes a real "no" that sticks, and ticking one take's Sel clears its siblings the same way. A Repair panel reconciles the rest: takes whose mark disagrees with the track their item is on (Adopt timeline, or Adopt sheet to re-run Pull), markers whose audio has been deleted, and marks left with nothing to attach to. This build also carries the earlier 0.15beta work: the card sheet, the selection outline and minimal directional follow-scroll, planned takes, and whisper gap repair in Sources.
+-- @version 0.15beta4
+-- @changelog PRE-RELEASE: ingesting a session that was cut and edited BEFORE this tool arrived is now one button. "Adopt session" (Cut panel, or the remote seam's `adopt`) writes a take marker for every matched take at its item's CURRENT edges and names the item for its script line -- cutting nothing, moving nothing, and never overwriting a name that already means a line, so re-running it is safe and Pull can route the session immediately after. Previously the only naming path was Cut and Name, which re-slices hand-fixed edges to fit whisper word timings. Also fixed: transcript gap repair silently repaired NOTHING on a session already cut into clips -- the audio probe read the source through the first clip that referenced it, and a take accessor is bounded by its item, so everything outside that clip's window measured as silence and every suspect hole passed as "genuine silence". The probe now uses an item that shows the whole file, or a temporary full-length one when no such item exists, so the swallowed-window repair fires no matter how the session is cut. Holes the repair could NOT check (unreadable audio, no measurable noise floor) are now reported by name instead of silently skipped. The remote seam also gains `mark_takes`. This build carries the earlier 0.15beta work: ranged take markers, the card sheet, planned takes, and whisper gap repair in Sources. -- one visible, draggable marker per performance, drawn inside the items in the arrange view and named for the script line. The marker IS the take: drag it and the sheet follows with every Sel, Keep, note and lock attached; alt-drag its end to resize the take; delete it and the take leaves the sheet. Cut writes the markers first and splits at their bounds, so every clip is born knowing which performance it is -- and Cut refuses to re-slice audio a marker already owns, reporting the skips with a Re-cut anyway that deletes those markers deliberately. The transcript match becomes a one-time generator rather than a live authority: once a line has markers, the match never gets to reinterpret it. A Mark takes button migrates a session cut before markers existed, banking each take at its item's CURRENT edges -- hand-fixed cut points become stored, visible truth. Clean stray take markers prunes the off-window copies item splits leave behind; the tool never touches markers it did not write. Sel and Keep also read the timeline now: an item sitting on the Selects track ticks Sel, one on Alts ticks Keep, so marks scrambled by a re-match heal themselves from where the audio actually is. NOTE ON FIRST OPEN: a blank mark now means "no opinion" rather than "no", so lines whose items already sit on Selects will tick themselves the first time you open an existing project -- those items ARE the selects, Pull is what put them there. Un-ticking one writes a real "no" that sticks, and ticking one take's Sel clears its siblings the same way. A Repair panel reconciles the rest: takes whose mark disagrees with the track their item is on (Adopt timeline, or Adopt sheet to re-run Pull), markers whose audio has been deleted, and marks left with nothing to attach to. This build also carries the earlier 0.15beta work: the card sheet, the selection outline and minimal directional follow-scroll, planned takes, and whisper gap repair in Sources.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -1094,7 +1094,15 @@ end
 -- view. Match rows whose audio is still uncut get their marker from the
 -- match span, on the recording item covering it. The migration for sessions
 -- cut before markers existed; new sessions never need it, Cut writes its own.
-local function MarkTakesFromSession()
+--
+-- With `adopt`, the same pass also NAMES each matched take's item for its
+-- line, at the item's current edges, cutting nothing -- the ingest path for
+-- a session that was cut and edited before this tool arrived. Cut and Name
+-- would re-slice those hand-fixed edges to fit whisper word timings; Pull
+-- routes by name and so does nothing until the names exist. Adopt is the
+-- bridge between them. Names that already resolve to a script line are
+-- assignments the user stated and are never overwritten (vo.PlanAdopt).
+local function MarkTakesFromSession(adopt)
   Reload()
   local taken = TakenMarkerIds()
   local per_item = {}   -- item -> { list = markers to add }
@@ -1127,13 +1135,43 @@ local function MarkTakesFromSession()
     end
   end
 
-  if marked == 0 then
-    state.message, state.message_kind =
-      "Nothing to mark: every take already has a marker.", "info"
+  -- Adoption reads the CURRENT name of every matched item and plans only the
+  -- renames that are not already assignments -- so a second run is a no-op,
+  -- and a name the user set by hand survives every run.
+  local renames, adopt_counts = {}, nil
+  if adopt then
+    local cfg = vo.LoadConfig()
+    local takes = {}
+    for _, row in ipairs(state.overview) do
+      if row.take_index and not row.planned and row.status ~= "orphan"
+         and row.item then
+        local take = r.GetActiveTake(row.item)
+        if take then
+          local _, name = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+          takes[#takes + 1] = {
+            item    = row.item,
+            name    = name or "",
+            deliver = row.deliver or row.asset,
+            sel     = row.user_select == true,
+          }
+        end
+      end
+    end
+    renames, adopt_counts = vo.PlanAdopt(takes, vo.BuildNameIndex(state.lines),
+                                         { alt_pattern = cfg.alt_append_pattern })
+  end
+
+  if marked == 0 and #renames == 0 then
+    state.message, state.message_kind = adopt
+      and "Nothing to adopt: every take has its marker and its name."
+      or  "Nothing to mark: every take already has a marker.", "info"
     return
   end
 
-  core.Transaction("VO Overview: mark takes", function()
+  if #renames > 0 then state.name_baseline = nil end
+
+  core.Transaction(adopt and "VO Overview: adopt session"
+                          or "VO Overview: mark takes", function()
     for item, rec in pairs(per_item) do
       -- Existing tool markers ride along, same rule as Cut's writes.
       local ok0, chunk0 = r.GetItemStateChunk(item, "", false)
@@ -1148,6 +1186,12 @@ local function MarkTakesFromSession()
       end
       vo.WriteTakeMarkers(item, rec.list)
     end
+    for _, rn in ipairs(renames) do
+      local take = r.GetActiveTake(rn.item)
+      if take then
+        r.GetSetMediaItemTakeInfo_String(take, "P_NAME", rn.name, true)
+      end
+    end
   end)
 
   -- The marks ride along: each rekeyed entry now lives under the marker id,
@@ -1157,10 +1201,29 @@ local function MarkTakesFromSession()
   end
   state.dirty = true
   Reload()
-  state.message, state.message_kind = string.format(
-    "Marked %d take(s).%s", marked,
-    no_audio > 0
-      and string.format(" %d row(s) had no audio to mark.", no_audio) or ""), "ok"
+  if adopt then
+    local c = adopt_counts or {}
+    local parts = { string.format(
+      "Adopted the session: %d take(s) marked, %d item(s) named for their lines.",
+      marked, #renames) }
+    if (c.already or 0) > 0 then
+      parts[#parts + 1] = string.format("%d already named.", c.already)
+    end
+    if (c.assigned or 0) > 0 then
+      parts[#parts + 1] = string.format(
+        "%d named for another line and left alone.", c.assigned)
+    end
+    if no_audio > 0 then
+      parts[#parts + 1] = string.format("%d row(s) had no audio.", no_audio)
+    end
+    parts[#parts + 1] = "Press Pull to route them."
+    state.message, state.message_kind = table.concat(parts, " "), "ok"
+  else
+    state.message, state.message_kind = string.format(
+      "Marked %d take(s).%s", marked,
+      no_audio > 0
+        and string.format(" %d row(s) had no audio to mark.", no_audio) or ""), "ok"
+  end
 end
 
 -- Split residue and hand-copied leftovers: tool markers whose range does not
@@ -3456,6 +3519,18 @@ local function DrawCutPanel()
   end
 
   im.SameLine(ctx)
+  if im.Button(ctx, "Adopt session") then
+    pending_action = function() MarkTakesFromSession(true) end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "For a session cut or edited BEFORE this tool: Mark takes plus\n" ..
+                       "name every matched item for its script line, at the item's\n" ..
+                       "current edges. Nothing is cut and nothing moves -- press Pull\n" ..
+                       "after. A name that already means a line is never overwritten,\n" ..
+                       "so re-running it is safe.")
+  end
+
+  im.SameLine(ctx)
   if im.Button(ctx, "Close##cut") then state.panel = nil end
   im.SameLine(ctx)
 
@@ -5500,10 +5575,10 @@ end
 
 local REMOTE_SECTION = "ajsfx_vo_remote"
 local REMOTE_HELP =
-  "status | rematch | cut | pull | name_alts | sort script|record | " ..
-  "set selection_only 0|1 | dupes | append script|asset|nth|text | " ..
-  "rows [needle] | spans <needle> | missing | boundaries | verify | " ..
-  "make_select <takename> | place | tighten"
+  "status | rematch | cut | adopt | mark_takes | pull | name_alts | " ..
+  "sort script|record | set selection_only 0|1 | dupes | " ..
+  "append script|asset|nth|text | rows [needle] | spans <needle> | " ..
+  "missing | boundaries | verify | make_select <takename> | place | tighten"
 
 local function RemoteStatus()
   local c, parts = state.check or {}, {}
@@ -5541,6 +5616,14 @@ local function RunRemoteCommand(command)
   elseif verb == "cut" then
     DoCut()
     return state.cut_result or "cut ran with no result string"
+  elseif verb == "adopt" then
+    -- The ingest verb for a pre-cut session: mark + name at current edges,
+    -- cut nothing. See MarkTakesFromSession.
+    MarkTakesFromSession(true)
+    return state.message or "adopt ran with no result string"
+  elseif verb == "mark_takes" then
+    MarkTakesFromSession()
+    return state.message or "mark_takes ran with no result string"
   elseif verb == "pull" then
     Pull()
     return state.pull_result or "pull ran with no result string"

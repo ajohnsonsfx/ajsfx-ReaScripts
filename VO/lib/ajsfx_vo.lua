@@ -1,7 +1,7 @@
 -- @description ajsfx VO Shared Library
 -- @author ajsfx
--- @version 0.7
--- @changelog Take identity via ranged take markers: the TKM chunk line's undocumented length field becomes the tool's substrate (ParseTKMChunk / PatchTKMChunk / FormatTKMLine), CountingMarkers applies the coverage rule that absorbs split residue, and BuildOverview builds a marked line's takes from its markers instead of the match. Sel/Keep become tri-state so a blank can defer to the track the item sits on, and PlanReconcile reports where the sheet and the timeline disagree. Also, from 0.6: transcript gap repair for whisper's swallowed-window failure.
+-- @version 0.8
+-- @changelog PlanAdopt: the pure planner behind "Adopt session" -- rename matched items to their lines at current edges, never overwriting a name that already resolves to a line. MakeSourceProbe now probes through an item that shows the WHOLE source, or a temporary full-length item when the session is already cut into clips (take accessors are item-bounded; the old first-item probe read silence outside one clip's window, which made gap repair a silent no-op on cut sessions). RepairTranscriptGaps reports holes it could not check instead of passing them as silence. From 0.7: take identity via ranged take markers: the TKM chunk line's undocumented length field becomes the tool's substrate (ParseTKMChunk / PatchTKMChunk / FormatTKMLine), CountingMarkers applies the coverage rule that absorbs split residue, and BuildOverview builds a marked line's takes from its markers instead of the match. Sel/Keep become tri-state so a blank can defer to the track the item sits on, and PlanReconcile reports where the sheet and the timeline disagree. Also, from 0.6: transcript gap repair for whisper's swallowed-window failure.
 -- @noindex
 -- @about Shared logic for the ajsfx VO windows.
 --        Split into a pure layer (parsing, normalization, matching, naming —
@@ -847,6 +847,71 @@ function vo.PlanPull(items, lines, marks)
   end
 
   return moves, summary
+end
+
+-- Adopting a session cut before this tool arrived: plan the renames that make
+-- the project's names say what the match found, at the items' CURRENT edges,
+-- cutting nothing. Cut and Name would re-slice hand-fixed edits to fit whisper
+-- word timings; this is the ingest path that treats the user's editing as the
+-- truth and only fills in the names Pull needs to route.
+--
+-- A name that resolves to ANY script line -- including one this match
+-- disagrees with, one claimed by two lines, or an alt-suffixed one -- is an
+-- assignment the user (or a previous run) stated, and the match, being a
+-- guess, never overwrites it. Only names the script does not know (a raw
+-- recording filename, REAPER's default clip name) are adoptable.
+--
+-- `takes` are { item = <id>, name = <current take name>, deliver = <the
+-- line's delivered name>, sel = <true when the row carries SEL> }; several
+-- rows may share an item, and the SEL row speaks for it. `index` comes from
+-- vo.BuildNameIndex; opts.alt_pattern is the Pull panel's alt pattern.
+-- Returns renames { { item, name } } in input order, and counts
+-- { renamed, already, assigned, no_name }.
+function vo.PlanAdopt(takes, index, opts)
+  opts = opts or {}
+  local by_item, order = {}, {}
+  for _, t in ipairs(takes or {}) do
+    if t.item ~= nil then
+      local cur = by_item[t.item]
+      if not cur then
+        order[#order + 1] = t.item
+        by_item[t.item] = t
+      elseif t.sel and not cur.sel then
+        by_item[t.item] = t
+      end
+    end
+  end
+
+  local function is_assignment(name)
+    local key = vo.NormalizeItemName(name)
+    if key == "" then return false end
+    if (index or {})[key] ~= nil then return true end  -- false = claimed twice
+    if opts.alt_pattern then
+      local base = vo.StripAltSuffix(name, opts.alt_pattern)
+      if base and (index or {})[vo.NormalizeItemName(base)] ~= nil then
+        return true
+      end
+    end
+    return false
+  end
+
+  local renames = {}
+  local counts = { renamed = 0, already = 0, assigned = 0, no_name = 0 }
+  for _, id in ipairs(order) do
+    local t = by_item[id]
+    local deliver = t.deliver or ""
+    if deliver == "" then
+      counts.no_name = counts.no_name + 1
+    elseif vo.NormalizeItemName(t.name or "") == vo.NormalizeItemName(deliver) then
+      counts.already = counts.already + 1
+    elseif is_assignment(t.name or "") then
+      counts.assigned = counts.assigned + 1
+    else
+      renames[#renames + 1] = { item = id, name = vo.SanitizeName(deliver) }
+      counts.renamed = counts.renamed + 1
+    end
+  end
+  return renames, counts
 end
 
 -- The alt naming convention belongs to whoever the delivery is for, so it is
@@ -5598,24 +5663,78 @@ end
 -- Returns: probe or nil, destroy (ALWAYS call it), duration or nil.
 -- UNVERIFIED outside REAPER — see SPEC.md §10.
 function vo.MakeSourceProbe(path)
+  -- An item that shows the WHOLE file probes in place ...
   for _, info in ipairs(vo.CollectProjectSpans()) do
     if info.path == path and not info.skip then
       local take = r.GetActiveTake(info.item)
-      local probe, destroy = vo.MakeTakeProbe(take)
-      if probe then
-        local src = r.GetMediaItemTake_Source(take)
-        local duration = src and r.GetMediaSourceLength
-                         and r.GetMediaSourceLength(src) or nil
-        local function probe_src(t0, t1)
-          return probe(vo.SourceTimeToProject(t0, info),
-                       vo.SourceTimeToProject(t1, info))
+      local src  = take and r.GetMediaItemTake_Source(take)
+      local full = src and r.GetMediaSourceLength
+                   and r.GetMediaSourceLength(src) or nil
+      local shown = (info.length or 0) * (info.playrate or 1)
+      if full and (info.start_offs or 0) <= 0.01 and shown >= full - 0.01 then
+        local probe, destroy = vo.MakeTakeProbe(take)
+        if probe then
+          local function probe_src(t0, t1)
+            return probe(vo.SourceTimeToProject(t0, info),
+                         vo.SourceTimeToProject(t1, info))
+          end
+          return probe_src, destroy, full
         end
-        return probe_src, destroy, duration
+        destroy()
       end
-      destroy()
     end
   end
-  return nil, function() end, nil
+  -- ... but a session already cut into clips has no such item, and a take
+  -- accessor is bounded by its item: probing the first clip that references
+  -- the file reads silence everywhere outside that clip's little window.
+  -- That is how gap repair measured "no speech" in a 28-second hole full of
+  -- takes and silently repaired nothing -- on exactly the session shape it
+  -- was built for. A temporary full-length item is the only window that can
+  -- see the whole source.
+  return vo.MakeTempSourceProbe(path)
+end
+
+-- A probe over the whole of `path` through a temporary full-length item on a
+-- temporary track, both removed by the returned destroy. Project time equals
+-- source time on this item (position 0, offset 0), so no conversion is
+-- needed. Callers hold the probe only across a synchronous scan -- never
+-- across a defer -- so the temporary track's lifetime stays invisible.
+-- UNVERIFIED outside REAPER — see SPEC.md §10.
+function vo.MakeTempSourceProbe(path)
+  if not (r.InsertTrackAtIndex and r.AddMediaItemToTrack
+          and r.AddTakeToMediaItem and r.PCM_Source_CreateFromFile) then
+    return nil, function() end, nil
+  end
+  local src = r.PCM_Source_CreateFromFile(path)
+  local duration = src and r.GetMediaSourceLength
+                   and r.GetMediaSourceLength(src) or nil
+  if not src or not duration or duration <= 0 then
+    return nil, function() end, nil
+  end
+
+  r.PreventUIRefresh(1)
+  r.InsertTrackAtIndex(r.CountTracks(0), false)
+  local track = r.GetTrack(0, r.CountTracks(0) - 1)
+  local item  = r.AddMediaItemToTrack(track)
+  local take  = r.AddTakeToMediaItem(item)
+  r.SetMediaItemTake_Source(take, src)
+  r.SetMediaItemInfo_Value(item, "D_POSITION", 0.0)
+  r.SetMediaItemInfo_Value(item, "D_LENGTH", duration)
+
+  local probe, destroy_probe = vo.MakeTakeProbe(take)
+  local cleaned = false
+  local function destroy()
+    if cleaned then return end
+    cleaned = true
+    destroy_probe()
+    r.DeleteTrack(track)
+    r.PreventUIRefresh(-1)
+  end
+  if not probe then
+    destroy()
+    return nil, function() end, nil
+  end
+  return probe, destroy, duration
 end
 
 -- The coupled half of gap repair (see "Pure layer: transcript gap repair"):
@@ -5634,10 +5753,27 @@ end
 -- on at least one side of the hole, which is the confirmed failure shape.
 -- UNVERIFIED outside REAPER — see SPEC.md §10.
 function vo.RepairTranscriptGaps(cfg, source_path, scratch, prefix, words, on_done, on_cancel)
+  -- A hole that cannot be judged must still be NAMED: "no probe, so nothing
+  -- was repaired" and "checked, and it is genuine silence" look identical
+  -- from the outside, and the first one silently costs takes. The report's
+  -- notes are how the difference reaches the user.
+  local function unchecked_report(duration, why)
+    local gaps = vo.TranscriptGapSpans(words, duration, cfg)
+    if #gaps == 0 then return nil end
+    local notes = {}
+    for _, g in ipairs(gaps) do
+      notes[#notes + 1] = string.format(
+        "gap at %s-%s could not be checked: %s",
+        vo.FormatTime(g.from), vo.FormatTime(g.to), why)
+    end
+    return { spans = {}, added = 0, notes = notes }
+  end
+
   local probe, destroy, duration = vo.MakeSourceProbe(source_path)
   if not probe then
     destroy()
-    on_done(words, nil)
+    on_done(words, unchecked_report(duration,
+      "the source audio could not be probed"))
     return
   end
 
@@ -5646,7 +5782,9 @@ function vo.RepairTranscriptGaps(cfg, source_path, scratch, prefix, words, on_do
   destroy()
 
   if #plans == 0 then
-    on_done(words, nil)
+    on_done(words, floor_db == nil
+      and unchecked_report(duration, "no noise floor could be measured")
+      or nil)
     return
   end
 
