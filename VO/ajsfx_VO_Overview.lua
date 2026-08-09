@@ -186,6 +186,11 @@ local state = {
   pull_result    = nil,       -- the same, for the Pull panel
   pull_result_kind = "ok",
   cut_result_kind = "ok",
+  -- Takes the last Cut refused to touch because their items had been
+  -- hand-edited, by delivered name. Non-empty is what puts the Re-cut anyway
+  -- button on screen; force_recut is the one-shot override it arms.
+  cut_skipped_edited = {},
+  force_recut   = false,
   cut_count_key = nil,
   cut_counts    = { spans = 0, cuttable = 0, in_range = 0, stale = 0, candidates = 0 },
   -- The Pull panel's count line, memoised: working it out reads a take name per
@@ -2830,8 +2835,9 @@ local function CutCandidates()
   -- Which rows are in range follows the same rule as every other tool here:
   -- the selected rows if any are selected, otherwise every row on show. So a
   -- filtered table cuts what it is showing, and an untouched one cuts the lot.
-  local counts = { spans = #all_spans, cuttable = 0, in_range = 0, stale = 0 }
+  local counts = { spans = #all_spans, cuttable = 0, in_range = 0, stale = 0, edited = 0 }
   local candidates = {}
+  local edited_names = {}
   for _, s in ipairs(all_spans) do
     local key = start_key(s.source_path, s.start)
     local row = by_start[key]
@@ -2848,10 +2854,16 @@ local function CutCandidates()
       counts.cuttable = counts.cuttable + 1
       if in_range[key] then
         counts.in_range = counts.in_range + 1
+        -- A take whose item the user has moved is THEIR edit, and re-cutting
+        -- would silently throw it away. Skipped unless the run is a deliberate
+        -- Re-cut anyway, which clears the anchors first.
+        if row and row.edited and not state.force_recut then
+          counts.edited = counts.edited + 1
+          edited_names[#edited_names + 1] = row.deliver or row.asset or "(unnamed)"
         -- Cutting to word timings the audio no longer matches would put the
         -- edges in the wrong places, so a stale source is skipped -- per
         -- source, so one re-recorded file cannot stop the others.
-        if stale_paths[s.source_path] then
+        elseif stale_paths[s.source_path] then
           counts.stale = counts.stale + 1
         else
           s.in_range = true
@@ -2862,7 +2874,7 @@ local function CutCandidates()
   end
   counts.candidates = #candidates
 
-  return candidates, all_spans, stale_names, counts
+  return candidates, all_spans, stale_names, counts, edited_names
 end
 
 local function DoCut()
@@ -2871,7 +2883,10 @@ local function DoCut()
   Reload()
   state.name_baseline = nil
   local cfg = vo.LoadConfig()
-  local candidates, all_spans, stale_names = CutCandidates()
+  local candidates, all_spans, stale_names, _counts, edited_names = CutCandidates()
+  state.cut_skipped_edited = edited_names or {}
+  -- The override is consumed by the run it was armed for, never the next one.
+  state.force_recut = false
 
   if #candidates == 0 then
     state.message = "Nothing to cut. The line under the button says which stage came up empty."
@@ -3021,6 +3036,16 @@ local function DoCut()
 
   state.cut_summary = vo.FormatCutSummary(all_spans, applied, skipped_msgs, failures)
 
+  if #state.cut_skipped_edited > 0 then
+    table.insert(state.cut_summary, {
+      text = string.format(
+        "%d take(s) skipped -- you had edited them: %s",
+        #state.cut_skipped_edited,
+        table.concat(state.cut_skipped_edited, ", ")),
+      warn = true,
+    })
+  end
+
   -- Where the run actually went, stage by stage. Without this a run that cuts
   -- fewer clips than expected gives no way to tell which stage lost them.
   local grouped = 0
@@ -3118,6 +3143,41 @@ local function DrawCutPanel()
       end
     end
   end
+  -- Only after a run that actually skipped something: the override discards
+  -- hand-edits, so it must never be a button standing permanently ready.
+  if #(state.cut_skipped_edited or {}) > 0 then
+    im.SameLine(ctx)
+    if im.Button(ctx, "Re-cut anyway") then
+      pending_action = function()
+        -- Clear the anchors of exactly the skipped takes, so they cut as
+        -- unbound spans and are re-anchored to their new items. Rows the user
+        -- did not edit keep theirs.
+        local doomed = {}
+        for _, name in ipairs(state.cut_skipped_edited) do doomed[name] = true end
+        for _, row in ipairs(state.overview) do
+          if row.edited and doomed[row.deliver or row.asset or ""] then
+            for _, e in ipairs(state.entries) do
+              if e.key == row.key then
+                e.anchor, e.anchor_start, e.anchor_stop = nil, nil, nil
+              end
+            end
+          end
+        end
+        state.dirty = true
+        state.force_recut = true
+        local ok, err = pcall(DoCut)
+        if not ok then
+          state.message, state.message_kind = "Cut failed: " .. tostring(err), "error"
+          state.cut_result, state.cut_result_kind = state.message, "error"
+        end
+      end
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Re-cut the takes you had edited, discarding those edits.\n" ..
+                         "Their anchors are cleared and rebound to the new clips.")
+    end
+  end
+
   im.SameLine(ctx)
   if im.Button(ctx, "Close##cut") then state.panel = nil end
   im.SameLine(ctx)
