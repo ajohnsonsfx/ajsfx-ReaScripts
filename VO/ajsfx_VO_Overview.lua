@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.15beta2
--- @changelog PRE-RELEASE: Sources now detects and repairs transcripts with a swallowed whisper window. Confirmed failure mode: a slate ("Actor reading Character.") followed by a pause at the head of a recording makes whisper emit a gap token that swallows the rest of its first 30-second window -- speech from ~1.4s to the window boundary never decoded, at normal levels, with nothing reported anywhere. After every transcription (fresh or cached), the transcript is scanned for holes of 5 seconds or more; each hole is probed against the recording's own measured noise floor, and a hole that holds speech-level audio -- a swallowed read, not a long silence -- is re-run through whisper on just that span, starting after the word that caused the swallow, and the recovered words are merged into the sidecar before it is written. The end-of-run summary names each repaired file and how many words came back; a repair that fails leaves the transcript as the first pass made it and says so. Everything else is unchanged from 0.15beta1: the card sheet, occupancy-based take resolution, the percentile noise floor, the adopted-row and Sel-routing fixes, and the remote rows command. Also: a take selected in the ARRANGE view is now outlined in the sheet at both levels -- the take row itself and the card that holds it -- and a folded card scrolls into view when its take is selected from the timeline; before, the selection landed on a row a folded card never draws, so clicking an item in the timeline showed nothing in the Overview at all. The timeline follow is fixed at the root: it matched only rows the sheet was showing, so clicking an item whose line was FOLDED selected nothing at all -- it now matches every filtered take, unfolds the line that holds it, scrolls there, and the outline is drawn after the card content instead of before it, where the band background was painting over its sides. The take list header says Item instead of Where. + Add Take now always shows: with items selected in REAPER it names them for the line as before, with nothing selected it adds a PLANNED take -- an empty row stored in the project file, with notes and marks of its own, whose Item column carries a + that links the REAPER selection to it later (linking names the item and retires the planned row in one stroke). A planned take counts as a take but never makes an unrecorded line read as recorded, and one orphaned by a script edit surfaces in the Not-on-the-script card rather than vanishing. The script name and line note moved out of the fold-only drawer onto the band itself, visible without unfolding; the drawer is gone. A Follow menu on the toolbar governs all of it with three saved toggles: auto scroll, auto unfold, and auto fold on deselect (which only ever folds lines the follow itself opened, and leaves a line alone while any of its takes is selected). The scroll is minimal and directional: it moves only when the take is actually off screen, a take below lands at the bottom edge and a take above at the top -- so which edge it arrived at tells you which way the sheet went, and selecting something already visible never nudges the view. And the sheet no longer flickers while you work: cards paint their chrome from last frame's measured heights, and a rebuild -- which any project edit triggers -- replaced every row object and threw the measurements away, so the whole sheet repainted one frame at guessed heights before snapping back. The measurements now survive the rebuild (row uids are stable), and the repaint is seamless.
+-- @changelog PRE-RELEASE: Sources now detects and repairs transcripts with a swallowed whisper window. Confirmed failure mode: a slate ("Actor reading Character.") followed by a pause at the head of a recording makes whisper emit a gap token that swallows the rest of its first 30-second window -- speech from ~1.4s to the window boundary never decoded, at normal levels, with nothing reported anywhere. After every transcription (fresh or cached), the transcript is scanned for holes of 5 seconds or more; each hole is probed against the recording's own measured noise floor, and a hole that holds speech-level audio -- a swallowed read, not a long silence -- is re-run through whisper on just that span, starting after the word that caused the swallow, and the recovered words are merged into the sidecar before it is written. The end-of-run summary names each repaired file and how many words came back; a repair that fails leaves the transcript as the first pass made it and says so. Everything else is unchanged from 0.15beta1: the card sheet, occupancy-based take resolution, the percentile noise floor, the adopted-row and Sel-routing fixes, and the remote rows command. Also: a take selected in the ARRANGE view is now outlined in the sheet at both levels -- the take row itself and the card that holds it -- and a folded card scrolls into view when its take is selected from the timeline; before, the selection landed on a row a folded card never draws, so clicking an item in the timeline showed nothing in the Overview at all. The timeline follow is fixed at the root: it matched only rows the sheet was showing, so clicking an item whose line was FOLDED selected nothing at all -- it now matches every filtered take, unfolds the line that holds it, scrolls there, and the outline is drawn after the card content instead of before it, where the band background was painting over its sides. The take list header says Item instead of Where. + Add Take now always shows: with items selected in REAPER it names them for the line as before, with nothing selected it adds a PLANNED take -- an empty row stored in the project file, with notes and marks of its own, whose Item column carries a + that links the REAPER selection to it later (linking names the item and retires the planned row in one stroke). A planned take counts as a take but never makes an unrecorded line read as recorded, and one orphaned by a script edit surfaces in the Not-on-the-script card rather than vanishing. The script name and line note moved out of the fold-only drawer onto the band itself, visible without unfolding; the drawer is gone. A Follow menu on the toolbar governs all of it with three saved toggles: auto scroll, auto unfold, and auto fold on deselect (which only ever folds lines the follow itself opened, and leaves a line alone while any of its takes is selected). The scroll is minimal and directional: it moves only when the take is actually off screen, the WHOLE line card is brought on screen when it fits (a card below lands at the bottom edge, one above at the top), narrowing to the selected take only when the card is taller than the view -- so which edge it arrived at tells you which way the sheet went, and selecting something already visible never nudges the view. And the sheet no longer flickers while you work: cards paint their chrome from last frame's measured heights, and a rebuild -- which any project edit triggers -- replaced every row object and threw the measurements away, so the whole sheet repainted one frame at guessed heights before snapping back. The measurements now survive the rebuild (row uids are stable), and the repaint is seamless.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -3476,10 +3476,12 @@ local function DrawFilters()
     local hit, v = im.Checkbox(ctx, "Auto scroll to the selected take", state.follow_scroll)
     if hit then SetFollowSetting("follow_scroll", v) end
     if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, "Scrolls only when the take is off screen, and only the\n" ..
-                         "minimum: a take below lands at the bottom edge, a take\n" ..
+      im.SetTooltip(ctx, "Scrolls only when the line is off screen, and only the\n" ..
+                         "minimum: a line below lands at the bottom edge, a line\n" ..
                          "above at the top, so the direction tells you which way\n" ..
-                         "the sheet went.")
+                         "the sheet went. Brings the WHOLE line card on screen\n" ..
+                         "when it fits; only a card taller than the view narrows\n" ..
+                         "to the selected take.")
     end
     hit, v = im.Checkbox(ctx, "Auto unfold the selected take's line", state.follow_unfold)
     if hit then SetFollowSetting("follow_unfold", v) end
@@ -3871,20 +3873,27 @@ local function SelectedTakeOf(node)
   return nil
 end
 
--- Scroll the cards child the MINIMUM needed to put the last submitted item
--- fully on screen -- and not at all when it already is. The direction is the
--- information: a target below lands at the BOTTOM edge (the sheet visibly
--- scrolled down to find it), a target above lands at the TOP edge, and a
--- target already visible does not move the sheet under the user's eyes.
-local function ScrollToLastItemMinimally()
-  local _, y0 = im.GetItemRectMin(ctx)
-  local _, y1 = im.GetItemRectMax(ctx)
+-- Scroll the cards child the MINIMUM needed to put [y0, y1] fully on screen
+-- -- and not at all when it already is. The direction is the information: a
+-- target below lands at the BOTTOM edge (the sheet visibly scrolled down to
+-- find it), a target above lands at the TOP edge, and a target already visible
+-- does not move the sheet under the user's eyes.
+--
+-- The range is the whole CARD, not the selected take: the reason the user is
+-- being brought here is "what is this line, and what other takes does it
+-- have", and a lone take row with its band off screen answers neither. Only
+-- when the card is taller than the view -- when "the whole line" is not on
+-- offer -- does the target narrow to [fy0, fy1], the selected take itself.
+local function ScrollRangeMinimally(y0, y1, fy0, fy1)
   local wy = select(2, im.GetWindowPos(ctx))
   local wh = im.GetWindowHeight(ctx)
+  if (y1 - y0) > wh and fy0 then
+    y0, y1 = fy0, fy1
+  end
   if y1 > wy + wh then
-    im.SetScrollHereY(ctx, 1.0)
+    im.SetScrollFromPosY(ctx, y1 - wy, 1.0)
   elseif y0 < wy then
-    im.SetScrollHereY(ctx, 0.0)
+    im.SetScrollFromPosY(ctx, y0 - wy, 0.0)
   end
 end
 
@@ -3950,10 +3959,11 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
     local at = vis_index
     pending_action = function() ClickRow(row, at, captured) end
   end
-  if state.scroll_to_uid == row.uid then
-    ScrollToLastItemMinimally()
-    ConsumeScrollTo()
-  end
+  -- Where this row sits this frame, for the card-level scroll: the scroll-to
+  -- itself is handled by the CARD (DrawLineCard / DrawOrphanCard), which
+  -- targets the whole line and needs the take's own rect only as the
+  -- fallback for a card taller than the view.
+  row._card_y = ry
   if im.IsItemHovered(ctx) and not row.item then
     im.SetTooltip(ctx, "The audio for this row is not in this project.")
   end
@@ -4384,20 +4394,6 @@ local function DrawLineCard(node, z, flat_index, avail_w)
   im.BeginGroup(ctx)
   DrawCardBand(node, z, key, open, cx + CARD_PAD, avail_w)
 
-  -- A folded card never draws its take rows, so the row-level scroll-to in
-  -- DrawCardTakeRow can never fire for it -- with auto-unfold off, the
-  -- timeline handoff would light a card somewhere off screen and look like it
-  -- did nothing. The band stands in for its hidden children.
-  if not open and state.scroll_to_uid then
-    for _, t in ipairs(node.takes) do
-      if t.uid == state.scroll_to_uid then
-        ScrollToLastItemMinimally()
-        ConsumeScrollTo()
-        break
-      end
-    end
-  end
-
   if open then
     if #node.takes > 0 then
       DrawTakeHeaderRow(z, cx + CARD_PAD)
@@ -4422,6 +4418,24 @@ local function DrawLineCard(node, z, flat_index, avail_w)
   if SelectedTakeOf(node) then
     im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + rep._card_full_h,
       SEL_OUTLINE, CARD_ROUND, 0, 2.0)
+  end
+
+  -- The scroll-to, at CARD level so the whole outlined line comes on screen,
+  -- not just the one take (the context being sought is "what is this line,
+  -- and what other takes does it have"). Works folded too -- with auto-unfold
+  -- off, the band itself is the whole of what there is to show. The take's
+  -- own rect, remembered by DrawCardTakeRow this frame, is the fallback for a
+  -- card taller than the view.
+  if state.scroll_to_uid then
+    for _, t in ipairs(node.takes) do
+      if t.uid == state.scroll_to_uid then
+        local fy0 = open and t._card_y or nil
+        ScrollRangeMinimally(cy - 2, cy + rep._card_full_h + 2,
+          fy0, fy0 and (fy0 + (t._card_h or im.GetFrameHeight(ctx)) + 2) or nil)
+        ConsumeScrollTo()
+        break
+      end
+    end
   end
 
   -- The card's footprint is a real ITEM, not a bare cursor move: ImGui only
@@ -4463,6 +4477,21 @@ local function DrawOrphanCard(node, z, flat_index, avail_w)
   if SelectedTakeOf(node) then
     im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + state._orphan_card_h,
       SEL_OUTLINE, CARD_ROUND, 0, 2.0)
+  end
+
+  -- Same card-level scroll-to as DrawLineCard. The orphan card holds every
+  -- unrecognised take at once and is routinely taller than the view, so the
+  -- take-row fallback is the common case here rather than the exception.
+  if state.scroll_to_uid then
+    for _, t in ipairs(node.takes) do
+      if t.uid == state.scroll_to_uid then
+        local fy0 = t._card_y
+        ScrollRangeMinimally(cy - 2, cy + state._orphan_card_h + 2,
+          fy0, fy0 and (fy0 + (t._card_h or im.GetFrameHeight(ctx)) + 2) or nil)
+        ConsumeScrollTo()
+        break
+      end
+    end
   end
 
   im.SetCursorScreenPos(ctx, cx, cy)
