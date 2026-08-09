@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.15beta2
--- @changelog PRE-RELEASE: Sources now detects and repairs transcripts with a swallowed whisper window. Confirmed failure mode: a slate ("Actor reading Character.") followed by a pause at the head of a recording makes whisper emit a gap token that swallows the rest of its first 30-second window -- speech from ~1.4s to the window boundary never decoded, at normal levels, with nothing reported anywhere. After every transcription (fresh or cached), the transcript is scanned for holes of 5 seconds or more; each hole is probed against the recording's own measured noise floor, and a hole that holds speech-level audio -- a swallowed read, not a long silence -- is re-run through whisper on just that span, starting after the word that caused the swallow, and the recovered words are merged into the sidecar before it is written. The end-of-run summary names each repaired file and how many words came back; a repair that fails leaves the transcript as the first pass made it and says so. Everything else is unchanged from 0.15beta1: the card sheet, occupancy-based take resolution, the percentile noise floor, the adopted-row and Sel-routing fixes, and the remote rows command. Also: a take selected in the ARRANGE view is now outlined in the sheet at both levels -- the take row itself and the card that holds it -- and a folded card scrolls into view when its take is selected from the timeline; before, the selection landed on a row a folded card never draws, so clicking an item in the timeline showed nothing in the Overview at all. The timeline follow is fixed at the root: it matched only rows the sheet was showing, so clicking an item whose line was FOLDED selected nothing at all -- it now matches every filtered take, unfolds the line that holds it, scrolls there, and the outline is drawn after the card content instead of before it, where the band background was painting over its sides. The take list header says Item instead of Where. + Add Take now always shows: with items selected in REAPER it names them for the line as before, with nothing selected it adds a PLANNED take -- an empty row stored in the project file, with notes and marks of its own, whose Item column carries a + that links the REAPER selection to it later (linking names the item and retires the planned row in one stroke). A planned take counts as a take but never makes an unrecorded line read as recorded, and one orphaned by a script edit surfaces in the Not-on-the-script card rather than vanishing. The script name and line note moved out of the fold-only drawer onto the band itself, visible without unfolding; the drawer is gone. A Follow menu on the toolbar governs all of it with three saved toggles: auto scroll, auto unfold, and auto fold on deselect (which only ever folds lines the follow itself opened, and leaves a line alone while any of its takes is selected). The scroll is minimal and directional: it moves only when the take is actually off screen, a take below lands at the bottom edge and a take above at the top -- so which edge it arrived at tells you which way the sheet went, and selecting something already visible never nudges the view.
+-- @changelog PRE-RELEASE: Sources now detects and repairs transcripts with a swallowed whisper window. Confirmed failure mode: a slate ("Actor reading Character.") followed by a pause at the head of a recording makes whisper emit a gap token that swallows the rest of its first 30-second window -- speech from ~1.4s to the window boundary never decoded, at normal levels, with nothing reported anywhere. After every transcription (fresh or cached), the transcript is scanned for holes of 5 seconds or more; each hole is probed against the recording's own measured noise floor, and a hole that holds speech-level audio -- a swallowed read, not a long silence -- is re-run through whisper on just that span, starting after the word that caused the swallow, and the recovered words are merged into the sidecar before it is written. The end-of-run summary names each repaired file and how many words came back; a repair that fails leaves the transcript as the first pass made it and says so. Everything else is unchanged from 0.15beta1: the card sheet, occupancy-based take resolution, the percentile noise floor, the adopted-row and Sel-routing fixes, and the remote rows command. Also: a take selected in the ARRANGE view is now outlined in the sheet at both levels -- the take row itself and the card that holds it -- and a folded card scrolls into view when its take is selected from the timeline; before, the selection landed on a row a folded card never draws, so clicking an item in the timeline showed nothing in the Overview at all. The timeline follow is fixed at the root: it matched only rows the sheet was showing, so clicking an item whose line was FOLDED selected nothing at all -- it now matches every filtered take, unfolds the line that holds it, scrolls there, and the outline is drawn after the card content instead of before it, where the band background was painting over its sides. The take list header says Item instead of Where. + Add Take now always shows: with items selected in REAPER it names them for the line as before, with nothing selected it adds a PLANNED take -- an empty row stored in the project file, with notes and marks of its own, whose Item column carries a + that links the REAPER selection to it later (linking names the item and retires the planned row in one stroke). A planned take counts as a take but never makes an unrecorded line read as recorded, and one orphaned by a script edit surfaces in the Not-on-the-script card rather than vanishing. The script name and line note moved out of the fold-only drawer onto the band itself, visible without unfolding; the drawer is gone. A Follow menu on the toolbar governs all of it with three saved toggles: auto scroll, auto unfold, and auto fold on deselect (which only ever folds lines the follow itself opened, and leaves a line alone while any of its takes is selected). The scroll is minimal and directional: it moves only when the take is actually off screen, a take below lands at the bottom edge and a take above at the top -- so which edge it arrived at tells you which way the sheet went, and selecting something already visible never nudges the view. And the sheet no longer flickers while you work: cards paint their chrome from last frame's measured heights, and a rebuild -- which any project edit triggers -- replaced every row object and threw the measurements away, so the whole sheet repainted one frame at guessed heights before snapping back. The measurements now survive the rebuild (row uids are stable), and the repaint is seamless.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -598,6 +598,20 @@ end
 -- -----------------------------------------------------------------------
 
 local function Rebuild()
+  -- The cards paint their chrome from LAST frame's measured heights, but a
+  -- rebuild replaces every row object -- and with them the measurements. Every
+  -- rebuild then repainted the whole sheet one frame at guessed heights before
+  -- snapping back: a visible flicker on every project edit, once per throttle
+  -- window, for as long as the user worked. Snapshot the measurements here and
+  -- restore them onto the new rows below; uids are stable across rebuilds, so
+  -- each row gets its own height back and the repaint is seamless.
+  local old_h = {}
+  for _, row in ipairs(state.overview or {}) do
+    if row.uid then
+      old_h[row.uid] = { row._card_h, row._band_h, row._card_full_h }
+    end
+  end
+
   state.items = vo.CollectProjectSpans()
   LoadScripts()
   state.lines = ScriptLines()
@@ -802,6 +816,11 @@ local function Rebuild()
     local n = (seen[row.key] or 0) + 1
     seen[row.key] = n
     row.uid = row.key .. "#" .. n
+
+    local h = old_h[row.uid]
+    if h then
+      row._card_h, row._band_h, row._card_full_h = h[1], h[2], h[3]
+    end
   end
 end
 
