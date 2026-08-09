@@ -1,7 +1,7 @@
 -- @description ajsfx VO Shared Library
 -- @author ajsfx
--- @version 0.5
--- @changelog Word-level transcript sidecars, a project file for the user's own marks, live matching, and silence-snapped clip boundaries The script side of a project is a list rather than a single CSV: the project file holds one row per script with its own column mapping and an on/off switch, plus the per-line Append that decides the delivered name. A project file written by the previous version still opens, and folds its one script into the list.
+-- @version 0.6
+-- @changelog Transcript gap repair: a transcript hole of 5s+ that the audio says holds speech (whisper's swallowed-window failure) is re-run through whisper on just that span and the recovered words merged into the sidecar. New pure functions TranscriptGapSpans / PlanGapRepairs / MergeRepairWords, a span (-ot/-d) option on BuildWhisperArgv, and coupled MakeSourceProbe / RepairTranscriptGaps wired into TranscribeSources.
 -- @noindex
 -- @about Shared logic for the ajsfx VO windows.
 --        Split into a pure layer (parsing, normalization, matching, naming —
@@ -1209,6 +1209,110 @@ function vo.DetectRepetitionLoop(words)
 end
 
 --------------------------------
+-- Pure layer: transcript gap repair
+--------------------------------
+
+-- Confirmed failure mode (ChristianBrently_Grumbar, 2026-08-08): a slate
+-- ("Actor reading Character.") followed by a pause at the head of a recording
+-- makes whisper emit a gap token that swallows the rest of its first 30s
+-- window -- speech from ~1.4s to the window boundary is never decoded, though
+-- levels are normal, and nothing in the run reports it. Re-running whisper on
+-- the same audio STARTING AFTER the slate recovers every word, so the repair
+-- is: find a transcript hole that the audio says holds speech, re-run whisper
+-- on just that span (-ot/-d), and merge the recovered words back in.
+--
+-- The functions here are the pure half: gap finding, repair planning against
+-- an injected probe, and the merge. vo.RepairTranscriptGaps in the coupled
+-- layer chains the actual whisper runs.
+
+-- Stretches of the transcript with no decoded words: between consecutive
+-- words, before the first word, and -- when the audio's duration is known --
+-- after the last. Only stretches at least `gap_repair_min_gap` long count:
+-- an ordinary between-takes pause is not a suspect, and the energy check in
+-- vo.PlanGapRepairs is what separates a long think from a swallowed read.
+-- Returns: array of { from, to } in source seconds.
+function vo.TranscriptGapSpans(words, duration, cfg)
+  local min_gap = vo.Opt(cfg, "gap_repair_min_gap")
+  local edges = {}
+  local at = 0.0
+  for _, w in ipairs(words or {}) do
+    edges[#edges + 1] = { from = at, to = w.t0 or at }
+    at = math.max(at, w.t1 or at)
+  end
+  if duration and duration > at then
+    edges[#edges + 1] = { from = at, to = duration }
+  end
+
+  local gaps = {}
+  for _, g in ipairs(edges) do
+    if (g.to - g.from) >= min_gap then gaps[#gaps + 1] = g end
+  end
+  return gaps
+end
+
+-- Which gaps actually hold speech, and the span to hand back to whisper.
+--
+-- The audio is the only evidence available: the transcript cannot tell a
+-- swallowed read from a long silence, because both look like the same hole.
+-- vo.FindSpeechBounds answers with the first and last moment above the floor;
+-- a gap whose speech runs at least `gap_repair_min_speech` is a suspect, and
+-- the repair span is that speech padded by `gap_repair_pad` -- clamped to the
+-- gap, so the re-run can never start on the already-decoded word before it
+-- (for the confirmed case, that word IS the slate that caused the swallow).
+--
+-- No floor or no probe means no repairs, not repairs everywhere: with nothing
+-- to measure against, every silence would read as speech and every long pause
+-- would cost a whisper run.
+-- Returns: array of { from, to } repair spans in source seconds.
+function vo.PlanGapRepairs(words, duration, floor_db, probe, cfg)
+  if not probe or not floor_db then return {} end
+  local min_speech = vo.Opt(cfg, "gap_repair_min_speech")
+  local pad        = vo.Opt(cfg, "gap_repair_pad")
+
+  local plans = {}
+  for _, gap in ipairs(vo.TranscriptGapSpans(words, duration, cfg)) do
+    local first, last = vo.FindSpeechBounds(gap.from, gap.to, floor_db, probe, cfg)
+    if first and last and (last - first) >= min_speech then
+      plans[#plans + 1] = {
+        from = math.max(gap.from, first - pad),
+        to   = math.min(gap.to,   last + pad),
+      }
+    end
+  end
+  return plans
+end
+
+-- Fold repair-run words back into the transcript.
+--
+-- `repairs` is an array of { span = { from, to }, words = { ... } }, one per
+-- repair run, with words in SOURCE seconds -- whisper's -ot offset is included
+-- in its output timestamps, so no shifting happens here. A repair word whose
+-- midpoint falls outside its own span is dropped: it is wrong by construction
+-- (a whisper build whose offset output turned out slice-relative, or decode
+-- bleed past the requested duration) and merging it would corrupt the very
+-- transcript the repair is trying to save. Original words are never removed.
+-- Returns: merged word array sorted by t0, and how many words were added.
+function vo.MergeRepairWords(words, repairs)
+  local merged = {}
+  for _, w in ipairs(words or {}) do merged[#merged + 1] = w end
+
+  local added = 0
+  for _, rep in ipairs(repairs or {}) do
+    local span = rep.span or {}
+    for _, w in ipairs(rep.words or {}) do
+      local mid = ((w.t0 or 0) + (w.t1 or 0)) / 2
+      if mid >= (span.from or 0) - 1e-6 and mid <= (span.to or 0) + 1e-6 then
+        merged[#merged + 1] = w
+        added = added + 1
+      end
+    end
+  end
+
+  table.sort(merged, function(a, b) return (a.t0 or 0) < (b.t0 or 0) end)
+  return merged, added
+end
+
+--------------------------------
 -- Pure layer: configuration
 --------------------------------
 
@@ -1292,6 +1396,17 @@ vo.DEFAULTS = {
   -- identically, leaving the user to audition and delete.
   use_alts_track   = false,
   suffix_alt_names = false,
+
+  -- Transcript gap repair (see "Pure layer: transcript gap repair").
+  -- min_gap is well above any between-lines pause worth ignoring and well
+  -- below the ~28s hole the confirmed failure leaves; min_speech screens out
+  -- a chair creak or a cough without screening out a single swallowed word;
+  -- pad gives whisper a running start without reaching back to the word --
+  -- the slate -- that caused the swallow (the clamp in PlanGapRepairs is what
+  -- guarantees that).
+  gap_repair_min_gap    = 5.0,  -- seconds of transcript hole before suspicion
+  gap_repair_min_speech = 0.75, -- seconds of above-floor audio to confirm it
+  gap_repair_pad        = 0.35, -- seconds of margin around the found speech
 
   review_prefix           = "REVIEW_",
   unmatched_prefix        = "UNMATCHED_",
@@ -2710,8 +2825,12 @@ end
 -- segment and writes start,end,text as CSV, so no JSON library is needed.
 -- whisper.cpp resamples and downmixes internally, so the take's source file is
 -- passed straight through — no render step and no ffmpeg.
+-- `span`, when given, is { from, to } in source seconds and becomes -ot/-d in
+-- whole milliseconds: a gap-repair run decodes only that stretch. whisper's
+-- output timestamps include the offset, so the repair CSV parses straight into
+-- source time like a full run's.
 -- Returns: array of strings (argv, NOT pre-joined).
-function vo.BuildWhisperArgv(cfg, audio, out_prefix)
+function vo.BuildWhisperArgv(cfg, audio, out_prefix, span)
   cfg = cfg or {}
 
   local argv = { cfg.whisper_bin or "whisper-cli" }
@@ -2742,6 +2861,12 @@ function vo.BuildWhisperArgv(cfg, audio, out_prefix)
   -- invented word in a silence costs an unmatched span nobody reads, while a
   -- dropped line costs a line.
   add("-nth", "0.9")
+
+  if span then
+    add("-ot", string.format("%d", math.floor((span.from or 0) * 1000 + 0.5)))
+    add("-d",  string.format("%d",
+        math.floor(((span.to or 0) - (span.from or 0)) * 1000 + 0.5)))
+  end
 
   if cfg.whisper_threads then add("-t", tostring(cfg.whisper_threads)) end
   if cfg.whisper_language and cfg.whisper_language ~= "" then
@@ -5001,6 +5126,111 @@ function vo.WriteSilentWav(path, seconds)
   return true
 end
 
+--------------------------------
+-- Coupled layer: transcript gap repair
+--------------------------------
+
+-- A SOURCE-time amplitude probe over the audio behind `path`, built on the
+-- first usable project item currently playing it. The take accessor reasons in
+-- project time, so the wrapper converts through that item's placement; a probe
+-- outside the item's coverage answers nil, which every pure consumer already
+-- reads as "nothing measurable there". Also reports the source's full duration
+-- so gap finding can see a swallowed tail.
+-- Returns: probe or nil, destroy (ALWAYS call it), duration or nil.
+-- UNVERIFIED outside REAPER — see SPEC.md §10.
+function vo.MakeSourceProbe(path)
+  for _, info in ipairs(vo.CollectProjectSpans()) do
+    if info.path == path and not info.skip then
+      local take = r.GetActiveTake(info.item)
+      local probe, destroy = vo.MakeTakeProbe(take)
+      if probe then
+        local src = r.GetMediaItemTake_Source(take)
+        local duration = src and r.GetMediaSourceLength
+                         and r.GetMediaSourceLength(src) or nil
+        local function probe_src(t0, t1)
+          return probe(vo.SourceTimeToProject(t0, info),
+                       vo.SourceTimeToProject(t1, info))
+        end
+        return probe_src, destroy, duration
+      end
+      destroy()
+    end
+  end
+  return nil, function() end, nil
+end
+
+-- The coupled half of gap repair (see "Pure layer: transcript gap repair"):
+-- probe the audio behind the transcript's holes, and for each hole that holds
+-- speech, re-run whisper on just that span and fold the recovered words in.
+--
+-- Always calls `on_done(words, report)`: with the original words and a nil
+-- report when there is nothing to do (no item to probe, no floor, no suspect
+-- gap), or with the merged words and { spans, added, notes } after repairs.
+-- A repair run that fails leaves that gap as it was and says so in `notes` --
+-- a failed rescue must not cost the transcription that already succeeded.
+--
+-- The floor comes from the transcript's own inter-word gaps, same as boundary
+-- snapping. A transcript with NO decoded words has no gaps to measure, so a
+-- fully swallowed file cannot be repaired this way -- only a file with words
+-- on at least one side of the hole, which is the confirmed failure shape.
+-- UNVERIFIED outside REAPER — see SPEC.md §10.
+function vo.RepairTranscriptGaps(cfg, source_path, scratch, prefix, words, on_done, on_cancel)
+  local probe, destroy, duration = vo.MakeSourceProbe(source_path)
+  if not probe then
+    destroy()
+    on_done(words, nil)
+    return
+  end
+
+  local floor_db = vo.MeasureNoiseFloor(vo.InterWordGaps(words), probe, cfg)
+  local plans    = vo.PlanGapRepairs(words, duration, floor_db, probe, cfg)
+  destroy()
+
+  if #plans == 0 then
+    on_done(words, nil)
+    return
+  end
+
+  local repairs, notes = {}, {}
+  local i = 0
+  local run
+  run = function()
+    i = i + 1
+    if i > #plans then
+      local merged, added = vo.MergeRepairWords(words, repairs)
+      on_done(merged, { spans = plans, added = added, notes = notes })
+      return
+    end
+
+    local plan = plans[i]
+    local out  = string.format("%s_repair%d", prefix, i)
+    local function note_failure(why)
+      notes[#notes + 1] = string.format("gap at %s-%s not repaired: %s",
+        vo.FormatTime(plan.from), vo.FormatTime(plan.to), why)
+    end
+
+    local argv = vo.BuildWhisperArgv(cfg, source_path, out, plan)
+    vo.RunWhisperAsync(cfg, argv, scratch,
+      function(code, log)
+        if code ~= 0 then
+          note_failure(string.format("whisper-cli exited with code %d", code))
+        else
+          local f = io.open(out .. ".csv", "r")
+          if not f then
+            note_failure("whisper-cli wrote no CSV")
+          else
+            repairs[#repairs + 1] = { span = plan, words = vo.ParseWhisperCSV(f:read("a")) }
+            f:close()
+          end
+        end
+        run()
+      end,
+      on_cancel,
+      function(err) note_failure(tostring(err)); run() end)
+  end
+  run()
+end
+
 -- Transcribe a list of unique source files in sequence, reusing cached
 -- transcripts.
 --
@@ -5020,21 +5250,31 @@ end
 -- A user CANCEL is different from a failure and does stop the run: it is an
 -- instruction, not an accident. Everything already written stays written.
 --
+-- Every parsed result then passes through vo.RepairTranscriptGaps before it is
+-- reported, so a transcript with a swallowed window (see "Pure layer:
+-- transcript gap repair") is mended before the sidecar is ever written. A
+-- source with nothing to repair passes through untouched, at the cost of a
+-- probe pass; a repair that fails reports itself in the per-source report and
+-- keeps the unrepaired words.
+--
 -- cb = { on_source, on_done, on_cancel, on_error }. on_error is called only for
 -- a failure that stopped the whole run (there are none left today); per-source
--- failures arrive through on_done.
+-- failures arrive through on_done. on_source receives the gap-repair report
+-- (or nil) as its fifth argument; on_done receives all reports, keyed by path,
+-- as its third.
 -- UNVERIFIED outside REAPER — see SPEC.md §10.
 function vo.TranscribeSources(cfg, sources, cb)
   cb = cb or {}
   local scratch = vo.ResolveScratchDir(cfg)
   vo.EnsureDir(scratch)
 
-  local results, failures = {}, {}
+  local results, failures, repair_reports = {}, {}, {}
   local index = 0
 
-  local function finish(source, words)
+  local function finish(source, words, report)
     results[source.path] = words
-    if cb.on_source then cb.on_source(source.path, words, index, #sources) end
+    if report then repair_reports[source.path] = report end
+    if cb.on_source then cb.on_source(source.path, words, index, #sources, report) end
   end
 
   local function fail(source, reason)
@@ -5045,7 +5285,7 @@ function vo.TranscribeSources(cfg, sources, cb)
   step = function()
     index = index + 1
     if index > #sources then
-      if cb.on_done then cb.on_done(results, failures) end
+      if cb.on_done then cb.on_done(results, failures, repair_reports) end
       return
     end
 
@@ -5054,11 +5294,23 @@ function vo.TranscribeSources(cfg, sources, cb)
     local prefix   = scratch .. "/" .. key
     local csv_path = prefix .. ".csv"
 
+    -- The raw whisper CSV is what is cached; repair happens on the way out on
+    -- both paths, so a cache hit gets the same mended transcript a fresh run
+    -- would.
+    local function repair_then_finish(words)
+      vo.RepairTranscriptGaps(cfg, source.path, scratch, prefix, words,
+        function(merged, report)
+          finish(source, merged, report)
+          step()
+        end,
+        cb.on_cancel)
+    end
+
     if not cfg.force_retranscribe and vo.FileExists(csv_path) then
       local f = io.open(csv_path, "r")
-      finish(source, vo.ParseWhisperCSV(f:read("a")))
+      local words = vo.ParseWhisperCSV(f:read("a"))
       f:close()
-      step()
+      repair_then_finish(words)
       return
     end
 
@@ -5077,9 +5329,9 @@ function vo.TranscribeSources(cfg, sources, cb)
           step()
           return
         end
-        finish(source, vo.ParseWhisperCSV(f:read("a")))
+        local words = vo.ParseWhisperCSV(f:read("a"))
         f:close()
-        step()
+        repair_then_finish(words)
       end,
       cb.on_cancel,
       function(err) fail(source, err); step() end)

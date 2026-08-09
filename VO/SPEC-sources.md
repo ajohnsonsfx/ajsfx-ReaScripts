@@ -61,6 +61,40 @@ Backend-not-ready is an inline red line naming the reason, with a **Settings…*
 button that launches `ajsfx_VO_Settings.lua` via `vo.LaunchSibling`. No message
 boxes anywhere in this window.
 
+### 2.1 Gap repair
+
+Whisper has a confirmed failure mode (ChristianBrently_Grumbar, 2026-08-08): a
+slate ("Actor reading Character.") followed by a pause at the head of a
+recording makes the decoder emit a gap token that swallows the rest of its
+first 30-second window — speech from ~1.4s to the window boundary is never
+decoded, levels are normal, and nothing in the run reports it. Re-running the
+same audio starting after the slate recovers every word.
+
+So every transcription result — fresh or cache hit — passes through
+`vo.RepairTranscriptGaps` before its sidecar is written:
+
+1. **Find the holes.** `vo.TranscriptGapSpans`: stretches of at least
+   `gap_repair_min_gap` (5s) with no decoded words, including before the first
+   word and, when the source duration is known, after the last.
+2. **Ask the audio.** The transcript cannot tell a swallowed read from a long
+   silence — both are the same hole — so `vo.PlanGapRepairs` probes each hole
+   against the measured noise floor (`vo.MeasureNoiseFloor` over the
+   transcript's own inter-word gaps, same as boundary snapping). A hole with at
+   least `gap_repair_min_speech` (0.75s) of above-floor audio is a swallowed
+   read; the rest are left alone.
+3. **Re-run and merge.** whisper runs again on just that span
+   (`vo.BuildWhisperArgv`'s `-ot`/`-d`), padded by `gap_repair_pad` but clamped
+   to the hole so the re-run can never start on the already-decoded word that
+   caused the swallow. `vo.MergeRepairWords` folds the recovered words in —
+   whisper's offset output stays in source time — dropping any word that lands
+   outside its own span, and never removing an original word.
+
+A repaired file reports how many words were recovered in the end-of-run
+summary; a repair run that fails leaves that gap as it was and says so there
+too. No floor, no probe (source not in the project), or a transcript with no
+words at all (nothing to measure a floor from) means no repairs — never
+repairs everywhere.
+
 ---
 
 ## 3. Detail panel
@@ -112,6 +146,8 @@ Pure layer in `lib/ajsfx_vo.lua`, unit-tested with no REAPER:
 - `vo.SerializeTranscript`, `vo.ParseTranscript`
 - `vo.ParagraphWords`, `vo.Paragraphs`
 - `vo.ParseWhisperCSV`, `vo.BuildWhisperArgv`, `vo.DTWPresetForModel`
+- `vo.TranscriptGapSpans`, `vo.PlanGapRepairs`, `vo.MergeRepairWords` — gap
+  repair (§2.1), tested in `tests/test_vo_gap_repair.lua`
 
 Coupled layer:
 
@@ -122,6 +158,8 @@ Coupled layer:
   filesystem side of the sidecar.
 - `vo.TranscribeSources`, `vo.RunWhisperAsync` — the detached async runner with
   progress and cancel.
+- `vo.MakeSourceProbe`, `vo.RepairTranscriptGaps` — the audio probe behind gap
+  repair and the repair-run chaining (§2.1).
 - `vo.LaunchSibling`, `vo.IsBackendReady`.
 
 `ajsfx_VO_Sources.lua` carries `@noindex` and ships as a `[main]` entry in

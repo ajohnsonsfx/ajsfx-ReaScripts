@@ -287,7 +287,7 @@ local function RunTranscribe(rows, force)
       state.scanned_at = -1   -- rescan so the row's column flips as it lands
     end,
 
-    on_done = function(results, failures)
+    on_done = function(results, failures, repairs)
       state.running    = false
       state.progress   = nil
       state.scanned_at = -1
@@ -300,8 +300,26 @@ local function RunTranscribe(rows, force)
       end
       for _, w in ipairs(state.write_fails) do lines[#lines + 1] = w end
 
+      -- A repaired transcript is a transcript that was WRONG on the first
+      -- pass, so it is always worth a line; a failed repair note doubly so.
+      local repair_notes = 0
+      for path, rep in pairs(repairs or {}) do
+        local name = path:match("([^\\/]+)$") or path
+        if (rep.added or 0) > 0 then
+          lines[#lines + 1] = string.format(
+            "%s: recovered %d word(s) whisper had skipped in %d gap(s).",
+            name, rep.added, #(rep.spans or {}))
+        end
+        for _, note in ipairs(rep.notes or {}) do
+          lines[#lines + 1] = name .. ": " .. note
+          repair_notes = repair_notes + 1
+        end
+      end
+
       local tone = "info"
-      if #(failures or {}) > 0 or #state.write_fails > 0 then tone = "warn" end
+      if #(failures or {}) > 0 or #state.write_fails > 0 or repair_notes > 0 then
+        tone = "warn"
+      end
       state.message = { text = table.concat(lines, "\n"), tone = tone }
     end,
 
