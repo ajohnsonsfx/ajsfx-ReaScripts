@@ -172,6 +172,40 @@ Item zone drops to a tooltip and below ~540px the Note zone follows, because
 at those widths they were unreadable slivers and the text is why the window is
 open.
 
+### Take identity
+
+A take row's link to its item is an **anchor**: the item's GUID plus the
+source-time edges Cut gave it. Anchored rows resolve by GUID before any
+inference runs, so an edge dragged in REAPER cannot detach a take's marks —
+which the source-time row key (`vo.OverviewKey`) could not survive, since it
+*is* a start time.
+
+Anchors are written automatically by Cut (`vo.ApplyPlan` returns the item it
+made for each span, keyed by a row key stamped *before* boundary padding
+mutates the span) and manually from a take row's right-click menu. An anchored
+take whose item edges have moved more than `vo.ANCHOR_EDIT_TOLERANCE` is
+**edited**: Cut skips it and offers *Re-cut anyway*, which clears those anchors
+first.
+
+**The track is the decision.** Sel and Keep are tri-state in the project file —
+`yes`, `no`, or blank meaning no opinion. A blank defers to where the item
+sits: on `Selects` it reads as Sel, on `Alts` as Keep (`vo.EffectiveMarks`).
+Track placement survives re-matching and re-transcription, so scrambled marks
+heal themselves. Un-ticking a mark whose item sits on the matching track writes
+an explicit `no`, without which the track would re-tick it on the next frame —
+and the Sel exclusivity clears siblings the same way, or a sibling on the
+Selects track would re-tick itself and leave two Sels on one line.
+
+Rows carry two pairs of mark fields, deliberately: `mark_select`/`mark_keep`
+are the stored tri-state and are what gets persisted, while
+`user_select`/`user_keep` are the effective booleans the checkbox and Pull
+read. Keeping them apart is what stops a tick *inferred* from a track being
+written back as an explicit decision nobody made.
+
+The **Repair** panel reconciles the two: disagreements between sheet and
+timeline (with *Adopt timeline* / *Adopt sheet*), anchors whose item is gone,
+items claimed by two takes, and marks with no audio left to attach to.
+
 **Folded is the default**, and the project file stores which lines are OPEN
 (`View,expanded,<line key>` rows) rather than which are shut — a fresh project
 opens as a tidy list of title bands. `Unfold all` / `Fold all` do every line at

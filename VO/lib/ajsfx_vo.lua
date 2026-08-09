@@ -1,7 +1,7 @@
 -- @description ajsfx VO Shared Library
 -- @author ajsfx
--- @version 0.6
--- @changelog Transcript gap repair: a transcript hole of 5s+ that the audio says holds speech (whisper's swallowed-window failure) is re-run through whisper on just that span and the recovered words merged into the sidecar. New pure functions TranscriptGapSpans / PlanGapRepairs / MergeRepairWords, a span (-ot/-d) option on BuildWhisperArgv, and coupled MakeSourceProbe / RepairTranscriptGaps wired into TranscribeSources.
+-- @version 0.7
+-- @changelog Take identity: anchors bind a take row to its REAPER item by GUID so hand-edits cannot detach its marks, Sel/Keep become tri-state so a blank can defer to the track the item sits on, and PlanReconcile reports where the sheet and the timeline disagree. Also, from 0.6: transcript gap repair for whisper's swallowed-window failure.
 -- @noindex
 -- @about Shared logic for the ajsfx VO windows.
 --        Split into a pure layer (parsing, normalization, matching, naming —

@@ -643,3 +643,33 @@ Note anything that differs from the expectations above directly in
 [SPEC.md §10](SPEC.md#10-explicitly-unverified) — that section exists precisely to
 be converted from "unverified" into "verified, on this date" as these checks are
 completed.
+
+## Take identity and repair (2026-08-09)
+
+Everything here is REAPER-only: the paths run through `r.*` calls the mock
+cannot reach, which is why the pure layer stops where it does.
+
+1. Cut a session. Open the project's `_vo.csv`: every cut take has an `Anchor`
+   GUID with `Anchor start` / `Anchor stop`, and each one sits on the row whose
+   `Key` names that take — not on a row that no longer exists, and not absent.
+   This is what proves the row key was stamped before padding: derived
+   afterwards it would be built from the snapped start and match nothing.
+2. Tick Sel on a take, then drag that item's left edge 1s later in REAPER. The
+   row still points at the item and Sel is still ticked. (Before anchors the
+   mark detached: the row key *is* a start time.)
+3. Press Cut again: the report reads "1 take skipped — you had edited them".
+   Press *Re-cut anyway*: it re-cuts and the anchor is rebound to the new clip.
+4. Run Pull. Drag an item from `Alts` to `Selects` by hand, then Refresh: the
+   row's Sel ticks itself and Keep clears.
+5. Un-tick that Sel. It stays un-ticked across a Refresh (the file holds `no`).
+6. On a line with two takes both on `Selects`, tick Sel on one: the other
+   un-ticks and *stays* un-ticked across a Refresh rather than re-ticking
+   itself from its track.
+7. Delete an anchored item. Open Repair: it appears under "anchored to an item
+   this project no longer has". Select another item, press *Relink*.
+8. With a take ticked Sel but its item still on the recording track, open
+   Repair: it appears as a disagreement. *Adopt timeline* clears the tick;
+   undo, then *Adopt sheet* opens Pull instead.
+9. Open a project file written before this version whose items already sit on
+   Selects: those rows tick themselves on load. This is the intended
+   behaviour change, not a bug.
