@@ -117,5 +117,39 @@ test("an explicit keep=no is not overwritten by the legacy alt rule", function()
 end)
 
 --------------------------------
+print("IsEditedAnchor:")
+
+local function anchor(from, to) return { anchor_start = from, anchor_stop = to } end
+local function range(from, to)  return { from = from, to = to } end
+
+test("an untouched item is not edited", function()
+  assert(not vo.IsEditedAnchor(anchor(1.0, 3.0), range(1.0, 3.0)))
+end)
+
+test("a head dragged past the tolerance is edited", function()
+  assert(vo.IsEditedAnchor(anchor(1.0, 3.0), range(1.2, 3.0)))
+end)
+
+test("a tail dragged past the tolerance is edited", function()
+  assert(vo.IsEditedAnchor(anchor(1.0, 3.0), range(1.0, 2.7)))
+end)
+
+test("a sub-tolerance nudge is not edited", function()
+  -- Rounding through "%.3f" and REAPER's own float noise must not read as a
+  -- hand-edit, or every take would report edited after one save cycle.
+  assert(not vo.IsEditedAnchor(anchor(1.0, 3.0), range(1.005, 2.996)))
+end)
+
+test("an anchor with no recorded edges is not edited", function()
+  -- Nothing to compare against is not evidence of an edit.
+  assert(not vo.IsEditedAnchor({}, range(1.0, 3.0)))
+end)
+
+test("a missing range is not edited", function()
+  -- The item is gone, which is a repair-pass finding, not an edit.
+  assert(not vo.IsEditedAnchor(anchor(1.0, 3.0), nil))
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

@@ -1209,6 +1209,39 @@ function vo.DetectRepetitionLoop(words)
 end
 
 --------------------------------
+-- Pure layer: anchors
+--------------------------------
+
+-- An ANCHOR binds a take row to one specific REAPER item by the item's GUID,
+-- plus the source-time edges Cut gave that item.
+--
+-- The GUID is the durable half: dragging an edge, moving an item between
+-- tracks, and saving and reloading all preserve it, while the source-time key
+-- every other part of this tool uses (vo.OverviewKey) changes the moment an
+-- edge moves. The EDGES are what make "has the user touched this?" answerable.
+--
+-- They are the edges the cut PLAN wrote, never the row's own source_start --
+-- boundary snapping moves the edges away from the raw match, so comparing
+-- against the match would report every untouched item as edited.
+vo.ANCHOR_EDIT_TOLERANCE = 0.010  -- seconds at either edge
+
+-- Has the user moved this item's edges since Cut made it?
+--
+-- `range` is the item's CURRENT source coverage, from vo.SourceCoverageRanges.
+-- Returns false when there is nothing to compare -- an anchor with no recorded
+-- edges, or an item that is gone. Neither is evidence of an edit: a missing
+-- item is a repair-pass finding (see vo.PlanReconcile), and treating it as an
+-- edit would make Cut skip takes it should be free to re-cut.
+function vo.IsEditedAnchor(anchor, range, tolerance)
+  if not anchor or not range then return false end
+  local from, to = anchor.anchor_start, anchor.anchor_stop
+  if not from or not to then return false end
+  local tol = tolerance or vo.ANCHOR_EDIT_TOLERANCE
+  return math.abs((range.from or 0) - from) > tol
+      or math.abs((range.to   or 0) - to)   > tol
+end
+
+--------------------------------
 -- Pure layer: transcript gap repair
 --------------------------------
 
