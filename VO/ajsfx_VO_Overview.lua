@@ -115,7 +115,7 @@ local COLUMNS = {
   { key = "sel",   label = "",      width =  30, nofilter = true },
   { key = "keep",  label = "",      width =  30, nofilter = true },
   { key = "lock",  label = "",      width =  30, nofilter = true },
-  { key = "text",  label = "Text",  width = 260,
+  { key = "text",  label = "Text",  width = 260, stretch = 2.0,
     text = function(row) return (row.line_text or "") .. " " .. (row.transcript or "") end,
     tip = "Line: what the script says. Take: what was actually said,\n" ..
           "directly beneath it for comparison." },
@@ -133,7 +133,7 @@ local COLUMNS = {
           .. (row.source_path and vo.Basename(row.source_path) or "")
     end,
     tip = "Line: which script CSV, and its row.\nTake: which recording, and when." },
-  { key = "notes", label = "Notes", width = 170,
+  { key = "notes", label = "Notes", width = 170, stretch = 1.0,
     text = function(row) return row.notes or "" end },
 }
 
@@ -4307,8 +4307,16 @@ local function DrawTakeRow(row, take_no, vis_index)
 end
 
 local function DrawTableBody()
+  -- Text and Notes STRETCH; everything else is fixed. The narrow columns
+  -- (numbers, dots, checkboxes) hold their size at any window width, and
+  -- whatever room is left goes to the two columns that are actually prose --
+  -- Text first, by weight, because it is the one being read.
   for _, c in ipairs(COLUMNS) do
-    im.TableSetupColumn(ctx, c.label, im.TableColumnFlags_WidthFixed, c.width)
+    if c.stretch then
+      im.TableSetupColumn(ctx, c.label, im.TableColumnFlags_WidthStretch, c.stretch)
+    else
+      im.TableSetupColumn(ctx, c.label, im.TableColumnFlags_WidthFixed, c.width)
+    end
   end
   -- Both the header and the filter boxes stay put while the rows scroll.
   im.TableSetupScrollFreeze(ctx, 0, state.filter_row and 2 or 1)
