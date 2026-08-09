@@ -4799,11 +4799,27 @@ test("a select alone counts as user work", function()
 end)
 
 test("clearing a row's marks removes it from the file", function()
+  -- CLEARED is nil, not false. Marks became tri-state when the item's track
+  -- gained a say (vo.EffectiveMarks): nil means "no opinion, ask the track",
+  -- while false is an explicit no the user typed and which must survive --
+  -- see the companion test below and tests/test_vo_identity.lua.
   local out = round_trip({
     { key = "a.wav|0", source = "a.wav", source_start = 0, asset = "x",
-      status = nil, notes = "", name_override = "", select = false, keep = false },
+      status = nil, notes = "", name_override = "", select = nil, keep = nil },
   })
   assert(#out.entries == 0, "A cleared row must vanish, got " .. #out.entries)
+end)
+
+test("an explicit no is user work and survives the round trip", function()
+  -- Without this the un-tick would be dropped as workless and the item's own
+  -- track would re-tick the mark on the next rebuild.
+  local out = round_trip({
+    { key = "a.wav|0", source = "a.wav", source_start = 0, asset = "x",
+      select = false },
+  })
+  assert(#out.entries == 1, "An explicit no must be kept, got " .. #out.entries)
+  assert(out.entries[1].select == false,
+         "Explicit no became " .. tostring(out.entries[1].select))
 end)
 
 test("a script line with no audio keeps its note and has no source", function()

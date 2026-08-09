@@ -3412,7 +3412,7 @@ vo.PROJECT_VERSION = 1
 
 vo.PROJECT_HEADER = {
   "Key", "Filename", "Source", "Source start", "Select", "Status",
-  "Name override", "Notes", "Keep",
+  "Name override", "Notes", "Keep", "Anchor", "Anchor start", "Anchor stop",
 }
 
 -- Statuses the USER sets. Derived statuses (missing/recorded/review/orphan) are
@@ -3456,6 +3456,25 @@ end
 function vo.IsPlannedKey(key)
   return type(key) == "string"
      and key:sub(1, #vo.PLANNED_PREFIX) == vo.PLANNED_PREFIX
+end
+
+-- Marks are TRI-STATE in the file: "yes", "no", or empty.
+--
+-- Empty means "no opinion", which is what lets an item's TRACK speak for it
+-- (vo.EffectiveMarks). That makes an explicit "no" load-bearing: without a way
+-- to say it, un-ticking a take whose item sits on Selects would be re-ticked by
+-- the track on the very next rebuild and the un-tick would spring back.
+local function mark_to_field(v)
+  if v == true  then return "yes" end
+  if v == false then return "no"  end
+  return ""
+end
+
+local function field_to_mark(v)
+  v = fold(v or "")
+  if v == "yes" then return true  end
+  if v == "no"  then return false end
+  return nil
 end
 
 -- `meta` carries the script side of a project's VO state:
@@ -3548,10 +3567,16 @@ function vo.SerializeProjectFile(entries, meta)
   for _, e in ipairs(entries or {}) do
     -- Only rows carrying actual user work are written. Without this the file
     -- would grow a line per script line per session and the signal would drown.
-    local has_work = e.select or e.keep
+    -- An explicit "no" IS work -- see mark_to_field -- so these test against
+    -- nil rather than truthiness, or the no would be dropped and reappear as a
+    -- tick inferred from the track.
+    local has_work = e.select ~= nil or e.keep ~= nil
                   or (e.status and e.status ~= "")
                   or (e.name_override and e.name_override ~= "")
                   or (e.notes and e.notes ~= "")
+                  -- An anchor is the whole of what binds a take to its item;
+                  -- dropping it would unbind every cut take on the next save.
+                  or (e.anchor and e.anchor ~= "")
                   -- A planned take's existence IS the work: it derives from
                   -- nothing else, so dropping a bare one would delete the row.
                   or vo.IsPlannedKey(e.key)
@@ -3561,11 +3586,14 @@ function vo.SerializeProjectFile(entries, meta)
         e.asset or "",
         e.source or "",
         e.source_start and string.format("%.3f", e.source_start) or "",
-        e.select and "yes" or "",
+        mark_to_field(e.select),
         e.status or "",
         e.name_override or "",
         e.notes or "",
-        e.keep and "yes" or "",
+        mark_to_field(e.keep),
+        e.anchor or "",
+        e.anchor_start and string.format("%.3f", e.anchor_start) or "",
+        e.anchor_stop  and string.format("%.3f", e.anchor_stop)  or "",
       })
     end
   end
@@ -3660,21 +3688,33 @@ function vo.ParseProjectFile(text)
     local key = row[1] or ""
     if key ~= "" then
       local status = fold(row[6] or "")
+      -- Two independent marks. 0.13 briefly wrote "alt" in the Select field
+      -- before Keep had a column of its own; it reads as a keep, so a file
+      -- written by that version keeps the work rather than losing it.
+      --
+      -- Written as statements, NOT `field_to_mark(row[9]) or legacy`: an
+      -- explicit "no" is `false`, and `false or legacy` would evaluate the
+      -- legacy branch and turn the user's no into a yes.
+      local keep = field_to_mark(row[9])
+      if keep == nil and fold(row[5] or "") == "alt" then keep = true end
+
       parsed.entries[#parsed.entries + 1] = {
         key           = key,
         asset         = row[2] ~= "" and row[2] or nil,
         source        = row[3] ~= "" and row[3] or nil,
         source_start  = tonumber(row[4] or ""),
-        -- Two independent marks. 0.13 briefly wrote "alt" in the Select field
-        -- before Keep had a column of its own; it reads as a keep, so a file
-        -- written by that version keeps the work rather than losing it.
-        select        = fold(row[5] or "") == "yes",
-        keep          = fold(row[9] or "") == "yes" or fold(row[5] or "") == "alt",
+        select        = field_to_mark(row[5]),
+        keep          = keep,
         -- An unrecognised status is dropped rather than carried: it would
         -- otherwise render as an unknown badge with no way to clear it.
         status        = vo.TRACKER_STATUSES[status] and status or nil,
         name_override = row[7] ~= "" and row[7] or nil,
         notes         = row[8] ~= "" and row[8] or nil,
+        -- Absent in files written before anchors existed; nil is correct there
+        -- and means "this take is not bound to an item".
+        anchor        = (row[10] and row[10] ~= "") and row[10] or nil,
+        anchor_start  = tonumber(row[11] or ""),
+        anchor_stop   = tonumber(row[12] or ""),
       }
     end
   end
