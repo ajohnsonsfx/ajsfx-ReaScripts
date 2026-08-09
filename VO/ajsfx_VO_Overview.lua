@@ -4472,6 +4472,9 @@ end
 local CARD_BG      = 0x26262CFF
 local CARD_OUTLINE = 0x3A3A44FF
 local BAND_BG      = 0x31313CFF
+-- Take rows sit on their own colour, cooler and darker than the band, so
+-- parent and child can never be mistaken for one another.
+local TAKE_BG      = 0x1B2026FF
 local CARD_ROUND   = 4.0
 local CARD_MARGIN  = 5.0   -- vertical space between cards
 local CARD_PAD     = 6.0   -- inner padding
@@ -4512,10 +4515,15 @@ end
 
 -- One take row inside a card. The row spans the card, a click anywhere that
 -- is not a widget selects, and the widgets sit at the zone offsets.
-local function DrawCardTakeRow(row, z, vis_index, x0)
+local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
   local dl = im.GetWindowDrawList(ctx)
   local row_h = row._card_h or im.GetFrameHeight(ctx)
   local rx, ry = im.GetCursorScreenPos(ctx)
+
+  -- The child's own colour, behind everything: parent band and take rows
+  -- must never read as the same kind of thing.
+  im.DrawList_AddRectFilled(dl, rx + 12, ry - 1,
+    rx + (inner_w or 600), ry + row_h + 1, TAKE_BG, 3.0)
 
   -- The spanning selectable first, so widgets drawn after it win the click.
   local sel_flags = 0
@@ -4698,30 +4706,20 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   im.DrawList_AddRectFilled(dl, rx - CARD_PAD, ry - 3,
     rx - CARD_PAD + band_w, ry + band_h + 3, BAND_BG, CARD_ROUND)
 
-  -- The hover/select surface spans the card's inner width -- the whole band
-  -- inside the outline reads as one clickable thing. Clicking selects the
-  -- line's takes; the arrow (drawn after, so it wins) folds.
+  -- The hover surface spans the card's inner width, and the WHOLE band is
+  -- the fold control -- the arrow is an indicator, not the only target.
   local overlap = Api('SelectableFlags_AllowOverlap')
   if im.Selectable(ctx, "##band", false, overlap or 0, inner_w, band_h) then
-    local takes = node.takes
-    if #takes > 0 then
-      pending_action = function()
-        local all = true
-        for _, t in ipairs(takes) do
-          if not state.selection[t.uid] then all = false break end
-        end
-        for _, t in ipairs(takes) do
-          state.selection[t.uid] = (not all) and true or nil
-        end
-        SyncProjectSelection()
-      end
-    end
+    if state.expanded[key] then state.expanded[key] = nil
+    else state.expanded[key] = true end
+    state.dirty = true
   end
   if im.IsItemHovered(ctx) then
     im.SetTooltip(ctx, #node.takes > 0
-      and string.format("%d take%s. Click selects them; the arrow folds.",
-            #node.takes, #node.takes == 1 and "" or "s")
-      or  "No takes yet. The arrow opens the line's details.")
+      and string.format("%d take%s. Click to %s.",
+            #node.takes, #node.takes == 1 and "" or "s",
+            open and "fold" or "unfold")
+      or  ("Click to " .. (open and "fold" or "unfold") .. " the line's details."))
   end
 
   im.SetCursorScreenPos(ctx, rx, ry)
@@ -4920,7 +4918,7 @@ local function DrawLineCard(node, z, flat_index, avail_w)
         t._take_no = ti
         im.PushID(ctx, ti)
         id_depth = id_depth + 1
-        DrawCardTakeRow(t, z, flat_index[t.uid], cx + CARD_PAD)
+        DrawCardTakeRow(t, z, flat_index[t.uid], cx + CARD_PAD, avail_w - CARD_PAD * 2)
         im.PopID(ctx)
         id_depth = id_depth - 1
       end
@@ -4958,7 +4956,7 @@ local function DrawOrphanCard(node, z, flat_index, avail_w)
     t._take_no = ti
     im.PushID(ctx, ti)
     id_depth = id_depth + 1
-    DrawCardTakeRow(t, z, flat_index[t.uid], cx + CARD_PAD)
+    DrawCardTakeRow(t, z, flat_index[t.uid], cx + CARD_PAD, avail_w - CARD_PAD * 2)
     im.PopID(ctx)
     id_depth = id_depth - 1
   end
