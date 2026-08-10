@@ -90,6 +90,13 @@ local STATUS_STYLE = {
 -- something to look at, not an error, and red is spoken for.
 local EXTRA_WORD = 0xDDAA33FF
 
+-- Which script lines an orphan's words could be, memoized on the words.
+-- Declared here, far from its one reader (OrphanLineHits), because Rebuild
+-- must be able to CLEAR it: the answer depends on the loaded script lines,
+-- and a memo keyed only on the words would keep offering hits from a script
+-- that has since been swapped out.
+local orphan_hits_memo = {}
+
 -- vo.ExtraWords is an LCS over two token streams: cheap per row, and not free
 -- across five hundred of them every frame.
 --
@@ -728,6 +735,9 @@ local function Rebuild()
     return a.label < b.label
   end)
   state.characters = chars
+  -- The orphan right-click's hits depend on the script lines, which a rebuild
+  -- can have changed; stale hits would offer lines from a swapped-out script.
+  orphan_hits_memo = {}
 
   -- Row-level, so a per-take name override can clear a clash or create one.
   state.dupe_names = vo.DuplicateNames(state.overview)
@@ -2780,7 +2790,7 @@ end
 
 -- Which script lines this span could be, memoized on the words themselves: the
 -- menu asks every frame it is open, and the answer cannot change while it is.
-local orphan_hits_memo = {}
+-- (The memo lives at the top of the file so Rebuild can clear it.)
 local function OrphanLineHits(row)
   local text = row.transcript or ""
   local hit = orphan_hits_memo[text]
