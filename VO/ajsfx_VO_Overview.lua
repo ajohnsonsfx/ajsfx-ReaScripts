@@ -5104,16 +5104,23 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   if node.rollup.locks > 0 then bits[#bits + 1] = node.rollup.locks .. " locked." end
   CardDot(style.colour, table.concat(bits, "\n"))
 
-  -- Speaker chip, then the LINE TEXT right beside it: the words are the main
-  -- piece of information on the card, so they read in the same glance as who
-  -- says them -- `4 · Grumbar  "Can"` -- rather than two rows down.
-  local said_x = rx + z.marks
+  -- Speaker chip, then the LINE TEXT: the words are the main piece of
+  -- information on the card, so they read in the same glance as who says them
+  -- rather than two rows down.
+  --
+  -- The line starts at the TRANSCRIPT zone, not wherever the speaker's name
+  -- happened to end. That puts the line as WRITTEN directly above the same
+  -- line as READ on every take row below it, which is the comparison the
+  -- window exists to make -- a ragged start made the eye do the work.
+  local said_x = rx + z.text
   if rep.character and rep.character ~= "" then
     im.SameLine(ctx)
     im.SetCursorScreenPos(ctx, rx + z.marks, ry)
+    -- Clipped: a long speaker name must not run into the line it introduces.
+    im.PushClipRect(ctx, rx + z.marks, ry, said_x - 6, ry + line_h, true)
     im.TextColored(ctx, 0x9FB4C8FF, rep.character)
-    im.SameLine(ctx)
-    said_x = select(1, im.GetCursorScreenPos(ctx)) + 4
+    im.PopClipRect(ctx)
+    if im.IsItemHovered(ctx) then im.SetTooltip(ctx, rep.character) end
   end
   if rep.line_text and rep.line_text ~= "" then
     im.SetCursorScreenPos(ctx, said_x, ry)
