@@ -4380,6 +4380,15 @@ local function DrawFilters()
     if b.key == "__all__" then return false end
     return a.label < b.label
   end)
+
+  -- Search first: it is the row's highest-frequency control (SPEC-toolbar.md
+  -- section 3), and this whole row only changes what is LOOKED AT -- every
+  -- control that acts on the session lives on row 1.
+  im.SetNextItemWidth(ctx, 200)
+  local s_changed, s_text = im.InputTextWithHint(ctx, "##search", "Search…", state.search)
+  if s_changed then state.search = s_text; state.dirty = true end
+  im.SameLine(ctx)
+
   Combo("##character", 140, chars, state.character or "__all__",
         function(k)
           state.character = (k ~= "__all__") and k or nil
@@ -4457,58 +4466,6 @@ local function DrawFilters()
                          "line keeps it open.")
     end
     im.EndPopup(ctx)
-  end
-  im.SameLine(ctx)
-
-  im.SetNextItemWidth(ctx, 200)
-  local changed, text = im.InputTextWithHint(ctx, "##search", "Search…", state.search)
-  if changed then state.search = text; state.dirty = true end
-
-  im.SameLine(ctx)
-  -- Called directly, not deferred: the toolbar draws above the table, so
-  -- nothing here runs inside it, and `pending_action` is not in scope yet.
-  if im.Button(ctx, "Rematch") then Rematch() end
-  if im.IsItemHovered(ctx) then
-    local locked = #state.pins
-    im.SetTooltip(ctx, string.format(
-      "Re-read every transcript and identify the lines again from scratch.\n" ..
-      "Locked lines keep the placement they have (%d locked).\n\n" ..
-      "Do this after transcribing in ajsfx VO Sources, or after editing\n" ..
-      "the script.", locked))
-  end
-
-  im.SameLine(ctx)
-  if im.Button(ctx, "Select takes") then AutoSelectTakes(AffectedRows()) end
-  im.SameLine(ctx)
-  Combo("##autoselect", 70, TAKE_PICKS, state.auto_select_take, function(k)
-    state.auto_select_take = k
-    local cfg = vo.LoadConfig()
-    cfg.auto_select_take = k
-    vo.SaveConfig(cfg)
-  end)
-  if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Which take to mark as the select on a line that was\n" ..
-                       "read more than once. Locked lines are left alone.")
-  end
-
-  im.SameLine(ctx)
-  if im.Button(ctx, "Place") then pending_action = PlaceSelectedItems end
-  if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx,
-      "File the item(s) selected in REAPER where their NAME says they\n" ..
-      "belong: a plain delivered name goes to Selects, an alt-patterned\n" ..
-      "one to Alts. Rename first, press this, the sheet follows.")
-  end
-
-  im.SameLine(ctx)
-  if im.Button(ctx, "Tighten") then pending_action = TightenItems end
-  if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx,
-      "Finishing pass: measure where the audio really is in each delivered\n" ..
-      "item and pull loose edges in to the standard head/tail room. Inward\n" ..
-      "only, so speech is never lost; hand-trimmed items (custom fades)\n" ..
-      "are left alone. Works on the REAPER selection, or everything on\n" ..
-      "Selects + Alts when nothing is selected.")
   end
 
   -- The per-field boxes, on their own line under the toolbar. In the sheet
