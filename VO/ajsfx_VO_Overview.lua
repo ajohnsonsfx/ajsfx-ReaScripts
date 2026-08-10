@@ -155,15 +155,18 @@ local TAKE_PICKS = {
   { key = "first", label = "First" },
 }
 
--- The toolbar's four groups. A tab decides which buttons are on screen and
--- does nothing else; the buttons under it do the work. "fix" carries no
--- buttons of its own -- the repair panel IS its body -- because it works on
--- one line rather than the session.
+-- The toolbar's groups. A tab decides which buttons are on screen and does
+-- nothing else; the buttons under it do the work.
+--
+-- TWO tabs, deliberately, and Edit is crowded. Sheet / Items / Fix a line were
+-- three tabs drawn along a domain boundary nobody has found yet, and the cost
+-- landed on the work: matching, cutting and fixing happen in one breath, and
+-- every guess at the boundary put a tab switch in the middle of it. One full
+-- row you can read beats three tidy ones you have to page through. Split it
+-- again when the domains are known, not before.
 local TOOLBAR_TABS = {
   { key = "setup", label = "Setup" },
-  { key = "sheet", label = "Sheet" },
-  { key = "items", label = "Items" },
-  { key = "fix",   label = "Fix a line" },
+  { key = "edit",  label = "Edit" },
 }
 
 local LAYOUT_ORDERS = {
@@ -188,7 +191,7 @@ local state = {
   panel         = nil,        -- "script" | "cut" | "pull" | "sort"
   -- Which toolbar tab's buttons are showing. Items is the default because it
   -- is where the work happens; Setup is a once-per-project errand.
-  tab           = "items",    -- see TOOLBAR_TABS
+  tab           = "edit",     -- see TOOLBAR_TABS
   tab_sync      = 4,          -- frames left to push state.tab into the tab bar
   -- Whether the tools narrow to the table's selection. Off by default: see
   -- AffectedRows for why selection makes a poor default scope here.
@@ -4195,7 +4198,7 @@ local function DrawRepairPanel()
     end
     im.SameLine(ctx)
     if im.Button(ctx, "Adopt sheet") then
-      state.tab, state.panel, state.tab_sync = "items", "pull", 4
+      state.tab, state.panel, state.tab_sync = "edit", "pull", 4
       state.message, state.message_kind =
         "The marks are right -- run Pull to move the items to match them.", "info"
     end
@@ -6147,13 +6150,18 @@ local function loop()
         end
       end
 
-    elseif state.tab == "sheet" then
+    elseif state.tab == "edit" then
+      -- Dim group labels rather than more tabs: the domains are still moving,
+      -- and a label can be redrawn in a line where a tab boundary cannot.
+      im.TextDisabled(ctx, "Match:")
+      im.SameLine(ctx)
+
       if im.Button(ctx, "Match transcript to script") then TidyPass() end
       Tip("Re-read every transcript and identify the lines again from scratch,\n" ..
           "then write down what the timeline shows: a take whose item sits on\n" ..
           "Selects is marked Sel. Lines left carrying two selects are counted\n" ..
           "so you can pick one.\n\n" ..
-          "Nothing in this tab changes an item. Run it after transcribing, or\n" ..
+          "Sheet only -- no item is touched. Run it after transcribing, or\n" ..
           "after editing the script.")
 
       if im.Button(ctx, "Pick a take for each line") then AutoSelectTakes(AffectedRows()) end
@@ -6167,8 +6175,13 @@ local function loop()
       if im.IsItemHovered(ctx) then
         im.SetTooltip(ctx, "Which take to pick on a line that was read more than once.")
       end
+      im.SameLine(ctx)
 
-    elseif state.tab == "items" then
+      im.TextDisabled(ctx, " | ")
+      im.SameLine(ctx)
+      im.TextDisabled(ctx, "Items:")
+      im.SameLine(ctx)
+
       PanelButton("cut", "Cut recording into takes",
         "Splits every take the match identified out of its recording and\n" ..
         "names it the script's filename. Nothing moves.")
@@ -6228,9 +6241,16 @@ local function loop()
           "only, so speech is never lost; hand-trimmed items (custom fades) are\n" ..
           "left alone. Works on the REAPER selection, or everything on Selects\n" ..
           "+ Alts when nothing is selected.")
+
+      im.TextDisabled(ctx, " | ")
+      im.SameLine(ctx)
+      PanelButton("repair", "Fix a line",
+        "Where the sheet and the timeline disagree, and what is broken:\n" ..
+        "marks that contradict the track their item sits on, anchors whose\n" ..
+        "item is gone, and items claimed by two takes at once.")
     end
 
-    if     state.tab == "fix"      then DrawRepairPanel()
+    if     state.panel == "repair" then DrawRepairPanel()
     elseif state.panel == "script" then DrawScriptPanel()
     elseif state.panel == "cut"    then DrawCutPanel()
     elseif state.panel == "pull"   then DrawPullPanel()
