@@ -6120,6 +6120,20 @@ local function loop()
     local row_left  = im.GetCursorPosX(ctx)
     local row_right = row_left + select(1, im.GetContentRegionAvail(ctx))
 
+    -- Each GROUP gets its own row, and the rows share a gutter so the first
+    -- button of each lines up under the others: three labelled rows read as a
+    -- table, where one wrapped paragraph of buttons reads as a pile. Inside a
+    -- group the buttons still wrap when the window is too narrow.
+    local GROUPS = { "Match:", "Items:", "Tracking:" }
+    local gutter = 0
+    for _, g in ipairs(GROUPS) do
+      local w = im.CalcTextSize(ctx, g)
+      if w > gutter then gutter = w end
+    end
+    gutter = gutter + item_gap * 2
+    local body_left = row_left + gutter
+    local started = false
+
     -- `extra` covers anything drawn after the label on the same run: an arrow
     -- button, a combo, a trailing readout.
     local function Flow(label, extra)
@@ -6127,8 +6141,18 @@ local function loop()
       local w = im.CalcTextSize(ctx, label) + frame_pad * 2 + (extra or 0)
       if im.GetCursorPosX(ctx) + w > row_right then
         im.NewLine(ctx)
-        im.SetCursorPosX(ctx, row_left)
+        im.SetCursorPosX(ctx, body_left)
       end
+    end
+
+    -- Start a labelled group on a row of its own.
+    local function Group(label)
+      if started then im.NewLine(ctx) end
+      started = true
+      im.SetCursorPosX(ctx, row_left)
+      im.TextDisabled(ctx, label)
+      im.SameLine(ctx)
+      im.SetCursorPosX(ctx, body_left)
     end
 
     -- One button per detail panel, the open one held down.
@@ -6175,11 +6199,7 @@ local function loop()
       end
 
     elseif state.tab == "edit" then
-      -- Dim group labels rather than more tabs: the domains are still moving,
-      -- and a label can be redrawn in a line where a tab boundary cannot.
-      im.TextDisabled(ctx, "Match:")
-      im.SameLine(ctx)
-
+      Group("Match:")
       if im.Button(ctx, "Match transcript to script") then TidyPass() end
       Tip("Re-read every transcript and identify the lines again from scratch,\n" ..
           "then write down what the timeline shows: a take whose item sits on\n" ..
@@ -6188,26 +6208,7 @@ local function loop()
           "Sheet only -- no item is touched. Run it after transcribing, or\n" ..
           "after editing the script.")
 
-      Flow("Pick a take for each line", 90 + item_gap)
-      if im.Button(ctx, "Pick a take for each line") then AutoSelectTakes(AffectedRows()) end
-      Tip("Mark one take per line as the select. Locked lines are left alone.")
-      Combo("##autoselect", 90, TAKE_PICKS, state.auto_select_take, function(k)
-        state.auto_select_take = k
-        local cfg = vo.LoadConfig()
-        cfg.auto_select_take = k
-        vo.SaveConfig(cfg)
-      end)
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, "Which take to pick on a line that was read more than once.")
-      end
-      im.SameLine(ctx)
-
-      Flow(" | Items: Cut recording into takes")
-      im.TextDisabled(ctx, " | ")
-      im.SameLine(ctx)
-      im.TextDisabled(ctx, "Items:")
-      im.SameLine(ctx)
-
+      Group("Items:")
       PanelButton("cut", "Cut recording into takes",
         "Splits every take the match identified out of its recording and\n" ..
         "names it the script's filename. Nothing moves.")
@@ -6223,9 +6224,19 @@ local function loop()
           pending_action = MarkTakesFromSession
         end
         if im.IsItemHovered(ctx) then
-          im.SetTooltip(ctx, "Write a take marker for every take that has none, spanning its\n" ..
-                             "item's CURRENT edges -- banks hand-fixed cut points as marker\n" ..
-                             "truth. The migration for sessions cut before markers existed.")
+          im.SetTooltip(ctx, "For items that hold several takes: work out where each one is\n" ..
+                             "and mark it inside the item. Splits nothing and moves nothing --\n" ..
+                             "the markers are the takes, and Cut can act on them later.\n\n" ..
+                             "Runs over the whole session, not just the selection.")
+        end
+        if im.Selectable(ctx, "Assign items to lines") then
+          pending_action = MarkSelectedItems
+        end
+        if im.IsItemHovered(ctx) then
+          im.SetTooltip(ctx, "For items that are already one take each: work out which line\n" ..
+                             "each selected item is, mark it at its CURRENT edges, name it,\n" ..
+                             "and log it in the sheet. Nothing is trimmed or moved, and the\n" ..
+                             "guess is reported so you can check it.")
         end
         if im.Selectable(ctx, "Adopt this whole session (mark and name)") then
           pending_action = function() MarkTakesFromSession(true) end
@@ -6235,14 +6246,6 @@ local function loop()
                              "name every matched item for its script line, at the item's\n" ..
                              "current edges. Nothing is cut and nothing moves. A name that\n" ..
                              "already means a line is never overwritten, so re-running is safe.")
-        end
-        if im.Selectable(ctx, "Assign items to lines") then
-          pending_action = MarkSelectedItems
-        end
-        if im.IsItemHovered(ctx) then
-          im.SetTooltip(ctx, "Best-effort: match the selected item(s) against the transcript,\n" ..
-                             "write each one's take marker at its CURRENT edges and name it\n" ..
-                             "for the line it matches. The guess is reported.")
         end
         if im.Selectable(ctx, "Sync take markers across copies") then
           pending_action = SyncTakeMarkers
@@ -6272,9 +6275,24 @@ local function loop()
           "left alone. Works on the REAPER selection, or everything on Selects\n" ..
           "+ Alts when nothing is selected.")
 
-      Flow(" | Fix a line")
-      im.TextDisabled(ctx, " | ")
+      -- Tracking: what the SHEET records about the session -- which take is
+      -- the delivery, and reconciling the sheet against the timeline when the
+      -- two disagree. No item is touched by anything on this row.
+      Group("Tracking:")
+      if im.Button(ctx, "Pick a take for each line") then AutoSelectTakes(AffectedRows()) end
+      Tip("Mark one take per line as the select. Locked lines are left alone.")
+      Combo("##autoselect", 90, TAKE_PICKS, state.auto_select_take, function(k)
+        state.auto_select_take = k
+        local cfg = vo.LoadConfig()
+        cfg.auto_select_take = k
+        vo.SaveConfig(cfg)
+      end)
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Which take to pick on a line that was read more than once.")
+      end
       im.SameLine(ctx)
+
+      Flow("Fix a line")
       PanelButton("repair", "Fix a line",
         "Where the sheet and the timeline disagree, and what is broken:\n" ..
         "marks that contradict the track their item sits on, anchors whose\n" ..
