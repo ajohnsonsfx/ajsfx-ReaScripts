@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.15beta6
--- @changelog PRE-RELEASE: the toolbar is three tabs -- Setup, Edit and Settings -- and a tab never does anything: it only decides which buttons you are looking at, while every button under it acts. Edit leads with "Run the whole pass" (match, cut, pick, pull, in one undo step) above the three rows it is made of: Match, Items and Tracking. Buttons wrap rather than running off a narrow window, and the ribbon holds one height so the sheet no longer jumps when you click between tabs. "Start over..." in Setup deletes this project's VO data, behind a confirm that names what goes and what stays. The blank sheet now asks for the two things it needs -- a script and a transcript -- with a button for each.
+-- @changelog PRE-RELEASE: the toolbar is three tabs -- Setup, Edit and Settings -- and a tab never does anything: it only decides which buttons you are looking at, while every button under it acts. Edit leads with "Run the whole pass" (match, cut, pick, pull, in one undo step) above one row per step of the same name -- Match, Cut, Pick, Pull -- plus Check, the phase the batch button cannot run for you. "Auto-pick selects" and "Auto-name the alts" join "Auto-adjust head and tail" as the Auto- family: each is the batch form of a per-row sheet gesture. Auto-adjust now moves the take marker with the edges it trims. Buttons wrap rather than running off a narrow window, and the ribbon holds one height so the sheet no longer jumps when you click between tabs. "Start over..." in Setup deletes this project's VO data, behind a confirm that names what goes and what stays. The blank sheet now asks for the two things it needs -- a script and a transcript -- with a button for each.
 --   "Not on the script" is a queue instead of a dead end: right-click any orphan to hand it to a script line (best guesses first, scored against what was actually said) or dismiss it as junk, which is remembered and leaves the count -- so "0 orphans" now means every span has been looked at. Each orphan says why it is one. Matching ranks candidates by tokens of agreement rather than by score, so a short line matched perfectly no longer takes the words out of the middle of a long one. A transcript is drawn in one colour with the EXTRA words -- what the reader said that the line does not contain -- in amber; the colour used to encode a match threshold nobody could see. Notes are gone from the cards. A reader going again is no longer reported as a transcriber loop. In Sources: single-click opens a file's detail, "Copy report" puts everything on the clipboard, reported timecodes are clickable links that move the edit cursor, and a transcript can be deleted from the panel. "Find lines in items" honours the REAPER selection. Fixed: a race that reported "whisper-cli exited with code -1" on runs that had barely started.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
@@ -179,11 +179,6 @@ local function ColumnKeys()
   for i, c in ipairs(COLUMNS) do keys[i] = c.key end
   return keys
 end
-
-local TAKE_PICKS = {
-  { key = "last",  label = "Last" },
-  { key = "first", label = "First" },
-}
 
 -- The toolbar's groups. A tab decides which buttons are on screen and does
 -- nothing else; the buttons under it do the work.
@@ -1903,6 +1898,7 @@ local function TightenItems()
     return
   end
 
+  local markers_followed = 0
   core.Transaction("VO Overview: tighten edges", function()
     for _, e in ipairs(edits) do
       local item = by_name[e.name]
@@ -1920,15 +1916,61 @@ local function TightenItems()
           r.SetMediaItemInfo_Value(item, "D_LENGTH",
             r.GetMediaItemInfo_Value(item, "D_LENGTH") - e.tail)
         end
+
+        -- The take's marker follows the new edges. The marker is the take's
+        -- identity and Cut wrote it at the OLD edges; leaving it there after
+        -- a deliberate trim leaves the marker owning silence the item no
+        -- longer shows -- a sheet-vs-timeline disagreement created by the
+        -- tool's own finishing pass, which is exactly what Fix a line would
+        -- then report. CLAMPED to the new window rather than snapped to it,
+        -- so on the rare item holding more than one marker, each keeps its
+        -- own place and only sheds what was trimmed away.
+        if e.head > 0 or e.tail > 0 then
+          local cov = vo.SourceCoverageRanges({ {
+            start_offs = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS"),
+            length     = r.GetMediaItemInfo_Value(item, "D_LENGTH"),
+            playrate   = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE"),
+          } })[1]
+          local ok_c, chunk = r.GetItemStateChunk(item, "", false)
+          if cov and ok_c then
+            local list, changed = {}, false
+            for _, m in ipairs(vo.ParseTKMChunk(chunk)) do
+              local asset0, id0 = vo.ParseMarkerName(m.name)
+              if id0 then
+                local from = math.max(m.pos, cov.from)
+                local to   = math.min(m.pos + (m.length or 0), cov.to)
+                if to > from then
+                  if from ~= m.pos or to ~= m.pos + (m.length or 0) then
+                    changed = true
+                  end
+                  list[#list + 1] = { start = from, stop = to,
+                                      asset = asset0, id = id0 }
+                else
+                  -- Wholly outside the trimmed window: stray residue, not
+                  -- this pass's business. Kept as it was; Tidy handles it.
+                  list[#list + 1] = { start = m.pos,
+                                      stop = m.pos + (m.length or 0),
+                                      asset = asset0, id = id0 }
+                end
+              end
+            end
+            if changed and vo.WriteTakeMarkers(item, list) then
+              markers_followed = markers_followed + 1
+            end
+          end
+        end
       end
     end
     r.UpdateArrange()
   end)
   state.message, state.message_kind = string.format(
-    "Tightened %d of %d item(s) to %dms head / %dms tail room.",
+    "Tightened %d of %d item(s) to %dms head / %dms tail room.%s",
     #edits, #measured,
     math.floor(vo.Opt(cfg, "snap_head_room") * 1000 + 0.5),
-    math.floor(vo.Opt(cfg, "snap_tail_room") * 1000 + 0.5)), "ok"
+    math.floor(vo.Opt(cfg, "snap_tail_room") * 1000 + 0.5),
+    markers_followed > 0
+      and string.format(" %d take marker(s) followed the new edges.", markers_followed)
+      or ""), "ok"
 end
 
 -- -----------------------------------------------------------------------
@@ -2607,7 +2649,17 @@ end
 -- Mark one take of every line as the select. Which one is the user's standing
 -- choice, not a guess: a session read in takes usually settles on the last, but
 -- an actor who leads with their best does the opposite.
-local function AutoSelectTakes(rows)
+-- `rule` ("last"/"first") overrides the remembered choice for this run and is
+-- then remembered as it: two explicit buttons replaced the rule combo, and the
+-- hero's batch run should pick the way the user last picked.
+local function AutoSelectTakes(rows, rule)
+  if rule then
+    state.auto_select_take = rule
+    local cfg = vo.LoadConfig()
+    cfg.auto_select_take = rule
+    vo.SaveConfig(cfg)
+  end
+
   -- A locked line has been settled by hand; a bulk action does not get to
   -- overrule that.
   local locked_line = {}
@@ -6687,7 +6739,7 @@ local function loop()
     -- button of each lines up under the others: three labelled rows read as a
     -- table, where one wrapped paragraph of buttons reads as a pile. Inside a
     -- group the buttons still wrap when the window is too narrow.
-    local GROUPS = { "Match:", "Items:", "Tracking:" }
+    local GROUPS = { "Match:", "Cut:", "Pick:", "Pull:", "Check:" }
     local gutter = 0
     for _, g in ipairs(GROUPS) do
       local w = im.CalcTextSize(ctx, g)
@@ -6816,13 +6868,19 @@ local function loop()
           "  2. cut the recording into takes\n" ..
           "  3. pick a take for each line\n" ..
           "  4. pull the items to their tracks\n\n" ..
-          "Every step is also a button below, for when you want just one.\n" ..
-          "This CHANGES ITEMS: it cuts, names and moves audio.")
+          "Each step is the row of the same name below, for when you want\n" ..
+          "just one. This CHANGES ITEMS: it cuts, names and moves audio.")
       end
       im.SameLine(ctx)
       im.TextDisabled(ctx, "  match \226\134\146 cut \226\134\146 pick \226\134\146 pull")
       started = true
 
+      -- The rows below are the hero's own words -- match, cut, pick, pull --
+      -- in the same order, plus Check: the one phase the batch button cannot
+      -- run for you. Rows are WORK PHASES, not object categories: finding a
+      -- button costs one question, "which part of the job am I doing?", and
+      -- the answer is the same whether you pressed the hero or are walking
+      -- the steps by hand.
       Group("Match:")
       if im.Button(ctx, "Match transcript to script") then TidyPass() end
       Tip("Re-read every transcript and identify the lines again from scratch,\n" ..
@@ -6831,11 +6889,6 @@ local function loop()
           "so you can pick one.\n\n" ..
           "Sheet only -- no item is touched. Run it after transcribing, or\n" ..
           "after editing the script.")
-
-      Group("Items:")
-      PanelButton("cut", "Cut recording into takes",
-        "Splits every take the match identified out of its recording and\n" ..
-        "names it the script's filename. Nothing moves.")
 
       Flow("Identify line from item  ▾")
       if im.Button(ctx, "Identify line from item  ▾") then
@@ -6872,22 +6925,52 @@ local function loop()
                              "current edges. Nothing is cut and nothing moves. A name that\n" ..
                              "already means a line is never overwritten, so re-running is safe.")
         end
-        if im.Selectable(ctx, "Tidy up take markers") then
-          pending_action = SyncTakeMarkers
-        end
-        if im.IsItemHovered(ctx) then
-          im.SetTooltip(ctx, "Leave each clip holding only the take it IS, and drop the\n" ..
-                             "rest. REAPER's split copies every take marker into both\n" ..
-                             "halves, so a cut session can end up carrying hundreds of\n" ..
-                             "them per clip -- harmless, but the tool re-reads them all\n" ..
-                             "whenever the project changes, and that is felt as a pause.\n\n" ..
-                             "Cut does this itself now; this is for sessions cut before\n" ..
-                             "it did, or after splitting by hand.")
-        end
         im.EndPopup(ctx)
       end
 
-      Flow("Pull items to their tracks")
+      Group("Cut:")
+      PanelButton("cut", "Cut recording into takes",
+        "Splits every take the match identified out of its recording and\n" ..
+        "names it the script's filename. Nothing moves.")
+
+      Flow("Auto-adjust head and tail")
+      if im.Button(ctx, "Auto-adjust head and tail") then pending_action = TightenItems end
+      Tip("Measure where the audio really is in each item and set its edges\n" ..
+          "to the standard head and tail room. Inward only, so speech is\n" ..
+          "never lost; hand-trimmed items (custom fades) are left alone. The\n" ..
+          "take's marker follows the new edges. Works on the REAPER\n" ..
+          "selection, or everything on Selects + Alts when nothing is\n" ..
+          "selected.")
+
+      -- Two buttons, not a button and a rule combo. The combo was the one
+      -- control on the toolbar that did nothing when clicked -- it set state
+      -- for a LATER press, which is exactly the tab-like behaviour the rest
+      -- of the row forbids. With two rules there is no menu to justify:
+      -- each button says its whole rule and acts on the press. Whichever
+      -- was pressed last is the rule the hero's batch run uses.
+      Group("Pick:")
+      if im.Button(ctx, "Auto-pick selects: last take") then
+        AutoSelectTakes(AffectedRows(), "last")
+      end
+      Tip("Mark each line's LAST take as the select -- the reader kept going\n" ..
+          "until they had it, so the last read is usually the keeper.\n\n" ..
+          "Locked lines are left alone, and any Sel you ticked by hand\n" ..
+          "stands. The sheet's Sel boxes are the per-line version of this.")
+
+      Flow("Auto-pick selects: first take")
+      if im.Button(ctx, "Auto-pick selects: first take") then
+        AutoSelectTakes(AffectedRows(), "first")
+      end
+      Tip("The same pass, picking each line's FIRST take instead.")
+
+      Flow("Auto-name the alts")
+      if im.Button(ctx, "Auto-name the alts") then pending_action = ApplyAltNames end
+      Tip("Give every take marked Keep its own numbered alt name (the\n" ..
+          "pattern in Settings), so it can ship beside the select. The\n" ..
+          "select keeps the plain name; a take that already has its own\n" ..
+          "name is left alone.")
+
+      Group("Pull:")
       PanelButton("pull", "Pull items to their tracks",
         "Moves items onto Selects, Alts, Outs and Review tracks nested under\n" ..
         "the recording they came from, matched to the script by name.")
@@ -6897,36 +6980,23 @@ local function loop()
         "Lays the items out on the timeline in script order or record order,\n" ..
         "on fresh child tracks so nothing lands on anything.")
 
-      Flow("Auto-adjust head and tail")
-      if im.Button(ctx, "Auto-adjust head and tail") then pending_action = TightenItems end
-      Tip("Finishing pass: measure where the audio really is in each delivered\n" ..
-          "item and set its edges to the standard head and tail room. Inward\n" ..
-          "only, so speech is never lost; hand-trimmed items (custom fades) are\n" ..
-          "left alone. Works on the REAPER selection, or everything on Selects\n" ..
-          "+ Alts when nothing is selected.")
-
-      -- Tracking: what the SHEET records about the session -- which take is
-      -- the delivery, and reconciling the sheet against the timeline when the
-      -- two disagree. No item is touched by anything on this row.
-      Group("Tracking:")
-      if im.Button(ctx, "Pick a take for each line") then AutoSelectTakes(AffectedRows()) end
-      Tip("Mark one take per line as the select. Locked lines are left alone.")
-      Combo("##autoselect", 90, TAKE_PICKS, state.auto_select_take, function(k)
-        state.auto_select_take = k
-        local cfg = vo.LoadConfig()
-        cfg.auto_select_take = k
-        vo.SaveConfig(cfg)
-      end)
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, "Which take to pick on a line that was read more than once.")
-      end
-      im.SameLine(ctx)
-
-      Flow("Fix a line")
+      -- Check: does the sheet agree with the timeline, and is the leftover
+      -- state accounted for. The phase the hero cannot run, because its
+      -- verbs need a person deciding.
+      Group("Check:")
       PanelButton("repair", "Fix a line",
         "Where the sheet and the timeline disagree, and what is broken:\n" ..
         "marks that contradict the track their item sits on, anchors whose\n" ..
         "item is gone, and items claimed by two takes at once.")
+
+      Flow("Tidy up take markers")
+      if im.Button(ctx, "Tidy up take markers") then pending_action = SyncTakeMarkers end
+      Tip("Leave each clip holding only the take it IS, and drop the rest.\n" ..
+          "REAPER's split copies every take marker into both halves, so a\n" ..
+          "session cut by hand can end up carrying hundreds per clip --\n" ..
+          "harmless, but the tool re-reads them all whenever the project\n" ..
+          "changes, and that is felt as a pause. Cut tidies after itself;\n" ..
+          "this is for sessions cut before it did, or split by hand.")
     end
 
     im.EndGroup(ctx)

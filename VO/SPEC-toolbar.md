@@ -37,7 +37,7 @@ window rather than showing buttons.
 Sheet / Items / Fix a line / Settings) and the extra boundaries cost more than
 they bought: matching, cutting and fixing happen in one breath, so every
 boundary put a tab switch in the middle of the work. Dim group labels
-(`Match:`, `Items:`) do the dividing instead — a label can be moved in a line,
+(`Match:`, `Pick:`) do the dividing instead — a label can be moved in a line,
 where a tab boundary cannot. Split again when the domains are known.
 
 ### Setup
@@ -49,47 +49,51 @@ the panel by itself.
 
 ### Edit
 ```
-Match:  [ Match transcript to script ]  [ Pick a take for each line ] [Last ▾]
-      | Items:  [ Cut recording into takes ]  [ Identify line from item ▾ ]
-                [ Pull items to their tracks ]  [ Lay items out in script order ]
-                [ Auto-adjust head and tail ]
-      | [ Fix a line ]
+[ Run the whole pass ]   match → cut → pick → pull
+
+Match:  [ Match transcript to script ]  [ Identify line from item ▾ ]
+Cut:    [ Cut recording into takes ]  [ Auto-adjust head and tail ]
+Pick:   [ Auto-pick selects: last take ]  [ …first take ]  [ Auto-name the alts ]
+Pull:   [ Pull items to their tracks ]  [ Lay items out in script order ]
+Check:  [ Fix a line ]  [ Tidy up take markers ]
 ```
 
-**Match** — sheet only, no item is touched.
-- **Match transcript to script** — re-reads every transcript, identifies the
-  lines again from scratch, and writes down what the timeline shows: a take
-  whose item sits on Selects is marked Sel. Lines left carrying two selects
-  are counted (§4). Named for the job because matching IS the job, and nothing
-  else in the toolbar said the word.
-- **Pick a take for each line** — with its rule combo visible beside it.
+**The rows are the hero's own words.** `Run the whole pass` reads
+`match → cut → pick → pull`, and below it sits one row per word, in the same
+order, plus **Check** — the phase the batch button cannot run, because its
+verbs need a person deciding. The hero is the map of the toolbar: the batch
+path and the manual path are the same mental model, and finding a button costs
+one question — *which part of the job am I doing?*
 
-It briefly carried two opt-ins (*also name matched takes*, *also pull*), which
-put item surgery behind a sheet action. Removed: both jobs are in Items, and a
-group whose contract is "changes nothing but the sheet" cannot have an
-exception, however well labelled.
+This replaced grouping by what a button touches (Match = sheet, Items = audio).
+Phases are how the user thinks while working; the object-touched split was how
+the engineer thought about safety, and it now lives in each button's name and
+tooltip instead of in the layout. The cost is real — the Match row mixes a
+sheet-only verb with item-writing ones — and accepted deliberately.
 
-**Items** — in workflow order.
-- **Cut recording into takes** — opens the Cut panel.
-- **Identify line from item ▾** — the one home for "these items already
-  exist, work out what they are", named for the SITUATION the user is in:
-  *Find lines in items* (long items holding several takes: find them all,
-  mark each inside the item, split nothing) · *Assign items to lines* (items
-  already one take each: work out which line each selected item is, mark it
-  at its current edges, name it, log it) · *Adopt this whole session* · *Sync
-  take markers across copies*. All four used to appear in the Cut panel **and**
-  the Repair panel.
-- **Pull items to their tracks** — opens the Pull panel, which also carries
-  **Pull the selected item(s) only** (the old `Place`): the same verb at a
-  smaller scope, so they sit together.
-- **Lay items out in script order** — the old Sort.
-- **Auto-adjust head and tail** — the old Tighten. Named for both directions:
-  it trims a loose edge and extends a clipped one.
-
-**Fix a line** — the reconciliation panel (adopt timeline / adopt sheet /
-relink / marker add-snap-delete), behind its own button at the end of the row.
-It is the only thing here that works on ONE line rather than the session, so it
-sits past a separator instead of among the batch actions.
+- **Match** — establish what everything is. *Match transcript to script*
+  (batch, sheet-only) and *Identify line from item ▾*, the per-item forms:
+  *Find lines in items* · *Assign items to lines* · *Adopt this whole
+  session*.
+- **Cut** — make each take physically its own item, with the right edges.
+  *Cut recording into takes*; *Auto-adjust head and tail* (the old Tighten —
+  its trims move the take marker too, so the finishing pass cannot create the
+  disagreement Fix a line would then report).
+- **Pick** — decide what ships. *Auto-pick selects: last take* / *first
+  take* — two buttons, not a button and a rule combo, because the combo was
+  the one control on the toolbar that did nothing when clicked: it set state
+  for a later press, which is tab behaviour. Each button states its whole
+  rule and acts; whichever was pressed last is the rule the hero uses.
+  *Auto-name the alts*. The **Auto- prefix is a family**: each Auto- button is
+  the batch form of a per-row sheet gesture (the Sel box, the name field, a
+  hand-trimmed edge), applying one rule everywhere the user has not already
+  decided. Locked lines and hand-set values always stand.
+- **Pull** — deliver. *Pull items to their tracks* (its panel also carries
+  *Pull the selected item(s) only*, the same verb at a smaller scope) and
+  *Lay items out in script order*.
+- **Check** — does the sheet agree with the timeline? *Fix a line* (the
+  reconciliation panel) and *Tidy up take markers*. The orphan queue and the
+  summary line are this phase's other half, living in the sheet itself.
 
 ### The ribbon's height
 
