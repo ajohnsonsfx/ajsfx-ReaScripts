@@ -724,3 +724,25 @@ below are the GUI-side confirmations of the same paths.
    copy is the truth, mirrors follow it.
 6. Sync twice: the second press says every item already carries the map.
 7. The seam knows `mark_selected` and `sync_markers`.
+
+## Toolbar zones + Tidy (0.15beta5)
+
+Setup: any project with a script loaded and a few cut takes.
+
+1. Row 1 reads `Sheet: [Refresh] [Tidy ▾] | Items: [Cut and Name] [Pull] [Sort]
+   [Place] [Tighten] [Repair] | [Script] [Sources…] [Settings] <script name>`.
+   Row 2 starts with the Search box; Rematch / Select takes / Place / Tighten
+   are gone from it.
+2. Refresh = old Rematch: message reports lines identified, locked lines skipped.
+3. Tidy with both opt-ins OFF: message reports refreshed count; NOTHING moves
+   or renames on the timeline (undo history gains no item edit).
+4. Drag a second item of one line onto Selects. The card shows the amber
+   "2 selects -- pick one" badge (band row 3, next to Script); the summary
+   line counts it. Press Tidy: message includes "1 line(s) with two selects".
+5. Tidy ▾ → tick both opt-ins (labelled "changes items"). Press Tidy on a
+   project with unnamed Sel-ticked takes: takes get named, Pull runs, one
+   undo step covers the item edits ("VO Overview: tidy"), Pull's own report
+   shows.
+6. Tidy ▾ → Select takes + first/last combo still work as before.
+7. Untick both opt-ins afterwards; confirm they persist across a window
+   close/reopen (config), and Tidy's tooltip returns to "Tracking only".

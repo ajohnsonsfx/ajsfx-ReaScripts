@@ -1,6 +1,6 @@
 # ajsfx VO Overview Toolbar — Design Spec
 
-**Status:** Approved design, unimplemented · **Date:** 2026-08-09
+**Status:** Implemented, unverified in REAPER · **Date:** 2026-08-09
 
 Reorganize the Overview toolbar so finding a button costs no thought. The
 organizing rule the user can trust without reading anything: **buttons on the
