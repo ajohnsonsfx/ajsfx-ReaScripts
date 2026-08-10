@@ -1,115 +1,111 @@
 # ajsfx VO Overview Toolbar — Design Spec
 
-**Status:** Implemented, unverified in REAPER · **Date:** 2026-08-09
+**Status:** Implemented, unverified in REAPER · **Date:** 2026-08-10
+(supersedes the 2026-08-09 three-zone layout)
 
-Reorganize the Overview toolbar so finding a button costs no thought. The
-organizing rule the user can trust without reading anything: **buttons on the
-left only update the tracking sheet; buttons on the right change audio
-items.** Plus one new hero action, **Tidy**, a best-effort pass that is safe
-by default.
+Reorganize the Overview toolbar so finding a button costs no thought.
 
 ---
 
 ## 1. The rule
 
-Every control the user can press falls into exactly one of three categories:
+**A tab never does anything. A button always does something.**
 
-| Category | Where it lives | Contract |
-|---|---|---|
-| **Sheet** — updates tracking only | Row 1, left zone | Can never change an item, a track, or the timeline. Always safe to press. |
-| **Items** — changes audio items | Row 1, right zone | Splits, moves, names, trims, or marks items. In workflow order. |
-| **View** — changes what you're looking at | Row 2 | Filters, folding, follow, search. Touches neither items nor tracking. |
+That is the whole contract, and it is what the previous layout broke: `Sort`
+opened a panel while `Place`, the button beside it, moved audio on the press.
+Two identical-looking controls with opposite consequences is the thing that
+made the row unreadable.
 
-The zones wear dimmed text labels (`Sheet:` / `Items:`), and every sheet-zone
-tooltip opens with "Tracking only — no items change."
+Second rule, subordinate to the first: **the button name carries the
+meaning, not the tooltip.** Names are deliberately long. A tooltip explains
+consequences and edge cases; it is never the only place the button's job is
+written down.
 
-The one deliberate crossover: Tidy's two opt-in checkboxes reach into item
-territory, and the popup labels them **"changes items"** so the boundary
-stays honest (§4).
-
-## 2. Row 1 layout
+## 2. Layout
 
 ```
-Sheet:  [Refresh] [Tidy ▾]   │   Items:  [Cut] [Pull] [Sort] [Place] [Tighten] [Repair]   │   [Script] [Sources…] [Settings]
+[ Setup ]  [ Sheet ]  [ Items ]  [ Fix a line ]                    [ Settings ]
+──────────────────────────────────────────────────────────────────────────────
+ <the selected tab's buttons>
+ <a detail panel, if a button opened one>
 ```
 
-- **Refresh** — the current Rematch, renamed and moved to first position.
-  Re-reads transcripts and re-identifies lines from scratch; locked lines
-  keep their placement. Tooltip keeps the existing explanation.
-- **Tidy ▾** — new; §3–4.
-- **Items zone** — the existing panel buttons plus Place and Tighten (moved
-  off the filter toolbar), in the order work happens: cut → pull → sort →
-  place → tighten → repair. Panel toggling behavior (held-down button, one
-  panel at a time) is unchanged. Panel *contents* are unchanged.
-- **Setup cluster** — Script, Sources…, Settings at the far right, out of
-  the workflow's way. The bad-script warning still jumps to the Script panel.
+`Settings` is a tab-shaped button on the trailing edge, not a tab: it opens a
+window rather than showing buttons.
 
-## 3. Row 2 layout
+### Setup
+```
+[ Choose script… ]  [ Sources and transcripts… ]        Script: HolyFool_VO.csv
+```
+Once-per-project errands. The loaded-script readout lives here, where you go
+when it is wrong. A script that fails to load switches to this tab and opens
+the panel by itself.
+
+### Sheet
+```
+[ Update sheet to match items ▾ ]   [ Pick a take for each line ] [Last ▾]
+```
+- **Update sheet to match items** — re-reads the session, then writes down
+  what it shows: a take whose item sits on Selects is marked Sel. Lines left
+  carrying two selects are counted (§4). This is the old Tidy, renamed.
+- **▾** — the two persisted opt-ins that reach out of the sheet and change
+  items, labelled as such: *also name matched takes*, *also pull named items
+  to their tracks*. With either on, the item-changing steps run inside one
+  `core.Transaction` — one undo step.
+- **Pick a take for each line** — the old Select takes, with its rule combo
+  visible beside it rather than hidden in a menu.
+
+There is no Refresh button. Refreshing was a strict subset of updating the
+sheet, and two buttons where one contains the other cannot be told apart no
+matter how they are named.
+
+### Items — in workflow order
+```
+[ Cut recording into takes ]  [ Identify line from item ▾ ]
+[ Pull items to their tracks ]  [ Lay items out in script order ]
+[ Auto-adjust head and tail ]
+```
+- **Cut recording into takes** — opens the Cut panel (unchanged internals
+  minus the relocated buttons below).
+- **Identify line from item ▾** — the one home for "these items already
+  exist, work out which line each one is": *Mark takes at their current
+  edges*, *Adopt this whole session (mark and name)*, *Identify the item(s)
+  selected in REAPER*, *Sync take markers across copies*. All four used to
+  appear in the Cut panel **and** the Repair panel.
+- **Pull items to their tracks** — opens the Pull panel, which now also
+  carries **Pull the selected item(s) only** (the old `Place`). Pull and
+  Place were the same verb at two scopes, so they sit together.
+- **Lay items out in script order** — the old Sort; opens the layout bar.
+- **Auto-adjust head and tail** — the old Tighten. Acts on the press. Named
+  for both directions: it trims a loose edge and extends a clipped one.
+
+### Fix a line
+The reconciliation panel (adopt timeline / adopt sheet / relink / marker
+add-snap-delete) is the tab's whole body — no button opens it. It earns tab
+level by being the only thing that works on **one line** instead of the
+session; buried among batch actions it reads as one.
+
+## 3. Row 2 — view only
 
 ```
 [Search…]  [Character ▾]  [Filters] ([Clear filters])  [Unfold all] [Fold all]  [Follow]
 ```
+Unchanged. Touches neither items nor tracking.
 
-Same controls as today minus Rematch, Select takes + combo, Place, and
-Tighten (all relocated). Search moves to the front — it is the
-highest-frequency control. Filter-row boxes, Follow popup, and all behavior
-unchanged.
+## 4. Select-conflict badge
 
-## 4. Tidy — the best-effort pass
+A line with 2+ takes marked Sel — track placement can legitimately create
+this — shows an amber `N selects — pick one` badge on its card band and
+counts into `DrawSummary`. A live state display, not an artifact of the
+update pass.
 
-**Click Tidy** → runs immediately, no dialog. Safe pass only:
+## 5. Not changing
 
-1. Refresh (same code path as the Refresh button).
-2. **Mark selects from track position**: for each line, every delivered item
-   sitting on that line's Selects track gets its take marked **Sel** in the
-   sheet. More than one item of a line on Selects → *all* are marked and the
-   line card shows an amber badge: `2 selects — pick one`. Locked lines are
-   untouched. This writes sheet state (project ExtState) only; no item
-   changes, no undo point on the timeline.
-3. One-line report in the message area:
-   `Tidy: 14 lines refreshed, 3 selects marked, 2 conflicts.`
+- Panel internals beyond the moves listed above; the cards; filtering,
+  follow and fold behavior; Sources and Settings as separate windows.
 
-**The ▾ arrow** (separate small button beside Tidy) opens a popup:
+## 6. Success criteria
 
-- ☐ **Also name matched takes** *(changes items)* — apply script filenames to
-  matched delivered takes that aren't named yet, and alt-pattern names to
-  Keep-ticked rows (existing `ApplyAltNames` machinery).
-- ☐ **Also pull named items to tracks** *(changes items)* — run the existing
-  Pull on what the pass just named/matched.
-- **[Select takes]** + take-pick combo — relocated from the toolbar,
-  unchanged behavior (heuristic pick on multi-read lines, respects locks).
-
-Both checkboxes persist in config (`vo.LoadConfig`/`SaveConfig`), default
-off. When either is on, the item-changing steps run inside **one
-`core.Transaction`** so the whole pass is a single undo step, and the Tidy
-button's tooltip switches from "Tracking only…" to naming what it will do.
-
-Order when everything is on: refresh → name → pull → mark selects (marking
-runs last so it sees the post-pull track layout).
-
-## 5. Select-conflict badge
-
-A line with 2+ takes marked Sel (however it got that way — Tidy, or hand
-ticks) shows the amber badge on its card title band and counts into the
-summary line (`DrawSummary`) as `N lines need a select chosen`. The badge is
-a state display, not a Tidy artifact: it appears and clears live as ticks
-change.
-
-## 6. Not changing
-
-- Panel internals: Cut panel (Cut and Name, Re-cut anyway, Mark takes, Adopt
-  session, Mark selected), Repair panel (Adopt timeline/sheet, Relink, Mark
-  takes, Mark selected item(s), Sync take markers), Pull and Sort panels.
-- The cards themselves, filtering semantics, follow behavior, fold
-  persistence.
-- Sources and Settings remain separate windows.
-
-## 7. Success criteria
-
-- A user who has never read the manual can answer "which button is safe to
-  press?" from the toolbar alone.
-- Refreshing the sheet is one click, leftmost button.
-- The best-effort pass is one click and cannot move or rename anything
-  unless its opt-ins were deliberately turned on.
-- No existing capability is removed; everything relocated is findable by its
-  category.
+- Nothing at the top acts on click; nothing below the tabs merely navigates.
+- A button's name tells you what it does with the tooltip closed.
+- No capability removed, and nothing reachable from two places.

@@ -1,7 +1,8 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.15beta5
--- @changelog PRE-RELEASE: the toolbar release. The Overview toolbar is now three zones you can trust without reading: row 1 left is SHEET (tracking only, always safe) -- Refresh (was Rematch) and the new Tidy, a one-press best-effort pass that refreshes the match, adopts the marks the timeline implies, and counts lines still carrying two selects; row 1 right is ITEMS (changes audio, in workflow order) -- Cut and Name, Pull, Sort, Place, Tighten, Repair, with Script/Sources/Settings parked at the end; row 2 is VIEW only -- search (now first), character, filters, folding, follow. Tidy's arrow menu holds two persisted opt-ins that reach into item territory, labelled as such (also name matched takes, also pull named items), plus the relocated Select takes control; with opt-ins on, the whole pass is one undo step. A line carrying two Sels -- which track placement can legitimately create -- now wears an amber "pick one" badge on its card and counts into the summary line. This build carries the earlier 0.15beta work: session ingest and take-map mirroring, ranged take markers, the card sheet, planned takes, and whisper gap repair in Sources.
+-- @version 0.15beta6
+-- @changelog PRE-RELEASE: the toolbar is now four tabs, and a tab never does anything -- it only decides which buttons you are looking at, while every button under it acts. SETUP (choose script, sources and transcripts), SHEET (Update sheet to match items, with the two item-changing opt-ins behind its arrow; Pick a take for each line), ITEMS in workflow order (Cut recording into takes, Identify line from item, Pull items to their tracks, Lay items out in script order, Auto-adjust head and tail), FIX A LINE (the reconciliation panel), and Settings parked on the right. Buttons are named at length so tooltips no longer carry the meaning. Refresh is gone: updating the sheet already re-reads the session. Place is gone as a separate button -- it is "Pull the selected item(s) only", beside Pull, being the same verb at a smaller scope. Mark takes, Adopt session, Mark selected and Sync take markers were duplicated across the Cut and Repair panels; they now live once, in Identify line from item.
+--   Row 2 stays view-only: search (first), character, filters, folding, follow. Updating the sheet adopts the marks the timeline implies and counts the lines still carrying two selects; a line carrying two Sels wears an amber "pick one" badge on its card and counts into the summary line. With both opt-ins on, the whole pass is one undo step. This build carries the earlier 0.15beta work: session ingest and take-map mirroring, ranged take markers, the card sheet, planned takes, and whisper gap repair in Sources.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -156,6 +157,17 @@ local TAKE_PICKS = {
   { key = "first", label = "First" },
 }
 
+-- The toolbar's four groups. A tab decides which buttons are on screen and
+-- does nothing else; the buttons under it do the work. "fix" carries no
+-- buttons of its own -- the repair panel IS its body -- because it works on
+-- one line rather than the session.
+local TOOLBAR_TABS = {
+  { key = "setup", label = "Setup" },
+  { key = "sheet", label = "Sheet" },
+  { key = "items", label = "Items" },
+  { key = "fix",   label = "Fix a line" },
+}
+
 local LAYOUT_ORDERS = {
   { key = "script", label = "Script order" },
   { key = "record", label = "Record order" },
@@ -175,7 +187,11 @@ local state = {
   -- Which inline panel is open, or nil for none. One at a time: they all draw
   -- in the same space above the table, and two at once would push it off the
   -- window. "script" opens itself when a script fails to load.
-  panel         = nil,        -- "script" | "cut" | "pull" | "repair" | "sort"
+  panel         = nil,        -- "script" | "cut" | "pull" | "sort"
+  -- Which toolbar tab's buttons are showing. Items is the default because it
+  -- is where the work happens; Setup is a once-per-project errand.
+  tab           = "items",    -- see TOOLBAR_TABS
+  tab_sync      = true,       -- push state.tab into the tab bar next frame
   -- Whether the tools narrow to the table's selection. Off by default: see
   -- AffectedRows for why selection makes a poor default scope here.
   selection_only = false,
@@ -368,7 +384,9 @@ local function LoadScripts()
   if guessed then state.loaded = vo.LoadScripts(state.scripts, ReadFile) end
 
   for _, sc in ipairs(state.loaded.scripts) do
-    if sc.error and sc.error ~= "" then state.panel = "script" end
+    if sc.error and sc.error ~= "" then
+      state.tab, state.panel, state.tab_sync = "setup", "script", true
+    end
   end
 
   vo.ResolveNames(state.loaded.lines, vo.AppendMap(state.appends))
@@ -3661,37 +3679,9 @@ local function DrawCutPanel()
     end
   end
 
-  im.SameLine(ctx)
-  if im.Button(ctx, "Mark takes") then
-    pending_action = MarkTakesFromSession
-  end
-  if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Write a take marker for every take that has none, spanning its\n" ..
-                       "item's CURRENT edges -- banks hand-fixed cut points as marker\n" ..
-                       "truth. The migration for sessions cut before markers existed.")
-  end
-
-  im.SameLine(ctx)
-  if im.Button(ctx, "Adopt session") then
-    pending_action = function() MarkTakesFromSession(true) end
-  end
-  if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "For a session cut or edited BEFORE this tool: Mark takes plus\n" ..
-                       "name every matched item for its script line, at the item's\n" ..
-                       "current edges. Nothing is cut and nothing moves -- press Pull\n" ..
-                       "after. A name that already means a line is never overwritten,\n" ..
-                       "so re-running it is safe.")
-  end
-
-  im.SameLine(ctx)
-  if im.Button(ctx, "Mark selected") then
-    pending_action = MarkSelectedItems
-  end
-  if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Best-effort: match the item(s) selected in REAPER against the\n" ..
-                       "transcript, write each one's take marker at its CURRENT edges\n" ..
-                       "and name it for the line it matches. The guess is reported.")
-  end
+  -- The marker/naming commands that used to sit here now live once, in the
+  -- Items tab's "Identify line from item" menu. They were in this panel AND
+  -- in Repair, which is exactly the duplication the tab layout removes.
 
   im.SameLine(ctx)
   if im.Button(ctx, "Close##cut") then state.panel = nil end
@@ -4152,6 +4142,17 @@ local function DrawPullPanel()
   -- ##do: distinct from the toolbar's "Pull". See DrawCutPanel.
   if im.Button(ctx, "Pull##do") then pending_action = Pull end
   im.SameLine(ctx)
+  -- The old toolbar's "Place": the same verb at a different scope, so it
+  -- belongs beside Pull rather than a button away from it.
+  if im.Button(ctx, "Pull the selected item(s) only") then
+    pending_action = PlaceSelectedItems
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "File the item(s) selected in REAPER where their NAME says they\n" ..
+                       "belong: a plain delivered name goes to Selects, an alt-patterned\n" ..
+                       "one to Alts. Rename first, press this, the sheet follows.")
+  end
+  im.SameLine(ctx)
   if im.Button(ctx, "Close##pull") then state.panel = nil end
   im.SameLine(ctx)
   DrawScopeToggle("pull")
@@ -4197,9 +4198,7 @@ local function DrawRepairPanel()
 
   if total == 0 then
     im.TextColored(ctx, 0x66BB66FF,
-      "Nothing to repair: every take agrees with the timeline.")
-    im.SameLine(ctx)
-    if im.Button(ctx, "Close##repair") then state.panel = nil end
+      "Nothing to fix: every take agrees with the timeline.")
     im.Separator(ctx)
     return
   end
@@ -4250,7 +4249,7 @@ local function DrawRepairPanel()
     end
     im.SameLine(ctx)
     if im.Button(ctx, "Adopt sheet") then
-      state.panel = "pull"
+      state.tab, state.panel, state.tab_sync = "items", "pull", true
       state.message, state.message_kind =
         "The marks are right -- run Pull to move the items to match them.", "info"
     end
@@ -4325,37 +4324,9 @@ local function DrawRepairPanel()
       #state.check.extra))
   end
 
-  if im.Button(ctx, "Mark takes##repair") then
-    pending_action = MarkTakesFromSession
-  end
-  if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Write a take marker for every take that has none, spanning its\n" ..
-                       "item's CURRENT edges. The migration for sessions cut before\n" ..
-                       "markers existed.")
-  end
-  im.SameLine(ctx)
-  if im.Button(ctx, "Mark selected item(s)") then
-    pending_action = MarkSelectedItems
-  end
-  if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Best-effort: match the item(s) selected in REAPER against the\n" ..
-                       "transcript, write each one's take marker at its CURRENT edges\n" ..
-                       "and name it for the line it matches. The guess -- and how much\n" ..
-                       "of the take it covers -- is reported so you can check it.")
-  end
-  im.SameLine(ctx)
-  if im.Button(ctx, "Sync take markers") then
-    pending_action = SyncTakeMarkers
-  end
-  if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Mirror each source's take map onto every item of that source\n" ..
-                       "(within the configured reach), so widening an item shows the\n" ..
-                       "neighbouring takes as labelled ranges. Also collapses split\n" ..
-                       "residue and refreshes stale copies after a marker drag. Your\n" ..
-                       "own markers are never touched.")
-  end
-  im.SameLine(ctx)
-  if im.Button(ctx, "Close##repair") then state.panel = nil end
+  -- Mark takes / Mark selected / Sync markers used to be repeated here. They
+  -- are session-wide item work, so they belong to the Items tab's "Identify
+  -- line from item" menu and appear once.
   im.Separator(ctx)
 end
 
@@ -6215,82 +6186,45 @@ local function loop()
   if visible then
     pending_action = nil
 
-    -- Row 1 is the ACT row, split by the one distinction the user must
-    -- never have to think about (SPEC-toolbar.md section 1): the Sheet
-    -- zone only updates tracking and is always safe to press; the Items
-    -- zone changes audio items, in workflow order.
-    im.TextDisabled(ctx, "Sheet:")
-    im.SameLine(ctx)
+    -- The toolbar is a TAB BAR over an ACTION ROW, and the split is the whole
+    -- point (SPEC-toolbar.md section 1): a tab never does anything, it only
+    -- decides which buttons you are looking at; a button always does
+    -- something. The old row mixed the two -- "Sort" opened a panel while
+    -- "Place" beside it moved audio on the press -- and that is what made it
+    -- unreadable. Names are long on purpose: the button says what it does so
+    -- the tooltip does not have to.
+    local n_scripts = #state.scripts
 
-    if im.Button(ctx, "Refresh") then Rematch() end
-    if im.IsItemHovered(ctx) then
-      local locked = #state.pins
-      im.SetTooltip(ctx, string.format(
-        "Tracking only -- no items change.\n\n" ..
-        "Re-read every transcript and identify the lines again from scratch.\n" ..
-        "Locked lines keep the placement they have (%d locked).\n\n" ..
-        "Do this after transcribing in ajsfx VO Sources, or after editing\n" ..
-        "the script.", locked))
+    if im.BeginTabBar(ctx, "##toolbar") then
+      for _, t in ipairs(TOOLBAR_TABS) do
+        -- ImGui selects the FIRST tab until told otherwise, which on frame one
+        -- silently moved state.tab to Setup. state.tab_sync is set whenever the
+        -- tool decides which tab you should be on -- window open, a script that
+        -- failed to load, "Adopt sheet" sending you to Pull -- and makes the
+        -- tab bar follow that decision for exactly one frame.
+        local flags = (state.tab_sync and t.key == state.tab)
+          and im.TabItemFlags_SetSelected or 0
+        if im.BeginTabItem(ctx, t.label, nil, flags) then
+          if state.tab ~= t.key then
+            -- A panel belongs to the tab that opened it; leaving the tab
+            -- closes it rather than leaving it hanging under a bar that
+            -- cannot close it.
+            state.panel = nil
+            state.tab = t.key
+          end
+          im.EndTabItem(ctx)
+        end
+      end
+      -- Settings is a window, not a group of buttons, so it is a tab-SHAPED
+      -- button parked on the right rather than a tab.
+      if im.TabItemButton(ctx, "Settings", im.TabItemFlags_Trailing) then
+        state.settings_open = true
+      end
+      im.EndTabBar(ctx)
+      state.tab_sync = false
     end
-    im.SameLine(ctx)
 
-    local tidy_cfg = vo.LoadConfig()
-    if im.Button(ctx, "Tidy") then TidyPass() end
-    if im.IsItemHovered(ctx) then
-      local extra = (tidy_cfg.tidy_name or tidy_cfg.tidy_pull)
-        and "\n\nOpt-ins are ON, so this run ALSO changes items:" ..
-            (tidy_cfg.tidy_name and "\n- names selects and alts" or "") ..
-            (tidy_cfg.tidy_pull and "\n- pulls named items to their tracks" or "")
-        or "\n\nTracking only -- no items change."
-      im.SetTooltip(ctx,
-        "Best-effort pass: refresh, adopt the marks the timeline implies,\n" ..
-        "and count lines still carrying two selects." .. extra)
-    end
-    im.SameLine(ctx, 0, 1)
-    if im.ArrowButton(ctx, "##tidyopts", im.Dir_Down) then
-      im.OpenPopup(ctx, "##tidy_menu")
-    end
-    if im.BeginPopup(ctx, "##tidy_menu") then
-      local hit, v = im.Checkbox(ctx, "Also name matched takes  (changes items)",
-                                 tidy_cfg.tidy_name == true)
-      if hit then
-        tidy_cfg.tidy_name = v or nil
-        vo.SaveConfig(tidy_cfg)
-      end
-      hit, v = im.Checkbox(ctx, "Also pull named items to tracks  (changes items)",
-                           tidy_cfg.tidy_pull == true)
-      if hit then
-        tidy_cfg.tidy_pull = v or nil
-        vo.SaveConfig(tidy_cfg)
-      end
-      im.Separator(ctx)
-      if im.Button(ctx, "Select takes") then AutoSelectTakes(AffectedRows()) end
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, "Tracking only -- no items change.\n\n" ..
-                           "Mark one take per line as the select.")
-      end
-      im.SameLine(ctx)
-      Combo("##autoselect", 70, TAKE_PICKS, state.auto_select_take, function(k)
-        state.auto_select_take = k
-        local cfg = vo.LoadConfig()
-        cfg.auto_select_take = k
-        vo.SaveConfig(cfg)
-      end)
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, "Which take to mark as the select on a line that was\n" ..
-                           "read more than once. Locked lines are left alone.")
-      end
-      im.EndPopup(ctx)
-    end
-    im.SameLine(ctx)
-
-    im.TextDisabled(ctx, " | ")
-    im.SameLine(ctx)
-    im.TextDisabled(ctx, "Items:")
-    im.SameLine(ctx)
-
-    -- One button per panel, the open one held down. Sources and Settings are
-    -- their own windows and open as they always did.
+    -- One button per detail panel, the open one held down.
     local function PanelButton(key, label, tip)
       local on = state.panel == key
       if on then
@@ -6302,79 +6236,151 @@ local function loop()
       im.SameLine(ctx)
     end
 
-    PanelButton("cut", "Cut and Name",
-      "Splits every take of every decided line out of its recording\n" ..
-      "and names it the script's filename. Moves nothing.")
-
-    PanelButton("pull", "Pull",
-      "Moves items onto Selects, Alts, Outs and Review tracks nested\n" ..
-      "under the recording they came from, matched to the script by name.")
-
-    PanelButton("sort", "Sort",
-      "Lays the items out on the timeline in script order or record\n" ..
-      "order, on fresh child tracks so nothing lands on anything.")
-
-    if im.Button(ctx, "Place") then pending_action = PlaceSelectedItems end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx,
-        "File the item(s) selected in REAPER where their NAME says they\n" ..
-        "belong: a plain delivered name goes to Selects, an alt-patterned\n" ..
-        "one to Alts. Rename first, press this, the sheet follows.")
+    local function Tip(text)
+      if im.IsItemHovered(ctx) then im.SetTooltip(ctx, text) end
+      im.SameLine(ctx)
     end
-    im.SameLine(ctx)
 
-    if im.Button(ctx, "Tighten") then pending_action = TightenItems end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx,
-        "Finishing pass: measure where the audio really is in each delivered\n" ..
-        "item and pull loose edges in to the standard head/tail room. Inward\n" ..
-        "only, so speech is never lost; hand-trimmed items (custom fades)\n" ..
-        "are left alone. Works on the REAPER selection, or everything on\n" ..
-        "Selects + Alts when nothing is selected.")
-    end
-    im.SameLine(ctx)
+    if state.tab == "setup" then
+      PanelButton("script", "Choose script…",
+        "The script CSVs this project reads, and which column of each\n" ..
+        "holds the filename, the line and the character.")
 
-    PanelButton("repair", "Repair",
-      "Where the sheet and the timeline disagree, and what is broken:\n" ..
-      "marks that contradict the track their item sits on, anchors whose\n" ..
-      "item is gone, and items claimed by two takes at once.")
-
-    im.TextDisabled(ctx, " | ")
-    im.SameLine(ctx)
-
-    -- Setup cluster, out of the workflow's way at the row's end.
-    PanelButton("script", "Script",
-      "The script CSVs this project reads, and which column of\n" ..
-      "each holds the filename, the line and the character.")
-
-    if im.Button(ctx, "Sources…") then
-      local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
-      if not ok then state.message, state.message_kind = tostring(why), "error" end
-    end
-    im.SameLine(ctx)
-
-    if im.Button(ctx, "Settings") then state.settings_open = true end
-    im.SameLine(ctx)
-
-    -- The loaded-script readout, relocated from the row's front.
-    local n_scripts = #state.scripts
-    if n_scripts == 0 then
-      im.TextDisabled(ctx, "(no script chosen)")
-    else
-      local label = vo.Basename(state.scripts[1].path or "")
-      if n_scripts > 1 then label = label .. string.format(" +%d more", n_scripts - 1) end
-      im.TextDisabled(ctx, label)
-      if im.IsItemHovered(ctx) then
-        local all = {}
-        for _, sc in ipairs(state.scripts) do all[#all + 1] = sc.path end
-        im.SetTooltip(ctx, table.concat(all, "\n"))
+      if im.Button(ctx, "Sources and transcripts…") then
+        local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
+        if not ok then state.message, state.message_kind = tostring(why), "error" end
       end
+      Tip("The recordings this project reads, and their transcripts.")
+
+      im.TextDisabled(ctx, "  Script: ")
+      im.SameLine(ctx, 0, 0)
+      if n_scripts == 0 then
+        im.TextDisabled(ctx, "(none chosen)")
+      else
+        local label = vo.Basename(state.scripts[1].path or "")
+        if n_scripts > 1 then label = label .. string.format(" +%d more", n_scripts - 1) end
+        im.TextDisabled(ctx, label)
+        if im.IsItemHovered(ctx) then
+          local all = {}
+          for _, sc in ipairs(state.scripts) do all[#all + 1] = sc.path end
+          im.SetTooltip(ctx, table.concat(all, "\n"))
+        end
+      end
+
+    elseif state.tab == "sheet" then
+      local tidy_cfg = vo.LoadConfig()
+      if im.Button(ctx, "Update sheet to match items") then TidyPass() end
+      if im.IsItemHovered(ctx) then
+        local extra = (tidy_cfg.tidy_name or tidy_cfg.tidy_pull)
+          and "\n\nThe opt-ins are ON, so this run ALSO changes items:" ..
+              (tidy_cfg.tidy_name and "\n- names selects and alts" or "") ..
+              (tidy_cfg.tidy_pull and "\n- pulls named items to their tracks" or "")
+          or ""
+        im.SetTooltip(ctx,
+          "Re-read the session, then write down what it shows: a take whose\n" ..
+          "item sits on Selects is marked Sel. Lines left carrying two\n" ..
+          "selects are counted so you can pick one." .. extra)
+      end
+      im.SameLine(ctx, 0, 1)
+      if im.ArrowButton(ctx, "##tidyopts", im.Dir_Down) then
+        im.OpenPopup(ctx, "##tidy_menu")
+      end
+      if im.BeginPopup(ctx, "##tidy_menu") then
+        im.TextDisabled(ctx, "These reach out of the sheet and change items:")
+        local hit, v = im.Checkbox(ctx, "Also name matched takes",
+                                   tidy_cfg.tidy_name == true)
+        if hit then
+          tidy_cfg.tidy_name = v or nil
+          vo.SaveConfig(tidy_cfg)
+        end
+        hit, v = im.Checkbox(ctx, "Also pull named items to their tracks",
+                             tidy_cfg.tidy_pull == true)
+        if hit then
+          tidy_cfg.tidy_pull = v or nil
+          vo.SaveConfig(tidy_cfg)
+        end
+        im.EndPopup(ctx)
+      end
+      im.SameLine(ctx)
+
+      if im.Button(ctx, "Pick a take for each line") then AutoSelectTakes(AffectedRows()) end
+      Tip("Mark one take per line as the select. Locked lines are left alone.")
+      Combo("##autoselect", 90, TAKE_PICKS, state.auto_select_take, function(k)
+        state.auto_select_take = k
+        local cfg = vo.LoadConfig()
+        cfg.auto_select_take = k
+        vo.SaveConfig(cfg)
+      end)
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Which take to pick on a line that was read more than once.")
+      end
+
+    elseif state.tab == "items" then
+      PanelButton("cut", "Cut recording into takes",
+        "Splits every take the match identified out of its recording and\n" ..
+        "names it the script's filename. Nothing moves.")
+
+      if im.Button(ctx, "Identify line from item  ▾") then
+        im.OpenPopup(ctx, "##identify_menu")
+      end
+      Tip("For items that already exist: work out which script line each one\n" ..
+          "is, and write that down in the item itself.")
+      if im.BeginPopup(ctx, "##identify_menu") then
+        if im.Selectable(ctx, "Mark takes at their current edges") then
+          pending_action = MarkTakesFromSession
+        end
+        if im.IsItemHovered(ctx) then
+          im.SetTooltip(ctx, "Write a take marker for every take that has none, spanning its\n" ..
+                             "item's CURRENT edges -- banks hand-fixed cut points as marker\n" ..
+                             "truth. The migration for sessions cut before markers existed.")
+        end
+        if im.Selectable(ctx, "Adopt this whole session (mark and name)") then
+          pending_action = function() MarkTakesFromSession(true) end
+        end
+        if im.IsItemHovered(ctx) then
+          im.SetTooltip(ctx, "For a session cut or edited BEFORE this tool: mark takes plus\n" ..
+                             "name every matched item for its script line, at the item's\n" ..
+                             "current edges. Nothing is cut and nothing moves. A name that\n" ..
+                             "already means a line is never overwritten, so re-running is safe.")
+        end
+        if im.Selectable(ctx, "Identify the item(s) selected in REAPER") then
+          pending_action = MarkSelectedItems
+        end
+        if im.IsItemHovered(ctx) then
+          im.SetTooltip(ctx, "Best-effort: match the selected item(s) against the transcript,\n" ..
+                             "write each one's take marker at its CURRENT edges and name it\n" ..
+                             "for the line it matches. The guess is reported.")
+        end
+        if im.Selectable(ctx, "Sync take markers across copies") then
+          pending_action = SyncTakeMarkers
+        end
+        if im.IsItemHovered(ctx) then
+          im.SetTooltip(ctx, "Mirror each recording's take map onto every item near it, so\n" ..
+                             "widening an item shows the neighbouring takes.")
+        end
+        im.EndPopup(ctx)
+      end
+
+      PanelButton("pull", "Pull items to their tracks",
+        "Moves items onto Selects, Alts, Outs and Review tracks nested under\n" ..
+        "the recording they came from, matched to the script by name.")
+
+      PanelButton("sort", "Lay items out in script order",
+        "Lays the items out on the timeline in script order or record order,\n" ..
+        "on fresh child tracks so nothing lands on anything.")
+
+      if im.Button(ctx, "Auto-adjust head and tail") then pending_action = TightenItems end
+      Tip("Finishing pass: measure where the audio really is in each delivered\n" ..
+          "item and set its edges to the standard head and tail room. Inward\n" ..
+          "only, so speech is never lost; hand-trimmed items (custom fades) are\n" ..
+          "left alone. Works on the REAPER selection, or everything on Selects\n" ..
+          "+ Alts when nothing is selected.")
     end
 
-    if     state.panel == "script" then DrawScriptPanel()
+    if     state.tab == "fix"      then DrawRepairPanel()
+    elseif state.panel == "script" then DrawScriptPanel()
     elseif state.panel == "cut"    then DrawCutPanel()
     elseif state.panel == "pull"   then DrawPullPanel()
-    elseif state.panel == "repair" then DrawRepairPanel()
     elseif state.panel == "sort"   then DrawLayoutBar() end
 
     local bad = BadScriptCount()
@@ -6383,7 +6389,9 @@ local function loop()
         "%d of %d script%s is not usable, so its lines are missing.",
         bad, n_scripts, n_scripts == 1 and "" or "s"))
       im.SameLine(ctx)
-      if im.Button(ctx, "Script##warn") then state.panel = "script" end
+      if im.Button(ctx, "Choose script…##warn") then
+        state.tab, state.panel, state.tab_sync = "setup", "script", true
+      end
     end
 
     im.Separator(ctx)
