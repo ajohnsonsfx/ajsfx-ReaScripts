@@ -5502,9 +5502,42 @@ end
 local function DrawCardsBody(avail_w)
   local z = CardZones(avail_w)
   if #state.nodes == 0 then
-    im.TextDisabled(ctx, #state.overview == 0
-      and "Nothing to show yet. Load a script CSV, or transcribe a recording in ajsfx VO Sources."
-      or  "No rows match the current filters.")
+    if #state.overview > 0 then
+      im.TextDisabled(ctx, "No rows match the current filters.")
+      return
+    end
+    -- The emptiest screen is the one that most needs to say what to do next.
+    -- It used to say only that there was nothing to show, leaving the two
+    -- things it needs to be found in a tab. They are offered here instead, in
+    -- the order they are done, with the one still outstanding first.
+    im.Spacing(ctx)
+    im.Text(ctx, "Nothing to show yet. This window needs two things:")
+    im.Spacing(ctx)
+
+    local have_script = #state.scripts > 0
+    im.Text(ctx, have_script and "\226\156\147  1." or "    1.")
+    im.SameLine(ctx)
+    if have_script then
+      im.TextDisabled(ctx, "A script -- " .. vo.Basename(state.scripts[1].path or ""))
+    else
+      if im.Button(ctx, "Choose script\226\128\166##empty") then
+        state.tab, state.panel, state.tab_sync = "setup", "script", 4
+      end
+      im.SameLine(ctx)
+      im.TextDisabled(ctx, "a CSV of filenames and lines: what was meant to be read.")
+    end
+
+    im.Text(ctx, "    2.")
+    im.SameLine(ctx)
+    if im.Button(ctx, "Transcribe\226\128\166##empty") then
+      local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
+      if not ok then state.message, state.message_kind = tostring(why), "error" end
+    end
+    im.SameLine(ctx)
+    im.TextDisabled(ctx, "the recordings in this project: what was actually read.")
+
+    im.Spacing(ctx)
+    im.TextDisabled(ctx, "With both, Edit \226\134\146 Run the whole pass does the rest.")
     return
   end
   local flat_index = {}
@@ -6274,6 +6307,24 @@ local function loop()
       im.EndTabBar(ctx)
     end
 
+    -- The ribbon holds ONE height: the tallest a tab has been at this width.
+    --
+    -- Each tab's row of buttons is as tall as its own contents, so switching
+    -- tabs moved the whole sheet up or down under the cursor -- you click
+    -- Setup and the card you were reading jumps. Reserving the tallest means
+    -- the cards never move when you click around the toolbar.
+    --
+    -- Measured rather than declared, because the buttons wrap: the same tab is
+    -- two rows on a wide window and four on a narrow one, so a constant would
+    -- be wrong at every width but one. The measurement is discarded when the
+    -- width changes, so a window made wider does not keep the tall reservation
+    -- it needed when it was narrow.
+    local ribbon_w = select(1, im.GetContentRegionAvail(ctx))
+    if state.ribbon_w ~= ribbon_w then
+      state.ribbon_w, state.ribbon_h = ribbon_w, 0
+    end
+    im.BeginGroup(ctx)
+
     -- The Edit row carries every verb in the tool and a narrow window cannot
     -- hold it on one line, so it WRAPS: continue beside the last widget when
     -- the next one still fits, otherwise start a row.
@@ -6526,6 +6577,11 @@ local function loop()
         "marks that contradict the track their item sits on, anchors whose\n" ..
         "item is gone, and items claimed by two takes at once.")
     end
+
+    im.EndGroup(ctx)
+    local _, ribbon_h = im.GetItemRectSize(ctx)
+    if ribbon_h > (state.ribbon_h or 0) then state.ribbon_h = ribbon_h end
+    if ribbon_h < state.ribbon_h then im.Dummy(ctx, 1, state.ribbon_h - ribbon_h) end
 
     if     state.panel == "repair" then DrawRepairPanel()
     elseif state.panel == "script" then DrawScriptPanel()
