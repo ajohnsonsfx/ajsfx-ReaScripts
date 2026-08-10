@@ -4021,6 +4021,86 @@ local function ApplyAltNames()
   state.pull_result, state.pull_result_kind = state.message, state.message_kind
 end
 
+-- The toolbar's best-effort pass (SPEC-toolbar.md section 4). Safe by
+-- default: refresh the match, then make the timeline's word on marks
+-- explicit -- sheet state only, no items touched. Two opt-ins reach into
+-- item territory (naming, pulling) and run inside one transaction so the
+-- whole pass is a single undo step. Marks are adopted LAST so they see the
+-- post-pull track layout.
+local function TidyPass()
+  local cfg = vo.LoadConfig()
+  Reload()
+  local refreshed = #state.overview
+
+  -- One OUTER transaction around every item-changing step: REAPER's undo
+  -- blocks nest (an inner Undo_EndBlock folds into the outer block), so
+  -- ApplyAltNames' and Pull's own transactions collapse into this one and
+  -- the whole pass is a single undo step.
+  local named, pulled = 0, 0
+  if cfg.tidy_name or cfg.tidy_pull then
+    core.Transaction("VO Overview: tidy", function()
+      if cfg.tidy_name then
+        -- Sel rows get the line's delivered name; Keep rows get alt names.
+        -- Never overwrite a name that already means a line (the Adopt-
+        -- session rule): a resolving name IS an assignment, and Tidy is
+        -- best-effort, not authoritative.
+        local index = vo.BuildNameIndex(state.lines or {})
+        local items = vo.CollectProjectSpans()
+        local sel_edits = vo.PlanSelectNames(state.overview)
+        for _, e in ipairs(sel_edits) do
+          local row   = state.overview[e.index]
+          local clean = vo.SanitizeName(e.name)
+          local item  = row and row.source_path and row.source_start
+                        and vo.ResolveSourceTime(row.source_path, row.source_start, items)
+          local take  = item and r.GetActiveTake(item)
+          if take and clean ~= "" then
+            local _, cur = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+            if not vo.ResolveItemName(index, cur or "") then
+              r.GetSetMediaItemTakeInfo_String(take, "P_NAME", clean, true)
+              EntryFor(row).name_override = clean
+              named = named + 1
+            end
+          end
+        end
+        -- Alts get their pattern names too. ApplyAltNames opens its own
+        -- transaction; nested inside ours it folds into the one undo step.
+        ApplyAltNames()
+      end
+      if cfg.tidy_pull then
+        Pull()
+        pulled = 1  -- Pull() reports its own counts in state.pull_result.
+      end
+    end)
+    state.name_baseline = nil
+    Reload()
+  end
+
+  -- The timeline's word on marks, made explicit -- the same write Repair's
+  -- "Adopt timeline" does, without the panel trip.
+  local plan = vo.PlanReconcile(state.overview, cfg)
+  local adopted = #plan.disagree
+  for _, f in ipairs(plan.disagree) do
+    local want = vo.MarkFromTrack(f.row.track_name, cfg)
+    Mutate(f.row, function(e)
+      e.select = (want == "select") or nil
+      e.keep   = (want == "keep")   or nil
+    end)
+  end
+
+  local conflicts = vo.SelectConflicts(state.overview)
+  local bits = { string.format("%d line%s refreshed", refreshed,
+                               refreshed == 1 and "" or "s") }
+  if adopted > 0 then bits[#bits + 1] = adopted .. " mark(s) adopted from the timeline" end
+  if named   > 0 then bits[#bits + 1] = named .. " select(s) named" end
+  if pulled  > 0 then bits[#bits + 1] = "items pulled (see the Pull report)" end
+  if #conflicts > 0 then
+    bits[#bits + 1] = #conflicts .. " line(s) with two selects -- pick one"
+  end
+  state.message = "Tidy: " .. table.concat(bits, ", ") .. "."
+  state.message_kind = (#conflicts > 0) and "warn" or "ok"
+  state.dirty = true
+end
+
 local function DrawPullPanel()
   im.Separator(ctx)
   im.TextWrapped(ctx,
