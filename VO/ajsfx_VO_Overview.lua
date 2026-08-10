@@ -90,17 +90,28 @@ local STATUS_STYLE = {
 -- something to look at, not an error, and red is spoken for.
 local EXTRA_WORD = 0xDDAA33FF
 
--- vo.ExtraWords is an LCS over two token streams, so it is cheap per row and
--- not free across five hundred of them every frame. Memoized on the two texts
--- it reads; a rebuild that changes neither reuses the answer.
-local extra_memo = {}
+-- vo.ExtraWords is an LCS over two token streams: cheap per row, and not free
+-- across five hundred of them every frame.
+--
+-- Cached ON THE ROW, not in a table keyed by the texts. The keyed version cost a
+-- string concat and a hash of the whole line-plus-transcript for every row of
+-- every frame -- five hundred fresh strings sixty times a second, which is
+-- garbage the collector then has to chase. The row is already the right
+-- lifetime: a rebuild makes new rows, so the cache clears exactly when the
+-- answer could have changed.
+--
+-- `_extra_clean` is the fast path's flag, computed once here rather than
+-- re-scanned per frame: true when nothing in this take is extra, which is most
+-- takes, and lets the drawing side stay one wrapped Text call.
 local function ExtraRuns(row)
-  local line, take = row.line_text or "", row.transcript or ""
-  local key = line .. "\0" .. take
-  local hit = extra_memo[key]
+  local hit = row._extra_runs
   if not hit then
-    hit = vo.ExtraWords(line, take)
-    extra_memo[key] = hit
+    hit = vo.ExtraWords(row.line_text or "", row.transcript or "")
+    local clean = true
+    for _, run in ipairs(hit) do
+      if run.extra then clean = false break end
+    end
+    row._extra_runs, row._extra_clean = hit, clean
   end
   return hit
 end
@@ -667,8 +678,12 @@ local function Rebuild()
   -- BuildOverview so marker rows are first-class.
   state.take_markers = vo.CollectTakeMarkers(state.items)
   local takes_by_asset, marker_info = {}, {}
-  for _, group in pairs(state.take_markers) do
+  for path, group in pairs(state.take_markers) do
     for _, mk in ipairs(vo.CountingMarkers(group)) do
+      -- The path the markers were collected under, carried onto the marker so
+      -- BuildOverview can ask the match what was said in that range. A marker
+      -- is a position and a name; the words live in the transcript.
+      mk.source_path = path
       takes_by_asset[mk.asset] = takes_by_asset[mk.asset] or {}
       table.insert(takes_by_asset[mk.asset], mk)
       marker_info[mk.id] = group[mk.item_index] and group[mk.item_index].info
@@ -698,6 +713,27 @@ local function Rebuild()
     end
   end
   state.summary = vo.SummarizeOverview(state.overview)
+
+  -- Two answers the header row was recomputing from all five hundred rows on
+  -- every frame: the character droplist (a full scan, a set, and a SORT) and
+  -- the select conflicts. Neither can change without a rebuild -- a tick goes
+  -- through Mutate, which rebuilds -- so they are computed here, once, with the
+  -- rest of the derived state.
+  local seen, chars = {}, { { key = "__all__", label = "(all characters)" } }
+  for _, row in ipairs(state.overview) do
+    local c = row.character
+    if c and c ~= "" and not seen[c] then
+      seen[c] = true
+      chars[#chars + 1] = { key = c, label = c }
+    end
+  end
+  table.sort(chars, function(a, b)
+    if a.key == "__all__" then return true end
+    if b.key == "__all__" then return false end
+    return a.label < b.label
+  end)
+  state.characters = chars
+  state.conflicts  = vo.SelectConflicts(state.overview)
 
   -- Row-level, so a per-take name override can clear a clash or create one.
   state.dupe_names = vo.DuplicateNames(state.overview)
@@ -2428,6 +2464,12 @@ local function ApplyFilters()
 
   state.filtered = filtered
   state.visible = out
+  -- Position-in-the-sheet lookup, built here rather than per frame: it is a
+  -- table of one entry per visible row, and the draw loop was allocating a
+  -- fresh one sixty times a second for a list that only changes here.
+  local flat = {}
+  for i, row in ipairs(out) do flat[row.uid] = i end
+  state.flat_index = flat
 
   -- The selection never outlives the filter. Keeping hidden rows selected would
   -- let a Sort move items the user cannot see, which is the one surprise this
@@ -4568,20 +4610,8 @@ local function DrawFilters()
 
   -- Characters come from the rows, not the CSV: an orphan can carry a character
   -- the current script filter excludes, and hiding it from the droplist would
-  -- make that row unreachable.
-  local seen, chars = {}, { { key = "__all__", label = "(all characters)" } }
-  for _, row in ipairs(state.overview) do
-    local c = row.character
-    if c and c ~= "" and not seen[c] then
-      seen[c] = true
-      chars[#chars + 1] = { key = c, label = c }
-    end
-  end
-  table.sort(chars, function(a, b)
-    if a.key == "__all__" then return true end
-    if b.key == "__all__" then return false end
-    return a.label < b.label
-  end)
+  -- make that row unreachable. Built in Rebuild, not here -- see the note there.
+  local chars = state.characters or { { key = "__all__", label = "(all characters)" } }
 
   -- Search first: it is the row's highest-frequency control (SPEC-toolbar.md
   -- section 3), and this whole row only changes what is LOOKED AT -- every
@@ -5114,6 +5144,12 @@ end
 -- indent wherever a colour run happens to break. One word per item cannot wrap
 -- internally, so the only wrapping is the one done here.
 --
+-- ONLY when there is something to colour. A word per item multiplies this
+-- sheet's ImGui items by roughly eight, and the cards are all drawn every frame,
+-- so five hundred rows went from five hundred items to several thousand and
+-- REAPER started to feel like it was pausing. A take whose words are all in its
+-- line takes the old path -- one wrapped Text -- which is most takes.
+--
 -- Drawn through the cursor (not the draw list) so the enclosing group still
 -- measures the height the card is laid out from.
 local function DrawTranscriptRuns(runs, x, y, wrap_w)
@@ -5276,7 +5312,17 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
   -- the words themselves: what the reader said that the line does not contain.
   -- Non-blocking, and deliberately so: a take with extra words is still a take
   -- the user may want, and Sel/Keep/Lock is where that gets decided.
-  DrawTranscriptRuns(ExtraRuns(row), rx + z.text, ry, z.text_w)
+  local runs = ExtraRuns(row)
+  im.SetCursorScreenPos(ctx, rx + z.text, ry)
+  if row._extra_clean then
+    im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + z.text_w)
+    wrap_depth = wrap_depth + 1
+    im.TextDisabled(ctx, row.transcript or "")
+    im.PopTextWrapPos(ctx)
+    wrap_depth = wrap_depth - 1
+  else
+    DrawTranscriptRuns(runs, rx + z.text, ry, z.text_w)
+  end
 
   -- The link affordance of a PLANNED row. It used to live in the Item zone;
   -- with that gone it sits beside the name, where it always did on a narrow
@@ -5594,6 +5640,26 @@ local function DrawAddTakeRow(rep, rx)
   end
 end
 
+-- Cards outside the view are not drawn at all.
+--
+-- Every card was built every frame whether or not it was on screen, so a
+-- 169-line sheet with a few cards unfolded paid for hundreds of widgets nobody
+-- could see -- and REAPER is single-threaded, so that time comes out of the
+-- editing you are trying to do. Off-screen cards now leave a spacer of the
+-- height they had last frame, which is the same measurement the chrome is
+-- already drawn from.
+--
+-- Stale height is not a risk: a card cannot change height while it is off
+-- screen, since nothing edits it there, and the frame it scrolls back in it
+-- draws for real and re-measures. Culling is skipped entirely while a scroll-to
+-- is pending, because a card that is not drawn cannot report where it is, which
+-- is exactly what the scroll needs to know.
+local IS_RECT_VISIBLE = Api('IsRectVisible')
+local function CardIsVisible(w, h)
+  if not IS_RECT_VISIBLE or state.scroll_to_uid then return true end
+  return IS_RECT_VISIBLE(ctx, w, h)
+end
+
 -- One card: chrome from last frame's height, band, then (open) the drawer,
 -- the take list under its header, and the add-take affordance.
 local function DrawLineCard(node, z, flat_index, avail_w)
@@ -5603,6 +5669,16 @@ local function DrawLineCard(node, z, flat_index, avail_w)
   local dl = im.GetWindowDrawList(ctx)
   local cx, cy = im.GetCursorScreenPos(ctx)
   local card_h = rep._card_full_h or (im.GetFrameHeight(ctx) + CARD_PAD * 2)
+
+  -- The remembered height is only usable if it was measured in the fold state
+  -- the card is in NOW. "Unfold all" changes every card at once, including the
+  -- ones off screen, and culling those at their folded height would put the
+  -- scroll extent badly wrong until each was scrolled to.
+  if rep._card_h_open == open and not CardIsVisible(avail_w, card_h + CARD_MARGIN) then
+    im.Dummy(ctx, 1, card_h + CARD_MARGIN)
+    return
+  end
+  rep._card_h_open = open
 
   im.DrawList_AddRectFilled(dl, cx, cy, cx + avail_w, cy + card_h, CARD_BG, CARD_ROUND)
   im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + card_h, CARD_OUTLINE, CARD_ROUND)
@@ -5668,6 +5744,14 @@ local function DrawOrphanCard(node, z, flat_index, avail_w)
   local dl = im.GetWindowDrawList(ctx)
   local cx, cy = im.GetCursorScreenPos(ctx)
   local card_h = state._orphan_card_h or (im.GetFrameHeight(ctx) + CARD_PAD * 2)
+
+  -- Worth more here than anywhere: this one card holds EVERY unidentified take
+  -- in the session, so it is routinely the tallest thing in the sheet and is
+  -- usually scrolled past.
+  if not CardIsVisible(avail_w, card_h + CARD_MARGIN) then
+    im.Dummy(ctx, 1, card_h + CARD_MARGIN)
+    return
+  end
 
   im.DrawList_AddRectFilled(dl, cx, cy, cx + avail_w, cy + card_h, 0x2C2228FF, CARD_ROUND)
   im.DrawList_AddRect(dl, cx, cy, cx + avail_w, cy + card_h, 0x55404AFF, CARD_ROUND)
@@ -5756,8 +5840,7 @@ local function DrawCardsBody(avail_w)
     im.TextDisabled(ctx, "With both, Edit \226\134\146 Run the whole pass does the rest.")
     return
   end
-  local flat_index = {}
-  for i, row in ipairs(state.visible) do flat_index[row.uid] = i end
+  local flat_index = state.flat_index or {}
   for ni, node in ipairs(state.nodes) do
     if node.kind == "line" or node.kind == "orphans" then
       im.PushID(ctx, ni)
@@ -5825,7 +5908,7 @@ local function DrawSummary()
   if (n.flagged or 0) > 0 then
     seg(0xDD6666FF, string.format("%d flagged", n.flagged))
   end
-  local conflicts = vo.SelectConflicts(state.overview)
+  local conflicts = state.conflicts or {}
   if #conflicts > 0 then
     seg(0xDDAA33FF, string.format("%d line(s) need a select chosen", #conflicts),
       "Lines carrying more than one Sel. Each card says which takes;\n" ..
@@ -6199,12 +6282,17 @@ local function RunRemoteCommand(command)
             local tr = r.GetMediaItem_Track(row.item)
             if tr then _, track = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false) end
           end
-          out[#out + 1] = string.format("%s take %s/%s %s%s%s src=%.3f item=%s %s",
+          -- The transcript too: it is what the take SAYS, the one column a
+          -- person reads to tell two takes apart, and its absence on
+          -- marker-owned rows was invisible from out here.
+          out[#out + 1] = string.format("%s take %s/%s %s%s%s src=%.3f item=%s %s | %s",
             asset, tostring(row.take_index or 0), tostring(row.take_count or 0),
             row.status or "?",
             row.user_select and " SEL" or "", row.user_keep and " KEEP" or "",
             row.source_start or -1,
-            row.item and "yes" or "NONE", track)
+            row.item and "yes" or "NONE", track,
+            (row.transcript and row.transcript ~= "")
+              and ("\"" .. row.transcript:sub(1, 60) .. "\"") or "(no transcript)")
         end
       end
     end

@@ -1551,6 +1551,63 @@ test("candidates carry the script line's identity and times", function()
 end)
 
 --------------------------------
+-- TranscriptForRange
+--------------------------------
+print("\nTranscriptForRange:")
+
+local TFR = {
+  { source_path = "a.wav", span = { start = 0, stop = 2, transcript = "open the gate",
+                                    kind = "match", score = 0.9, in_sequence = true } },
+  { source_path = "a.wav", span = { start = 3, stop = 5, transcript = "and hurry",
+                                    kind = "review", score = 0.6 } },
+  { source_path = "a.wav", span = { start = 9, stop = 11, transcript = "elsewhere",
+                                    kind = "match", score = 1.0 } },
+  { source_path = "b.wav", span = { start = 0, stop = 2, transcript = "other file",
+                                    kind = "match", score = 1.0 } },
+}
+
+test("a marker's range reads back the words inside it", function()
+  local text, score, seq = vo.TranscriptForRange(TFR, "a.wav", 0, 2)
+  assert(text == "open the gate", "Got: " .. tostring(text))
+  assert(near(score, 0.9), "score not carried: " .. tostring(score))
+  assert(seq == true, "in_sequence not carried")
+end)
+
+test("a marker spanning two spans reads as both, in time order", function()
+  local text = vo.TranscriptForRange(TFR, "a.wav", 0, 5)
+  assert(text == "open the gate and hurry", "Got: " .. tostring(text))
+end)
+
+test("the score comes from the span that overlaps most, not an average", function()
+  -- Mostly the review span, a sliver of the match: the score is the review's.
+  local _, score = vo.TranscriptForRange(TFR, "a.wav", 1.9, 5)
+  assert(near(score, 0.6), "Got: " .. tostring(score))
+end)
+
+test("another source's words never leak in", function()
+  local text = vo.TranscriptForRange(TFR, "b.wav", 0, 5)
+  assert(text == "other file", "Got: " .. tostring(text))
+end)
+
+test("a range over nothing is nil, not empty", function()
+  assert(vo.TranscriptForRange(TFR, "a.wav", 6, 8) == nil, "silence returned text")
+  assert(vo.TranscriptForRange(TFR, "c.wav", 0, 5) == nil, "unknown source returned text")
+  assert(vo.TranscriptForRange(TFR, "a.wav", 2, 2) == nil, "zero-length range")
+  assert(vo.TranscriptForRange(nil, "a.wav", 0, 5) == nil, "no spans at all")
+end)
+
+test("audio nothing matched still reports what was heard", function()
+  -- An orphan span has no line, but it has words, and a marker over it should
+  -- show them rather than nothing.
+  local flat = { { source_path = "a.wav",
+                   span = { start = 0, stop = 2, transcript = "sorry again",
+                            kind = "orphan" } } }
+  local text, score = vo.TranscriptForRange(flat, "a.wav", 0, 2)
+  assert(text == "sorry again", "Got: " .. tostring(text))
+  assert(score == nil, "an unmatched span has no score to report")
+end)
+
+--------------------------------
 -- FindSpanLines
 --------------------------------
 print("\nFindSpanLines:")

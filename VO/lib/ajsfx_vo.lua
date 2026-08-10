@@ -1,7 +1,7 @@
 -- @description ajsfx VO Shared Library
 -- @author ajsfx
--- @version 0.8
--- @changelog PlanAdopt: the pure planner behind "Adopt session" -- rename matched items to their lines at current edges, never overwriting a name that already resolves to a line. MakeSourceProbe now probes through an item that shows the WHOLE source, or a temporary full-length item when the session is already cut into clips (take accessors are item-bounded; the old first-item probe read silence outside one clip's window, which made gap repair a silent no-op on cut sessions). RepairTranscriptGaps reports holes it could not check instead of passing them as silence. From 0.7: take identity via ranged take markers: the TKM chunk line's undocumented length field becomes the tool's substrate (ParseTKMChunk / PatchTKMChunk / FormatTKMLine), CountingMarkers applies the coverage rule that absorbs split residue, and BuildOverview builds a marked line's takes from its markers instead of the match. Sel/Keep become tri-state so a blank can defer to the track the item sits on, and PlanReconcile reports where the sheet and the timeline disagree. Also, from 0.6: transcript gap repair for whisper's swallowed-window failure.
+-- @version 0.9
+-- @changelog Agreement: candidates are ranked by TOKENS of agreement (score x window length) rather than by score, so a short line matched perfectly no longer takes the words out of the middle of a long one. ExtraWords: an LCS alignment of a line against a take, for colouring the words the take has and the line does not. FindSpanLines: the matcher backwards -- which script lines could THESE words be -- behind the orphan right-click. TranscriptForRange: what was said inside a take marker's range, so marker-owned rows keep their transcript and score after a Cut. SummarizeOverview counts dismissed spans separately and leaves them out of the orphan count. ParagraphWords and the loop detector break on the reader's PAUSES, so four reads of one line are no longer reported as a transcriber loop. ParseExitFile: a launcher that has not written its exit code yet reads as not finished, not as failure. From 0.8: PlanAdopt, MakeSourceProbe, gap-hole reporting.
 -- @noindex
 -- @about Shared logic for the ajsfx VO windows.
 --        Split into a pure layer (parsing, normalization, matching, naming —
@@ -1618,6 +1618,50 @@ function vo.CountingMarkers(per_item)
     return tostring(a.id) < tostring(b.id)
   end)
   return out
+end
+
+-- What was said inside a marker's range, and how well it matched.
+--
+-- Markers are the truth about WHICH takes exist -- that is the whole point of
+-- them -- but they are only positions and a name, so a row built from a marker
+-- knew nothing about the words. After a Cut, which is when markers take over,
+-- the transcript column emptied across the whole sheet: the one column that
+-- tells you what a take actually says, gone at exactly the moment there are
+-- takes to read.
+--
+-- The match still knows. Every span on this source that overlaps the range
+-- contributes its words, in time order, so a marker spanning two spans reads as
+-- both and a marker over audio nothing claimed still shows what was heard. The
+-- SCORE comes from the single matched span that overlaps most, since a score is
+-- a fact about one placement and averaging two would mean nothing.
+--
+-- `flat` is the flattened { span, source_path } list BuildOverview already
+-- builds. Returns: text, score, in_sequence -- all nil when nothing overlaps.
+function vo.TranscriptForRange(flat, path, from, to)
+  if not (path and from and to and to > from) then return nil end
+  local hits, best, best_overlap = {}, nil, 0
+  for _, rec in ipairs(flat or {}) do
+    local s = rec.span
+    if rec.source_path == path and s and s.start and s.stop then
+      local overlap = math.min(s.stop, to) - math.max(s.start, from)
+      if overlap > 0 then
+        hits[#hits + 1] = s
+        if (s.kind == "match" or s.kind == "review") and overlap > best_overlap then
+          best, best_overlap = s, overlap
+        end
+      end
+    end
+  end
+  if #hits == 0 then return nil end
+
+  table.sort(hits, function(a, b) return (a.start or 0) < (b.start or 0) end)
+  local text = {}
+  for _, s in ipairs(hits) do
+    if s.transcript and s.transcript ~= "" then text[#text + 1] = s.transcript end
+  end
+  if #text == 0 then return nil end
+  return table.concat(text, " "), best and best.score or nil,
+         best and best.in_sequence or nil
 end
 
 -- The best-effort answer to "which line is this item?": the match span whose
@@ -4674,10 +4718,16 @@ function vo.BuildOverview(input)
   -- whole point.
   local function marker_row(mk, line, take_index, take_count)
     local t = by_key["tkm|" .. mk.id]
+    -- The marker says WHICH take; the match still knows what was said there.
+    local said, score, in_seq =
+      vo.TranscriptForRange(spans, mk.source_path, mk.start, mk.stop)
     return {
       key           = "tkm|" .. mk.id,
       marker_id     = mk.id,
       status        = "recorded",
+      transcript    = said,
+      score         = score,
+      in_sequence   = in_seq,
       asset         = line.asset,
       deliver       = line.deliver or line.asset,
       script        = line.script,

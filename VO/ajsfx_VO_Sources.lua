@@ -642,6 +642,7 @@ local function DetailReport(row)
       row.loop.phrase, row.loop.cycles)
   end
   if t then
+    if not t._paragraphs then t._paragraphs = vo.Paragraphs(t.words or {}) end
     out[#out + 1] = "Source: " .. (t.source or "")
     out[#out + 1] = "Source bytes: " .. tostring(t.source_bytes or 0)
     out[#out + 1] = "Source hash: " .. (t.source_hash or "")
@@ -650,7 +651,7 @@ local function DetailReport(row)
     out[#out + 1] = "Language: " .. (t.language or "")
     out[#out + 1] = "Words: " .. tostring(#(t.words or {}))
     out[#out + 1] = ""
-    for _, para in ipairs(vo.Paragraphs(t.words or {})) do out[#out + 1] = para end
+    for _, para in ipairs(t._paragraphs) do out[#out + 1] = para end
   end
   return table.concat(out, "\n")
 end
@@ -819,8 +820,20 @@ local function DrawTranscriptDetail(row)
   im.Text(ctx, "Words: " .. tostring(#t.words))
   im.Spacing(ctx)
 
-  local paragraph_words = vo.ParagraphWords(t.words)
-  local paragraphs      = vo.Paragraphs(t.words)
+  -- Grouped ONCE per transcript, not once per frame.
+  --
+  -- These two walked all 1600 words on every frame the panel was open -- twice,
+  -- since Paragraphs calls ParagraphWords again -- building five hundred
+  -- sub-tables and five hundred concatenated strings each time. Sixty times a
+  -- second, that is garbage the collector spends the rest of the frame chasing,
+  -- and this panel stays open for a whole first pass. Neither depends on
+  -- anything but the word list, and a new word list means a new row.
+  if not t._paragraph_words then
+    t._paragraph_words = vo.ParagraphWords(t.words)
+    t._paragraphs      = vo.Paragraphs(t.words)
+  end
+  local paragraph_words = t._paragraph_words
+  local paragraphs      = t._paragraphs
 
   if #paragraphs == 0 then
     im.TextDisabled(ctx, "No words in this transcript.")
