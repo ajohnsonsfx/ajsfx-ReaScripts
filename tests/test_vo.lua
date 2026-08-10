@@ -1041,6 +1041,56 @@ end)
 --------------------------------
 -- Normalize
 --------------------------------
+print("\nExtraWords:")
+
+local function marked(line, take)
+  local out = {}
+  for _, run in ipairs(vo.ExtraWords(line, take)) do
+    out[#out + 1] = (run.extra and "[" .. run.text .. "]" or run.text)
+  end
+  return table.concat(out, " ")
+end
+
+test("a clean read marks nothing", function()
+  local s = marked("Open the north gate.", "Open the north gate.")
+  assert(s == "Open the north gate.", "Got: " .. s)
+end)
+
+test("words the take has and the line does not are marked", function()
+  local s = marked("Open the gate.", "Uh, open the big gate.")
+  assert(s == "[Uh,] open the [big] gate.", "Got: " .. s)
+end)
+
+test("words the line has and the take does not are not marked", function()
+  -- Nothing to colour: the reader dropped a word, there is no word on screen.
+  local s = marked("Open the north gate.", "Open the gate.")
+  assert(s == "Open the gate.", "Got: " .. s)
+end)
+
+test("a false start is marked, and the read that followed it is not", function()
+  -- Both halves are an equally valid pairing; the tie goes to the LATER one, so
+  -- what gets coloured is the stumble the reader abandoned rather than the read
+  -- they went on to give.
+  local s = marked("Do not repeat that.", "Do not repeat, do not repeat that.")
+  assert(s == "[Do not repeat,] do not repeat that.", "Got: " .. s)
+end)
+
+test("comparison ignores case and punctuation", function()
+  assert(marked("Don't!", "don\226\128\153t") == "don\226\128\153t", marked("Don't!", "don\226\128\153t"))
+end)
+
+test("a word Normalize splits pairs against the split line", function()
+  local s = marked("well worn", "well-worn")
+  assert(s == "well-worn", "Got: " .. s)
+end)
+
+test("with no line to compare, nothing is extra", function()
+  -- An orphan is not a take made entirely of extra words.
+  local s = marked("", "whatever he said here")
+  assert(s == "whatever he said here", "Got: " .. s)
+  assert(#vo.ExtraWords("a line", "") == 0, "empty take yields no runs")
+end)
+
 print("\nNormalize:")
 
 test("lowercases and strips terminal punctuation", function()

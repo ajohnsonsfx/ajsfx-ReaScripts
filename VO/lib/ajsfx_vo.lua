@@ -1192,6 +1192,90 @@ function vo.Tokenize(s)
   return tokens
 end
 
+-- The words a take has that its line does not, as drawable runs.
+--
+-- The sheet used to colour a whole transcript amber when its match score fell
+-- in the "review" band -- the colour encoded a threshold, with no legend and no
+-- number, so from the outside it read as random. This says something the reader
+-- can act on instead: here are the words that are not in the line.
+--
+-- Aligns the two token streams by longest common subsequence, so a word only
+-- counts as extra when it cannot be paired with one in the line IN ORDER. A
+-- multiset would call the second half of a double-read extra and also let a word
+-- that moved across the line pass unmarked; the LCS gets both right. Comparison
+-- is on Normalize()d tokens, display is the original text, so punctuation and
+-- case survive.
+--
+-- Returns: array of { text = string, extra = boolean } in take order, adjacent
+-- runs of the same verdict merged. Marks nothing when there is no line to
+-- compare against -- an orphan is not a take full of extra words.
+function vo.ExtraWords(line_text, take_text, subs)
+  local raw = {}
+  for token in tostring(take_text or ""):gmatch("%S+") do raw[#raw + 1] = token end
+  if #raw == 0 then return {} end
+
+  local line = vo.Tokenize(vo.Normalize(line_text or "", subs))
+  if #line == 0 then
+    return { { text = table.concat(raw, " "), extra = false } }
+  end
+
+  -- The comparison stream, with each token remembering which display word it
+  -- came from. One display word can yield several: Normalize breaks "well-worn"
+  -- in two, and the line it is being compared against says "well worn".
+  local take, owner = {}, {}
+  for i, token in ipairs(raw) do
+    for _, t in ipairs(vo.Tokenize(vo.Normalize(token, subs))) do
+      take[#take + 1] = t
+      owner[#take] = i
+    end
+  end
+  if #take == 0 then
+    return { { text = table.concat(raw, " "), extra = false } }
+  end
+
+  -- LCS lengths over (line, take); walk back for which take tokens paired.
+  local n, m = #line, #take
+  local L = {}
+  for i = 0, n do L[i] = {} for j = 0, m do L[i][j] = 0 end end
+  for i = 1, n do
+    for j = 1, m do
+      if line[i] ~= "" and line[i] == take[j] then L[i][j] = L[i - 1][j - 1] + 1
+      else L[i][j] = math.max(L[i - 1][j], L[i][j - 1]) end
+    end
+  end
+
+  -- Walking back from the end pairs the LATEST valid occurrence, which is the
+  -- right tie to take: where a reader stumbled and went again, both halves pair
+  -- equally well, and the half worth colouring is the false start, not the read
+  -- they settled on.
+  local paired = {}
+  local i, j = n, m
+  while i > 0 and j > 0 do
+    if line[i] ~= "" and line[i] == take[j] then
+      paired[j] = true
+      i, j = i - 1, j - 1
+    elseif L[i - 1][j] >= L[i][j - 1] then i = i - 1
+    else j = j - 1 end
+  end
+
+  -- Back to display words: a word that Normalize split is extra if any part of
+  -- it went unpaired, and a word that normalizes to nothing at all (punctuation
+  -- on its own) is never extra -- there was nothing to fail to match.
+  local unpaired = {}
+  for k = 1, m do
+    if not paired[k] then unpaired[owner[k]] = true end
+  end
+
+  local runs = {}
+  for k = 1, #raw do
+    local extra = unpaired[k] == true
+    local last = runs[#runs]
+    if last and last.extra == extra then last.text = last.text .. " " .. raw[k]
+    else runs[#runs + 1] = { text = raw[k], extra = extra } end
+  end
+  return runs
+end
+
 --------------------------------
 -- Pure layer: whisper output
 --------------------------------

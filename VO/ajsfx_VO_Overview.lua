@@ -86,6 +86,25 @@ local STATUS_STYLE = {
   planned  = { label = "Planned",  colour = 0x7FA0C0FF },
 }
 
+-- Words the take has that its line does not. Amber, not red: an extra word is
+-- something to look at, not an error, and red is spoken for.
+local EXTRA_WORD = 0xDDAA33FF
+
+-- vo.ExtraWords is an LCS over two token streams, so it is cheap per row and
+-- not free across five hundred of them every frame. Memoized on the two texts
+-- it reads; a rebuild that changes neither reuses the answer.
+local extra_memo = {}
+local function ExtraRuns(row)
+  local line, take = row.line_text or "", row.transcript or ""
+  local key = line .. "\0" .. take
+  local hit = extra_memo[key]
+  if not hit then
+    hit = vo.ExtraWords(line, take)
+    extra_memo[key] = hit
+  end
+  return hit
+end
+
 -- Defined here rather than beside the other UI helpers because the column
 -- accessors below need it.
 local function FormatTime(t)
@@ -4893,6 +4912,39 @@ local function CardZones(w)
   return z
 end
 
+-- The take's transcript, wrapped, with the words the line does not contain in
+-- amber.
+--
+-- Word by word with manual wrapping rather than one PushTextWrapPos call,
+-- because the colour changes mid-paragraph: ImGui wraps an ITEM, and a wrapped
+-- item that starts mid-line continues at its own left edge, which puts a hanging
+-- indent wherever a colour run happens to break. One word per item cannot wrap
+-- internally, so the only wrapping is the one done here.
+--
+-- Drawn through the cursor (not the draw list) so the enclosing group still
+-- measures the height the card is laid out from.
+local function DrawTranscriptRuns(runs, x, y, wrap_w)
+  local space  = im.CalcTextSize(ctx, " ")
+  local line_h = im.GetTextLineHeight(ctx)
+  local cx, cy = 0, 0
+  for _, run in ipairs(runs) do
+    for word in run.text:gmatch("%S+") do
+      local ww = im.CalcTextSize(ctx, word)
+      if cx > 0 and cx + ww > wrap_w then cx, cy = 0, cy + line_h end
+      im.SetCursorScreenPos(ctx, x + cx, y + cy)
+      if run.extra then im.TextColored(ctx, EXTRA_WORD, word)
+      else im.TextDisabled(ctx, word) end
+      cx = cx + ww + space
+    end
+  end
+  if cx == 0 and cy == 0 then
+    -- Nothing drawn: still claim one line, so a take with no transcript is the
+    -- same height as one with.
+    im.SetCursorScreenPos(ctx, x, y)
+    im.TextDisabled(ctx, "")
+  end
+end
+
 -- A dot with the status behind it. `words` is the tooltip.
 local function CardDot(colour, words)
   im.TextColored(ctx, colour, "●")
@@ -5000,17 +5052,15 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
     end
   end
 
-  -- Text: the transcript, wrapped inside its zone.
-  im.SetCursorScreenPos(ctx, rx + z.text, ry)
-  im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + z.text_w)
-  wrap_depth = wrap_depth + 1
-  if row.score and row.status == "review" then
-    im.TextColored(ctx, 0xDDAA33FF, row.transcript or "")
-  else
-    im.TextDisabled(ctx, row.transcript or "")
-  end
-  im.PopTextWrapPos(ctx)
-  wrap_depth = wrap_depth - 1
+  -- Text: the transcript, wrapped inside its zone, extra words in amber.
+  --
+  -- The colour used to mean `status == "review"` -- i.e. the match score fell
+  -- below a threshold -- which put a number nobody could see in charge of a
+  -- whole paragraph's colour, and from the outside read as random. Now it marks
+  -- the words themselves: what the reader said that the line does not contain.
+  -- Non-blocking, and deliberately so: a take with extra words is still a take
+  -- the user may want, and Sel/Keep/Lock is where that gets decided.
+  DrawTranscriptRuns(ExtraRuns(row), rx + z.text, ry, z.text_w)
 
   -- The link affordance of a PLANNED row. It used to live in the Item zone;
   -- with that gone it sits beside the name, where it always did on a narrow
