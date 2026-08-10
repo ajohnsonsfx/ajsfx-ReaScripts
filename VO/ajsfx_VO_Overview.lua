@@ -971,10 +971,29 @@ local function EntryFor(row)
   return e
 end
 
+-- Rebuild() is the whole sheet: every source re-matched, every row rebuilt.
+-- One write deserves one rebuild, but a BULK action writing a mark per line
+-- was paying for a rebuild per line -- a few hundred of them over five hundred
+-- rows for one press of "Pick a take for each line", which is why it crawled.
+-- Batch() collects the writes and rebuilds once at the end.
+local batch_depth = 0
+
 local function Mutate(row, fn)
   fn(EntryFor(row))
   state.dirty = true
-  Rebuild()
+  if batch_depth == 0 then Rebuild() end
+end
+
+-- Run `fn` with rebuilds deferred, then rebuild once. Nestable, and a rebuild
+-- still happens if `fn` throws: the entries have already been written by then,
+-- so leaving the sheet stale would show the user the state BEFORE a change
+-- that did land.
+local function Batch(fn)
+  batch_depth = batch_depth + 1
+  local ok, err = pcall(fn)
+  batch_depth = batch_depth - 1
+  if batch_depth == 0 then Rebuild() end
+  if not ok then error(err, 0) end
 end
 
 -- All marker ids currently in the project, so minting can never collide.
@@ -2513,14 +2532,18 @@ local function AutoSelectTakes(rows)
       if row.take_index == pick then best[row.asset] = row end
     end
   end
-  for _, row in pairs(best) do
-    -- An alt is not an answer to "which take is the delivery", so a line whose
-    -- only mark is an alt still has one to make and this fills it in.
-    if not row.user_select then
-      SetSelect(row, true)
-      changed = changed + 1
+  -- One rebuild for the whole pass, not one per line. SetSelect also clears
+  -- each sibling it displaces, so the naive cost was two rebuilds per line.
+  Batch(function()
+    for _, row in pairs(best) do
+      -- An alt is not an answer to "which take is the delivery", so a line
+      -- whose only mark is an alt still has one to make and this fills it in.
+      if not row.user_select then
+        SetSelect(row, true)
+        changed = changed + 1
+      end
     end
-  end
+  end)
 
   local n = 0
   for _ in pairs(best) do n = n + 1 end
@@ -4037,6 +4060,53 @@ local function TidyPass()
   end
   state.message = "Sheet: " .. table.concat(bits, ", ") .. "."
   state.message_kind = (#conflicts > 0) and "warn" or "ok"
+  state.dirty = true
+end
+
+-- The golden path: what a session does the first time, in order, on one press.
+--
+-- Match, cut, pick a take per line, pull to the tracks. Each of these is its
+-- own button because each is worth running alone -- but a new session runs all
+-- four, in this order, every time, and making the user rediscover that order
+-- is making them learn the tool before they can use it.
+--
+-- The order is load-bearing. Cut needs the match to know where takes are; the
+-- pick needs the takes to exist; Pull routes by the marks the pick just made.
+--
+-- Everything that touches items runs inside ONE transaction, so the whole pass
+-- is a single undo. The match is sheet-only and sits outside it: undoing the
+-- audio should not throw away tracking that is still true.
+local function GoldenPath()
+  TidyPass()
+  local matched = state.message or ""
+
+  local cut_err
+  core.Transaction("VO Overview: run the whole pass", function()
+    local ok, err = pcall(DoCut)
+    if not ok then
+      cut_err = tostring(err)
+      return          -- a failed cut leaves nothing to pick or pull
+    end
+    Reload()
+    AutoSelectTakes(AffectedRows())
+    Pull()
+  end)
+
+  state.name_baseline = nil
+  Reload()
+
+  if cut_err then
+    state.message, state.message_kind =
+      "Stopped at the cut, so nothing was picked or pulled: " .. cut_err, "error"
+    r.ShowConsoleMsg("ajsfx VO -- whole pass FAILED at the cut\n" .. cut_err .. "\n\n")
+    return
+  end
+
+  -- Each step already wrote its own report; the last one standing is Pull's,
+  -- which is the one that says whether audio reached its tracks. Lead with the
+  -- match so the pass reads in the order it ran.
+  state.message = matched .. "  |  " .. (state.pull_result or "Pulled.")
+  state.message_kind = state.pull_result_kind or "ok"
   state.dirty = true
 end
 
@@ -6199,6 +6269,29 @@ local function loop()
       end
 
     elseif state.tab == "edit" then
+      -- The hero, on its own row above the parts it is made of: a new session
+      -- runs these four in this order every time, and the row below shows
+      -- exactly which four, so the button teaches the path instead of hiding
+      -- it.
+      im.SetCursorPosX(ctx, row_left)
+      im.PushStyleColor(ctx, im.Col_Button,        0x3E6FA3FF)
+      im.PushStyleColor(ctx, im.Col_ButtonHovered, 0x4E86C0FF)
+      if im.Button(ctx, "Run the whole pass") then pending_action = GoldenPath end
+      im.PopStyleColor(ctx, 2)
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx,
+          "The usual first pass, in order, in one undo step:\n\n" ..
+          "  1. match the transcript to the script\n" ..
+          "  2. cut the recording into takes\n" ..
+          "  3. pick a take for each line\n" ..
+          "  4. pull the items to their tracks\n\n" ..
+          "Every step is also a button below, for when you want just one.\n" ..
+          "This CHANGES ITEMS: it cuts, names and moves audio.")
+      end
+      im.SameLine(ctx)
+      im.TextDisabled(ctx, "  match \226\134\146 cut \226\134\146 pick \226\134\146 pull")
+      started = true
+
       Group("Match:")
       if im.Button(ctx, "Match transcript to script") then TidyPass() end
       Tip("Re-read every transcript and identify the lines again from scratch,\n" ..
