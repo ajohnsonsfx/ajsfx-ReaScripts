@@ -1352,23 +1352,32 @@ end
 -- while a marker drag was in flight would snap the marker out of the user's
 -- hand. Cut, Adopt and Mark selected keep their own single undo points, so
 -- the mirror refresh stays its own press and its own undo step.
+-- The write half, without the reloads or the transaction, so a caller that is
+-- already inside both can prune as part of its own job. Returns touched, canon.
+local function MirrorTakeMarkers()
+  local reach = vo.Opt(vo.LoadConfig(), "marker_mirror_reach")
+  local touched, canonical = 0, 0
+  for _, group in pairs(state.take_markers or {}) do
+    local rewrites, canon = vo.PlanMarkerMirror(group, reach)
+    canonical = canonical + canon
+    for _, rw in ipairs(rewrites) do
+      local rec = group[rw.item_index]
+      if rec and rec.info and rec.info.item then
+        if vo.WriteTakeMarkers(rec.info.item, rw.markers) then
+          touched = touched + 1
+        end
+      end
+    end
+  end
+  return touched, canonical
+end
+
 local function SyncTakeMarkers()
   Reload()
   local reach = vo.Opt(vo.LoadConfig(), "marker_mirror_reach")
   local touched, canonical = 0, 0
   core.Transaction("VO Overview: sync take markers", function()
-    for _, group in pairs(state.take_markers or {}) do
-      local rewrites, canon = vo.PlanMarkerMirror(group, reach)
-      canonical = canonical + canon
-      for _, rw in ipairs(rewrites) do
-        local rec = group[rw.item_index]
-        if rec and rec.info and rec.info.item then
-          if vo.WriteTakeMarkers(rec.info.item, rw.markers) then
-            touched = touched + 1
-          end
-        end
-      end
-    end
+    touched, canonical = MirrorTakeMarkers()
   end)
   Reload()
   state.message, state.message_kind = (touched > 0)
@@ -3693,7 +3702,7 @@ local function DoCut()
   end
 
   -- One transaction around every split and rename, so the run is one undo step.
-  local applied, failures = 0, {}
+  local applied, failures, pruned = 0, {}, 0
   core.Transaction("VO Overview: cut and name", function()
     -- MARKERS FIRST, then the splits at their bounds: split propagation
     -- carries each marker into the piece cut for it, so every clip is born
@@ -3744,9 +3753,34 @@ local function DoCut()
       applied = applied + a
       for _, msg in ipairs(f) do failures[#failures + 1] = msg end
     end
+
+    -- Cut cleans up after itself, in the same undo step.
+    --
+    -- REAPER's split copies the WHOLE take-marker set into BOTH halves, so
+    -- cutting one recording into 451 clips left every clip carrying all 409 of
+    -- the session's markers: 184,000 marker lines and 24MB of item chunk for
+    -- 409 real takes. Nothing looked wrong, because the coverage rule in
+    -- vo.CountingMarkers ignores residue -- it just cost 566ms to READ all that
+    -- chunk on every rescan before throwing 99.8% of it away, and a rescan
+    -- fires whenever the project changes, which includes clicking between
+    -- items. That is the stall.
+    --
+    -- The mirror pass already knew how to collapse it; it was simply never run
+    -- unless the user pressed "Sync take markers", which nothing told them to
+    -- do. The Reload is what makes the freshly split items visible to it.
+    -- `marker_mirror_reach` still decides how much of the neighbourhood each
+    -- clip keeps, and at 0 a clip keeps only the take it IS.
+    Reload()
+    pruned = MirrorTakeMarkers()
   end)
 
   state.cut_summary = vo.FormatCutSummary(all_spans, applied, skipped_msgs, failures)
+  if pruned > 0 then
+    state.cut_summary[#state.cut_summary + 1] = {
+      text = string.format(
+        "Tidied the take markers REAPER's split copied onto %d clip(s).", pruned),
+    }
+  end
 
   if #state.cut_skipped_edited > 0 then
     table.insert(state.cut_summary, {
