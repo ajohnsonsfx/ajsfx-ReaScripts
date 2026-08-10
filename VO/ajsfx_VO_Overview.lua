@@ -2431,25 +2431,6 @@ local function SetFollowSetting(key, value)
   r.SetExtState(vo.EXT_SECTION, key, value and "1" or "0", true)
 end
 
--- The sheet-update opt-ins, same ExtState pattern and for the same reason:
--- they belong to this window's toolbar, not to matching, so they stay out of
--- vo.CONFIG_SCHEMA and the Settings dialog.
---
--- They used to ride on the config table, which is why ticking one appeared to
--- undo itself: vo.SaveConfig writes SCHEMA FIELDS ONLY, so a key that is not
--- in the schema is dropped on the way out and reads back false.
-local UPDATE_OPT_KEYS = { "tidy_name", "tidy_pull" }
-
-local function LoadUpdateOpts()
-  for _, key in ipairs(UPDATE_OPT_KEYS) do
-    state[key] = r.GetExtState(vo.EXT_SECTION, key) == "1"
-  end
-end
-
-local function SetUpdateOpt(key, value)
-  state[key] = value and true or false
-  r.SetExtState(vo.EXT_SECTION, key, state[key] and "1" or "0", true)
-end
 
 -- -----------------------------------------------------------------------
 -- Presentation settings
@@ -4019,59 +4000,18 @@ local function ApplyAltNames()
   state.pull_result, state.pull_result_kind = state.message, state.message_kind
 end
 
--- The toolbar's best-effort pass (SPEC-toolbar.md section 4). Safe by
--- default: refresh the match, then make the timeline's word on marks
--- explicit -- sheet state only, no items touched. Two opt-ins reach into
--- item territory (naming, pulling) and run inside one transaction so the
--- whole pass is a single undo step. Marks are adopted LAST so they see the
--- post-pull track layout.
+-- The Sheet tab's one action (SPEC-toolbar.md section 4): re-read every
+-- transcript, identify the lines again from scratch, and make the timeline's
+-- word on marks explicit.
+--
+-- It changes NOTHING but the sheet. It used to carry two opt-ins that named
+-- takes and pulled them, which put item surgery behind a Sheet button and
+-- broke the one rule the toolbar is built on. Both jobs already live in the
+-- Items tab, where a button that changes audio belongs.
 local function TidyPass()
   local cfg = vo.LoadConfig()
   Reload()
   local refreshed = #state.overview
-
-  -- One OUTER transaction around every item-changing step: REAPER's undo
-  -- blocks nest (an inner Undo_EndBlock folds into the outer block), so
-  -- ApplyAltNames' and Pull's own transactions collapse into this one and
-  -- the whole pass is a single undo step.
-  local named, pulled = 0, 0
-  if state.tidy_name or state.tidy_pull then
-    core.Transaction("VO Overview: tidy", function()
-      if state.tidy_name then
-        -- Sel rows get the line's delivered name; Keep rows get alt names.
-        -- Never overwrite a name that already means a line (the Adopt-
-        -- session rule): a resolving name IS an assignment, and Tidy is
-        -- best-effort, not authoritative.
-        local index = vo.BuildNameIndex(state.lines or {})
-        local items = vo.CollectProjectSpans()
-        local sel_edits = vo.PlanSelectNames(state.overview)
-        for _, e in ipairs(sel_edits) do
-          local row   = state.overview[e.index]
-          local clean = vo.SanitizeName(e.name)
-          local item  = row and row.source_path and row.source_start
-                        and vo.ResolveSourceTime(row.source_path, row.source_start, items)
-          local take  = item and r.GetActiveTake(item)
-          if take and clean ~= "" then
-            local _, cur = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
-            if not vo.ResolveItemName(index, cur or "") then
-              r.GetSetMediaItemTakeInfo_String(take, "P_NAME", clean, true)
-              EntryFor(row).name_override = clean
-              named = named + 1
-            end
-          end
-        end
-        -- Alts get their pattern names too. ApplyAltNames opens its own
-        -- transaction; nested inside ours it folds into the one undo step.
-        ApplyAltNames()
-      end
-      if state.tidy_pull then
-        Pull()
-        pulled = 1  -- Pull() reports its own counts in state.pull_result.
-      end
-    end)
-    state.name_baseline = nil
-    Reload()
-  end
 
   -- The timeline's word on marks, made explicit -- the same write Repair's
   -- "Adopt timeline" does, without the panel trip.
@@ -4089,12 +4029,10 @@ local function TidyPass()
   local bits = { string.format("%d line%s refreshed", refreshed,
                                refreshed == 1 and "" or "s") }
   if adopted > 0 then bits[#bits + 1] = adopted .. " mark(s) adopted from the timeline" end
-  if named   > 0 then bits[#bits + 1] = named .. " select(s) named" end
-  if pulled  > 0 then bits[#bits + 1] = "items pulled (see the Pull report)" end
   if #conflicts > 0 then
     bits[#bits + 1] = #conflicts .. " line(s) with two selects -- pick one"
   end
-  state.message = "Tidy: " .. table.concat(bits, ", ") .. "."
+  state.message = "Sheet: " .. table.concat(bits, ", ") .. "."
   state.message_kind = (#conflicts > 0) and "warn" or "ok"
   state.dirty = true
 end
@@ -6065,7 +6003,6 @@ end
 LoadProjectFile()
 LoadLayoutSettings()
 LoadFollowSettings()
-LoadUpdateOpts()
 LoadViewSettings()
 Reload()
 
@@ -6211,33 +6148,13 @@ local function loop()
       end
 
     elseif state.tab == "sheet" then
-      if im.Button(ctx, "Update sheet to match items") then TidyPass() end
-      if im.IsItemHovered(ctx) then
-        local extra = (state.tidy_name or state.tidy_pull)
-          and "\n\nThe opt-ins are ON, so this run ALSO changes items:" ..
-              (state.tidy_name and "\n- names selects and alts" or "") ..
-              (state.tidy_pull and "\n- pulls named items to their tracks" or "")
-          or ""
-        im.SetTooltip(ctx,
-          "Re-read the session, then write down what it shows: a take whose\n" ..
-          "item sits on Selects is marked Sel. Lines left carrying two\n" ..
-          "selects are counted so you can pick one." .. extra)
-      end
-      im.SameLine(ctx, 0, 1)
-      if im.ArrowButton(ctx, "##tidyopts", im.Dir_Down) then
-        im.OpenPopup(ctx, "##tidy_menu")
-      end
-      if im.BeginPopup(ctx, "##tidy_menu") then
-        im.TextDisabled(ctx, "These reach out of the sheet and change items:")
-        local hit, v = im.Checkbox(ctx, "Also name matched takes",
-                                   state.tidy_name == true)
-        if hit then SetUpdateOpt("tidy_name", v) end
-        hit, v = im.Checkbox(ctx, "Also pull named items to their tracks",
-                             state.tidy_pull == true)
-        if hit then SetUpdateOpt("tidy_pull", v) end
-        im.EndPopup(ctx)
-      end
-      im.SameLine(ctx)
+      if im.Button(ctx, "Match transcript to script") then TidyPass() end
+      Tip("Re-read every transcript and identify the lines again from scratch,\n" ..
+          "then write down what the timeline shows: a take whose item sits on\n" ..
+          "Selects is marked Sel. Lines left carrying two selects are counted\n" ..
+          "so you can pick one.\n\n" ..
+          "Nothing in this tab changes an item. Run it after transcribing, or\n" ..
+          "after editing the script.")
 
       if im.Button(ctx, "Pick a take for each line") then AutoSelectTakes(AffectedRows()) end
       Tip("Mark one take per line as the select. Locked lines are left alone.")

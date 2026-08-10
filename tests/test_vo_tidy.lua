@@ -1,5 +1,5 @@
--- Unit tests for vo.LineKey, vo.SelectConflicts and vo.PlanSelectNames --
--- the pure layer behind the Overview toolbar's Tidy pass (SPEC-toolbar.md).
+-- Unit tests for vo.LineKey and vo.SelectConflicts -- the pure layer behind
+-- the Sheet tab's "Match transcript to script" (SPEC-toolbar.md).
 
 local passed = 0
 local failed = 0
@@ -60,33 +60,6 @@ test("rows with no script_row group by asset", function()
   }
   local c = vo.SelectConflicts(rows)
   assert(#c == 1 and c[1].key == "asset:line_a", "key: " .. tostring(c[1] and c[1].key))
-end)
-
-print("PlanSelectNames:")
-
-test("a Sel row plans its delivered name", function()
-  local rows = {
-    { user_select = true, asset = "line_a", deliver = "line_a_ch2" },
-    { user_select = false, asset = "line_a", deliver = "line_a_ch2" },
-  }
-  local edits, skipped = vo.PlanSelectNames(rows)
-  assert(#edits == 1 and skipped == 0)
-  assert(edits[1].index == 1 and edits[1].name == "line_a_ch2",
-    "got " .. tostring(edits[1].index) .. "/" .. tostring(edits[1].name))
-end)
-
-test("a hand-named row is skipped, not renamed", function()
-  local rows = {
-    { user_select = true, asset = "line_a", deliver = "line_a", name_override = "custom" },
-  }
-  local edits, skipped = vo.PlanSelectNames(rows)
-  assert(#edits == 0 and skipped == 1)
-end)
-
-test("no deliver name means nothing to plan", function()
-  local rows = { { user_select = true, asset = "line_a" } }
-  local edits, skipped = vo.PlanSelectNames(rows)
-  assert(#edits == 0 and skipped == 0)
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))

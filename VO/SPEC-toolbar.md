@@ -43,17 +43,24 @@ the panel by itself.
 
 ### Sheet
 ```
-[ Update sheet to match items ▾ ]   [ Pick a take for each line ] [Last ▾]
+[ Match transcript to script ]   [ Pick a take for each line ] [Last ▾]
 ```
-- **Update sheet to match items** — re-reads the session, then writes down
-  what it shows: a take whose item sits on Selects is marked Sel. Lines left
-  carrying two selects are counted (§4). This is the old Tidy, renamed.
-- **▾** — the two persisted opt-ins that reach out of the sheet and change
-  items, labelled as such: *also name matched takes*, *also pull named items
-  to their tracks*. With either on, the item-changing steps run inside one
-  `core.Transaction` — one undo step.
+- **Match transcript to script** — re-reads every transcript, identifies the
+  lines again from scratch, and writes down what the timeline shows: a take
+  whose item sits on Selects is marked Sel. Lines left carrying two selects
+  are counted (§4).
+
+  It is named for the job because matching IS the job, and nothing else in
+  the toolbar said the word. Asked "how do I make it match?", a user could
+  not find this button under its previous name.
 - **Pick a take for each line** — the old Select takes, with its rule combo
   visible beside it rather than hidden in a menu.
+
+**No opt-ins.** This button briefly carried two — *also name matched takes*,
+*also pull named items to their tracks* — which put item surgery behind a
+Sheet button and broke §1 in the one place it mattered most. Both jobs live
+in the Items tab. A tab whose contract is "never changes an item" cannot have
+an exception, however well labelled.
 
 There is no Refresh button. Refreshing was a strict subset of updating the
 sheet, and two buttons where one contains the other cannot be told apart no

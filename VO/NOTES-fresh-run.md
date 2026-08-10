@@ -10,6 +10,36 @@ Status: **open** unless marked.
 
 ## Toolbar
 
+- [ ] **Nothing in the toolbar says "match", and matching is what the tool
+      does.** Asked how to make the engine match transcript to script, the
+      answer is "Sheet → Update sheet to match items", which nobody would
+      guess: the match is recomputed live and that button re-reads everything
+      first. The old `Refresh` at least said "identify the lines again from
+      scratch" in its tooltip. Folding it in was right on mechanics and wrong
+      on vocabulary. Either the button says it (`Re-match and update the
+      sheet`?) or the Transcribe/Script tab carries an explicit
+      **Match transcript to script** that runs the same path.
+
+- [ ] **Split Setup into [Script] and [Transcribe].** Proposed layout:
+      `[Script] [Transcribe] [Sheet] [Items] [Fix a line] … [Settings]`, with
+      Script holding **Add script…** and Transcribe holding **Sources and
+      transcripts…** plus an explicit match action. Two different jobs share
+      the Setup tab today, and the one people look for most (transcribe) is
+      the one buried behind a generic name.
+
+- [ ] **A script should be able to select which speaker(s) it contributes.**
+      Open question from the same design: multi-select on one script entry, or
+      add the same CSV twice with a different character each time. Adding it
+      twice already works and needs no new UI — worth trying that before
+      building selection, since the second entry is also how you would give
+      the two speakers different settings later.
+
+- [ ] **A "find what I missed" pass, looser than the batch run.** Same idea as
+      the orphan right-click above, applied to everything at once: re-run
+      matching at a lower threshold over spans nothing claimed. May be made
+      redundant by the scoring and island-boundary work — worth deciding after
+      those, not before.
+
 - [ ] **The tab ribbon should be a fixed height.** Each tab's button row is
       whatever tall its own contents are, so switching tabs shifts the whole
       sheet up or down under the cursor. The ribbon should reserve one
@@ -66,6 +96,26 @@ Status: **open** unless marked.
       PAUSED (`vo.PARAGRAPH_PAUSE`, 0.35s), which is the only boundary in this
       data that came from the performance rather than the recognizer.
 
+- [ ] **Let the user delete a transcript from the Sources panel.** Transcribing
+      the wrong file is an ordinary mistake, and the only cure right now is to
+      open the project folder, work out which `*_vo_transcript.csv` it is, and
+      delete it by hand. The tool wrote the file; the tool should be able to
+      remove it. Being opaque about it does not make it safer — it just moves
+      the work somewhere the tool cannot check it.
+
+      On whether it breaks anything: mostly no, and for a principled reason.
+      What the user DECIDED lives in the project file, take identity lives in
+      ranged take markers inside the items, and the delivered name lives on the
+      take — none of that is in the transcript. The transcript is the one file
+      the tool can rebuild by running whisper again. What is lost is the
+      transcript COLUMN and the ability to re-derive matches until it is
+      re-run; items already named, pulled and markered keep everything.
+
+      Verify before shipping it, rather than assuming: delete a transcript on a
+      session that has been cut and pulled, and confirm marks, names and take
+      markers all survive. Ask for confirmation naming the file, and say in the
+      dialog what is lost and what is kept.
+
 ## What the transcript's timings actually are
 
 Measured on this run, and it reframes several of the items above:
@@ -99,6 +149,58 @@ Measured on this run, and it reframes several of the items above:
   order (`vo.BuildBackbone` takes the longest NON-DECREASING subsequence of
   line indices, non-decreasing exactly so retakes count as in order).
   Still unverified: how false starts (half a line, then a restart) are handled.
+
+## "Not on the script" must be a QUEUE, not a dead end
+
+- [ ] **Give every orphan a right-click that resolves it.** The list reads as
+      a pile of unknown content, and a session does not feel finished while it
+      is sitting there — 64 of them on this run. It is the right instinct: some
+      of those lines ARE in the script, so the list is a to-do, but the tool
+      offers no way to do anything about a single entry.
+
+      The three verbs it needs, on a right-click:
+
+      1. **Try again** — re-match this span alone, at a looser threshold than
+         the batch run dares use. A human looking at one span can accept a
+         weaker match than a pass over 1600 words should; the risk that makes
+         the global setting conservative does not apply to one deliberate act.
+      2. **This is line X** — hand it to a line, with the search already
+         filtered by what the span says. The name is the assignment, so this
+         is a rename underneath, but the user should be picking a LINE, not
+         typing a filename.
+      3. **This is junk** — slate, chatter, a cough, a false start. Dismissed
+         explicitly, PERSISTED (it is a judgement about audio, so it belongs
+         in the project file with the marks), and out of the count.
+
+      The last one is what makes the count trustworthy: with it, "not on the
+      script: 0" means every span has been looked at and decided, and the
+      session really is done. Without it the number can only ever be ignored,
+      which is what makes the pile feel like a wall.
+
+- [ ] **Say WHY a span is orphaned.** "Not on the script" covers at least
+      three different things — no line scored high enough, a line matched but
+      another span won it, or the words genuinely are not in the script — and
+      the fix differs by case. The list should name which.
+
+## The sheet
+
+- [ ] **Transcript colour should say something the user can act on.** Today a
+      take's transcript is amber when `row.status == "review"` and dim
+      otherwise — i.e. the colour encodes the MATCH SCORE, with no legend and
+      no number. From the outside it reads as random: `can` amber on one card,
+      `book` amber on another, `man walk down and come back wrong` dim on a
+      third.
+
+      Proposal: draw every transcript in one colour, and mark the DIFFERENCE
+      instead — the words the take has that the line does not, in AMBER (the
+      same `0xDDAA33FF` already used for "needs your attention" elsewhere in
+      the sheet; red is for errors, and an extra word is not an error). Then
+      the colour is about the words on screen rather than about a threshold,
+      and it is legible without knowing what "review" means.
+
+      It should stay non-blocking either way. A take with extra words is still
+      a take the user may want; Sel/Keep/Lock is where that gets decided, not
+      a status the tool assigns.
 
 ## Empty state
 

@@ -976,26 +976,6 @@ function vo.PlanAltNames(rows, opts)
   return edits, skipped
 end
 
--- The Sel half of what PlanAltNames does for Keeps: a take ticked Select
--- should carry the line's delivered name. Same return shape as PlanAltNames
--- so one apply loop serves both. Pure -- whether the live item already
--- carries a name that means a line is the APPLY side's question, answered
--- against the project at write time (never overwrite a name that already
--- resolves, the Adopt-session rule).
-function vo.PlanSelectNames(rows)
-  local edits, skipped = {}, 0
-  for i, row in ipairs(rows or {}) do
-    if row.user_select and row.asset then
-      if row.name_override and trim(row.name_override) ~= "" then
-        skipped = skipped + 1
-      elseif row.deliver and row.deliver ~= "" then
-        edits[#edits + 1] = { index = i, name = row.deliver }
-      end
-    end
-  end
-  return edits, skipped
-end
-
 -- The whole script side of a project, loaded in one call. Both ajsfx VO Overview
 -- and the old ajsfx VO Cut window kept near-identical copies of this; it is now
 -- one function, so a script that loads for the table cannot fail to load for
