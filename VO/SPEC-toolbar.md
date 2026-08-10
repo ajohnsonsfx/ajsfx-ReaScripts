@@ -51,11 +51,12 @@ the panel by itself.
 ```
 [ Run the whole pass ]   match → cut → pick → pull
 
-Match:  [ Match transcript to script ]  [ Identify line from item ▾ ]
+Match:  [ Match transcript to script ]  [ Find lines in items ]
+        [ Assign items to lines ]  [ Adopt the whole session ]
 Cut:    [ Cut recording into takes ]  [ Auto-adjust head and tail ]
 Pick:   [ Auto-pick selects: last take ]  [ …first take ]  [ Auto-name the alts ]
 Pull:   [ Pull items to their tracks ]  [ Lay items out in script order ]
-Check:  [ Fix a line ]  [ Tidy up take markers ]
+Check:  [ Marks vs tracks (0) ]  [ Takes without audio (0) ]  [ Tidy up take markers ]
 ```
 
 **The rows are the hero's own words.** `Run the whole pass` reads
@@ -72,9 +73,10 @@ tooltip instead of in the layout. The cost is real — the Match row mixes a
 sheet-only verb with item-writing ones — and accepted deliberately.
 
 - **Match** — establish what everything is. *Match transcript to script*
-  (batch, sheet-only) and *Identify line from item ▾*, the per-item forms:
-  *Find lines in items* · *Assign items to lines* · *Adopt this whole
-  session*.
+  (batch, sheet-only) and the per-item forms as plain buttons: *Find lines in
+  items* · *Assign items to lines* · *Adopt the whole session*. They lived in
+  an "Identify line from item ▾" menu, which hid three distinct situations
+  behind one generic name and an extra click.
 - **Cut** — make each take physically its own item, with the right edges.
   *Cut recording into takes*; *Auto-adjust head and tail* (the old Tighten —
   its trims move the take marker too, so the finishing pass cannot create the
@@ -91,9 +93,16 @@ sheet-only verb with item-writing ones — and accepted deliberately.
 - **Pull** — deliver. *Pull items to their tracks* (its panel also carries
   *Pull the selected item(s) only*, the same verb at a smaller scope) and
   *Lay items out in script order*.
-- **Check** — does the sheet agree with the timeline? *Fix a line* (the
-  reconciliation panel) and *Tidy up take markers*. The orphan queue and the
-  summary line are this phase's other half, living in the sheet itself.
+- **Check** — does the sheet agree with the timeline? *Fix a line* is gone:
+  it was one panel holding three problems, and the button name said none of
+  them. Split by REMEDY — *Marks vs tracks* (disagreements, fixed as a batch:
+  adopt the timeline or adopt the sheet) and *Takes without audio* (markers
+  and marks whose audio is gone — two of the old three sections, merged
+  because they always shared the same per-row Relink). Both buttons wear
+  their counts, so the row reads as state before anything is clicked: "(0)"
+  everywhere means the session agrees with itself. *Tidy up take markers*
+  closes the row. The orphan queue and the summary line are this phase's
+  other half, living in the sheet itself.
 
 ### The ribbon's height
 

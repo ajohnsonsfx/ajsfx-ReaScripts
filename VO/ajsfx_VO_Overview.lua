@@ -728,7 +728,6 @@ local function Rebuild()
     return a.label < b.label
   end)
   state.characters = chars
-  state.conflicts  = vo.SelectConflicts(state.overview)
 
   -- Row-level, so a per-take name override can clear a clash or create one.
   state.dupe_names = vo.DuplicateNames(state.overview)
@@ -905,6 +904,13 @@ local function Rebuild()
       { select = row.mark_select, keep = row.mark_keep }, row.track_name, cfg)
     row.user_select, row.user_keep = marks.select, marks.keep
   end
+
+  -- Derived AFTER the marks and track names above, because both read them --
+  -- conflicts through user_select, the reconcile plan through track_name.
+  -- Computed here rather than per frame: the toolbar shows their counts, and
+  -- nothing can change either without coming back through Rebuild.
+  state.conflicts = vo.SelectConflicts(state.overview)
+  state.reconcile = vo.PlanReconcile(state.overview, cfg)
 
   -- Out-of-band rename detection: the name IS the assignment, and anything --
   -- F2, a batch renamer, another script -- can move it silently. The baseline
@@ -1164,7 +1170,8 @@ local function DeleteTakeMarker(row)
     state.dirty = true
     Reload()
     state.message, state.message_kind =
-      "Marker deleted. The take left the sheet; any marks surface in Repair.", "ok"
+      "Marker deleted. The take left the sheet; any marks surface in\n" ..
+      "Check -> Takes without audio.", "ok"
   else
     state.message, state.message_kind = "Could not delete that marker.", "error"
   end
@@ -4544,27 +4551,34 @@ end
 -- without a press, and every finding can be clicked to go and look at it.
 local REPAIR_LIST_CAP = 12
 
-local function DrawRepairPanel()
-  local cfg  = vo.LoadConfig()
-  local plan = vo.PlanReconcile(state.overview, cfg)
-  local total = #plan.disagree + #plan.unbacked_markers + #plan.orphan_marks
+-- "Fix a line" was one panel holding three different problems, and the button
+-- name said none of them. It is now two panels, split by REMEDY rather than by
+-- diagnosis: disagreements have batch fixes (adopt one side or the other),
+-- while a take whose audio is gone can only be relinked or cleared by hand --
+-- two lists that were three sections, since unbacked markers and orphaned
+-- marks always shared the same Relink. Each button wears its count, so the
+-- Check row reads as state, not as navigation.
 
-  if total == 0 then
+local function RepairGoTo(row)
+  state.selection        = { [row.uid] = true }
+  state.focus_key        = row.uid
+  state.scroll_to_uid    = row.uid
+  state.scroll_to_frames = 2
+end
+
+local function DrawDisagreePanel()
+  local cfg  = vo.LoadConfig()
+  local plan = state.reconcile or vo.PlanReconcile(state.overview, cfg)
+
+  if #plan.disagree == 0 then
     im.TextColored(ctx, 0x66BB66FF,
-      "Nothing to fix: every take agrees with the timeline.")
+      "Every take's marks agree with the track its item sits on.")
     im.Separator(ctx)
     return
   end
 
-  local function GoTo(row)
-    state.selection        = { [row.uid] = true }
-    state.focus_key        = row.uid
-    state.scroll_to_uid    = row.uid
-    state.scroll_to_frames = 2
-  end
-
-  -- 1. The sheet and the timeline disagree.
-  if #plan.disagree > 0 then
+  local GoTo = RepairGoTo
+  do
     im.TextColored(ctx, 0xDDAA33FF, string.format(
       "%d take(s) disagree with where their item sits:", #plan.disagree))
     for i, f in ipairs(plan.disagree) do
@@ -4612,8 +4626,20 @@ local function DrawRepairPanel()
     end
     im.Separator(ctx)
   end
+end
 
-  -- 2. Markers whose audio is gone.
+local function DrawNoAudioPanel()
+  local plan = state.reconcile
+               or vo.PlanReconcile(state.overview, vo.LoadConfig())
+
+  if #plan.unbacked_markers + #plan.orphan_marks == 0 then
+    im.TextColored(ctx, 0x66BB66FF,
+      "Every marker and every mark has audio under it.")
+    im.Separator(ctx)
+    return
+  end
+
+  -- Markers whose audio is gone.
   if #plan.unbacked_markers > 0 then
     im.TextColored(ctx, 0xDD6666FF, string.format(
       "%d take marker(s) with no audio under them:", #plan.unbacked_markers))
@@ -4641,7 +4667,7 @@ local function DrawRepairPanel()
     im.Separator(ctx)
   end
 
-  -- 4. Marks with nothing to attach to.
+  -- Marks with nothing to attach to.
   if #plan.orphan_marks > 0 then
     im.TextColored(ctx, 0xDDAA33FF, string.format(
       "%d take(s) carry marks but have no audio in this project:",
@@ -4668,18 +4694,6 @@ local function DrawRepairPanel()
     im.Separator(ctx)
   end
 
-  -- The fifth thing worth knowing about is computed elsewhere: items named for
-  -- a line that no row claims are already counted by vo.CheckCoverage and
-  -- adopted by Rebuild, so this points at that rather than recomputing it.
-  if #(state.check.extra or {}) > 0 then
-    im.TextDisabled(ctx, string.format(
-      "%d item name(s) are not on the script -- see the summary line above.",
-      #state.check.extra))
-  end
-
-  -- Mark takes / Mark selected / Sync markers used to be repeated here. They
-  -- are session-wide item work, so they belong to the Items tab's "Identify
-  -- line from item" menu and appear once.
   im.Separator(ctx)
 end
 
@@ -6890,43 +6904,37 @@ local function loop()
           "Sheet only -- no item is touched. Run it after transcribing, or\n" ..
           "after editing the script.")
 
-      Flow("Identify line from item  ▾")
-      if im.Button(ctx, "Identify line from item  ▾") then
-        im.OpenPopup(ctx, "##identify_menu")
+      -- The per-item forms of matching, as three plain buttons. They lived in
+      -- an "Identify line from item ▾" menu, which hid three distinct
+      -- situations behind one generic name and an extra click; each button
+      -- now names its situation itself.
+      Flow("Find lines in items")
+      if im.Button(ctx, "Find lines in items") then
+        pending_action = MarkTakesFromSession
       end
-      Tip("For items that already exist: work out which script line each one\n" ..
-          "is, and write that down in the item itself.")
-      if im.BeginPopup(ctx, "##identify_menu") then
-        if im.Selectable(ctx, "Find lines in items") then
-          pending_action = MarkTakesFromSession
-        end
-        if im.IsItemHovered(ctx) then
-          im.SetTooltip(ctx, "For items that hold several takes: work out where each one is\n" ..
-                             "and mark it inside the item. Splits nothing and moves nothing --\n" ..
-                             "the markers are the takes, and Cut can act on them later.\n\n" ..
-                             "Runs over the items selected in REAPER, or the whole\n" ..
-                             "session when nothing is selected.")
-        end
-        if im.Selectable(ctx, "Assign items to lines") then
-          pending_action = MarkSelectedItems
-        end
-        if im.IsItemHovered(ctx) then
-          im.SetTooltip(ctx, "For items that are already one take each: work out which line\n" ..
-                             "each selected item is, mark it at its CURRENT edges, name it,\n" ..
-                             "and log it in the sheet. Nothing is trimmed or moved, and the\n" ..
-                             "guess is reported so you can check it.")
-        end
-        if im.Selectable(ctx, "Adopt this whole session (mark and name)") then
-          pending_action = function() MarkTakesFromSession(true) end
-        end
-        if im.IsItemHovered(ctx) then
-          im.SetTooltip(ctx, "For a session cut or edited BEFORE this tool: mark takes plus\n" ..
-                             "name every matched item for its script line, at the item's\n" ..
-                             "current edges. Nothing is cut and nothing moves. A name that\n" ..
-                             "already means a line is never overwritten, so re-running is safe.")
-        end
-        im.EndPopup(ctx)
+      Tip("For items that hold several takes: work out where each one is\n" ..
+          "and mark it inside the item. Splits nothing and moves nothing --\n" ..
+          "the markers are the takes, and Cut can act on them later.\n\n" ..
+          "Runs over the items selected in REAPER, or the whole session\n" ..
+          "when nothing is selected.")
+
+      Flow("Assign items to lines")
+      if im.Button(ctx, "Assign items to lines") then
+        pending_action = MarkSelectedItems
       end
+      Tip("For items that are already one take each: work out which line\n" ..
+          "each selected item is, mark it at its CURRENT edges, name it,\n" ..
+          "and log it in the sheet. Nothing is trimmed or moved, and the\n" ..
+          "guess is reported so you can check it.")
+
+      Flow("Adopt the whole session")
+      if im.Button(ctx, "Adopt the whole session") then
+        pending_action = function() MarkTakesFromSession(true) end
+      end
+      Tip("For a session cut or edited BEFORE this tool: mark takes plus\n" ..
+          "name every matched item for its script line, at the item's\n" ..
+          "current edges. Nothing is cut and nothing moves. A name that\n" ..
+          "already means a line is never overwritten, so re-running is safe.")
 
       Group("Cut:")
       PanelButton("cut", "Cut recording into takes",
@@ -6982,12 +6990,26 @@ local function loop()
 
       -- Check: does the sheet agree with the timeline, and is the leftover
       -- state accounted for. The phase the hero cannot run, because its
-      -- verbs need a person deciding.
+      -- verbs need a person deciding. The first two buttons wear their
+      -- counts, so this row reads as state before anything is clicked --
+      -- "(0)" everywhere means the session agrees with itself.
       Group("Check:")
-      PanelButton("repair", "Fix a line",
-        "Where the sheet and the timeline disagree, and what is broken:\n" ..
-        "marks that contradict the track their item sits on, anchors whose\n" ..
-        "item is gone, and items claimed by two takes at once.")
+      local rec = state.reconcile
+                  or { disagree = {}, unbacked_markers = {}, orphan_marks = {} }
+      local n_dis  = #rec.disagree
+      local n_gone = #rec.unbacked_markers + #rec.orphan_marks
+
+      PanelButton("disagree", string.format("Marks vs tracks (%d)", n_dis),
+        "Takes whose Sel/Keep marks contradict the track their item sits\n" ..
+        "on. The panel lists each one and fixes them as a batch: adopt the\n" ..
+        "timeline (the tracks are right) or adopt the sheet (the marks are\n" ..
+        "right -- Pull moves the items to match).")
+
+      Flow(string.format("Takes without audio (%d)", n_gone))
+      PanelButton("noaudio", string.format("Takes without audio (%d)", n_gone),
+        "Markers and marks whose audio is no longer in the project -- the\n" ..
+        "item was deleted, or trimmed past them. Relink each to the item\n" ..
+        "it belongs to, or clear its marks on the row itself.")
 
       Flow("Tidy up take markers")
       if im.Button(ctx, "Tidy up take markers") then pending_action = SyncTakeMarkers end
@@ -7004,7 +7026,8 @@ local function loop()
     if ribbon_h > (state.ribbon_h or 0) then state.ribbon_h = ribbon_h end
     if ribbon_h < state.ribbon_h then im.Dummy(ctx, 1, state.ribbon_h - ribbon_h) end
 
-    if     state.panel == "repair" then DrawRepairPanel()
+    if     state.panel == "disagree" then DrawDisagreePanel()
+    elseif state.panel == "noaudio"  then DrawNoAudioPanel()
     elseif state.panel == "script" then DrawScriptPanel()
     elseif state.panel == "cut"    then DrawCutPanel()
     elseif state.panel == "pull"   then DrawPullPanel()
