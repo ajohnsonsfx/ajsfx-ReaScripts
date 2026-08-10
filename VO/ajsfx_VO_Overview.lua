@@ -4822,19 +4822,15 @@ end
 -- levels correlated without a table's grid.
 local function CardZones(w)
   local z = { lead = 0, marks = 78, text = 186 }
-  local name_w  = 180
-  local where_w = 150
-  -- The text being read takes everything left over. There is no notes zone:
-  -- a free-text box per take was a third of the card's width spent on
-  -- something the tool cannot act on, and the card is for the things you
-  -- CONTROL. Below ~720px the Where zone drops to a tooltip -- at that width
-  -- it was an unreadable sliver, and the text is why the window is open.
-  z.show_where = w >= 720
-  local fixed = z.text + name_w + (z.show_where and where_w or 0) + CARD_PAD * 2
+  -- Two zones carry the whole card now, and both are things the user acts on:
+  -- the text being read, and the name it will be exported under. What went:
+  --   Notes -- a free-text box the tool cannot act on, a third of the width.
+  --   Item  -- which recording and when. That is the project bay's job; here
+  --            it was reading room the exported name wanted.
+  local name_w = math.min(340, math.max(200, math.floor(w * 0.26)))
+  local fixed  = z.text + name_w + CARD_PAD * 2
   z.text_w  = math.max(160, w - fixed)
   z.name    = z.text + z.text_w + 6
-  z.where   = z.name + name_w + 6
-  z.where_w = where_w
   z.name_w  = name_w
   return z
 end
@@ -4958,9 +4954,9 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
   im.PopTextWrapPos(ctx)
   wrap_depth = wrap_depth - 1
 
-  -- The link affordance of a PLANNED row, shared between the two spots it can
-  -- draw in (the Item zone normally; beside the name when the window is too
-  -- narrow to show that zone at all).
+  -- The link affordance of a PLANNED row. It used to live in the Item zone;
+  -- with that gone it sits beside the name, where it always did on a narrow
+  -- window.
   local function DrawLinkButton()
     if im.SmallButton(ctx, "+##link") then
       local captured = row
@@ -4980,10 +4976,8 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
     TooltipEvenWhenDisabled(
       "An empty take added by hand -- no audio is linked yet.\n" ..
       "Select the item in REAPER, then press its + button.")
-    if not z.show_where then
-      im.SameLine(ctx)
-      DrawLinkButton()
-    end
+    im.SameLine(ctx)
+    DrawLinkButton()
   elseif not row.item then
     im.TextDisabled(ctx, "(no item)")
     TooltipEvenWhenDisabled(
@@ -5006,32 +5000,6 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
         pending_action = function() ResetName(row) end
       end
       im.EndPopup(ctx)
-    end
-  end
-
-  -- Item: which recording, and when. Dropped to the name tooltip when the
-  -- window is too narrow for it to be legible. On a planned row the zone
-  -- holds the link button instead: there is no recording to name yet.
-  local place = row.source_path
-    and (vo.Basename(row.source_path) .. " @ " .. FormatTime(row.proj_time)) or ""
-  if z.show_where and row.planned then
-    im.SetCursorScreenPos(ctx, rx + z.where, ry)
-    DrawLinkButton()
-  elseif z.show_where then
-    im.SetCursorScreenPos(ctx, rx + z.where, ry)
-    im.PushClipRect(ctx, rx + z.where, ry, rx + z.where + z.where_w - 4, ry + 200, true)
-    im.TextDisabled(ctx, place)
-    im.PopClipRect(ctx)
-    if row.source_path and im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, row.source_path .. "\n\nDouble-click to open in ajsfx VO Sources.")
-      if im.IsMouseDoubleClicked(ctx, 0) then
-        local captured = row.source_path
-        pending_action = function()
-          r.SetExtState(vo.EXT_SECTION, "focus_source", captured, false)
-          local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
-          if not ok then state.message, state.message_kind = tostring(why), "error" end
-        end
-      end
     end
   end
 
@@ -5083,19 +5051,32 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   im.SetCursorScreenPos(ctx, rx, ry)
   im.BeginGroup(ctx)
 
-  -- Row 1: arrow, number, dot, speaker -- and the badges at the right edge.
-  if im.Selectable(ctx, (open and "v" or ">") .. "##fold", false, 0, 16, line_h) then
-    if state.expanded[key] then state.expanded[key] = nil
-    else state.expanded[key] = true end
-    state.dirty = true
+  -- Row 1: delivered count, number, dot, speaker, line.
+  --
+  -- The count takes the far-left corner the fold arrow used to hold. The
+  -- whole band folds on click, so the arrow was an indicator sitting in the
+  -- best seat on the card -- and "is this line delivered, and how many
+  -- times" is the thing worth reading first.
+  local rec = rep.script_row and DELIVERY(rep.script_row)
+  if rep.script_row then
+    if rec then im.TextColored(ctx, 0x66BB66FF, "✓" .. tostring(rec.count))
+    else im.TextColored(ctx, 0xDD6666FF, "–") end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, rec
+        and string.format("%d item%s in the project named %s.\n" ..
+              "Read from the item names, so a take cut by hand or delivered\n" ..
+              "as a rendered file counts just the same.",
+              rec.count, rec.count == 1 and "" or "s", rep.deliver or rep.asset or "?")
+        or  string.format("No item in the project is named %s yet.\n" ..
+              "Cut and Name, or name an item yourself.",
+              rep.deliver or rep.asset or "?"))
+    end
   end
-  im.SameLine(ctx)
-  im.SetCursorScreenPos(ctx, rx + 22, ry)
+  im.SetCursorScreenPos(ctx, rx + 40, ry)
   im.TextDisabled(ctx, tostring(rep.order or ""))
   im.SameLine(ctx)
 
   local style = STATUS_STYLE[node.rollup.status] or STATUS_STYLE.missing
-  local rec = rep.script_row and DELIVERY(rep.script_row)
   local bits = { style.label }
   bits[#bits + 1] = rec and (tostring(rec.count) .. " delivered") or "Nothing delivered yet."
   if node.rollup.take_count > 0 and not node.rollup.has_sel then
@@ -5134,23 +5115,8 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   -- below whichever is lower, the wrapped words or the fixed row height.
   local y2 = math.max(select(2, im.GetCursorScreenPos(ctx)), ry + line_h) + 2
 
-  -- Badges, right-aligned on the first row.
-  im.SetCursorScreenPos(ctx, rx + inner_w - 52, ry)
-  if rep.script_row then
-    if rec then im.TextColored(ctx, 0x66BB66FF, "✓" .. tostring(rec.count))
-    else im.TextColored(ctx, 0xDD6666FF, "–") end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, rec
-        and string.format("%d item%s in the project named %s.\n" ..
-              "Read from the item names, so a take cut by hand or delivered\n" ..
-              "as a rendered file counts just the same.",
-              rec.count, rec.count == 1 and "" or "s", rep.deliver or rep.asset or "?")
-        or  string.format("No item in the project is named %s yet.\n" ..
-              "Cut and Name, or name an item yourself.",
-              rep.deliver or rep.asset or "?"))
-    end
-    im.SameLine(ctx)
-  end
+  -- The one badge still worth the right edge: nothing is ticked for delivery.
+  im.SetCursorScreenPos(ctx, rx + inner_w - 20, ry)
   if node.rollup.take_count > 0 and not node.rollup.has_sel then
     im.TextColored(ctx, 0xDDAA33FF, " !")
     if im.IsItemHovered(ctx) then
@@ -5160,17 +5126,19 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
 
   -- Rows 2 and 3: the delivered name and the source script, labelled. The
   -- line-note box used to sit beside them; the card is for the things you
-  -- CONTROL, so the filename now gets the full width it was crowded out of.
-  local note_x = rx + inner_w
-
-  im.SetCursorScreenPos(ctx, rx + 22, y2)
-  im.TextDisabled(ctx, "Filename:")
-  im.SameLine(ctx)
+  -- CONTROL.
+  --
+  -- The delivered filename sits in the Item name COLUMN, directly above the
+  -- take names below it. That is the comparison being made -- what the script
+  -- says this file will be called, against what each item is called now -- and
+  -- it only works if the two line up. The "Filename:" label is gone for the
+  -- same reason: a label would push the name out of its column.
   local base = rep.asset or ""
   local shown = rep.deliver or base
   local clash = rep.line_key ~= nil and shown ~= ""
                 and state.dupe_names[shown] == true
-  im.PushClipRect(ctx, rx + 22, y2, note_x - 8, y2 + line_h, true)
+  im.SetCursorScreenPos(ctx, rx + z.name, y2)
+  im.PushClipRect(ctx, rx + z.name, y2, rx + z.name + z.name_w, y2 + line_h, true)
   if clash then im.TextColored(ctx, 0xDD6666FF, shown)
   else im.TextDisabled(ctx, shown) end
   im.PopClipRect(ctx)
@@ -5201,8 +5169,10 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     im.EndPopup(ctx)
   end
 
-  -- Row 3: the source script, under the filename.
-  im.SetCursorScreenPos(ctx, rx + 22, y2 + line_h)
+  -- Same row, left: which script the line came from. It used to sit a row
+  -- lower, under the filename; with the filename moved into its column that
+  -- row would have been empty.
+  im.SetCursorScreenPos(ctx, rx + 22, y2)
   local script_name = (rep.script and rep.script ~= "")
                       and (vo.Basename(rep.script):gsub("%.%w+$", "")) or "—"
   im.TextDisabled(ctx, "Script: " .. script_name)
@@ -5231,7 +5201,8 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
 
   im.EndGroup(ctx)
   local _, gh = im.GetItemRectSize(ctx)
-  rep._band_h = math.max(gh, line_h * 3)
+  -- Two rows now, not three: the line, then filename and script side by side.
+  rep._band_h = math.max(gh, line_h * 2)
 end
 
 -- (The old fold-only drawer is gone: its whole content -- the script name and
@@ -5251,10 +5222,6 @@ local function DrawTakeHeaderRow(z, rx)
   im.TextDisabled(ctx, "Transcript")
   im.SetCursorScreenPos(ctx, rx + z.name, y)
   im.TextDisabled(ctx, "Item name")
-  if z.show_where then
-    im.SetCursorScreenPos(ctx, rx + z.where, y)
-    im.TextDisabled(ctx, "Item")
-  end
   PopCellFont(sf)
 end
 

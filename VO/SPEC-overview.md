@@ -141,17 +141,25 @@ an unfolded parent and its neighbour ambiguous. A card's own chrome answers
 "where does this line end", and take rows sit on their own colour inside it,
 so the two levels can never be mistaken for one another.
 
-Each card is a **title band**, always visible, of a header row and two
-parallel columns:
+Each card is a **title band**, always visible, of two rows:
 
 | | |
 |---|---|
-| **who + said** | fold arrow · script position · status dot · speaker · **the line text**, quoted, right beside the speaker — the words are the main piece of information on the card, so they read in the same glance as who says them (`4 · Grumbar "Can"`) · badges right-aligned: `✓N` delivered, `!` when the line has takes but no Sel |
-| **left column** | `Filename:` the delivered name (CSV filename + Append), red on a clash · `Script:` the source script |
-| **right column** | the line note, editable in place, double height to sit parallel with Filename + Script, unlabelled — promoted from the old fold-only drawer, because a note you can only see by unfolding is a note you forget you wrote |
+| **who + said** | `✓N` delivered (or `–`) in the far-left corner · script position · status dot · speaker · **the line text**, quoted · `!` at the right edge when the line has takes but no Sel |
+| **filename + script** | the delivered name (CSV filename + Append), red on a clash, **in the Item name column** · `Script:` the source script, at the left |
 
-Clicking **anywhere on the band** folds or unfolds; the arrow is an indicator,
-not the only target. Unfolding adds, in order: a header row naming the take
+Two alignments do the card's real work, and both are vertical:
+
+- **the line as written sits directly above the line as read** — the quoted
+  line starts at the transcript zone, not wherever the speaker's name ended.
+- **the name it will be exported under sits directly above the names it has
+  now** — the delivered filename sits in the take rows' Item name column,
+  unlabelled, because a `Filename:` label would push it out of that column.
+
+The far-left corner holds `✓N` rather than a fold arrow: the whole band folds
+on click, so the arrow was an indicator occupying the best seat on the card.
+
+Unfolding adds, in order: a header row naming the take
 fields, the **take rows** (lettered `A, B, C … Z, AA, AB`, `vo.TakeLetter`),
 and a **`+ Add Take`** button. With items selected in REAPER it names them for
 this line — the only honest "add" under the name-is-the-assignment model
@@ -166,11 +174,14 @@ script line surfaces in the orphans card rather than vanishing.
 
 A take row answers, at shared x-offsets so it stays correlated with its
 neighbours: letter · status dot · `Sel` `Keep` `Lock` checkboxes · transcript ·
-the item's own editable name · item (recording @ time) · take note. The offsets
-are the alignment mechanism a table's columns used to provide; below ~720px the
-Item zone drops to a tooltip and below ~540px the Note zone follows, because
-at those widths they were unreadable slivers and the text is why the window is
-open.
+the item's own editable name. The offsets are the alignment mechanism a table's
+columns used to provide.
+
+Two zones were removed rather than shrunk, because both spent width on
+something the user cannot act on here: the **Note** boxes (line and take —
+free text the tool can never read), and **Item** (which recording, and when —
+the project bay's job). What is left is the text and the name, and the name
+got the width.
 
 ### Take identity: ranged take markers
 
@@ -428,13 +439,14 @@ the Settings dialog.
   is a visible vertical diff. The **Append** is edited on demand — double-click
   or right-click the cell — because it is rare; red marks a delivered-name
   clash until an Append separates the two lines.
-- **Notes** — editable free text at both levels, saved to the project file.
-  Line notes back onto `linenote|`-keyed entries no row claims, carried over
-  explicitly by every save.
+- **Notes** — REMOVED. Free text at both levels, saved to the project file,
+  never used and costing about a third of the card's width. The sidecar's
+  notes column stays in the file format so an existing project still
+  round-trips; nothing writes it and nothing reads it back.
 
 Filters: character, per-field boxes (their own line under the toolbar, behind
-the **Filters** toggle), and a text search across filename, line, transcript
-and notes — all selecting LINES, with takes travelling whole. There
+the **Filters** toggle), and a text search across filename, line and
+transcript — all selecting LINES, with takes travelling whole. There
 is no display sorting of any kind (0.15): script order is the one order.
 
 ### Refresh
@@ -648,8 +660,8 @@ touches the project or the project file. It lives in `ExtState` under section
 
 Widths are not stored at all any more. The table persisted its column widths
 and order into `REAPER/ReaImGui/<hash>.ini`; cards compute their zones from the
-window width every frame, which is also what lets the Where and Note zones drop
-out on a narrow window (§4).
+window width every frame, which is what lets the Item name zone grow with the
+window (§4).
 
 The pre-0.15 `view_mirror_text` setting is gone with the columns it paired:
 line text and transcript are no longer side by side, so there is nothing left
