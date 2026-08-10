@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.15beta4
--- @changelog PRE-RELEASE: ingesting a session that was cut and edited BEFORE this tool arrived is now one button. "Adopt session" (Cut panel, or the remote seam's `adopt`) writes a take marker for every matched take at its item's CURRENT edges and names the item for its script line -- cutting nothing, moving nothing, and never overwriting a name that already means a line, so re-running it is safe and Pull can route the session immediately after. Previously the only naming path was Cut and Name, which re-slices hand-fixed edges to fit whisper word timings. Also fixed: transcript gap repair silently repaired NOTHING on a session already cut into clips -- the audio probe read the source through the first clip that referenced it, and a take accessor is bounded by its item, so everything outside that clip's window measured as silence and every suspect hole passed as "genuine silence". The probe now uses an item that shows the whole file, or a temporary full-length one when no such item exists, so the swallowed-window repair fires no matter how the session is cut. Holes the repair could NOT check (unreadable audio, no measurable noise floor) are now reported by name instead of silently skipped. The remote seam also gains `mark_takes`. This build carries the earlier 0.15beta work: ranged take markers, the card sheet, planned takes, and whisper gap repair in Sources. -- one visible, draggable marker per performance, drawn inside the items in the arrange view and named for the script line. The marker IS the take: drag it and the sheet follows with every Sel, Keep, note and lock attached; alt-drag its end to resize the take; delete it and the take leaves the sheet. Cut writes the markers first and splits at their bounds, so every clip is born knowing which performance it is -- and Cut refuses to re-slice audio a marker already owns, reporting the skips with a Re-cut anyway that deletes those markers deliberately. The transcript match becomes a one-time generator rather than a live authority: once a line has markers, the match never gets to reinterpret it. A Mark takes button migrates a session cut before markers existed, banking each take at its item's CURRENT edges -- hand-fixed cut points become stored, visible truth. Clean stray take markers prunes the off-window copies item splits leave behind; the tool never touches markers it did not write. Sel and Keep also read the timeline now: an item sitting on the Selects track ticks Sel, one on Alts ticks Keep, so marks scrambled by a re-match heal themselves from where the audio actually is. NOTE ON FIRST OPEN: a blank mark now means "no opinion" rather than "no", so lines whose items already sit on Selects will tick themselves the first time you open an existing project -- those items ARE the selects, Pull is what put them there. Un-ticking one writes a real "no" that sticks, and ticking one take's Sel clears its siblings the same way. A Repair panel reconciles the rest: takes whose mark disagrees with the track their item is on (Adopt timeline, or Adopt sheet to re-run Pull), markers whose audio has been deleted, and marks left with nothing to attach to. This build also carries the earlier 0.15beta work: the card sheet, the selection outline and minimal directional follow-scroll, planned takes, and whisper gap repair in Sources.
+-- @changelog PRE-RELEASE: the ingest release. "Adopt session" (Cut panel, or the remote seam's `adopt`) takes a session that was cut and edited BEFORE this tool arrived and makes it routable in one press: a take marker for every matched take at its item's CURRENT edges, and the line's name on the item -- cutting nothing, moving nothing, never overwriting a name that already means a line, so re-running is safe and Pull works immediately after. "Mark selected item(s)" (Repair panel) does the same for one item in your hand: best-effort match against the transcript, marker at current edges, named for the line, with the guess and its confidence reported. "Sync take markers" replaces Clean stray: the take map now travels with the audio -- every item of a source mirrors the neighbouring takes' markers within a configurable reach of its window, so widening an item shows labelled takes instead of bare waveform; stale copies refresh from the one you actually dragged, and split residue still collapses. Also fixed: transcript gap repair silently repaired NOTHING on a session already cut into clips (take audio accessors are bounded by their item, so the probe read silence outside the first clip's window and every suspect hole passed as "genuine silence") -- the probe now sees the whole file through a temporary full-length item, and holes that cannot be checked are reported by name. The remote seam gains adopt, mark_takes, mark_selected and sync_markers. This build carries the earlier 0.15beta work: ranged take markers, the card sheet, planned takes, and whisper gap repair in Sources.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -1226,39 +1226,194 @@ local function MarkTakesFromSession(adopt)
   end
 end
 
--- Split residue and hand-copied leftovers: tool markers whose range does not
--- intersect the item holding them never count (the coverage rule) -- this
--- deletes them so the timeline stops showing dead labels. User markers are
--- never touched.
-local function CleanStrayTakeMarkers()
-  local removed = 0
-  core.Transaction("VO Overview: clean stray take markers", function()
+-- The take map travels with the AUDIO: rewrite every item's tool markers as
+-- the source's canonical set within `marker_mirror_reach` of its window, so
+-- widening an item reveals the neighbouring takes as labelled ranges instead
+-- of bare waveform. The canonical copy is the one the coverage rule already
+-- counts -- the copy the user can see and drag -- and every other copy is a
+-- mirror refreshed from it, which is also what absorbs split residue and
+-- stale mirrors after a drag (vo.PlanMarkerMirror). Reach 0 degrades to the
+-- old "clean stray markers". User markers are never touched.
+--
+-- Deliberately explicit, never run per-frame: a rebuild that rewrote chunks
+-- while a marker drag was in flight would snap the marker out of the user's
+-- hand. Cut, Adopt and Mark selected keep their own single undo points, so
+-- the mirror refresh stays its own press and its own undo step.
+local function SyncTakeMarkers()
+  Reload()
+  local reach = vo.Opt(vo.LoadConfig(), "marker_mirror_reach")
+  local touched, canonical = 0, 0
+  core.Transaction("VO Overview: sync take markers", function()
     for _, group in pairs(state.take_markers or {}) do
-      for _, rec in ipairs(group) do
-        local cov = rec.coverage
-        local list, changed = {}, false
-        for _, m in ipairs(rec.markers or {}) do
-          local asset, id = vo.ParseMarkerName(m.name)
-          if id then
-            local start, stop = m.pos, m.pos + (m.length or 0)
-            if cov and stop > cov.from and start < cov.to then
-              list[#list + 1] = { start = start, stop = stop,
-                                  asset = asset, id = id }
-            else
-              changed = true
-              removed = removed + 1
-            end
+      local rewrites, canon = vo.PlanMarkerMirror(group, reach)
+      canonical = canonical + canon
+      for _, rw in ipairs(rewrites) do
+        local rec = group[rw.item_index]
+        if rec and rec.info and rec.info.item then
+          if vo.WriteTakeMarkers(rec.info.item, rw.markers) then
+            touched = touched + 1
           end
         end
-        if changed then vo.WriteTakeMarkers(rec.info.item, list) end
       end
     end
   end)
   Reload()
-  state.message, state.message_kind = (removed > 0)
-    and (string.format("Removed %d stray marker cop%s.", removed,
-         removed == 1 and "y" or "ies")) or "No stray markers found.",
-    "ok"
+  state.message, state.message_kind = (touched > 0)
+    and string.format(
+      "Synced the take map onto %d item(s): %d take(s), mirrored %.0fs around each window.",
+      touched, canonical, reach)
+    or "Every item already carries the take map.", "ok"
+end
+
+-- The button for "I have this item in my hand and it has no marker": a
+-- best-effort match of the SELECTED items, one at a time. The best match
+-- span the item's window covers gives the line; the marker is written at
+-- the item's CURRENT edges (adopt rules: the user's editing is the truth)
+-- and the item takes the line's name unless its name is already an
+-- assignment. The guess is reported per item -- with the fraction -- so a
+-- wrong one is visible the moment it is made rather than three tools later.
+local function MarkSelectedItems()
+  Reload()
+  local n = r.CountSelectedMediaItems(0)
+  if n == 0 then
+    state.message, state.message_kind =
+      "Select the item(s) in REAPER first, then press Mark selected.", "warn"
+    return
+  end
+
+  local cfg   = vo.LoadConfig()
+  local floor = vo.Opt(cfg, "mark_item_min_span")
+  local taken = TakenMarkerIds()
+  local index = vo.BuildNameIndex(state.lines)
+
+  local info_by_item = {}
+  for _, info in ipairs(state.items or {}) do
+    if info.item then info_by_item[info.item] = info end
+  end
+  -- Items whose window already holds a counting marker are already takes.
+  local marked_items = {}
+  for _, group in pairs(state.take_markers or {}) do
+    for _, c in ipairs(vo.CountingMarkers(group)) do
+      local rec = group[c.item_index]
+      if rec and rec.info then marked_items[rec.info.item] = true end
+    end
+  end
+  local spans_by_path = {}
+  for _, m in ipairs(state.matches or {}) do spans_by_path[m.path] = m.spans end
+  local rows_by_start = {}
+  for _, row in ipairs(state.overview) do
+    if row.source_path and row.source_start ~= nil then
+      rows_by_start[row.source_path .. "|" ..
+                    string.format("%.4f", row.source_start)] = row
+    end
+  end
+
+  local jobs, already, unusable, unmatched, weak = {}, 0, 0, 0, nil
+  for i = 0, n - 1 do
+    local item = r.GetSelectedMediaItem(0, i)
+    local info = item and info_by_item[item]
+    if not info or info.skip then
+      unusable = unusable + 1
+    elseif marked_items[item] then
+      already = already + 1
+    else
+      local coverage = vo.SourceCoverageRanges({ info })[1]
+      local span, frac = vo.BestSpanForItem(coverage, spans_by_path[info.path])
+      if span and frac >= floor then
+        jobs[#jobs + 1] = { item = item, info = info, coverage = coverage,
+                            span = span, frac = frac }
+      else
+        unmatched = unmatched + 1
+        if span then
+          weak = string.format("best guess %s at %d%%, under the %d%% floor",
+            span.asset or "?", math.floor(frac * 100 + 0.5),
+            math.floor(floor * 100 + 0.5))
+        end
+      end
+    end
+  end
+
+  if #jobs == 0 then
+    local parts = { "Nothing marked." }
+    if already > 0 then
+      parts[#parts + 1] = string.format("%d already had a marker.", already)
+    end
+    if unmatched > 0 then
+      parts[#parts + 1] = string.format(
+        "%d matched no line%s.", unmatched, weak and (" (" .. weak .. ")") or "")
+    end
+    if unusable > 0 then
+      parts[#parts + 1] = string.format("%d had no usable audio.", unusable)
+    end
+    state.message, state.message_kind = table.concat(parts, " "), "warn"
+    return
+  end
+
+  state.name_baseline = nil
+  local rekey, named = {}, 0
+  core.Transaction("VO Overview: mark selected item(s)", function()
+    for _, j in ipairs(jobs) do
+      local id = vo.MintMarkerId(taken)
+      -- Existing tool markers on the item ride along, same rule as every
+      -- other marker write.
+      local list = { { start = j.coverage.from, stop = j.coverage.to,
+                       asset = j.span.asset, id = id } }
+      local ok0, chunk0 = r.GetItemStateChunk(j.item, "", false)
+      if ok0 then
+        for _, m in ipairs(vo.ParseTKMChunk(chunk0)) do
+          local a0, i0 = vo.ParseMarkerName(m.name)
+          if i0 then
+            list[#list + 1] = { start = m.pos, stop = m.pos + (m.length or 0),
+                                asset = a0, id = i0 }
+          end
+        end
+      end
+      vo.WriteTakeMarkers(j.item, list)
+
+      local row = rows_by_start[j.info.path .. "|" ..
+                                string.format("%.4f", j.span.start)]
+      if row and row.key then rekey[row.key] = "tkm|" .. id end
+
+      local take = r.GetActiveTake(j.item)
+      if take then
+        local _, cur = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+        local renames = vo.PlanAdopt(
+          { { item = j.item, name = cur or "",
+              deliver = j.span.deliver or j.span.asset } },
+          index, { alt_pattern = cfg.alt_append_pattern })
+        if #renames == 1 then
+          r.GetSetMediaItemTakeInfo_String(take, "P_NAME", renames[1].name, true)
+          named = named + 1
+        end
+      end
+    end
+  end)
+
+  for _, e in ipairs(state.entries) do
+    if e.key and rekey[e.key] then e.key = rekey[e.key] end
+  end
+  state.dirty = true
+  Reload()
+
+  local parts = {}
+  if #jobs <= 4 then
+    -- Few enough to say exactly what was decided; the guess must be visible.
+    for _, j in ipairs(jobs) do
+      parts[#parts + 1] = string.format("%s (%d%% of the take)",
+        j.span.asset or "?", math.floor(j.frac * 100 + 0.5))
+    end
+    parts = { string.format("Marked %d item(s): %s.", #jobs,
+                            table.concat(parts, ", ")) }
+  else
+    parts = { string.format("Marked %d item(s), named %d.", #jobs, named) }
+  end
+  if already > 0 then
+    parts[#parts + 1] = string.format("%d already had a marker.", already)
+  end
+  if unmatched > 0 then
+    parts[#parts + 1] = string.format("%d matched no line.", unmatched)
+  end
+  state.message, state.message_kind = table.concat(parts, " "), "ok"
 end
 
 local function SetStatus(row, status)
@@ -3531,6 +3686,16 @@ local function DrawCutPanel()
   end
 
   im.SameLine(ctx)
+  if im.Button(ctx, "Mark selected") then
+    pending_action = MarkSelectedItems
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Best-effort: match the item(s) selected in REAPER against the\n" ..
+                       "transcript, write each one's take marker at its CURRENT edges\n" ..
+                       "and name it for the line it matches. The guess is reported.")
+  end
+
+  im.SameLine(ctx)
   if im.Button(ctx, "Close##cut") then state.panel = nil end
   im.SameLine(ctx)
 
@@ -4042,7 +4207,7 @@ local function DrawRepairPanel()
     end
     im.TextDisabled(ctx,
       "The item this marker lived in was deleted or trimmed past it. Relink\n" ..
-      "to the right item, or Clean stray take markers to drop the leftovers.")
+      "to the right item, or Sync take markers to drop the leftovers.")
     im.Separator(ctx)
   end
 
@@ -4091,12 +4256,25 @@ local function DrawRepairPanel()
                        "markers existed.")
   end
   im.SameLine(ctx)
-  if im.Button(ctx, "Clean stray take markers") then
-    pending_action = CleanStrayTakeMarkers
+  if im.Button(ctx, "Mark selected item(s)") then
+    pending_action = MarkSelectedItems
   end
   if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Delete tool markers whose range does not intersect the item\n" ..
-                       "holding them -- split residue. Your own markers are never touched.")
+    im.SetTooltip(ctx, "Best-effort: match the item(s) selected in REAPER against the\n" ..
+                       "transcript, write each one's take marker at its CURRENT edges\n" ..
+                       "and name it for the line it matches. The guess -- and how much\n" ..
+                       "of the take it covers -- is reported so you can check it.")
+  end
+  im.SameLine(ctx)
+  if im.Button(ctx, "Sync take markers") then
+    pending_action = SyncTakeMarkers
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Mirror each source's take map onto every item of that source\n" ..
+                       "(within the configured reach), so widening an item shows the\n" ..
+                       "neighbouring takes as labelled ranges. Also collapses split\n" ..
+                       "residue and refreshes stale copies after a marker drag. Your\n" ..
+                       "own markers are never touched.")
   end
   im.SameLine(ctx)
   if im.Button(ctx, "Close##repair") then state.panel = nil end
@@ -5575,10 +5753,11 @@ end
 
 local REMOTE_SECTION = "ajsfx_vo_remote"
 local REMOTE_HELP =
-  "status | rematch | cut | adopt | mark_takes | pull | name_alts | " ..
-  "sort script|record | set selection_only 0|1 | dupes | " ..
-  "append script|asset|nth|text | rows [needle] | spans <needle> | " ..
-  "missing | boundaries | verify | make_select <takename> | place | tighten"
+  "status | rematch | cut | adopt | mark_takes | mark_selected | " ..
+  "sync_markers | pull | name_alts | sort script|record | " ..
+  "set selection_only 0|1 | dupes | append script|asset|nth|text | " ..
+  "rows [needle] | spans <needle> | missing | boundaries | verify | " ..
+  "make_select <takename> | place | tighten"
 
 local function RemoteStatus()
   local c, parts = state.check or {}, {}
@@ -5624,6 +5803,12 @@ local function RunRemoteCommand(command)
   elseif verb == "mark_takes" then
     MarkTakesFromSession()
     return state.message or "mark_takes ran with no result string"
+  elseif verb == "mark_selected" then
+    MarkSelectedItems()
+    return state.message or "mark_selected ran with no result string"
+  elseif verb == "sync_markers" then
+    SyncTakeMarkers()
+    return state.message or "sync_markers ran with no result string"
   elseif verb == "pull" then
     Pull()
     return state.pull_result or "pull ran with no result string"

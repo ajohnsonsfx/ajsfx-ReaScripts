@@ -200,8 +200,21 @@ takes' markers first, the same gesture the user could do by hand. The take-row
 menu carries the verbs native gestures don't cover: *Add take marker from
 selected item*, *Snap marker to item* (the trimmed-head fix), *Delete take
 marker*. **Mark takes** migrates a pre-marker session by banking each take's
-current item edges as marker truth; **Clean stray take markers** prunes
-off-window split copies.
+current item edges as marker truth. **Adopt session** is Mark takes plus
+naming: every matched item takes its line's delivered name at its current
+edges, cutting nothing and never overwriting a name that already resolves to
+a line — the ingest path for a session edited before the tool arrived.
+**Mark selected item(s)** is the same gesture for one item in the hand:
+best-effort match (`vo.BestSpanForItem`, floored by `mark_item_min_span`),
+marker at current edges, named for the line, guess reported. **Sync take
+markers** mirrors each source's canonical take map onto every item of that
+source within `marker_mirror_reach` of its window (`vo.PlanMarkerMirror`), so
+widening an item reveals the neighbouring takes as labelled ranges; the copy
+the user can see and drag is the canonical one, stale mirrors refresh from
+it, and off-window split residue collapses — it subsumes the old *Clean
+stray take markers*. The sync is an explicit press, never per-frame: a
+rebuild that rewrote chunks mid-drag would snap the marker out of the
+user's hand.
 
 **The track is the decision.** Sel and Keep are tri-state in the project file —
 `yes`, `no`, or blank meaning no opinion. A blank defers to where the item

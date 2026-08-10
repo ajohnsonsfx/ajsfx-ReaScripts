@@ -1472,6 +1472,86 @@ function vo.CountingMarkers(per_item)
   return out
 end
 
+-- The best-effort answer to "which line is this item?": the match span whose
+-- own audio this item's window covers most. Fraction is of the SPAN, not the
+-- item -- an item holding a whole take plus room reads 1.0, an item holding
+-- half a take reads 0.5 -- so the caller can put a floor under a guess before
+-- writing it anywhere. Only match/review spans are candidates: an orphan or
+-- chatter span has no line to offer.
+function vo.BestSpanForItem(coverage, spans)
+  if not coverage then return nil, 0 end
+  local best, best_frac = nil, 0
+  for _, s in ipairs(spans or {}) do
+    if (s.kind == "match" or s.kind == "review")
+       and s.start and s.stop and s.stop > s.start then
+      local overlap = math.min(s.stop, coverage.to) - math.max(s.start, coverage.from)
+      if overlap > 0 then
+        local frac = overlap / (s.stop - s.start)
+        if frac > best_frac then best, best_frac = s, frac end
+      end
+    end
+  end
+  return best, best_frac
+end
+
+-- The take map travels with the AUDIO: every item of a source carries the
+-- source's take markers that fall within `reach` seconds of its own window,
+-- so widening an item reveals the neighbouring takes instead of unlabelled
+-- waveform. The canonical set is what CountingMarkers already says -- the
+-- copy the user can see and drag is the truth, and every other copy is a
+-- mirror refreshed from it. reach = 0 keeps only each item's own takes,
+-- which is exactly the old "clean stray markers".
+--
+-- `group` is CollectTakeMarkers' per-path shape ({ coverage, markers, info }).
+-- Returns rewrites { { item_index, markers } } -- only the items whose tool
+-- markers differ from the mirror -- and the canonical marker count. User
+-- markers are untouched (vo.WriteTakeMarkers preserves them).
+function vo.PlanMarkerMirror(group, reach)
+  reach = reach or 0
+  local canonical = vo.CountingMarkers(group)
+  local rewrites = {}
+  for idx, rec in ipairs(group or {}) do
+    local cov = rec.coverage
+    if cov then
+      local want = {}
+      for _, c in ipairs(canonical) do
+        if c.stop > cov.from - reach and c.start < cov.to + reach then
+          want[#want + 1] = { start = c.start, stop = c.stop,
+                              asset = c.asset, id = c.id }
+        end
+      end
+
+      local have, have_n = {}, 0
+      for _, m in ipairs(rec.markers or {}) do
+        local asset, id = vo.ParseMarkerName(m.name)
+        if id then
+          have_n = have_n + 1
+          -- A duplicated id inside one item is split residue by definition;
+          -- counting it above forces the rewrite that collapses it.
+          have[id] = { start = m.pos, stop = m.pos + (m.length or 0),
+                       asset = asset }
+        end
+      end
+
+      local same = have_n == #want
+      if same then
+        for _, w in ipairs(want) do
+          local h = have[w.id]
+          if not h or math.abs(h.start - w.start) > 1e-6
+             or math.abs(h.stop - w.stop) > 1e-6 or h.asset ~= w.asset then
+            same = false
+            break
+          end
+        end
+      end
+      if not same then
+        rewrites[#rewrites + 1] = { item_index = idx, markers = want }
+      end
+    end
+  end
+  return rewrites, #canonical
+end
+
 -- What the sheet and the timeline disagree about, and what is simply broken.
 --
 -- Pure: it reads rows that already carry their resolved item's GUID and track
@@ -1724,6 +1804,17 @@ vo.DEFAULTS = {
   gap_repair_min_gap    = 5.0,  -- seconds of transcript hole before suspicion
   gap_repair_min_speech = 0.75, -- seconds of above-floor audio to confirm it
   gap_repair_pad        = 0.35, -- seconds of margin around the found speech
+
+  -- How far beyond an item's own window the source's take markers are
+  -- mirrored into it (Sync take markers), so widening an item reveals the
+  -- neighbouring takes. 0 keeps only each item's own takes -- the old
+  -- "clean stray markers" behaviour.
+  marker_mirror_reach = 30.0,
+
+  -- The floor under "which line is this item?" for Mark selected item(s):
+  -- the best match span must have at least this fraction of itself inside
+  -- the item before the guess is written anywhere.
+  mark_item_min_span = 0.35,
 
   review_prefix           = "REVIEW_",
   unmatched_prefix        = "UNMATCHED_",

@@ -702,3 +702,25 @@ below are the GUI-side confirmations of the same paths.
    report says the hole "could not be checked" and names why, instead of
    passing it as silence.
 7. The remote seam knows `adopt` and `mark_takes`; `help` lists both.
+
+## Mark selected + the take map travels with the audio (2026-08-09)
+
+1. Select an item that has no take marker (a leftover, or an item cut by
+   hand), press **Mark selected** (Cut panel, or Repair panel). The message
+   names the line it guessed and the percentage of the take the item covers;
+   the marker appears at the item's edges and the item takes the line's
+   name. One Ctrl+Z reverts marker and name together.
+2. Select an item holding chatter or room tone and press it: "matched no
+   line", and if there was a weak candidate the message says what it was and
+   why it was refused (under the floor).
+3. Select an item that already has a marker: counted as such, untouched.
+4. Press **Sync take markers** (Repair panel). Widen any Selects item by a
+   few seconds: the neighbouring takes' markers are visible inside the
+   revealed audio, labelled with their lines. Widen past the configured
+   reach (default 30s): nothing there — press Sync again and the newly
+   overlapped takes appear.
+5. Drag a take marker somewhere else, then Sync: the copies of that marker
+   in neighbouring items move to match the one you dragged — the visible
+   copy is the truth, mirrors follow it.
+6. Sync twice: the second press says every item already carries the map.
+7. The seam knows `mark_selected` and `sync_markers`.
