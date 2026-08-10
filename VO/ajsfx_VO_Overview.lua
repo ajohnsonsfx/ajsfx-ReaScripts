@@ -4063,6 +4063,53 @@ local function TidyPass()
   state.dirty = true
 end
 
+-- Delete this project's VO data so the session can be processed again from
+-- scratch. Testing needs this constantly, and doing it by hand means quitting
+-- REAPER first: the Overview holds its own copy of the project file and
+-- flushes it on the way out, so a sidecar deleted from Explorer with the
+-- window open simply comes back. That is also why this lives HERE rather than
+-- in the Settings window -- only the process holding the file can drop it and
+-- forget what it was holding.
+--
+-- It never touches audio. Items, take names and take markers are REAPER's, and
+-- undo is what reverses those.
+local function ResetProject(also_transcripts)
+  local removed, failed = {}, {}
+  local function drop(path)
+    if not path or path == "" then return end
+    local f = io.open(path, "r")
+    if not f then return end                 -- nothing there is not a failure
+    f:close()
+    local ok = os.remove(path)
+    if ok then removed[#removed + 1] = vo.Basename(path)
+    else failed[#failed + 1] = vo.Basename(path) end
+  end
+
+  drop(state.project_path or vo.ProjectFilePath(ProjectPath()))
+  if also_transcripts then
+    for _, path in ipairs(vo.ProjectSourcePaths(state.items) or {}) do
+      drop(vo.TranscriptPath(path))
+    end
+  end
+
+  -- Forget everything read from those files BEFORE anything can save again,
+  -- or the in-memory copy writes the sidecar straight back.
+  state.entries, state.scripts, state.appends, state.pins = {}, {}, {}, {}
+  state.loaded = { scripts = {}, lines = {} }
+  state.selection, state.expanded = {}, {}
+  state.name_baseline, state.project_error = nil, ""
+  state.dirty = false
+  state.scanned_at = nil
+  Reload()
+
+  local bits = {}
+  if #removed > 0 then bits[#bits + 1] = "deleted " .. table.concat(removed, ", ") end
+  if #failed  > 0 then bits[#bits + 1] = "COULD NOT delete " .. table.concat(failed, ", ") end
+  if #bits == 0 then bits[1] = "nothing to delete -- this project had no VO data" end
+  state.message = "Start over: " .. table.concat(bits, "; ") .. ". Audio untouched."
+  state.message_kind = (#failed > 0) and "error" or "ok"
+end
+
 -- The golden path: what a session does the first time, in order, on one press.
 --
 -- Match, cut, pick a take per line, pull to the tracks. Each of these is its
@@ -6252,6 +6299,44 @@ local function loop()
         if not ok then state.message, state.message_kind = tostring(why), "error" end
       end
       Tip("The recordings this project reads, and their transcripts.")
+
+      -- Parked at the end of the Setup row, red, behind a confirm that names
+      -- the files: it is the only button in the tool that destroys work.
+      im.PushStyleColor(ctx, im.Col_Button,        0x8C3A3AFF)
+      im.PushStyleColor(ctx, im.Col_ButtonHovered, 0xA84A4AFF)
+      if im.Button(ctx, "Start over…") then im.OpenPopup(ctx, "##reset_confirm") end
+      im.PopStyleColor(ctx, 2)
+      Tip("Delete this project's VO data so the session can be processed\n" ..
+          "again from scratch. Audio is never touched.")
+
+      if im.BeginPopup(ctx, "##reset_confirm") then
+        im.Text(ctx, "Delete this project's VO data?")
+        im.Spacing(ctx)
+        im.TextDisabled(ctx, "Goes:")
+        im.TextWrapped(ctx, "  " .. (state.project_path
+          and vo.Basename(state.project_path) or "(no project file yet)") ..
+          "  -- every Sel, Keep, Lock, rename, Append, pin, and the script list.")
+        im.TextDisabled(ctx, "Stays:")
+        im.TextWrapped(ctx, "  Every item, take name and take marker in the " ..
+          "project. This deletes the tool's notes, not your audio -- and Cut " ..
+          "is undone with undo, not with this.")
+        im.Spacing(ctx)
+        local hit, v = im.Checkbox(ctx, "Also delete the transcripts (whisper must run again)",
+                                   state.reset_transcripts == true)
+        if hit then state.reset_transcripts = v or nil end
+        im.Spacing(ctx)
+        im.PushStyleColor(ctx, im.Col_Button, 0x8C3A3AFF)
+        if im.Button(ctx, "Delete") then
+          local also = state.reset_transcripts == true
+          pending_action = function() ResetProject(also) end
+          im.CloseCurrentPopup(ctx)
+        end
+        im.PopStyleColor(ctx)
+        im.SameLine(ctx)
+        if im.Button(ctx, "Cancel") then im.CloseCurrentPopup(ctx) end
+        im.EndPopup(ctx)
+      end
+      im.SameLine(ctx)
 
       im.TextDisabled(ctx, "  Script: ")
       im.SameLine(ctx, 0, 0)
