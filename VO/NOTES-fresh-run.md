@@ -31,18 +31,27 @@ Status: **open** unless marked.
       the Setup tab today, and the one people look for most (transcribe) is
       the one buried behind a generic name.
 
-- [ ] **A script should be able to select which speaker(s) it contributes.**
-      Open question from the same design: multi-select on one script entry, or
-      add the same CSV twice with a different character each time. Adding it
-      twice already works and needs no new UI — worth trying that before
-      building selection, since the second entry is also how you would give
-      the two speakers different settings later.
+- [~] ANSWERED, no code — adding the same CSV twice with a different character
+      already does this and needs no new UI. It is also how you would give the
+      two speakers different settings later, so the second entry is not a
+      workaround for a missing multi-select; it is the better shape. Build
+      selection only if adding twice turns out to be annoying in practice.
 
-- [ ] **A "find what I missed" pass, looser than the batch run.** Same idea as
-      the orphan right-click above, applied to everything at once: re-run
-      matching at a lower threshold over spans nothing claimed. May be made
-      redundant by the scoring and island-boundary work — worth deciding after
-      those, not before.
+- [~] DECIDED against, for now — most of it already exists and the rest should
+      not be automatic. `vo.ResidualPass` already re-matches the lines nobody
+      placed against the audio nobody claimed, repeating until a pass adds
+      nothing, so the batch "come back for the leftovers" is done. What was
+      really being asked for is the LOWER THRESHOLD, and that is exactly what
+      should not run unsupervised: the risk that keeps the global setting
+      conservative is a wrong name written silently across five hundred takes.
+      The orphan right-click is that same looser search, one span at a time,
+      with a person looking at it — which is what makes the loosening safe.
+      Revisit if a real session leaves a pile the right-click is too slow to
+      work through.
+      ORIGINAL NOTE: Same idea as the orphan right-click above, applied to
+      everything at once: re-run matching at a lower threshold over spans
+      nothing claimed. May be made redundant by the scoring and island-boundary
+      work — worth deciding after those, not before.
 
 - [x] **FIXED — the Edit row wraps instead of running off screen.** It carries
       every verb in the tool, and ImGui has no flow layout, so buttons simply
@@ -50,7 +59,13 @@ Status: **open** unless marked.
       next one will not fit — correct at any width, and renaming a button
       cannot push the last one off the edge.
 
-- [ ] **The tab ribbon should be a fixed height.** Each tab's button row is
+- [x] **FIXED — the tab ribbon holds one height.**
+      It reserves the tallest a tab has taken AT THIS WIDTH, measured rather
+      than declared: the buttons wrap, so the same tab is two rows wide and
+      four narrow, and a constant would be wrong at every width but one. The
+      reservation is dropped when the width changes, so a window made wider
+      does not keep what it needed when it was narrow.
+      ORIGINAL NOTE: Each tab's button row is
       whatever tall its own contents are, so switching tabs shifts the whole
       sheet up or down under the cursor. The ribbon should reserve one
       height — the tallest tab's — and every tab draw into it, so the cards
@@ -58,12 +73,18 @@ Status: **open** unless marked.
 
 ## Sources / transcribe
 
-- [ ] **The log must be selectable text.** A run reported two problems and
-      neither could be copied out of the window — the only way to quote it was
-      a screenshot. Whatever is worth printing is worth pasting into a bug
-      report.
+- [x] **FIXED — Copy report.** A run reported two problems and neither could be
+      copied out of the window; the only way to quote it was a screenshot. The
+      detail panel's facts — identity, backend, model, any problems, and the
+      whole transcript — go to the clipboard as text on one button. Selecting
+      individual words on screen would have meant a read-only text box, which
+      loses the colour that makes the problems findable in the first place.
 
-- [ ] **Take me to the problem — make the timecode itself the link.** Every
+- [x] **FIXED — the timecode is the link.** Underlined, blue, hand cursor; a
+      click moves the edit cursor, and it says so if no item in the project
+      plays that source. On the loop warning, which is the only trouble report
+      that names a time.
+      ORIGINAL NOTE: Every
       reported trouble spot (an unrepaired gap, a suspected loop) prints a
       timecode; that timecode should be clickable, drawn as a link
       (underlined, blue) — `00:08:48:00` — and move the edit cursor and view
@@ -113,7 +134,14 @@ Status: **open** unless marked.
       PAUSED (`vo.PARAGRAPH_PAUSE`, 0.35s), which is the only boundary in this
       data that came from the performance rather than the recognizer.
 
-- [ ] **Let the user delete a transcript from the Sources panel.** Transcribing
+- [x] **DONE — Delete transcript…, behind a confirm that names the file and
+      says what goes and what stays.** Offered on an unreadable sidecar too,
+      which is the row most likely to want removing. STILL TO VERIFY BY HAND,
+      which is what the note asked for: delete a transcript on a session that
+      has been cut and pulled, and confirm marks, names and take markers all
+      survive. The argument that they will is below, and it rests on where each
+      thing is stored rather than on having tried it.
+      ORIGINAL NOTE: Transcribing
       the wrong file is an ordinary mistake, and the only cure right now is to
       open the project folder, work out which `*_vo_transcript.csv` it is, and
       delete it by hand. The tool wrote the file; the tool should be able to
@@ -154,7 +182,14 @@ Measured on this run, and it reframes several of the items above:
       structurally rather than by tuning thresholds — and it is the same probe
       machinery the cutter already uses.
 
-- [ ] **BUG: candidate scoring is length-blind, so short lines eat long ones.**
+- [x] **FIXED — ranked by tokens of agreement, not by score.** vo.Agreement is
+      score x window length: 0.89 of nine tokens is eight tokens landing in a
+      row, which is what cannot be an accident, where 1.0 of four tokens is
+      four. It ranks the backbone pool and each tier of SelectSpans, and reads
+      `effective`, so an out-of-order candidate carries its penalty into the
+      comparison rather than around it. The gates (accept, margin, review
+      floor) are unchanged — this decides who goes FIRST among the eligible.
+      ORIGINAL NOTE:
       `vo.FindCandidates` scores `1 - Levenshtein/max(len)`, and
       `vo.BuildBackbone` picks greedily by score among non-overlapping spans.
       A one-word line (`"Can."`) matching one word scores 1.0 and beats a
@@ -180,24 +215,41 @@ scope. Renamed in the Items tab's menu:
   are selected that hold several takes; find them all and write a marker per
   take inside the item. Splits nothing.
 
-- [ ] **"Find lines in items" is session-wide and should honour the
-      selection.** It walks every matched take in the project. When the user
+- [x] **FIXED — "Find lines in items" honours the REAPER selection**, and
+      nothing selected still means everything. Judged on the RESOLVED item, not
+      row.item, since a row whose audio is found by source time has no item of
+      its own until that point. "Adopt this whole session" is exempt: its name
+      is its scope.
+      ORIGINAL NOTE: It walks every matched take in the project. When the user
       has picked the two long items they want dealt with, it should do those.
       The per-item scoping is the same want as the orphan right-click's "try
       again": run the matcher over ONE span, deliberately, at a threshold a
       batch pass would not dare.
 
-- [ ] **Transcribe should always be visible, not behind a tab.** Standing
-      conflict with the tab layout: tabs mean only row 2 is always on screen,
-      and transcribing is something the user reaches for constantly during a
-      first pass. Options: a permanent strip above the sheet, or keep the
-      tabs and move Sources into row 2 with the view controls. Needs a
-      decision before more toolbar churn — this is the second reorganisation
-      and the layout should settle.
+- [~] DECIDED — keep the tabs, do not move Sources. Two things changed the case
+      since the note was written: the empty sheet now offers **Transcribe**
+      directly, which is when a first pass actually reaches for it, and **Run
+      the whole pass** removed the other reason to live in the toolbar. Sources
+      is a once-or-twice-per-FILE errand, which is what Setup is for. Revisit
+      if a real session still finds the trip annoying — but not before, because
+      this would be the third reorganisation and the layout should settle.
 
 ## "Not on the script" must be a QUEUE, not a dead end
 
-- [ ] **Give every orphan a right-click that resolves it.** The list reads as
+- [x] **DONE — every orphan has a right-click that resolves it.**
+      *This is line…* lists the script lines those words could be, best first
+      (vo.FindSpanLines: the matcher backwards, looser than the batch pass on
+      purpose), and assigning renames the item, or writes a ranged take marker
+      where the span is if it has not been cut out yet. *This is junk* is
+      persisted as the row's status, so it rides with the marks and survives a
+      rematch, and it LEAVES the orphan count — which is what makes "not on the
+      script: 0" mean the session is finished. The summary says so when it gets
+      there.
+      NOT built as a separate verb: *Try again*. The looser retry IS that menu;
+      it shows the guesses the batch pass would not take rather than applying
+      one. A button that pre-picks the top entry of a list you are already
+      looking at is a third control where two do the job.
+      ORIGINAL NOTE: The list reads as
       a pile of unknown content, and a session does not feel finished while it
       is sitting there — 64 of them on this run. It is the right instinct: some
       of those lines ARE in the script, so the list is a to-do, but the tool
@@ -222,14 +274,26 @@ scope. Renamed in the Items tab's menu:
       session really is done. Without it the number can only ever be ignored,
       which is what makes the pile feel like a wall.
 
-- [ ] **Say WHY a span is orphaned.** "Not on the script" covers at least
+- [x] **DONE — each orphan says why it is one:** *dismissed*, *no such line*
+      (named for a line no loaded script has), or *unmatched*. Told from what
+      the row already carries, so it costs nothing. The fourth case the note
+      imagined — "a line matched but another span won it" — is not
+      distinguishable without re-running the match, and the right-click answers
+      it better anyway by showing what each line scores against this span.
+      ORIGINAL NOTE: "Not on the script" covers at least
       three different things — no line scored high enough, a line matched but
       another span won it, or the words genuinely are not in the script — and
       the fix differs by case. The list should name which.
 
 ## The sheet
 
-- [ ] **Transcript colour should say something the user can act on.** Today a
+- [x] **FIXED — the transcript colour marks extra words.** vo.ExtraWords aligns
+      line and take by longest common subsequence and returns drawable runs, so
+      what is amber is the words the reader said that the line does not
+      contain. The tie goes to the LATER occurrence, so a false start is marked
+      rather than the read that followed it. Non-blocking, as the note
+      required.
+      ORIGINAL NOTE: Today a
       take's transcript is amber when `row.status == "review"` and dim
       otherwise — i.e. the colour encodes the MATCH SCORE, with no legend and
       no number. From the outside it reads as random: `can` amber on one card,
@@ -249,7 +313,9 @@ scope. Renamed in the Items tab's menu:
 
 ## Empty state
 
-- [ ] **The blank sheet should ask for the two things it needs.** On a project
+- [x] **FIXED — the blank sheet asks for the two things it needs**, with a
+      button for each and a tick against the one already done.
+      ORIGINAL NOTE: On a project
       with no script and no transcript, the large empty area where the cards
       go says nothing. It should prompt for **Choose script…** and
       **Transcribe**, as the two next actions, rather than leaving the user to

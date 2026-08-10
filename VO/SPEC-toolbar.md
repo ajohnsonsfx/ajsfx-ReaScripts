@@ -91,6 +91,31 @@ relink / marker add-snap-delete), behind its own button at the end of the row.
 It is the only thing here that works on ONE line rather than the session, so it
 sits past a separator instead of among the batch actions.
 
+### The ribbon's height
+
+The ribbon reserves the tallest height a tab has taken **at this width**, and a
+shorter tab pads to it. Each tab's row was as tall as its own contents, so
+switching tabs moved the whole sheet up or down under the cursor — you click
+`Setup` and the card you were reading jumps.
+
+Measured, not declared: the buttons wrap, so the same tab is two rows on a wide
+window and four on a narrow one. A constant would be right at exactly one width.
+The reservation is discarded when the width changes, so widening the window does
+not keep the tall reservation it needed when it was narrow.
+
+### The empty sheet
+
+With no script and no transcript, the card area asks for both — a button each,
+and a tick against whichever is already done. It used to say only that there was
+nothing to show, leaving both to be found inside a tab. The emptiest screen is
+the one that most needs to say what to do next.
+
+This is also the answer to "transcribe should always be visible": the moment a
+first pass reaches for it is the moment the sheet is empty, and that is where it
+now is. Sources stays in Setup otherwise — it is a once-or-twice-per-file
+errand, not a constant one, and `Run the whole pass` removed the other reason to
+live in the toolbar.
+
 ## 3. Row 2 — view only
 
 ```

@@ -99,9 +99,12 @@ repairs everywhere.
 
 ## 3. Detail panel
 
-Double-clicking a row opens a detail panel in the same window — a child region
-below the table, not a separate script — and a second double-click on the same
-row closes it again. What it shows depends on the row's status:
+A **single click** on a row opens a detail panel in the same window — a child
+region below the table, not a separate script. It used to take a double-click,
+which meant the log — the only place a run says what went wrong — was behind a
+gesture nobody would try. Ctrl- and shift-clicks are multi-select and leave the
+panel alone, and the panel follows the selection rather than toggling. What it
+shows depends on the row's status:
 
 - **`No`** — just the filename and a **Transcribe** button for that one file.
 - **`Error`** — the filename, the parse failure reason, and the sidecar's path,
@@ -119,6 +122,31 @@ moves the edit cursor to that word's position in the first project item that
 references the source (`vo.SourceTimeToProject`), converting from the
 sidecar's source-relative time. A source with no item left in the project has
 nothing to seek to and the click is a no-op.
+
+**Copy report** puts everything on the panel — identity, backend, model, any
+problems, and the whole transcript — on the clipboard as text. A run used to
+report its problems with no way to get them off the screen but a screenshot;
+whatever is worth printing is worth pasting into a bug report. Selecting words
+on screen instead would mean a read-only text box, which loses the colour that
+makes the problems findable.
+
+Every reported trouble spot that names a **timecode draws it as a link** —
+underlined, blue, hand cursor — and clicking it moves the edit cursor there, so
+the user can listen and decide whether it is a real hole or the reader genuinely
+said that. A button beside the message would work; the link is better, because
+the thing you want to go to is the thing you click.
+
+**Delete transcript…** removes the sidecar, behind a confirm that names the file
+and says what goes and what stays. Transcribing the wrong file is an ordinary
+mistake and the only cure used to be opening the project folder and working out
+which `*_vo_transcript.csv` it was; being opaque about it did not make it safer,
+it moved the work somewhere the tool could not check. Little is at risk, and for
+a principled reason: what the user DECIDED lives in the project file, take
+identity lives in ranged take markers inside the items, and the delivered name
+lives on the take — none of that is in the transcript, which is the one file
+here whisper can rebuild. What goes is the transcript COLUMN and the ability to
+re-derive matches until it is re-run. Offered on an `Error` row too, that being
+the one most likely to want removing.
 
 Re-transcribing from the detail panel always forces the run — it does not
 consult the transcription cache — so pressing the button is guaranteed to

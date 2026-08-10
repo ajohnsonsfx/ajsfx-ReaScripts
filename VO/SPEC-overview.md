@@ -189,6 +189,51 @@ free text the tool can never read), and **Item** (which recording, and when —
 the project bay's job). What is left is the text and the name, and the name
 got the width.
 
+**The transcript's colour marks extra words.** A take's transcript is drawn in
+one colour, with the words the reader said that the **line does not contain** in
+amber (`vo.ExtraWords`, a longest-common-subsequence alignment of the two token
+streams). The colour used to mean `status == "review"` — i.e. the match score
+fell below a threshold — which put a number nobody could see in charge of a
+whole paragraph's colour and read, from the outside, as random.
+
+Where a reader stumbled and went again, both halves align equally well; the tie
+goes to the **later** occurrence, so what is marked is the false start rather
+than the read they settled on.
+
+Amber, not red: an extra word is something to look at, not an error. It is
+non-blocking by design — a take with extra words is still a take the user may
+want, and `Sel`/`Keep`/`Lock` is where that gets decided, not a status the tool
+assigns.
+
+### The orphans card is a queue
+
+Audio that matched no script line sits in one card at the foot of the sheet, and
+every entry can be **resolved**, not just looked at. Right-click:
+
+- **This is line…** — the script lines those words could be, best first
+  (`vo.FindSpanLines`: the matcher run backwards, scoring every line against a
+  known window instead of searching for windows). Assigning **renames the item**
+  if the span has been cut out, or writes a **ranged take marker** where the
+  span is if it has not — the name is the assignment either way.
+- **This is junk** — slate, chatter, a cough, a false start. Stored as the row's
+  status, so it lives in the project file with the marks and survives a rematch.
+
+Dismissed spans **leave the orphan count**, and that is the point: `0 orphans`
+now means every span has been looked at and decided. Without it the number could
+only ever be ignored, which is what made the list feel like a wall.
+
+`vo.FindSpanLines` is deliberately looser than the batch pass. A person looking
+at one span can accept weaker evidence than a sweep over sixteen hundred words
+should — the risk that keeps the global threshold conservative is a wrong name
+written silently across the session, and it does not apply to one deliberate
+act. This is also why there is no batch "find what I missed" at a lower
+threshold: `vo.ResidualPass` already comes back for the leftovers at the normal
+threshold, and the loosening is safe only because someone is watching.
+
+Each orphan says **why** it is one — *dismissed*, *no such line* (named for a
+line no loaded script has), or *unmatched* — since the three want different
+fixes.
+
 ### Take identity: ranged take markers
 
 A recorded take's identity is a **ranged take marker** — one `TKM` line in the
