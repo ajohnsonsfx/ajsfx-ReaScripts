@@ -2443,6 +2443,26 @@ local function SetFollowSetting(key, value)
   r.SetExtState(vo.EXT_SECTION, key, value and "1" or "0", true)
 end
 
+-- The sheet-update opt-ins, same ExtState pattern and for the same reason:
+-- they belong to this window's toolbar, not to matching, so they stay out of
+-- vo.CONFIG_SCHEMA and the Settings dialog.
+--
+-- They used to ride on the config table, which is why ticking one appeared to
+-- undo itself: vo.SaveConfig writes SCHEMA FIELDS ONLY, so a key that is not
+-- in the schema is dropped on the way out and reads back false.
+local UPDATE_OPT_KEYS = { "tidy_name", "tidy_pull" }
+
+local function LoadUpdateOpts()
+  for _, key in ipairs(UPDATE_OPT_KEYS) do
+    state[key] = r.GetExtState(vo.EXT_SECTION, key) == "1"
+  end
+end
+
+local function SetUpdateOpt(key, value)
+  state[key] = value and true or false
+  r.SetExtState(vo.EXT_SECTION, key, state[key] and "1" or "0", true)
+end
+
 -- -----------------------------------------------------------------------
 -- Presentation settings
 --
@@ -4027,9 +4047,9 @@ local function TidyPass()
   -- ApplyAltNames' and Pull's own transactions collapse into this one and
   -- the whole pass is a single undo step.
   local named, pulled = 0, 0
-  if cfg.tidy_name or cfg.tidy_pull then
+  if state.tidy_name or state.tidy_pull then
     core.Transaction("VO Overview: tidy", function()
-      if cfg.tidy_name then
+      if state.tidy_name then
         -- Sel rows get the line's delivered name; Keep rows get alt names.
         -- Never overwrite a name that already means a line (the Adopt-
         -- session rule): a resolving name IS an assignment, and Tidy is
@@ -4056,7 +4076,7 @@ local function TidyPass()
         -- transaction; nested inside ours it folds into the one undo step.
         ApplyAltNames()
       end
-      if cfg.tidy_pull then
+      if state.tidy_pull then
         Pull()
         pulled = 1  -- Pull() reports its own counts in state.pull_result.
       end
@@ -6134,6 +6154,7 @@ end
 LoadProjectFile()
 LoadLayoutSettings()
 LoadFollowSettings()
+LoadUpdateOpts()
 LoadViewSettings()
 Reload()
 
@@ -6279,13 +6300,12 @@ local function loop()
       end
 
     elseif state.tab == "sheet" then
-      local tidy_cfg = vo.LoadConfig()
       if im.Button(ctx, "Update sheet to match items") then TidyPass() end
       if im.IsItemHovered(ctx) then
-        local extra = (tidy_cfg.tidy_name or tidy_cfg.tidy_pull)
+        local extra = (state.tidy_name or state.tidy_pull)
           and "\n\nThe opt-ins are ON, so this run ALSO changes items:" ..
-              (tidy_cfg.tidy_name and "\n- names selects and alts" or "") ..
-              (tidy_cfg.tidy_pull and "\n- pulls named items to their tracks" or "")
+              (state.tidy_name and "\n- names selects and alts" or "") ..
+              (state.tidy_pull and "\n- pulls named items to their tracks" or "")
           or ""
         im.SetTooltip(ctx,
           "Re-read the session, then write down what it shows: a take whose\n" ..
@@ -6299,17 +6319,11 @@ local function loop()
       if im.BeginPopup(ctx, "##tidy_menu") then
         im.TextDisabled(ctx, "These reach out of the sheet and change items:")
         local hit, v = im.Checkbox(ctx, "Also name matched takes",
-                                   tidy_cfg.tidy_name == true)
-        if hit then
-          tidy_cfg.tidy_name = v or nil
-          vo.SaveConfig(tidy_cfg)
-        end
+                                   state.tidy_name == true)
+        if hit then SetUpdateOpt("tidy_name", v) end
         hit, v = im.Checkbox(ctx, "Also pull named items to their tracks",
-                             tidy_cfg.tidy_pull == true)
-        if hit then
-          tidy_cfg.tidy_pull = v or nil
-          vo.SaveConfig(tidy_cfg)
-        end
+                             state.tidy_pull == true)
+        if hit then SetUpdateOpt("tidy_pull", v) end
         im.EndPopup(ctx)
       end
       im.SameLine(ctx)
