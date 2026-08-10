@@ -40,6 +40,12 @@ Status: **open** unless marked.
       redundant by the scoring and island-boundary work — worth deciding after
       those, not before.
 
+- [x] **FIXED — the Edit row wraps instead of running off screen.** It carries
+      every verb in the tool, and ImGui has no flow layout, so buttons simply
+      left the window. It now measures each label and starts a new row when the
+      next one will not fit — correct at any width, and renaming a button
+      cannot push the last one off the edge.
+
 - [ ] **The tab ribbon should be a fixed height.** Each tab's button row is
       whatever tall its own contents are, so switching tabs shifts the whole
       sheet up or down under the cursor. The ribbon should reserve one

@@ -6107,6 +6107,30 @@ local function loop()
       im.EndTabBar(ctx)
     end
 
+    -- The Edit row carries every verb in the tool and a narrow window cannot
+    -- hold it on one line, so it WRAPS: continue beside the last widget when
+    -- the next one still fits, otherwise start a row.
+    --
+    -- Measured, not guessed: ImGui has no flow layout, and a fixed break would
+    -- be wrong at every width except the one it was chosen at. Sizing from the
+    -- label means renaming a button cannot silently push the last one off the
+    -- edge -- which is exactly how they went off screen.
+    local frame_pad = im.GetStyleVar(ctx, im.StyleVar_FramePadding)
+    local item_gap  = im.GetStyleVar(ctx, im.StyleVar_ItemSpacing)
+    local row_left  = im.GetCursorPosX(ctx)
+    local row_right = row_left + select(1, im.GetContentRegionAvail(ctx))
+
+    -- `extra` covers anything drawn after the label on the same run: an arrow
+    -- button, a combo, a trailing readout.
+    local function Flow(label, extra)
+      im.SameLine(ctx)
+      local w = im.CalcTextSize(ctx, label) + frame_pad * 2 + (extra or 0)
+      if im.GetCursorPosX(ctx) + w > row_right then
+        im.NewLine(ctx)
+        im.SetCursorPosX(ctx, row_left)
+      end
+    end
+
     -- One button per detail panel, the open one held down.
     local function PanelButton(key, label, tip)
       local on = state.panel == key
@@ -6164,6 +6188,7 @@ local function loop()
           "Sheet only -- no item is touched. Run it after transcribing, or\n" ..
           "after editing the script.")
 
+      Flow("Pick a take for each line", 90 + item_gap)
       if im.Button(ctx, "Pick a take for each line") then AutoSelectTakes(AffectedRows()) end
       Tip("Mark one take per line as the select. Locked lines are left alone.")
       Combo("##autoselect", 90, TAKE_PICKS, state.auto_select_take, function(k)
@@ -6177,6 +6202,7 @@ local function loop()
       end
       im.SameLine(ctx)
 
+      Flow(" | Items: Cut recording into takes")
       im.TextDisabled(ctx, " | ")
       im.SameLine(ctx)
       im.TextDisabled(ctx, "Items:")
@@ -6186,6 +6212,7 @@ local function loop()
         "Splits every take the match identified out of its recording and\n" ..
         "names it the script's filename. Nothing moves.")
 
+      Flow("Identify line from item  ▾")
       if im.Button(ctx, "Identify line from item  ▾") then
         im.OpenPopup(ctx, "##identify_menu")
       end
@@ -6227,14 +6254,17 @@ local function loop()
         im.EndPopup(ctx)
       end
 
+      Flow("Pull items to their tracks")
       PanelButton("pull", "Pull items to their tracks",
         "Moves items onto Selects, Alts, Outs and Review tracks nested under\n" ..
         "the recording they came from, matched to the script by name.")
 
+      Flow("Lay items out in script order")
       PanelButton("sort", "Lay items out in script order",
         "Lays the items out on the timeline in script order or record order,\n" ..
         "on fresh child tracks so nothing lands on anything.")
 
+      Flow("Auto-adjust head and tail")
       if im.Button(ctx, "Auto-adjust head and tail") then pending_action = TightenItems end
       Tip("Finishing pass: measure where the audio really is in each delivered\n" ..
           "item and set its edges to the standard head and tail room. Inward\n" ..
@@ -6242,6 +6272,7 @@ local function loop()
           "left alone. Works on the REAPER selection, or everything on Selects\n" ..
           "+ Alts when nothing is selected.")
 
+      Flow(" | Fix a line")
       im.TextDisabled(ctx, " | ")
       im.SameLine(ctx)
       PanelButton("repair", "Fix a line",
