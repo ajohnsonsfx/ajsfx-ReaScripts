@@ -10,8 +10,9 @@ Status: **open** unless marked.
 
 ## Toolbar
 
-- [ ] **Nothing in the toolbar says "match", and matching is what the tool
-      does.** Asked how to make the engine match transcript to script, the
+- [x] **FIXED — the Match button says "match".** Now
+      `Match transcript to script`, in the Edit tab's Match row.
+      ORIGINAL NOTE: Asked how to make the engine match transcript to script, the
       answer is "Sheet → Update sheet to match items", which nobody would
       guess: the match is recomputed live and that button re-reads everything
       first. The old `Refresh` at least said "identify the lines again from
@@ -20,7 +21,10 @@ Status: **open** unless marked.
       sheet`?) or the Transcribe/Script tab carries an explicit
       **Match transcript to script** that runs the same path.
 
-- [ ] **Split Setup into [Script] and [Transcribe].** Proposed layout:
+- [~] SUPERSEDED — went the other way: five tabs collapsed to
+      Setup / Edit / Settings, with dim group labels (Match / Items /
+      Tracking) doing the dividing. Revisit only when the domains are known.
+      ORIGINAL NOTE: Proposed layout:
       `[Script] [Transcribe] [Sheet] [Items] [Fix a line] … [Settings]`, with
       Script holding **Add script…** and Transcribe holding **Sources and
       transcripts…** plus an explicit match action. Two different jobs share
@@ -80,7 +84,7 @@ Status: **open** unless marked.
       finished") for an unreadable code, with tests, and the same bug is fixed
       in the second async runner that had it copied.
 
-- [ ] **BUG: the loop detector cried wolf on a real performance.** It reported
+- [x] **FIXED — the loop detector cried wolf on a real performance.** It reported
       8:48–9:01 as the transcriber looping — "Do not repeat that." four times,
       "whatever was said in those 0:13 is not in this transcript, so no line
       from that stretch can match. Re-transcribe." Listening says otherwise:
@@ -88,11 +92,18 @@ Status: **open** unless marked.
       (`DBP_Grumbar_Grumbar_DoNotRepeatThat`, "Do not repeat that.").
       Four takes of a short line is NORMAL — it is what the whole tool is for.
 
-      The detector must consult the script before accusing the transcript: a
-      repeat that MATCHES A SCRIPT LINE is a re-read, not a loop. As written
-      the message is worse than silence — it tells the user to throw away a
-      good transcript and re-run whisper on a 39-minute file, and it will fire
-      on every line an actor tries more than twice in a row.
+      Fixed without needing the script, which the Sources window cannot see: a
+      decoder emitting one phrase over and over does not BREATHE, and a reader
+      going again does. Repeats separated by `vo.LOOP_MAX_PAUSE` (0.35s) or
+      more no longer extend a run, so the four reads above count as two cycles
+      and stay silent. The gap is checked everywhere inside the added stretch,
+      not just at the block junction — an offset phrase otherwise hides the
+      pause mid-block, which is how the first attempt still flagged twelve
+      re-reads.
+
+      Accepted false negative: a real loop straddling a pause reads as two
+      shorter runs. That is the right way to be wrong — a missed loop costs a
+      re-run, crying wolf costs a good transcript the user was told to bin.
 
 - [x] **FIXED — the detail panel implied sentences the data does not have.**
       It broke the transcript into paragraphs at `.`/`?`/`!`, so four reads of

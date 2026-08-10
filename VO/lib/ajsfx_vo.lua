@@ -1224,10 +1224,28 @@ end
 --
 -- Thresholds are set so ordinary repetition in a read ("no, no, no") cannot
 -- trip it: a run needs at least 4 cycles AND 12 repeated words.
+--
+-- AND the cycles must be BACK TO BACK. This is what separates a decoder loop
+-- from an actor, and it was missing: on a real session the detector reported
+-- "Do not repeat that." four times as a loop and told the user to re-transcribe
+-- a 39-minute file. The script has that line. Four takes of a short line is
+-- normal -- it is what this whole tool is for.
+--
+-- A decoder emitting the same phrase over and over does not breathe: the
+-- repeats abut. A reader going again pauses first, however briefly (0.22s,
+-- 0.60s and 0.84s between the four reads above). So a pause of
+-- LOOP_MAX_PAUSE or more ends the run, and four re-reads count as at most two
+-- cycles -- under the threshold, silent.
+--
+-- False negative it accepts: a loop that happens to fall either side of a
+-- pause reads as two shorter runs. That is the right way to be wrong. Missing
+-- a loop costs a transcript the user can re-run; crying wolf costs a good
+-- transcript they were told to throw away.
 -- Returns: nil, or { from, to, phrase, cycles, words } (times in source seconds)
 vo.LOOP_MAX_PHRASE  = 12
 vo.LOOP_MIN_CYCLES  = 4
 vo.LOOP_MIN_WORDS   = 12
+vo.LOOP_MAX_PAUSE   = 0.35
 
 function vo.DetectRepetitionLoop(words)
   local n = #(words or {})
@@ -1247,6 +1265,17 @@ function vo.DetectRepetitionLoop(words)
           if words[a + j].text ~= words[b + j].text then same = false break end
         end
         if not same then break end
+        -- A breath ANYWHERE in the stretch being added means a person said it
+        -- again. Checking only the junction between blocks is not enough: with
+        -- a phrase offset by a word or two, the block boundary falls mid-read
+        -- and the pause hides inside the block.
+        local breathed = false
+        for j = b, b + k - 1 do
+          local prev, this = words[j - 1], words[j]
+          local gap = (prev.t1 and this.t0) and (this.t0 - prev.t1) or 0
+          if gap >= vo.LOOP_MAX_PAUSE then breathed = true break end
+        end
+        if breathed then break end
         cycles = cycles + 1
       end
       if cycles * k > best_cycles * (best_k or 1) then

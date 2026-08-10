@@ -2959,10 +2959,28 @@ end)
 --------------------------------
 print("\nDetectRepetitionLoop:")
 
+-- Back-to-back words, the way whisper actually writes them: each word's end
+-- IS the next word's start. A decoder loop has no gaps in it, so the fixture
+-- must not either -- with 0.5s holes between every word these tests were
+-- describing speech no recognizer produces.
 local function loop_words(list)
   local out = {}
   for i, w in ipairs(list) do
-    out[i] = { t0 = i * 1.0, t1 = i * 1.0 + 0.5, text = w }
+    out[i] = { t0 = i * 1.0, t1 = (i + 1) * 1.0, text = w }
+  end
+  return out
+end
+
+-- The same words, but with `pause` seconds of quiet before every repeat of a
+-- `k`-word phrase: a reader going again rather than a decoder stuck.
+local function reread(phrase, times, pause)
+  local out, t = {}, 0.0
+  for _ = 1, times do
+    for _, w in ipairs(phrase) do
+      out[#out + 1] = { t0 = t, t1 = t + 0.8, text = w }
+      t = t + 0.8
+    end
+    t = t + pause
   end
   return out
 end
@@ -2976,6 +2994,25 @@ local function repeated(phrase, times, before, after)
   for _, w in ipairs(after or {}) do list[#list + 1] = w end
   return loop_words(list)
 end
+
+test("four reads of one line are not a loop", function()
+  -- The Grumbar case: the actor read "Do not repeat that." four times, the
+  -- script has the line, and the detector told the user to re-transcribe a
+  -- 39-minute file. A breath between repeats means a person said it again.
+  local phrase = { "Do", "not", "repeat", "that." }
+  assert(vo.DetectRepetitionLoop(reread(phrase, 4, 0.6)) == nil,
+    "four re-reads flagged as a decoder loop")
+  assert(vo.DetectRepetitionLoop(reread(phrase, 12, 0.6)) == nil,
+    "twelve re-reads are still re-reads")
+end)
+
+test("a pause shorter than a breath does not rescue a loop", function()
+  -- 0.05s between cycles is decoder timing, not a person.
+  local found = vo.DetectRepetitionLoop(
+    reread({ "Riddle", "that", "punish", "you" }, 20, 0.05))
+  assert(found, "a back-to-back run must still be caught")
+  assert(found.cycles == 20, "cycles: " .. tostring(found.cycles))
+end)
 
 test("clean speech reports no loop", function()
   local words = loop_words({ "the", "quick", "brown", "fox", "jumps", "over",
@@ -3002,9 +3039,9 @@ end)
 test("the reported span is where the loop starts and ends, not the whole file", function()
   local found = vo.DetectRepetitionLoop(repeated({ "a", "b" }, 10, { "x", "y", "z" }))
   -- three leading words, so the loop's first word is index 4 (t0 = 4.0) and its
-  -- last is index 23 (t1 = 23.5).
+  -- last is index 23, whose end is the next word's start (24.0).
   assert(math.abs(found.from - 4.0) < 1e-9, "from: " .. tostring(found.from))
-  assert(math.abs(found.to - 23.5) < 1e-9, "to: " .. tostring(found.to))
+  assert(math.abs(found.to - 24.0) < 1e-9, "to: " .. tostring(found.to))
 end)
 
 test("the longest run wins when a file contains more than one", function()
