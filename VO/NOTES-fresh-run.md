@@ -36,6 +36,49 @@ Status: **open** unless marked.
       two speakers different settings later, so the second entry is not a
       workaround for a missing multi-select; it is the better shape. Build
       selection only if adding twice turns out to be annoying in practice.
+      SUPERSEDED IN SPIRIT by the note below: binding the CHARACTER to the
+      SOURCE is the same want, expressed on the axis where the fact actually
+      lives.
+
+- [ ] **Bind a character to a source file: `source + script + character = what
+      to expect from this file`.** (AJ, 2026-08-10, while running the tool in
+      order.) Two mics, two actors, one script: say which actor is on which
+      wav, and matching a source considers only that character's lines.
+
+      This is a better axis than script-side speaker selection, and it is worth
+      being clear about why: **the mic is the fact.** One wav holds one actor,
+      and that is true of the recording no matter how the script is organised —
+      one CSV for the whole cast, one per character, or the same CSV added
+      twice. A binding made on the source survives every one of those choices,
+      where a binding made on the script entry has to be redone whenever the
+      script list changes.
+
+      What it buys, in order of value:
+      1. **Halves the candidate pool per source.** Every wrong match this tool
+         makes is a line stealing another line's words, and the worst offenders
+         are short lines that match everywhere. A one-word line of the OTHER
+         actor can no longer take this actor's audio at all — not scored lower,
+         gone. That is a constraint, not a threshold, and constraints are what
+         short lines have always needed.
+      2. **Makes "not on the script" mean something narrower.** Audio on this
+         mic that matches no line OF THIS CHARACTER is a much sharper statement
+         than audio matching no line at all.
+      3. **Catches the setup mistake.** A file bound to the wrong actor would
+         match almost nothing, loudly and immediately, instead of matching a
+         plausible-looking third of the script.
+
+      Where it lives: `<project>_vo.csv`, beside the script list. It is a
+      judgement about a recording, not a fact derived from one, so it belongs
+      in the user's file — and it must survive re-transcribing, which rewrites
+      the sidecar wholesale. Where it is SET is Overview's Setup tab, next to
+      the script list: Sources deliberately cannot see the script (SPEC-sources
+      §1), and this needs both to be meaningful.
+
+      Design question to settle first: is an unbound source **unconstrained**
+      (matches everything, today's behaviour) or **unusable**? Unconstrained,
+      certainly — a one-actor session must keep working with no setup at all,
+      and that is the common case. So the binding is an optional narrowing,
+      never a requirement.
 
 - [~] DECIDED against, for now — most of it already exists and the rest should
       not be automatic. `vo.ResidualPass` already re-matches the lines nobody
