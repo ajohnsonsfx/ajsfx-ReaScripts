@@ -5105,7 +5105,8 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   end
   if rep.line_text and rep.line_text ~= "" then
     im.SetCursorScreenPos(ctx, said_x, ry)
-    im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + (rx + inner_w - 60 - said_x))
+    -- Wraps before the filename column, which shares this row.
+    im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + (rx + z.name - 8 - said_x))
     wrap_depth = wrap_depth + 1
     im.Text(ctx, '"' .. rep.line_text .. '"')
     im.PopTextWrapPos(ctx)
@@ -5124,21 +5125,21 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     end
   end
 
-  -- Rows 2 and 3: the delivered name and the source script, labelled. The
-  -- line-note box used to sit beside them; the card is for the things you
-  -- CONTROL.
+  -- Still row 1, in the Item name COLUMN: the delivered filename, directly
+  -- above the names the items carry now. That is the comparison being made --
+  -- what this file WILL be called against what it IS called -- and it only
+  -- works if the two line up. No "Filename:" label: a label would push the
+  -- name out of its column.
   --
-  -- The delivered filename sits in the Item name COLUMN, directly above the
-  -- take names below it. That is the comparison being made -- what the script
-  -- says this file will be called, against what each item is called now -- and
-  -- it only works if the two line up. The "Filename:" label is gone for the
-  -- same reason: a label would push the name out of its column.
+  -- It shares the top row with the badge, the speaker and the line because
+  -- those are one horizontal sentence about the line, and that sentence is
+  -- the whole of a FOLDED card.
   local base = rep.asset or ""
   local shown = rep.deliver or base
   local clash = rep.line_key ~= nil and shown ~= ""
                 and state.dupe_names[shown] == true
-  im.SetCursorScreenPos(ctx, rx + z.name, y2)
-  im.PushClipRect(ctx, rx + z.name, y2, rx + z.name + z.name_w, y2 + line_h, true)
+  im.SetCursorScreenPos(ctx, rx + z.name, ry)
+  im.PushClipRect(ctx, rx + z.name, ry, rx + z.name + z.name_w, ry + line_h, true)
   if clash then im.TextColored(ctx, 0xDD6666FF, shown)
   else im.TextDisabled(ctx, shown) end
   im.PopClipRect(ctx)
@@ -5169,40 +5170,41 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     im.EndPopup(ctx)
   end
 
-  -- Same row, left: which script the line came from. It used to sit a row
-  -- lower, under the filename; with the filename moved into its column that
-  -- row would have been empty.
-  im.SetCursorScreenPos(ctx, rx + 22, y2)
-  local script_name = (rep.script and rep.script ~= "")
-                      and (vo.Basename(rep.script):gsub("%.%w+$", "")) or "—"
-  im.TextDisabled(ctx, "Script: " .. script_name)
-  if rep.script and rep.script ~= "" and im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, rep.script)
-  end
+  -- ROW 2 IS UNFOLD-ONLY. A folded card is one horizontal row and nothing
+  -- else; open one and the second row appears with the provenance and with
+  -- what still stands between this line and done.
+  if open then
+    im.SetCursorScreenPos(ctx, rx + 22, y2)
+    local script_name = (rep.script and rep.script ~= "")
+                        and (vo.Basename(rep.script):gsub("%.%w+$", "")) or "—"
+    im.TextDisabled(ctx, "Script: " .. script_name)
+    if rep.script and rep.script ~= "" and im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, rep.script)
+    end
 
-  -- Two Sels on one line is a decision still pending, not an error --
-  -- track placement legitimately creates it (two items of the line on the
-  -- Selects track both read as Sel) -- so it is badged where the user is
-  -- already looking, and counted into the summary line.
-  local sels = 0
-  for _, t in ipairs(node.takes) do
-    if t.user_select then sels = sels + 1 end
-  end
-  if sels >= 2 then
-    im.SameLine(ctx)
-    im.TextColored(ctx, 0xDDAA33FF,
-      string.format("   %d selects -- pick one", sels))
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, "More than one take of this line is marked Sel.\n" ..
-                         "Untick all but one, or drag the extra item off Selects\n" ..
-                         "and press Tidy.")
+    -- Two Sels on one line is a decision still pending, not an error -- track
+    -- placement legitimately creates it (two items of the line on the Selects
+    -- track both read as Sel) -- so it says so here, and counts into the
+    -- summary line whether the card is open or not.
+    local sels = 0
+    for _, t in ipairs(node.takes) do
+      if t.user_select then sels = sels + 1 end
+    end
+    if sels >= 2 then
+      im.SameLine(ctx)
+      im.TextColored(ctx, 0xDDAA33FF,
+        string.format("   %d selects -- pick one", sels))
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "More than one take of this line is marked Sel.\n" ..
+                           "Untick all but one, or drag the extra item off Selects\n" ..
+                           "and press Update sheet to match items.")
+      end
     end
   end
 
   im.EndGroup(ctx)
   local _, gh = im.GetItemRectSize(ctx)
-  -- Two rows now, not three: the line, then filename and script side by side.
-  rep._band_h = math.max(gh, line_h * 2)
+  rep._band_h = math.max(gh, open and line_h * 2 or line_h)
 end
 
 -- (The old fold-only drawer is gone: its whole content -- the script name and

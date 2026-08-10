@@ -141,12 +141,18 @@ an unfolded parent and its neighbour ambiguous. A card's own chrome answers
 "where does this line end", and take rows sit on their own colour inside it,
 so the two levels can never be mistaken for one another.
 
-Each card is a **title band**, always visible, of two rows:
+Each card is a **title band** of one row that is always there and a second
+that appears when it opens:
 
 | | |
 |---|---|
-| **who + said** | `✓N` delivered (or `–`) in the far-left corner · script position · status dot · speaker · **the line text**, quoted · `!` at the right edge when the line has takes but no Sel |
-| **filename + script** | the delivered name (CSV filename + Append), red on a clash, **in the Item name column** · `Script:` the source script, at the left |
+| **row 1 — always** | `✓N` delivered (or `–`) in the far-left corner · script position · status dot · speaker · **the line text**, quoted · the delivered name (CSV filename + Append), red on a clash, **in the Item name column** · `!` at the right edge when the line has takes but no Sel |
+| **row 2 — open only** | `Script:` the source script · what still stands between this line and done (`N selects — pick one`) |
+
+A **folded card is one horizontal row**: one sentence about the line, ending
+in the name it ships under. Row 2 is provenance and unfinished business —
+worth reading when you are working on that line, noise when you are scanning
+169 of them.
 
 Two alignments do the card's real work, and both are vertical:
 
