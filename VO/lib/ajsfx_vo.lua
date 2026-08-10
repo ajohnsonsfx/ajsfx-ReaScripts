@@ -1686,20 +1686,27 @@ function vo.BestSpanForItem(coverage, spans)
   return best, best_frac
 end
 
--- The take map travels with the AUDIO: every item of a source carries the
--- source's take markers that fall within `reach` seconds of its own window,
--- so widening an item reveals the neighbouring takes instead of unlabelled
--- waveform. The canonical set is what CountingMarkers already says -- the
--- copy the user can see and drag is the truth, and every other copy is a
--- mirror refreshed from it. reach = 0 keeps only each item's own takes,
--- which is exactly the old "clean stray markers".
+-- An item carries the take markers its own window covers, and nothing else.
+--
+-- This used to mirror the source's takes within `reach` seconds of each item's
+-- window, so widening an item revealed its neighbours as labelled ranges. The
+-- idea was sound and the cost was not: markers live in the item's state CHUNK,
+-- which the tool re-reads whenever the project changes, so every mirrored copy
+-- is paid for on every rescan forever. On a 451-clip session at the 30s default
+-- that was ~10,000 marker lines to read and discard; REAPER's split, which
+-- copies the whole set into both halves, had already pushed it to 184,459.
+--
+-- So: one take, one marker, in the clip that IS that take. Widening an item
+-- shows bare waveform again -- the neighbours are still in the sheet, which is
+-- where the session is read. A setting was removed rather than defaulted to 0,
+-- because a knob whose other positions are all slower is not a choice.
 --
 -- `group` is CollectTakeMarkers' per-path shape ({ coverage, markers, info }).
 -- Returns rewrites { { item_index, markers } } -- only the items whose tool
--- markers differ from the mirror -- and the canonical marker count. User
--- markers are untouched (vo.WriteTakeMarkers preserves them).
-function vo.PlanMarkerMirror(group, reach)
-  reach = reach or 0
+-- markers differ from what they should hold -- and the canonical marker count.
+-- User markers are untouched (vo.WriteTakeMarkers preserves them).
+function vo.PlanMarkerMirror(group)
+  local reach = 0
   local canonical = vo.CountingMarkers(group)
   local rewrites = {}
   for idx, rec in ipairs(group or {}) do
@@ -1997,11 +2004,6 @@ vo.DEFAULTS = {
   gap_repair_min_speech = 0.75, -- seconds of above-floor audio to confirm it
   gap_repair_pad        = 0.35, -- seconds of margin around the found speech
 
-  -- How far beyond an item's own window the source's take markers are
-  -- mirrored into it (Sync take markers), so widening an item reveals the
-  -- neighbouring takes. 0 keeps only each item's own takes -- the old
-  -- "clean stray markers" behaviour.
-  marker_mirror_reach = 30.0,
 
   -- The floor under "which line is this item?" for Mark selected item(s):
   -- the best match span must have at least this fraction of itself inside

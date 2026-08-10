@@ -268,15 +268,29 @@ edges, cutting nothing and never overwriting a name that already resolves to
 a line — the ingest path for a session edited before the tool arrived.
 **Mark selected item(s)** is the same gesture for one item in the hand:
 best-effort match (`vo.BestSpanForItem`, floored by `mark_item_min_span`),
-marker at current edges, named for the line, guess reported. **Sync take
-markers** mirrors each source's canonical take map onto every item of that
-source within `marker_mirror_reach` of its window (`vo.PlanMarkerMirror`), so
-widening an item reveals the neighbouring takes as labelled ranges; the copy
-the user can see and drag is the canonical one, stale mirrors refresh from
-it, and off-window split residue collapses — it subsumes the old *Clean
-stray take markers*. The sync is an explicit press, never per-frame: a
-rebuild that rewrote chunks mid-drag would snap the marker out of the
-user's hand.
+marker at current edges, named for the line, guess reported. **Tidy up take markers**
+leaves every item holding only the takes its own window covers, dropping the
+rest (`vo.PlanMarkerMirror`); the copy the user can see and drag is the
+canonical one, and stale leftovers collapse against it. It subsumes the old
+*Clean stray take markers*.
+
+**One take, one marker, in the clip that IS that take.** This used to mirror
+each source's take map into every item within `marker_mirror_reach` (30s) of
+its window, so widening an item revealed its neighbours as labelled ranges.
+The idea was sound and the cost was not: markers live in the item's state
+CHUNK, which the tool re-reads whenever the project changes, so every spare
+copy is paid for on every rescan forever. REAPER's split makes this acute — it
+copies the WHOLE take-marker set into both halves, so one recording cut into
+451 clips carried all 409 of the session's markers in each: 184,459 marker
+lines and 24MB of chunk for 409 takes, 810ms to read and discard on every
+rescan, felt as REAPER pausing when clicking between items. The reach setting
+was removed rather than defaulted to 0, because a knob whose other positions
+are all slower is not a choice.
+
+Cut runs the tidy itself, in the same transaction, so a fresh session never
+accumulates residue. The standalone press is for sessions cut before it did,
+or after splitting by hand. It is never per-frame: a rebuild that rewrote
+chunks mid-drag would snap the marker out of the user's hand.
 
 **The track is the decision.** Sel and Keep are tri-state in the project file —
 `yes`, `no`, or blank meaning no opinion. A blank defers to where the item

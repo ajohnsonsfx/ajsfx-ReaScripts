@@ -1339,14 +1339,12 @@ local function MarkTakesFromSession(adopt)
   end
 end
 
--- The take map travels with the AUDIO: rewrite every item's tool markers as
--- the source's canonical set within `marker_mirror_reach` of its window, so
--- widening an item reveals the neighbouring takes as labelled ranges instead
--- of bare waveform. The canonical copy is the one the coverage rule already
--- counts -- the copy the user can see and drag -- and every other copy is a
--- mirror refreshed from it, which is also what absorbs split residue and
--- stale mirrors after a drag (vo.PlanMarkerMirror). Reach 0 degrades to the
--- old "clean stray markers". User markers are never touched.
+-- One take, one marker, in the clip that IS that take: rewrite every item's
+-- tool markers as the ones its own window covers, dropping the rest. The
+-- canonical copy is the one the coverage rule already counts -- the copy the
+-- user can see and drag -- and this is what absorbs REAPER's split residue
+-- (which duplicates the whole set into both halves) and stale copies after a
+-- drag. User markers are never touched.
 --
 -- Deliberately explicit, never run per-frame: a rebuild that rewrote chunks
 -- while a marker drag was in flight would snap the marker out of the user's
@@ -1355,10 +1353,9 @@ end
 -- The write half, without the reloads or the transaction, so a caller that is
 -- already inside both can prune as part of its own job. Returns touched, canon.
 local function MirrorTakeMarkers()
-  local reach = vo.Opt(vo.LoadConfig(), "marker_mirror_reach")
   local touched, canonical = 0, 0
   for _, group in pairs(state.take_markers or {}) do
-    local rewrites, canon = vo.PlanMarkerMirror(group, reach)
+    local rewrites, canon = vo.PlanMarkerMirror(group)
     canonical = canonical + canon
     for _, rw in ipairs(rewrites) do
       local rec = group[rw.item_index]
@@ -1374,7 +1371,6 @@ end
 
 local function SyncTakeMarkers()
   Reload()
-  local reach = vo.Opt(vo.LoadConfig(), "marker_mirror_reach")
   local touched, canonical = 0, 0
   core.Transaction("VO Overview: sync take markers", function()
     touched, canonical = MirrorTakeMarkers()
@@ -1382,9 +1378,9 @@ local function SyncTakeMarkers()
   Reload()
   state.message, state.message_kind = (touched > 0)
     and string.format(
-      "Synced the take map onto %d item(s): %d take(s), mirrored %.0fs around each window.",
-      touched, canonical, reach)
-    or "Every item already carries the take map.", "ok"
+      "Tidied the take markers on %d item(s). %d take(s) in the session, one " ..
+      "marker each, in the clip it belongs to.", touched, canonical)
+    or "Every item already carries just its own take.", "ok"
 end
 
 -- The button for "I have this item in my hand and it has no marker": a
@@ -3765,11 +3761,9 @@ local function DoCut()
     -- fires whenever the project changes, which includes clicking between
     -- items. That is the stall.
     --
-    -- The mirror pass already knew how to collapse it; it was simply never run
+    -- The tidy pass already knew how to collapse it; it was simply never run
     -- unless the user pressed "Sync take markers", which nothing told them to
     -- do. The Reload is what makes the freshly split items visible to it.
-    -- `marker_mirror_reach` still decides how much of the neighbourhood each
-    -- clip keeps, and at 0 a clip keeps only the take it IS.
     Reload()
     pruned = MirrorTakeMarkers()
   end)
@@ -4591,7 +4585,7 @@ local function DrawRepairPanel()
     end
     im.TextDisabled(ctx,
       "The item this marker lived in was deleted or trimmed past it. Relink\n" ..
-      "to the right item, or Sync take markers to drop the leftovers.")
+      "to the right item, or Tidy up take markers to drop the leftovers.")
     im.Separator(ctx)
   end
 
@@ -6878,12 +6872,17 @@ local function loop()
                              "current edges. Nothing is cut and nothing moves. A name that\n" ..
                              "already means a line is never overwritten, so re-running is safe.")
         end
-        if im.Selectable(ctx, "Sync take markers across copies") then
+        if im.Selectable(ctx, "Tidy up take markers") then
           pending_action = SyncTakeMarkers
         end
         if im.IsItemHovered(ctx) then
-          im.SetTooltip(ctx, "Mirror each recording's take map onto every item near it, so\n" ..
-                             "widening an item shows the neighbouring takes.")
+          im.SetTooltip(ctx, "Leave each clip holding only the take it IS, and drop the\n" ..
+                             "rest. REAPER's split copies every take marker into both\n" ..
+                             "halves, so a cut session can end up carrying hundreds of\n" ..
+                             "them per clip -- harmless, but the tool re-reads them all\n" ..
+                             "whenever the project changes, and that is felt as a pause.\n\n" ..
+                             "Cut does this itself now; this is for sessions cut before\n" ..
+                             "it did, or after splitting by hand.")
         end
         im.EndPopup(ctx)
       end
