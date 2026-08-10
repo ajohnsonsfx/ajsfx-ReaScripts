@@ -2616,6 +2616,54 @@ function vo.PinnedSpans(word_tokens, pins, lines)
   return spans, unresolved
 end
 
+-- The matcher, backwards: which script lines could THESE words be, best first.
+--
+-- vo.FindLineCandidates answers "where did this line go?"; this answers "what is
+-- this?", which is the question a span nothing claimed actually poses. The list
+-- of orphans reads as a pile of unknown audio precisely because the tool could
+-- only ever ask the first question, one line at a time, and a person looking at
+-- an orphan does not yet know which line to ask about.
+--
+-- No index and no anchors: the window is fixed, so every line is simply scored
+-- against it. That is the same Levenshtein the matcher uses, and at a few hundred
+-- lines against ten tokens it costs nothing -- the index exists to find WINDOWS,
+-- and here the window is already known.
+--
+-- Deliberately looser than the batch pass by default. A person looking at one
+-- span can accept weaker evidence than a sweep over sixteen hundred words should:
+-- the risk that makes the global threshold conservative is a wrong name written
+-- silently across the session, and it does not apply to one deliberate act.
+--
+-- Decides nothing and stores nothing.
+-- Returns: { { line_idx, score, asset, deliver, text, speaker }, ... }
+function vo.FindSpanLines(lines, text, cfg, opts)
+  opts = opts or {}
+  local floor_ = opts.floor or 0.25
+  local limit  = opts.limit or 12
+  local window = vo.Tokenize(vo.Normalize(text or "", cfg and cfg.subs))
+  if #window == 0 or not lines then return {} end
+
+  local out = {}
+  for idx, line in ipairs(lines) do
+    local toks = vo.Tokenize(vo.Normalize(line.text or "", cfg and cfg.subs))
+    if #toks > 0 then
+      local score = 1 - vo.Levenshtein(toks, window) / math.max(#toks, #window)
+      if score >= floor_ then
+        out[#out + 1] = { line_idx = idx, score = score, asset = line.asset,
+                          deliver = line.deliver or line.asset,
+                          text = line.text, speaker = line.speaker }
+      end
+    end
+  end
+
+  table.sort(out, function(a, b)
+    if a.score ~= b.score then return a.score > b.score end
+    return a.line_idx < b.line_idx
+  end)
+  while #out > limit do table.remove(out) end
+  return out
+end
+
 -- Every distinct place one script line could sit in one transcript, best first.
 --
 -- Deliberately NOT the matcher. The matcher has to choose one placement and
@@ -4903,12 +4951,21 @@ end
 -- Counts for the header summary line.
 function vo.SummarizeOverview(rows)
   local n = { total = 0, recorded = 0, review = 0, missing = 0, orphan = 0,
-              verified = 0, flagged = 0, lines = 0 }
+              verified = 0, flagged = 0, junk = 0, lines = 0 }
   local seen_asset = {}
   for _, row in ipairs(rows or {}) do
     n.total = n.total + 1
-    if n[row.status] then n[row.status] = n[row.status] + 1 end
-    if row.user_status and n[row.user_status] then
+    -- Dismissed audio leaves the orphan count rather than adding to it. That is
+    -- the whole point of being able to dismiss: with it, "not on the script: 0"
+    -- means every span has been looked at and decided, and the session really
+    -- is finished. Without it the number can only ever be ignored, which is
+    -- what made the list feel like a wall instead of a queue.
+    if row.status == "orphan" and row.user_status == "junk" then
+      n.junk = n.junk + 1
+    elseif n[row.status] then
+      n[row.status] = n[row.status] + 1
+    end
+    if row.user_status and row.user_status ~= "junk" and n[row.user_status] then
       n[row.user_status] = n[row.user_status] + 1
     end
     -- Script coverage counts LINES, not takes: five takes of one line is one

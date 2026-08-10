@@ -2641,6 +2641,126 @@ local function AssignSelectedItems(row, base_name)
   Reload()
 end
 
+-- -----------------------------------------------------------------------
+-- Resolving one orphan
+--
+-- "Not on the script" was a dead end: a pile of unknown audio with nothing
+-- offered to do about any single entry, and a session does not feel finished
+-- while it is sitting there. It should be a QUEUE -- every span gets looked at
+-- and decided, one of three ways, and then it leaves.
+--
+--   Try again    -- match this span alone, at a threshold a sweep would not
+--                   dare use. A person looking at one span can accept weaker
+--                   evidence than a pass over sixteen hundred words should: the
+--                   risk that makes the global setting conservative is a wrong
+--                   name written silently across the session.
+--   This is line -- hand it to a line. The name is the assignment, so this is
+--                   a marker or a rename underneath, but the user is picking a
+--                   LINE, not typing a filename.
+--   This is junk -- slate, chatter, a cough, a false start. Persisted, since it
+--                   is a judgement about audio and belongs with the marks, and
+--                   out of the count.
+-- -----------------------------------------------------------------------
+
+-- Slate, chatter, a cough. Stored as the row's status, which is the same
+-- mechanism Lock and Flag use, so it rides in the project file with the marks
+-- and survives a rematch.
+local function DismissOrphan(row, junk)
+  SetStatus(row, junk and "junk" or nil)
+  state.message, state.message_kind = junk
+    and "Dismissed. It no longer counts against \"not on the script\"."
+    or  "Back in the queue.", "ok"
+end
+
+-- Which script lines this span could be, memoized on the words themselves: the
+-- menu asks every frame it is open, and the answer cannot change while it is.
+local orphan_hits_memo = {}
+local function OrphanLineHits(row)
+  local text = row.transcript or ""
+  local hit = orphan_hits_memo[text]
+  if not hit then
+    hit = vo.FindSpanLines(state.lines or {}, text, vo.LoadConfig(), { limit = 8 })
+    orphan_hits_memo[text] = hit
+  end
+  return hit
+end
+
+-- Hand this span to a line.
+--
+-- Two shapes, because an orphan may or may not have been cut out yet. If it has
+-- an item of its own, the item is renamed -- that IS the assignment. If it is
+-- still a stretch inside a longer recording, a ranged take marker is written
+-- where the span is, which is the same thing Cut would later act on.
+local function AssignOrphanToLine(row, hit)
+  local name = hit.deliver or hit.asset
+  if not name or name == "" then
+    state.message, state.message_kind =
+      "That script line has no filename to name the audio after.", "error"
+    return
+  end
+
+  if row.item then
+    local take = r.GetActiveTake(row.item)
+    if not take then
+      state.message, state.message_kind = "That item has no take to name.", "error"
+      return
+    end
+    state.name_baseline = nil
+    core.Transaction("VO Overview: assign orphan to line", function()
+      r.GetSetMediaItemTakeInfo_String(take, "P_NAME", vo.SanitizeName(name), true)
+    end)
+    r.UpdateArrange()
+    Reload()
+    state.message, state.message_kind = "Named that item " .. name .. ".", "ok"
+    return
+  end
+
+  local item = row.source_path and row.source_start and row.source_stop
+    and vo.ResolveSourceSpanForCut(row.source_path, row.source_start,
+                                   row.source_stop, state.items)
+  if not item then
+    state.message, state.message_kind =
+      "That audio is not in the project any more, so there is nothing to mark.", "error"
+    return
+  end
+
+  local id = vo.MintMarkerId(TakenMarkerIds())
+  local list = { { start = row.source_start, stop = row.source_stop,
+                   asset = hit.asset, id = id } }
+  -- Existing tool markers ride along: WriteTakeMarkers replaces the tool's set
+  -- wholesale, and dropping them would orphan every other take in this item.
+  local ok0, chunk0 = r.GetItemStateChunk(item, "", false)
+  if ok0 then
+    for _, m in ipairs(vo.ParseTKMChunk(chunk0)) do
+      local asset0, id0 = vo.ParseMarkerName(m.name)
+      if id0 then
+        list[#list + 1] = { start = m.pos, stop = m.pos + (m.length or 0),
+                            asset = asset0, id = id0 }
+      end
+    end
+  end
+
+  local wrote, why
+  core.Transaction("VO Overview: assign orphan to line", function()
+    wrote, why = vo.WriteTakeMarkers(item, list)
+  end)
+  if not wrote then
+    state.message, state.message_kind =
+      "Could not write the marker: " .. tostring(why), "error"
+    return
+  end
+
+  -- The row's decisions ride onto the marker's key rather than being stranded
+  -- on a span that no longer exists.
+  for _, e in ipairs(state.entries) do
+    if e.key == row.key then e.key = "tkm|" .. id end
+  end
+  state.dirty = true
+  Reload()
+  state.message, state.message_kind = string.format(
+    "Marked that stretch as %s. Cut will split it out.", name), "ok"
+end
+
 -- Link a real item to a PLANNED take: the rename IS the link (the name is the
 -- assignment), and the planned row has served its purpose -- it is removed in
 -- the same stroke, and the named item's own row takes its place on the next
@@ -4736,7 +4856,54 @@ local wrap_depth = 0
 -- Right-click acts on the whole selection when this row is part of it, and
 -- on this row alone when it is not -- so right-clicking somewhere else never
 -- silently operates on rows you had selected earlier.
+-- The three verbs an orphan needs, at the top of its own menu: the rest of this
+-- menu is about a take that already knows which line it is.
+local function DrawOrphanMenu(row)
+  local hits = OrphanLineHits(row)
+
+  if im.BeginMenu(ctx, "This is line\226\128\166", #hits > 0) then
+    for _, hit in ipairs(hits) do
+      local label = string.format("%3d%%  %s", math.floor(hit.score * 100 + 0.5),
+        (hit.text or ""):sub(1, 70))
+      if im.MenuItem(ctx, label) then
+        local captured_row, captured_hit = row, hit
+        pending_action = function() AssignOrphanToLine(captured_row, captured_hit) end
+      end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, (hit.deliver or hit.asset or "") .. "\n\n" .. (hit.text or ""))
+      end
+    end
+    im.EndMenu(ctx)
+  end
+  if #hits == 0 and im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "No script line resembles these words closely enough to\n" ..
+                       "offer. Either they are not in the script, or the transcript\n" ..
+                       "got them badly wrong -- listen, then dismiss or re-transcribe.")
+  elseif im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Hand this audio to a script line. The best guesses first,\n" ..
+                       "scored against what was said. Looser than the batch pass on\n" ..
+                       "purpose: you are looking at ONE span and can judge it.")
+  end
+
+  local junk = row.user_status == "junk"
+  if im.MenuItem(ctx, junk and "Bring it back into the queue"
+                            or "This is junk (slate, chatter, a false start)") then
+    local captured = row
+    pending_action = function() DismissOrphan(captured, not junk) end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, junk
+      and "Count it again as audio still to be identified."
+      or  "Decided and out of the way: it stops counting against\n" ..
+          "\"not on the script\", so that number reaching zero means\n" ..
+          "every span has been looked at. Nothing is deleted.")
+  end
+
+  im.Separator(ctx)
+end
+
 local function DrawTakeRowMenu(row)
+  if row.status == "orphan" then DrawOrphanMenu(row) end
   local targets = state.selection[row.uid] and SelectedRows() or { row }
   local label = (#targets > 1)
     and string.format("Find candidates for %d lines", #targets)
@@ -5033,7 +5200,30 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
 
   -- Marks: three checkboxes on the shared offsets.
   local orphan = row.status == "orphan"
-  if not orphan then
+  if orphan then
+    -- Why this one is here. "Not on the script" covers at least three different
+    -- situations and the fix differs by case, so the row says which rather than
+    -- leaving the whole list looking like one undifferentiated pile.
+    local short_, long_
+    if row.user_status == "junk" then
+      short_, long_ = "dismissed", "You decided this is not a line: slate, chatter,\n" ..
+        "a cough or a false start. It no longer counts against\n" ..
+        "\"not on the script\". Right-click to bring it back."
+    elseif row.asset and row.asset ~= "" then
+      short_, long_ = "no such line",
+        "This audio is named \"" .. row.asset .. "\", which is not in any\n" ..
+        "script this project has loaded. Either the wrong script is\n" ..
+        "loaded, or the name is from somewhere else."
+    else
+      short_, long_ = "unmatched",
+        "No script line scored high enough against these words.\n" ..
+        "Right-click: the guesses the batch pass would not take are\n" ..
+        "listed there, best first."
+    end
+    im.SetCursorScreenPos(ctx, rx + z.marks, ry)
+    im.TextDisabled(ctx, short_)
+    if im.IsItemHovered(ctx) then im.SetTooltip(ctx, long_) end
+  else
     local function MarkTargets()
       if not state.selection[row.uid] then return { row } end
       local out = {}
@@ -5644,7 +5834,20 @@ local function DrawSummary()
   if (n.orphan or 0) > 0 then
     seg(nil, string.format("%d orphan", n.orphan),
       "Recorded audio whose transcript matches no script line.\n" ..
-      "Listed in the card at the bottom of the sheet.")
+      "Listed in the card at the bottom of the sheet. Right-click one:\n" ..
+      "hand it to a line, or dismiss it as junk. This number reaching\n" ..
+      "zero means every span has been looked at.")
+  elseif (n.junk or 0) > 0 then
+    -- Only worth saying once the queue is empty: that is the moment the number
+    -- above means something, and it is worth being told it was earned.
+    seg(0x66BB66FF, "every span accounted for",
+      "Nothing unidentified is left: each one is either on a line or\n" ..
+      "dismissed by hand.")
+  end
+  if (n.junk or 0) > 0 then
+    seg(nil, string.format("%d dismissed", n.junk),
+      "Spans you marked as junk -- slate, chatter, a false start.\n" ..
+      "Still in the project and still in the sheet; just decided.")
   end
 
   if #(c.extra or {}) > 0 then

@@ -1551,6 +1551,48 @@ test("candidates carry the script line's identity and times", function()
 end)
 
 --------------------------------
+-- FindSpanLines
+--------------------------------
+print("\nFindSpanLines:")
+
+test("the closest line comes first", function()
+  local hits = vo.FindSpanLines(IDX_LINES, "open the south gate", {})
+  assert(#hits > 0, "no hits")
+  assert(hits[1].asset == "vo_gate_south", "Got: " .. tostring(hits[1].asset))
+  assert(near(hits[1].score, 1.0), "exact match did not score 1.0")
+end)
+
+test("near misses are offered, in order", function()
+  local hits = vo.FindSpanLines(IDX_LINES, "open the north gates", {})
+  assert(hits[1].asset == "vo_gate_north", "Got: " .. tostring(hits[1].asset))
+  assert(#hits >= 2, "only one line was offered")
+  assert(hits[2].score < hits[1].score, "runners-up were not ranked")
+end)
+
+test("words that are in no line offer nothing", function()
+  assert(#vo.FindSpanLines(IDX_LINES, "sorry can we go again", {}) == 0, "junk matched")
+end)
+
+test("the floor is loose by default and can be set", function()
+  local loose = vo.FindSpanLines(IDX_LINES, "open the gate now please", {})
+  assert(#loose > 0, "a person looking at one span gets nothing to work with")
+  assert(#vo.FindSpanLines(IDX_LINES, "open the gate now please", {}, { floor = 0.99 }) == 0,
+    "the floor was ignored")
+end)
+
+test("empty input is not a match for everything", function()
+  assert(#vo.FindSpanLines(IDX_LINES, "", {}) == 0, "empty text matched")
+  assert(#vo.FindSpanLines(nil, "open the gate", {}) == 0, "no lines matched")
+end)
+
+test("the list is capped", function()
+  local many = {}
+  for i = 1, 40 do many[i] = { text = "open the gate", asset = "a" .. i, row = i } end
+  assert(#vo.FindSpanLines(many, "open the gate", {}) == 12, "not capped to 12")
+  assert(#vo.FindSpanLines(many, "open the gate", {}, { limit = 3 }) == 3, "limit ignored")
+end)
+
+--------------------------------
 -- SelectSpans
 --------------------------------
 print("\nSelectSpans:")
@@ -5385,6 +5427,24 @@ test("the summary counts the user's marks", function()
   })
   assert(n.verified == 1 and n.flagged == 1, "Marks counted independently of status")
   assert(n.total == 3, "Total counts every row")
+end)
+
+test("dismissed audio leaves the orphan count", function()
+  -- Without this, "not on the script: N" can never reach zero and the number
+  -- can only be ignored.
+  local n = vo.SummarizeOverview({
+    { status = "orphan" },
+    { status = "orphan", user_status = "junk" },
+    { status = "orphan", user_status = "junk" },
+  })
+  assert(n.orphan == 1, "Expected 1 orphan, got " .. n.orphan)
+  assert(n.junk == 2, "Expected 2 dismissed, got " .. n.junk)
+  assert(n.total == 3, "Dismissed rows are still rows")
+end)
+
+test("dismissing is not locking", function()
+  local n = vo.SummarizeOverview({ { status = "orphan", user_status = "junk" } })
+  assert(n.verified == 0 and n.flagged == 0, "junk leaked into another count")
 end)
 
 test("summarizing nothing is zero, not an error", function()
