@@ -6233,23 +6233,78 @@ local function loop()
   if visible then
     pending_action = nil
 
-    -- Scripts -------------------------------------------------------------
-    im.Text(ctx, "Script:")
+    -- Row 1 is the ACT row, split by the one distinction the user must
+    -- never have to think about (SPEC-toolbar.md section 1): the Sheet
+    -- zone only updates tracking and is always safe to press; the Items
+    -- zone changes audio items, in workflow order.
+    im.TextDisabled(ctx, "Sheet:")
     im.SameLine(ctx)
-    local n_scripts = #state.scripts
-    if n_scripts == 0 then
-      im.TextDisabled(ctx, "none chosen")
-    else
-      local label = vo.Basename(state.scripts[1].path or "")
-      if n_scripts > 1 then label = label .. string.format(" +%d more", n_scripts - 1) end
-      im.TextDisabled(ctx, label)
-      if im.IsItemHovered(ctx) then
-        local all = {}
-        for _, sc in ipairs(state.scripts) do all[#all + 1] = sc.path end
-        im.SetTooltip(ctx, table.concat(all, "\n"))
-      end
-    end
 
+    if im.Button(ctx, "Refresh") then Rematch() end
+    if im.IsItemHovered(ctx) then
+      local locked = #state.pins
+      im.SetTooltip(ctx, string.format(
+        "Tracking only -- no items change.\n\n" ..
+        "Re-read every transcript and identify the lines again from scratch.\n" ..
+        "Locked lines keep the placement they have (%d locked).\n\n" ..
+        "Do this after transcribing in ajsfx VO Sources, or after editing\n" ..
+        "the script.", locked))
+    end
+    im.SameLine(ctx)
+
+    local tidy_cfg = vo.LoadConfig()
+    if im.Button(ctx, "Tidy") then TidyPass() end
+    if im.IsItemHovered(ctx) then
+      local extra = (tidy_cfg.tidy_name or tidy_cfg.tidy_pull)
+        and "\n\nOpt-ins are ON, so this run ALSO changes items:" ..
+            (tidy_cfg.tidy_name and "\n- names selects and alts" or "") ..
+            (tidy_cfg.tidy_pull and "\n- pulls named items to their tracks" or "")
+        or "\n\nTracking only -- no items change."
+      im.SetTooltip(ctx,
+        "Best-effort pass: refresh, adopt the marks the timeline implies,\n" ..
+        "and count lines still carrying two selects." .. extra)
+    end
+    im.SameLine(ctx, 0, 1)
+    if im.ArrowButton(ctx, "##tidyopts", im.Dir_Down) then
+      im.OpenPopup(ctx, "##tidy_menu")
+    end
+    if im.BeginPopup(ctx, "##tidy_menu") then
+      local hit, v = im.Checkbox(ctx, "Also name matched takes  (changes items)",
+                                 tidy_cfg.tidy_name == true)
+      if hit then
+        tidy_cfg.tidy_name = v or nil
+        vo.SaveConfig(tidy_cfg)
+      end
+      hit, v = im.Checkbox(ctx, "Also pull named items to tracks  (changes items)",
+                           tidy_cfg.tidy_pull == true)
+      if hit then
+        tidy_cfg.tidy_pull = v or nil
+        vo.SaveConfig(tidy_cfg)
+      end
+      im.Separator(ctx)
+      if im.Button(ctx, "Select takes") then AutoSelectTakes(AffectedRows()) end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Tracking only -- no items change.\n\n" ..
+                           "Mark one take per line as the select.")
+      end
+      im.SameLine(ctx)
+      Combo("##autoselect", 70, TAKE_PICKS, state.auto_select_take, function(k)
+        state.auto_select_take = k
+        local cfg = vo.LoadConfig()
+        cfg.auto_select_take = k
+        vo.SaveConfig(cfg)
+      end)
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Which take to mark as the select on a line that was\n" ..
+                           "read more than once. Locked lines are left alone.")
+      end
+      im.EndPopup(ctx)
+    end
+    im.SameLine(ctx)
+
+    im.TextDisabled(ctx, " | ")
+    im.SameLine(ctx)
+    im.TextDisabled(ctx, "Items:")
     im.SameLine(ctx)
 
     -- One button per panel, the open one held down. Sources and Settings are
@@ -6265,16 +6320,6 @@ local function loop()
       im.SameLine(ctx)
     end
 
-    PanelButton("script", "Script",
-      "The script CSVs this project reads, and which column of\n" ..
-      "each holds the filename, the line and the character.")
-
-    if im.Button(ctx, "Sources…") then
-      local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
-      if not ok then state.message, state.message_kind = tostring(why), "error" end
-    end
-    im.SameLine(ctx)
-
     PanelButton("cut", "Cut and Name",
       "Splits every take of every decided line out of its recording\n" ..
       "and names it the script's filename. Moves nothing.")
@@ -6287,12 +6332,62 @@ local function loop()
       "Lays the items out on the timeline in script order or record\n" ..
       "order, on fresh child tracks so nothing lands on anything.")
 
+    if im.Button(ctx, "Place") then pending_action = PlaceSelectedItems end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx,
+        "File the item(s) selected in REAPER where their NAME says they\n" ..
+        "belong: a plain delivered name goes to Selects, an alt-patterned\n" ..
+        "one to Alts. Rename first, press this, the sheet follows.")
+    end
+    im.SameLine(ctx)
+
+    if im.Button(ctx, "Tighten") then pending_action = TightenItems end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx,
+        "Finishing pass: measure where the audio really is in each delivered\n" ..
+        "item and pull loose edges in to the standard head/tail room. Inward\n" ..
+        "only, so speech is never lost; hand-trimmed items (custom fades)\n" ..
+        "are left alone. Works on the REAPER selection, or everything on\n" ..
+        "Selects + Alts when nothing is selected.")
+    end
+    im.SameLine(ctx)
+
     PanelButton("repair", "Repair",
       "Where the sheet and the timeline disagree, and what is broken:\n" ..
       "marks that contradict the track their item sits on, anchors whose\n" ..
       "item is gone, and items claimed by two takes at once.")
 
+    im.TextDisabled(ctx, " | ")
+    im.SameLine(ctx)
+
+    -- Setup cluster, out of the workflow's way at the row's end.
+    PanelButton("script", "Script",
+      "The script CSVs this project reads, and which column of\n" ..
+      "each holds the filename, the line and the character.")
+
+    if im.Button(ctx, "Sources…") then
+      local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
+      if not ok then state.message, state.message_kind = tostring(why), "error" end
+    end
+    im.SameLine(ctx)
+
     if im.Button(ctx, "Settings") then state.settings_open = true end
+    im.SameLine(ctx)
+
+    -- The loaded-script readout, relocated from the row's front.
+    local n_scripts = #state.scripts
+    if n_scripts == 0 then
+      im.TextDisabled(ctx, "(no script chosen)")
+    else
+      local label = vo.Basename(state.scripts[1].path or "")
+      if n_scripts > 1 then label = label .. string.format(" +%d more", n_scripts - 1) end
+      im.TextDisabled(ctx, label)
+      if im.IsItemHovered(ctx) then
+        local all = {}
+        for _, sc in ipairs(state.scripts) do all[#all + 1] = sc.path end
+        im.SetTooltip(ctx, table.concat(all, "\n"))
+      end
+    end
 
     if     state.panel == "script" then DrawScriptPanel()
     elseif state.panel == "cut"    then DrawCutPanel()
