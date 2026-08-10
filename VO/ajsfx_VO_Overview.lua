@@ -5257,6 +5257,25 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     im.SetTooltip(ctx, rep.script)
   end
 
+  -- Two Sels on one line is a decision still pending, not an error --
+  -- track placement legitimately creates it (two items of the line on the
+  -- Selects track both read as Sel) -- so it is badged where the user is
+  -- already looking, and counted into the summary line.
+  local sels = 0
+  for _, t in ipairs(node.takes) do
+    if t.user_select then sels = sels + 1 end
+  end
+  if sels >= 2 then
+    im.SameLine(ctx)
+    im.TextColored(ctx, 0xDDAA33FF,
+      string.format("   %d selects -- pick one", sels))
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "More than one take of this line is marked Sel.\n" ..
+                         "Untick all but one, or drag the extra item off Selects\n" ..
+                         "and press Tidy.")
+    end
+  end
+
   -- The line note, right column: double height to sit parallel with the
   -- Filename and Script rows. No label -- the tooltip says what it is, and
   -- the label was spending the exact space the note wants.
@@ -5546,6 +5565,12 @@ local function DrawSummary()
   end
   if (n.flagged or 0) > 0 then
     seg(0xDD6666FF, string.format("%d flagged", n.flagged))
+  end
+  local conflicts = vo.SelectConflicts(state.overview)
+  if #conflicts > 0 then
+    seg(0xDDAA33FF, string.format("%d line(s) need a select chosen", #conflicts),
+      "Lines carrying more than one Sel. Each card says which takes;\n" ..
+      "untick all but one.")
   end
   if (n.orphan or 0) > 0 then
     seg(nil, string.format("%d orphan", n.orphan),
