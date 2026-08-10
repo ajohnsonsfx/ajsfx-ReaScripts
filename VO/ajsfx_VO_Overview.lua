@@ -137,8 +137,6 @@ local COLUMNS = {
           .. (row.source_path and vo.Basename(row.source_path) or "")
     end,
     tip = "Line: which script CSV, and its row.\nTake: which recording, and when." },
-  { key = "notes", label = "Notes", width = 170, stretch = 1.0,
-    text = function(row) return row.notes or "" end },
 }
 
 local COLUMN_BY_KEY = {}
@@ -493,13 +491,7 @@ local function SaveProjectFile()
   end
   state.project_path = path
 
-  -- Entries are rebuilt from the rows, and line-level notes back onto
-  -- entries no row ever claims ("linenote|" keys) -- carried over here or a
-  -- save would silently drop every line note.
   local entries = vo.ProjectEntriesFromRows(state.overview)
-  for _, e in ipairs(state.entries) do
-    if e.key and e.key:sub(1, 9) == "linenote|" then entries[#entries + 1] = e end
-  end
   local ok = WriteFileAtomic(path, vo.SerializeProjectFile(
     entries,
     { scripts = state.scripts, appends = state.appends, pins = state.pins,
@@ -1438,10 +1430,6 @@ local function SetStatus(row, status)
   Mutate(row, function(e) e.status = status end)
 end
 
-local function SetNotes(row, notes)
-  Mutate(row, function(e) e.notes = (notes ~= "") and notes or nil end)
-end
-
 -- The Append belongs to the SCRIPT LINE, not to the take, so it is written to
 -- state.appends rather than through EntryFor -- and every take of the line picks
 -- it up on the next rebuild. Nothing about the match changes, so this does not
@@ -2295,7 +2283,7 @@ local function Matches(row)
   if state.search ~= "" then
     local needle = state.search:lower()
     local hay = ((row.asset or "") .. " " .. (row.line_text or "") .. " "
-              .. (row.transcript or "") .. " " .. (row.notes or "")):lower()
+              .. (row.transcript or "")):lower()
     if not hay:find(needle, 1, true) then return false end
   end
 
@@ -4756,21 +4744,6 @@ local function DrawTakeRowMenu(row)
   end
 end
 
--- Line-level notes back onto an entry of their own, keyed to the LINE: no
--- overview row ever claims a "linenote|" key, so SaveProjectFile carries
--- these entries over explicitly rather than rebuilding them from rows.
-local function LineNoteKeyOf(rep)
-  return "linenote|" .. tostring(rep.script_row or rep.asset or "")
-end
-
-local function LineNote(rep)
-  local key = LineNoteKeyOf(rep)
-  for _, e in ipairs(state.entries) do
-    if e.key == key then return e.notes or "" end
-  end
-  return ""
-end
-
 -- -----------------------------------------------------------------------
 -- Cards (prototype renderer)
 --
@@ -4851,21 +4824,17 @@ local function CardZones(w)
   local z = { lead = 0, marks = 78, text = 186 }
   local name_w  = 180
   local where_w = 150
-  -- Prose gets what is left, split between the text being read and the
-  -- notes beside it. Below ~720px the Where zone drops to a tooltip, below
-  -- ~540 the Notes zone goes too: at those widths they were unreadable
-  -- slivers, and the text is why the window is open.
+  -- The text being read takes everything left over. There is no notes zone:
+  -- a free-text box per take was a third of the card's width spent on
+  -- something the tool cannot act on, and the card is for the things you
+  -- CONTROL. Below ~720px the Where zone drops to a tooltip -- at that width
+  -- it was an unreadable sliver, and the text is why the window is open.
   z.show_where = w >= 720
-  z.show_notes = w >= 540
   local fixed = z.text + name_w + (z.show_where and where_w or 0) + CARD_PAD * 2
-  local free  = math.max(160, w - fixed)
-  local notes_w = z.show_notes and math.floor(free * 0.32) or 0
-  z.text_w  = free - notes_w
+  z.text_w  = math.max(160, w - fixed)
   z.name    = z.text + z.text_w + 6
   z.where   = z.name + name_w + 6
   z.where_w = where_w
-  z.notes   = z.show_where and (z.where + where_w + 6) or (z.name + name_w + 6)
-  z.notes_w = notes_w
   z.name_w  = name_w
   return z
 end
@@ -5066,17 +5035,6 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
     end
   end
 
-  -- Notes.
-  if z.show_notes then
-    im.SetCursorScreenPos(ctx, rx + z.notes, ry)
-    im.SetNextItemWidth(ctx, z.notes_w)
-    local nchanged, notes = im.InputText(ctx, "##notes", row.notes or "")
-    if nchanged then
-      local captured = notes
-      pending_action = function() SetNotes(row, captured) end
-    end
-  end
-
   im.EndGroup(ctx)
   local _, gh = im.GetItemRectSize(ctx)
   row._card_h = math.max(gh, im.GetFrameHeight(ctx))
@@ -5193,13 +5151,10 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     end
   end
 
-  -- Left column, rows 2 and 3: the delivered name and the source script,
-  -- labelled. The note field sits beside them on the right, double height so
-  -- the two columns stay parallel.
-  -- Notes run short, so the box stays modest: a fifth of the card, capped,
-  -- leaving the width to the filename it was crowding.
-  local note_w = math.min(220, math.max(120, math.floor(inner_w * 0.20)))
-  local note_x = rx + inner_w - note_w
+  -- Rows 2 and 3: the delivered name and the source script, labelled. The
+  -- line-note box used to sit beside them; the card is for the things you
+  -- CONTROL, so the filename now gets the full width it was crowded out of.
+  local note_x = rx + inner_w
 
   im.SetCursorScreenPos(ctx, rx + 22, y2)
   im.TextDisabled(ctx, "Filename:")
@@ -5267,22 +5222,6 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     end
   end
 
-  -- The line note, right column: double height to sit parallel with the
-  -- Filename and Script rows. No label -- the tooltip says what it is, and
-  -- the label was spending the exact space the note wants.
-  im.SetCursorScreenPos(ctx, note_x, y2)
-  local nchanged, ntext = im.InputTextMultiline(ctx, "##linenote", LineNote(rep),
-                                                note_w, line_h * 2)
-  if nchanged then
-    local captured = ntext
-    local target = { key = LineNoteKeyOf(rep), source_path = nil,
-                     source_start = nil, asset = rep.asset }
-    pending_action = function() SetNotes(target, captured) end
-  end
-  if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Note on the line itself (a take's note lives on its row).")
-  end
-
   im.EndGroup(ctx)
   local _, gh = im.GetItemRectSize(ctx)
   rep._band_h = math.max(gh, line_h * 3)
@@ -5308,10 +5247,6 @@ local function DrawTakeHeaderRow(z, rx)
   if z.show_where then
     im.SetCursorScreenPos(ctx, rx + z.where, y)
     im.TextDisabled(ctx, "Item")
-  end
-  if z.show_notes then
-    im.SetCursorScreenPos(ctx, rx + z.notes, y)
-    im.TextDisabled(ctx, "Note")
   end
   PopCellFont(sf)
 end
