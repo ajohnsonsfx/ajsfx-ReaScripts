@@ -150,6 +150,34 @@ Measured on this run, and it reframes several of the items above:
   line indices, non-decreasing exactly so retakes count as in order).
   Still unverified: how false starts (half a line, then a restart) are handled.
 
+## The two item verbs, in the user's words
+
+Both already exist; what was missing was the names and, in one case, the
+scope. Renamed in the Items tab's menu:
+
+- **Assign items to lines** (`MarkSelectedItems`) — one or more already-split
+  items are selected; work out which line each one is, mark it at its CURRENT
+  edges, name it, log it in the sheet. Bidirectional and non-destructive: it
+  gets things STARTED, it does not decide Sel/Keep and it does not trim.
+- **Find lines in items** (`MarkTakesFromSession`) — one or more LONG items
+  are selected that hold several takes; find them all and write a marker per
+  take inside the item. Splits nothing.
+
+- [ ] **"Find lines in items" is session-wide and should honour the
+      selection.** It walks every matched take in the project. When the user
+      has picked the two long items they want dealt with, it should do those.
+      The per-item scoping is the same want as the orphan right-click's "try
+      again": run the matcher over ONE span, deliberately, at a threshold a
+      batch pass would not dare.
+
+- [ ] **Transcribe should always be visible, not behind a tab.** Standing
+      conflict with the tab layout: tabs mean only row 2 is always on screen,
+      and transcribing is something the user reaches for constantly during a
+      first pass. Options: a permanent strip above the sheet, or keep the
+      tabs and move Sources into row 2 with the view controls. Needs a
+      decision before more toolbar churn — this is the second reorganisation
+      and the layout should settle.
+
 ## "Not on the script" must be a QUEUE, not a dead end
 
 - [ ] **Give every orphan a right-click that resolves it.** The list reads as

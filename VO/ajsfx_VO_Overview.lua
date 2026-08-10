@@ -6179,7 +6179,7 @@ local function loop()
       Tip("For items that already exist: work out which script line each one\n" ..
           "is, and write that down in the item itself.")
       if im.BeginPopup(ctx, "##identify_menu") then
-        if im.Selectable(ctx, "Mark takes at their current edges") then
+        if im.Selectable(ctx, "Find lines in items") then
           pending_action = MarkTakesFromSession
         end
         if im.IsItemHovered(ctx) then
@@ -6196,7 +6196,7 @@ local function loop()
                              "current edges. Nothing is cut and nothing moves. A name that\n" ..
                              "already means a line is never overwritten, so re-running is safe.")
         end
-        if im.Selectable(ctx, "Identify the item(s) selected in REAPER") then
+        if im.Selectable(ctx, "Assign items to lines") then
           pending_action = MarkSelectedItems
         end
         if im.IsItemHovered(ctx) then
