@@ -1437,12 +1437,10 @@ local function SetAppend(row, text)
 end
 
 -- Which takes of a line are the same line's takes, for the Sel exclusivity
--- below. By SCRIPT ROW, never by filename: two CSV rows may ask for the same
--- filename -- that is what the Append column exists to separate -- and keying
--- on the name made ticking one line's Sel clear the other line's, which is a
--- different line entirely.
+-- below. The key rule itself lives in the lib (vo.LineKey) so the sheet,
+-- Tidy's conflict count and the card badge cannot drift apart.
 local function LineKeyOf(row)
-  return row.script_row or ("asset:" .. tostring(row.asset))
+  return vo.LineKey(row)
 end
 
 -- Exactly one take of a line may be the SELECT, so ticking one clears the rest

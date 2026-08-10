@@ -1323,6 +1323,41 @@ function vo.EffectiveMarks(entry, track_name, cfg)
   return { select = sel, keep = keep }
 end
 
+-- One take of a line is the Select; the line key is what "one line" means.
+-- By SCRIPT ROW, never by filename: two CSV rows may share a filename (the
+-- Append column separates them), and keying by name would fuse them. This
+-- is the same rule the sheet's SetSelect exclusivity uses -- one function,
+-- so the two cannot drift.
+function vo.LineKey(row)
+  return row.script_row or ("asset:" .. tostring(row.asset))
+end
+
+-- Lines carrying more than one Sel. Not an error state to be prevented --
+-- track placement legitimately creates it (EffectiveMarks rule 2: two items
+-- of a line dragged onto Selects both read as Sel) -- but a decision the
+-- user still has to make, so Tidy counts them and the card badges them.
+-- Orphans are skipped: they are not lines, and their asset keys collide.
+function vo.SelectConflicts(rows)
+  local by_key, order = {}, {}
+  for _, row in ipairs(rows or {}) do
+    if row.user_select and row.status ~= "orphan" then
+      local key = vo.LineKey(row)
+      local got = by_key[key]
+      if not got then
+        got = { key = key, label = row.deliver or row.asset or "(unnamed)", count = 0 }
+        by_key[key] = got
+        order[#order + 1] = got
+      end
+      got.count = got.count + 1
+    end
+  end
+  local out = {}
+  for _, c in ipairs(order) do
+    if c.count >= 2 then out[#out + 1] = c end
+  end
+  return out
+end
+
 --------------------------------
 -- Pure layer: ranged take markers
 --------------------------------
