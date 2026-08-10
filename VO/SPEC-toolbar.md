@@ -21,6 +21,9 @@ meaning, not the tooltip.** Names are deliberately long. A tooltip explains
 consequences and edge cases; it is never the only place the button's job is
 written down.
 
+Third rule: **every verb acts on the selection, and the scope is always on
+screen.** See §2.1.
+
 ## 2. Layout
 
 ```
@@ -50,6 +53,7 @@ the panel by itself.
 ### Edit
 ```
 [ Run the whole pass ]   match → cut → pick → pull
+Acting on 12 selected row(s).
 
 Match:  [ Match transcript to script ]  [ Find lines in items ]
         [ Assign items to lines ]  [ Adopt the whole session ]
@@ -78,7 +82,9 @@ sheet-only verb with item-writing ones — and accepted deliberately.
   an "Identify line from item ▾" menu, which hid three distinct situations
   behind one generic name and an extra click.
 - **Cut** — make each take physically its own item, with the right edges.
-  *Cut recording into takes*; *Auto-adjust head and tail* (the old Tighten —
+  *Cut recording into takes* acts on the press (it used to open a panel whose
+  only real control was a second copy of itself; the panel is now the report
+  the run opens by itself); *Auto-adjust head and tail* (the old Tighten —
   its trims move the take marker too, so the finishing pass cannot create the
   disagreement Fix a line would then report).
 - **Pick** — decide what ships. *Auto-pick selects: last take* / *first
@@ -103,6 +109,41 @@ sheet-only verb with item-writing ones — and accepted deliberately.
   everywhere means the session agrees with itself. *Tidy up take markers*
   closes the row. The orphan queue and the summary line are this phase's
   other half, living in the sheet itself.
+
+### 2.1 Scope: the selection, shown
+
+**Every verb acts on what is selected; nothing is selected means everything the
+filters show.** One rule, no per-panel checkbox, and a dim line under the hero
+says what the next press will act on before it is pressed.
+
+**There are two selections and they are one idea.** The sheet selects rows;
+REAPER selects items. `row.item` is the bridge, and `vo.ResolveScope` unions
+them — a row is in scope if its own row is selected, or if the item it lives in
+is. That reads correctly at both stages of the job, which is why the UI never
+has to distinguish lines from items:
+
+| | one item is… | selecting the item means… |
+|---|---|---|
+| **before Cut** | the whole recording, holding every take | every take in it — *"cut this recording"* |
+| **after Cut** | exactly one take | that take |
+
+That asymmetry is the reason the rule is written on takes rather than on items.
+Before Cut there is no parity to appeal to: one item holds four hundred takes.
+Resolving item → takes (never item → item) makes the same sentence true at both
+stages.
+
+**It never silently widens.** A selection that resolves to nothing in view —
+because the filters are hiding it — gives an EMPTY scope and says so. Acting on
+169 lines because the one you picked was filtered out is the worst available
+answer.
+
+**Why the scope line is not optional.** This replaced a "Selected rows only"
+checkbox that defaulted to OFF, because clicking a row to audition it also
+selects its item (`SyncProjectSelection`), so honouring the selection meant
+listening could silently narrow the next run. The tool was protecting itself
+from its own selection by ignoring it. Honouring it always and *showing* the
+result is the honest version of the same safety: if the line says "3 rows",
+nothing can act on 169.
 
 ### The ribbon's height
 

@@ -1436,6 +1436,42 @@ function vo.EffectiveMarks(entry, track_name, cfg)
   return { select = sel, keep = keep }
 end
 
+-- What a batch action acts on: the selection, whichever way it was made.
+--
+-- There are two selections in this tool and they used to be different ideas --
+-- the sheet's row selection, and REAPER's item selection -- with a checkbox
+-- ("Selected rows only") deciding whether the first one counted at all. Two
+-- selections and a toggle is three things to hold in mind before pressing
+-- anything, which is the opposite of feeling in control.
+--
+-- They are one idea, because `row.item` is the bridge. A row IS a take; an
+-- item CONTAINS takes. After Cut that is one take per item and the two
+-- selections name the same set. Before Cut one recording item holds every take
+-- in the session, so selecting it selects them all -- which is exactly what
+-- "cut this recording" should mean. The same rule reads correctly at both
+-- stages, so the UI never has to distinguish them.
+--
+-- Never silently widens: a selection that matches nothing in view returns an
+-- EMPTY scope rather than falling back to everything. Acting on 169 lines
+-- because the one you picked was filtered out is the worst possible answer.
+--
+-- `rows` is the fallback scope (what the filters are showing).
+-- Returns: rows in scope, narrowed (true when a selection decided it).
+function vo.ResolveScope(rows, selected_uids, selected_items)
+  local picked = (selected_uids and next(selected_uids) ~= nil)
+              or (selected_items and next(selected_items) ~= nil)
+  if not picked then return rows or {}, false end
+
+  local out = {}
+  for _, row in ipairs(rows or {}) do
+    if (row.uid ~= nil and selected_uids and selected_uids[row.uid])
+       or (row.item ~= nil and selected_items and selected_items[row.item]) then
+      out[#out + 1] = row
+    end
+  end
+  return out, true
+end
+
 -- One take of a line is the Select; the line key is what "one line" means.
 -- By SCRIPT ROW, never by filename: two CSV rows may share a filename (the
 -- Append column separates them), and keying by name would fuse them. This

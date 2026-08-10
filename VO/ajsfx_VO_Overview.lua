@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.15beta6
--- @changelog PRE-RELEASE: the toolbar is three tabs -- Setup, Edit and Settings -- and a tab never does anything: it only decides which buttons you are looking at, while every button under it acts. Edit leads with "Run the whole pass" (match, cut, pick, pull, in one undo step) above one row per step of the same name -- Match, Cut, Pick, Pull -- plus Check, the phase the batch button cannot run for you. "Auto-pick selects" and "Auto-name the alts" join "Auto-adjust head and tail" as the Auto- family: each is the batch form of a per-row sheet gesture. Auto-adjust now moves the take marker with the edges it trims. Buttons wrap rather than running off a narrow window, and the ribbon holds one height so the sheet no longer jumps when you click between tabs. "Start over..." in Setup deletes this project's VO data, behind a confirm that names what goes and what stays. The blank sheet now asks for the two things it needs -- a script and a transcript -- with a button for each.
+-- @changelog PRE-RELEASE: the toolbar is three tabs -- Setup, Edit and Settings -- and a tab never does anything: it only decides which buttons you are looking at, while every button under it acts. Edit leads with "Run the whole pass" (match, cut, pick, pull, in one undo step) above one row per step of the same name -- Match, Cut, Pick, Pull -- plus Check, the phase the batch button cannot run for you. EVERY verb now acts on the selection -- rows picked in the sheet, items picked in REAPER, or both -- and a line under the hero says what the next press will act on. Selecting an uncut recording selects every take inside it, so one rule reads correctly before and after the cut. The per-panel "Selected rows only" checkboxes are gone. "Cut recording into takes" cuts on the press; its panel is now the report the run opens by itself. "Auto-pick selects" and "Auto-name the alts" join "Auto-adjust head and tail" as the Auto- family: each is the batch form of a per-row sheet gesture. Auto-adjust now moves the take marker with the edges it trims. Buttons wrap rather than running off a narrow window, and the ribbon holds one height so the sheet no longer jumps when you click between tabs. "Start over..." in Setup deletes this project's VO data, behind a confirm that names what goes and what stays. The blank sheet now asks for the two things it needs -- a script and a transcript -- with a button for each.
 --   "Not on the script" is a queue instead of a dead end: right-click any orphan to hand it to a script line (best guesses first, scored against what was actually said) or dismiss it as junk, which is remembered and leaves the count -- so "0 orphans" now means every span has been looked at. Each orphan says why it is one. Matching ranks candidates by tokens of agreement rather than by score, so a short line matched perfectly no longer takes the words out of the middle of a long one. A transcript is drawn in one colour with the EXTRA words -- what the reader said that the line does not contain -- in amber; the colour used to encode a match threshold nobody could see. Notes are gone from the cards. A reader going again is no longer reported as a transcriber loop. In Sources: single-click opens a file's detail, "Copy report" puts everything on the clipboard, reported timecodes are clickable links that move the edit cursor, and a transcript can be deleted from the panel. "Find lines in items" honours the REAPER selection. Fixed: a race that reported "whisper-cli exited with code -1" on runs that had barely started.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
@@ -225,9 +225,6 @@ local state = {
   -- is where the work happens; Setup is a once-per-project errand.
   tab           = "edit",     -- see TOOLBAR_TABS
   tab_sync      = 4,          -- frames left to push state.tab into the tab bar
-  -- Whether the tools narrow to the table's selection. Off by default: see
-  -- AffectedRows for why selection makes a poor default scope here.
-  selection_only = false,
   cut_summary   = {},         -- what the last Cut and Name run did
   -- The Cut panel's stage counts, memoised. Worked out from the same code the
   -- run uses, so what it says and what it does cannot drift apart.
@@ -240,8 +237,6 @@ local state = {
   -- button on screen; force_recut is the one-shot override it arms.
   cut_skipped_edited = {},
   force_recut   = false,
-  cut_count_key = nil,
-  cut_counts    = { spans = 0, cuttable = 0, in_range = 0, stale = 0, candidates = 0 },
   -- The Pull panel's count line, memoised: working it out reads a take name per
   -- item. Keyed on the project-state counter and the selection size.
   pull_count_key = nil,
@@ -2904,14 +2899,29 @@ end
 -- selected, and a tool that quietly narrowed to it would do a fraction of what
 -- its label says. The filters are the real scoping tool here; the tick boxes
 -- are how you mark individual takes.
-local function AffectedRows()
-  if state.selection_only then
-    local sel = SelectedRows()
-    if #sel > 0 then return sel, true end
+-- The items selected in REAPER, as a set, for scope resolution.
+local function SelectedItemSet()
+  local set = {}
+  for i = 0, r.CountSelectedMediaItems(0) - 1 do
+    set[r.GetSelectedMediaItem(0, i)] = true
   end
-  -- Filtered, not visible: a line folded shut is still in scope. Folding is
-  -- how the table is tidied, not how a run is narrowed.
-  return state.filtered, false
+  return set
+end
+
+-- What the next press acts on: the selection, made either way, else everything
+-- the filters are showing.
+--
+-- No toggle. "Selected rows only" was a checkbox deciding whether the sheet's
+-- selection counted, defaulting to OFF because clicking a row to audition it
+-- also selects its item -- so the tool protected itself from its own selection
+-- by ignoring it. The honest fix is the opposite: honour the selection always
+-- and SHOW what it resolved to (DrawScopeLine), so narrowing is visible rather
+-- than defended against.
+--
+-- Filtered, not visible: a line folded shut is still in scope. Folding is how
+-- the sheet is tidied, not how a run is narrowed.
+local function AffectedRows()
+  return vo.ResolveScope(state.filtered, state.selection, SelectedItemSet())
 end
 
 -- The items Pull and Sort may act on, in timeline order, each carrying the name
@@ -2927,16 +2937,24 @@ end
 -- Scope, narrowest first: the items selected in REAPER, else the items behind
 -- the selected rows, else every item in the project.
 local function TargetItems()
-  -- REAPER's own item selection is NOT consulted: clicking a row to audition
-  -- it selects that row's item, so using it as the scope would silently narrow
-  -- every run to the last take listened to.
-  local chosen, scope = {}, "every item in the project"
-  if state.selection_only then
-    for _, row in ipairs(SelectedRows()) do
-      if row.item then chosen[row.item] = true end
+  -- Both selections count, and REAPER's is taken as given rather than mapped
+  -- through the sheet: Pull and Sort serve folders of rendered files that have
+  -- no rows at all, so an item selected in the arrange must be actionable even
+  -- when nothing in the sheet knows about it.
+  local chosen = SelectedItemSet()
+  local from_reaper = next(chosen) ~= nil
+  local from_rows = false
+  for _, row in ipairs(SelectedRows()) do
+    if row.item then
+      chosen[row.item] = true
+      from_rows = true
     end
-    if next(chosen) then scope = "the items behind the selected rows" end
   end
+
+  local scope = "every item in the project"
+  if from_reaper and from_rows then scope = "the selected items and rows"
+  elseif from_reaper           then scope = "the items selected in REAPER"
+  elseif from_rows             then scope = "the items behind the selected rows" end
   local everything = next(chosen) == nil
 
   -- Marks, characters and per-take names come from the row where one exists.
@@ -3178,15 +3196,36 @@ local ctx = NewContext()
 -- belongs: everything above this line runs before `ctx` exists, so a drawing
 -- helper placed there would pass a nil context to ImGui and take the frame
 -- down with it -- which is exactly what it did.
-local function DrawScopeToggle(id)
-  local changed, on = im.Checkbox(ctx, "Selected rows only##" .. id, state.selection_only)
-  if changed then state.selection_only = on end
+-- What the next press will act on, always on screen.
+--
+-- This replaced the "Selected rows only" checkbox, and it is the safety the
+-- checkbox was pretending to be. Every verb is selection-driven now, and the
+-- hazard that made the old default OFF is real -- clicking a row to audition it
+-- selects its item, so listening can narrow the next run. The answer is not to
+-- ignore the selection; it is to never let the scope be a surprise. If this
+-- line says "3 takes", nothing can act on 169.
+local function DrawScopeLine()
+  local rows, narrowed = AffectedRows()
+  local n = #rows
+  if not narrowed then
+    im.TextDisabled(ctx, string.format(
+      "Acting on all %d row(s) in view \226\128\148 select rows here, or items in " ..
+      "REAPER, to narrow.", n))
+    return
+  end
+  if n == 0 then
+    im.TextColored(ctx, 0xDDAA33FF,
+      "Nothing selected is in view \226\128\148 the filters are hiding it. " ..
+      "Clear the filters, or select something showing here.")
+    return
+  end
+  im.TextColored(ctx, 0x7FA0C0FF, string.format(
+    "Acting on %d selected row(s).", n))
   if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, string.format(
-      "Off: act on every row the filters are showing (%d).\n" ..
-      "On: act on the rows selected in the table (%d).\n\n" ..
-      "Off by default because clicking a row to listen to it also selects it.",
-      #(state.filtered or {}), #SelectedRows()))
+    im.SetTooltip(ctx, "Every button below acts on this, not on the whole\n" ..
+                       "session. Deselect everything to act on all of it.\n\n" ..
+                       "Selecting a recording that has not been cut yet selects\n" ..
+                       "every take inside it.")
   end
 end
 
@@ -3927,35 +3966,32 @@ local function DoCut()
   Reload()
 end
 
+-- Cut, wrapped. An error in the cut path used to escape into the defer loop,
+-- which stops the script dead and looks exactly like the button doing nothing.
+-- Whatever went wrong belongs on screen.
+local function RunCut()
+  local ok, err = pcall(DoCut)
+  if not ok then
+    state.message, state.message_kind = "Cut failed: " .. tostring(err), "error"
+    state.cut_result, state.cut_result_kind = state.message, "error"
+    r.ShowConsoleMsg("ajsfx VO — Cut FAILED\n" .. tostring(err) .. "\n\n")
+  end
+  -- The report opens itself. Cut is the one verb whose result needs more than
+  -- a message line: which stage lost spans, what was skipped and why.
+  state.panel = "cut"
+end
+
+-- The REPORT, not the controls. This panel used to carry a "Cut and Name"
+-- button (a second copy of the toolbar button that opened it), a "Selected
+-- rows only" checkbox, and a live pre-flight counter that existed to show what
+-- that checkbox would do. The toolbar button now cuts on the press and the
+-- scope line above says what it will act on, so all three are gone and what is
+-- left is what the run did.
 local function DrawCutPanel()
   im.Separator(ctx)
-  im.TextWrapped(ctx,
-    "Splits every take the match identified out of its recording and names it " ..
-    "the script's filename. Nothing moves and nothing is decided: press Pull " ..
-    "afterwards to route the takes onto their tracks.")
-  im.Spacing(ctx)
-
-  -- "##do" is an ID suffix, not part of the label: the toolbar has a button
-  -- reading "Cut and Name" too, and ImGui identifies a widget by its label
-  -- within the window. Two buttons with one ID are ONE widget to ImGui, and
-  -- the click never reaches this one.
-  if im.Button(ctx, "Cut and Name##do") then
-    -- Wrapped: an error in the cut path used to escape into the defer loop,
-    -- which stops the script dead and looks exactly like the button doing
-    -- nothing. Whatever went wrong belongs on screen.
-    pending_action = function()
-      local ok, err = pcall(DoCut)
-      if not ok then
-        state.message, state.message_kind = "Cut failed: " .. tostring(err), "error"
-        state.cut_result, state.cut_result_kind = state.message, "error"
-        r.ShowConsoleMsg("ajsfx VO — Cut and Name FAILED\n" .. tostring(err) .. "\n\n")
-      end
-    end
-  end
   -- Only after a run that actually skipped something: the override discards
   -- hand-edits, so it must never be a button standing permanently ready.
   if #(state.cut_skipped_edited or {}) > 0 then
-    im.SameLine(ctx)
     if im.Button(ctx, "Re-cut anyway") then
       pending_action = function()
         -- Delete the markers of exactly the skipped takes -- by delivered
@@ -3985,11 +4021,7 @@ local function DrawCutPanel()
           end
         end)
         state.force_recut = true
-        local ok, err = pcall(DoCut)
-        if not ok then
-          state.message, state.message_kind = "Cut failed: " .. tostring(err), "error"
-          state.cut_result, state.cut_result_kind = state.message, "error"
-        end
+        RunCut()
       end
     end
     if im.IsItemHovered(ctx) then
@@ -3998,37 +4030,7 @@ local function DrawCutPanel()
     end
   end
 
-  -- The marker/naming commands that used to sit here now live once, in the
-  -- Items tab's "Identify line from item" menu. They were in this panel AND
-  -- in Repair, which is exactly the duplication the tab layout removes.
-
-  im.SameLine(ctx)
   if im.Button(ctx, "Close##cut") then state.panel = nil end
-  im.SameLine(ctx)
-
-  DrawScopeToggle("cut")
-
-  -- The pipeline, stage by stage, from the same code the run uses. A run that
-  -- does nothing can then be read off rather than guessed at.
-  local key = table.concat({ tostring(state.scanned_at), tostring(#SelectedRows()) }, "|")
-  if key ~= state.cut_count_key then
-    local _, _, _, counts = CutCandidates()
-    state.cut_count_key, state.cut_counts = key, counts
-  end
-  local c = state.cut_counts
-  im.TextDisabled(ctx, string.format(
-    "%d spans matched, %d cuttable, %d in range, %d skipped as stale  ->  %d to cut",
-    c.spans, c.cuttable, c.in_range, c.stale, c.candidates))
-
-  -- Before the first cut is the moment this is fixable for free: afterwards
-  -- the takes of both lines share a name until the Appends land and a re-cut
-  -- renames them.
-  if #(state.dupe_assets or {}) > 0 then
-    im.TextColored(ctx, 0xDDAA33FF, string.format(
-      "%d delivered name(s) are claimed by two script lines. Set an Append " ..
-      "on each first, or their takes will be cut under one shared name.",
-      #state.dupe_assets))
-  end
 
   -- What the last run did, repeated here because the window's own message line
   -- is below the table and this panel is above it.
@@ -4525,8 +4527,6 @@ local function DrawPullPanel()
   im.SameLine(ctx)
   if im.Button(ctx, "Close##pull") then state.panel = nil end
   im.SameLine(ctx)
-  DrawScopeToggle("pull")
-  im.SameLine(ctx)
 
   -- Memoised on the project-state counter and the row selection: PullItems
   -- reads a take name per item, which is a REAPER call per item and has no
@@ -4970,8 +4970,6 @@ local function DrawLayoutBar()
   end
   im.SameLine(ctx)
   if im.Button(ctx, "Close##sort") then state.panel = nil end
-  im.SameLine(ctx)
-  DrawScopeToggle("sort")
 
   im.Separator(ctx)
 end
@@ -6274,7 +6272,7 @@ local REMOTE_SECTION = "ajsfx_vo_remote"
 local REMOTE_HELP =
   "status | rematch | cut | adopt | mark_takes | mark_selected | " ..
   "sync_markers | pull | name_alts | sort script|record | " ..
-  "set selection_only 0|1 | dupes | append script|asset|nth|text | " ..
+  "dupes | append script|asset|nth|text | " ..
   "rows [needle] | spans <needle> | missing | boundaries | verify | " ..
   "make_select <takename> | place | tighten"
 
@@ -6286,8 +6284,9 @@ local function RemoteStatus()
   parts[#parts + 1] = string.format("extra=%d", #(c.extra or {}))
   parts[#parts + 1] = string.format("rows=%d", #(state.overview or {}))
   parts[#parts + 1] = string.format("scripts=%d", #(state.scripts or {}))
-  parts[#parts + 1] = string.format("selection_only=%s",
-    state.selection_only and "1" or "0")
+  local scoped, narrowed = AffectedRows()
+  parts[#parts + 1] = string.format("scope=%s",
+    narrowed and (#scoped .. " selected") or "all")
   if #(state.dupe_assets or {}) > 0 then
     parts[#parts + 1] = string.format("dupes=%d", #state.dupe_assets)
   end
@@ -6338,13 +6337,6 @@ local function RunRemoteCommand(command)
     if rest == "script" or rest == "record" then state.layout_order = rest end
     SortOnTimeline()
     return state.message or "sort ran"
-  elseif verb == "set" then
-    local key, value = rest:match("^(%S+)%s+(%S+)$")
-    if key == "selection_only" then
-      state.selection_only = (value == "1")
-      return "selection_only=" .. (state.selection_only and "1" or "0")
-    end
-    return "unknown setting: " .. tostring(key) .. ". Commands: " .. REMOTE_HELP
   elseif verb == "rows" then
     -- The sheet, as the window actually holds it: one line per row, with the
     -- mark, the take number and the item it resolved to.
@@ -6893,10 +6885,22 @@ local function loop()
           "  3. pick a take for each line\n" ..
           "  4. pull the items to their tracks\n\n" ..
           "Each step is the row of the same name below, for when you want\n" ..
-          "just one. This CHANGES ITEMS: it cuts, names and moves audio.")
+          "just one. This CHANGES ITEMS: it cuts, names and moves audio.\n\n" ..
+          "Acts on the selection, like every button below: the line under\n" ..
+          "this one says what that is right now.\n\n" ..
+          "Step 3 picks each line's " ..
+          ((state.auto_select_take == "first") and "FIRST" or "LAST") ..
+          " take -- whichever of the two\nAuto-pick buttons you used last.")
       end
       im.SameLine(ctx)
       im.TextDisabled(ctx, "  match \226\134\146 cut \226\134\146 pick \226\134\146 pull")
+
+      -- Directly under the hero and above every row: the scope is the one
+      -- thing that changes what all of these do, so it is never more than a
+      -- glance away from the button being pressed.
+      im.NewLine(ctx)
+      im.SetCursorPosX(ctx, row_left)
+      DrawScopeLine()
       started = true
 
       -- The rows below are the hero's own words -- match, cut, pick, pull --
@@ -6947,9 +6951,14 @@ local function loop()
           "already means a line is never overwritten, so re-running is safe.")
 
       Group("Cut:")
-      PanelButton("cut", "Cut recording into takes",
-        "Splits every take the match identified out of its recording and\n" ..
-        "names it the script's filename. Nothing moves.")
+      if im.Button(ctx, "Cut recording into takes") then
+        pending_action = RunCut
+      end
+      Tip("Splits every take in scope out of its recording and names it the\n" ..
+          "script's filename. Nothing moves and nothing is decided -- Pull is\n" ..
+          "where a take's fate is settled.\n\n" ..
+          "Select a recording to cut all of it, or rows to cut just those.\n" ..
+          "The line above the rows says which.")
 
       Flow("Auto-adjust head and tail")
       if im.Button(ctx, "Auto-adjust head and tail") then pending_action = TightenItems end
