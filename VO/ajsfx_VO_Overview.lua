@@ -191,7 +191,7 @@ local state = {
   -- Which toolbar tab's buttons are showing. Items is the default because it
   -- is where the work happens; Setup is a once-per-project errand.
   tab           = "items",    -- see TOOLBAR_TABS
-  tab_sync      = true,       -- push state.tab into the tab bar next frame
+  tab_sync      = 4,          -- frames left to push state.tab into the tab bar
   -- Whether the tools narrow to the table's selection. Off by default: see
   -- AffectedRows for why selection makes a poor default scope here.
   selection_only = false,
@@ -385,7 +385,7 @@ local function LoadScripts()
 
   for _, sc in ipairs(state.loaded.scripts) do
     if sc.error and sc.error ~= "" then
-      state.tab, state.panel, state.tab_sync = "setup", "script", true
+      state.tab, state.panel, state.tab_sync = "setup", "script", 4
     end
   end
 
@@ -4249,7 +4249,7 @@ local function DrawRepairPanel()
     end
     im.SameLine(ctx)
     if im.Button(ctx, "Adopt sheet") then
-      state.tab, state.panel, state.tab_sync = "items", "pull", true
+      state.tab, state.panel, state.tab_sync = "items", "pull", 4
       state.message, state.message_kind =
         "The marks are right -- run Pull to move the items to match them.", "info"
     end
@@ -6196,16 +6196,23 @@ local function loop()
     local n_scripts = #state.scripts
 
     if im.BeginTabBar(ctx, "##toolbar") then
+      -- ImGui selects the FIRST tab until told otherwise, which on frame one
+      -- silently moved the tool to Setup. state.tab_sync is a frame budget,
+      -- set whenever the TOOL decides which tab you should be on -- window
+      -- open, a script that failed to load, "Adopt sheet" sending you to
+      -- Pull -- and it pushes that decision into the bar.
+      --
+      -- `want` is read ONCE, before the loop: during a sync the bar reports
+      -- the outgoing tab as selected too, and writing state.tab from inside
+      -- the loop overwrote the very target the later tabs compare against.
+      -- So while syncing, what the bar reports is ignored entirely.
+      local want = (state.tab_sync or 0) > 0 and state.tab or nil
+      local reported = nil
       for _, t in ipairs(TOOLBAR_TABS) do
-        -- ImGui selects the FIRST tab until told otherwise, which on frame one
-        -- silently moved state.tab to Setup. state.tab_sync is set whenever the
-        -- tool decides which tab you should be on -- window open, a script that
-        -- failed to load, "Adopt sheet" sending you to Pull -- and makes the
-        -- tab bar follow that decision for exactly one frame.
-        local flags = (state.tab_sync and t.key == state.tab)
-          and im.TabItemFlags_SetSelected or 0
+        local flags = (want == t.key) and im.TabItemFlags_SetSelected or 0
         if im.BeginTabItem(ctx, t.label, nil, flags) then
-          if state.tab ~= t.key then
+          reported = t.key
+          if not want and state.tab ~= t.key then
             -- A panel belongs to the tab that opened it; leaving the tab
             -- closes it rather than leaving it hanging under a bar that
             -- cannot close it.
@@ -6215,13 +6222,17 @@ local function loop()
           im.EndTabItem(ctx)
         end
       end
+      if want then
+        -- Done as soon as the bar agrees, and in any case bounded, so a
+        -- flag the bar never honours cannot freeze the tabs.
+        state.tab_sync = (reported == want) and 0 or (state.tab_sync - 1)
+      end
       -- Settings is a window, not a group of buttons, so it is a tab-SHAPED
       -- button parked on the right rather than a tab.
       if im.TabItemButton(ctx, "Settings", im.TabItemFlags_Trailing) then
         state.settings_open = true
       end
       im.EndTabBar(ctx)
-      state.tab_sync = false
     end
 
     -- One button per detail panel, the open one held down.
@@ -6390,7 +6401,7 @@ local function loop()
         bad, n_scripts, n_scripts == 1 and "" or "s"))
       im.SameLine(ctx)
       if im.Button(ctx, "Choose script…##warn") then
-        state.tab, state.panel, state.tab_sync = "setup", "script", true
+        state.tab, state.panel, state.tab_sync = "setup", "script", 4
       end
     end
 
