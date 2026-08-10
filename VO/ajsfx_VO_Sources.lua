@@ -743,7 +743,10 @@ local function DrawDeleteTranscript(row)
   if im.IsItemHovered(ctx) then
     im.SetTooltip(ctx, "Remove this file's transcript sidecar from disk.")
   end
-  if im.BeginPopupModal(ctx, popup, nil, im.WindowFlags_AlwaysAutoResize) then
+  -- A plain popup, not a modal: this one is drawn inside the detail CHILD
+  -- window, and the reset confirm in Overview already proves this shape works
+  -- here. Clicking away cancels, which is the right default for a delete.
+  if im.BeginPopup(ctx, popup) then
     im.Text(ctx, "Delete the transcript for:")
     im.TextDisabled(ctx, row.name)
     im.Spacing(ctx)
