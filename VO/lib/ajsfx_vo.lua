@@ -3615,6 +3615,28 @@ end
 
 
 --------------------------------
+-- Pure layer: subprocess exit code
+--------------------------------
+
+-- Read an exit code out of the launcher's done-file contents.
+--
+-- Returns a NUMBER when the launcher has written one, and nil for "not
+-- finished yet" -- including an empty file, which is the state `> done.txt`
+-- leaves behind between creating the file and writing into it. The poll loop
+-- opens that file at frame rate, so it WILL sometimes catch it empty.
+--
+-- The distinction is the whole point. Reading an empty file as -1 told the
+-- user "whisper-cli exited with code -1" about a run that had not started
+-- failing, and on a real session that message cost the first 30 seconds of a
+-- read: the gap repair that would have recovered it was recorded as a failure
+-- while the process it launched went on to succeed unheard.
+function vo.ParseExitFile(text)
+  if type(text) ~= "string" then return nil end
+  local line = text:match("^[^\r\n]*") or ""
+  return tonumber((line:gsub("^%s+", ""):gsub("%s+$", "")))
+end
+
+--------------------------------
 -- Pure layer: shell quoting
 --------------------------------
 
@@ -3824,16 +3846,42 @@ end
 -- destroyed whisper's own sentence grouping, and the SCRIPT is what says where
 -- lines divide anyway. This is purely a reading aid for the detail panel.
 --
--- Words are grouped so a new paragraph starts after any word whose text ends
--- in `.`, `?` or `!` (optionally followed by a closing quote).
+-- Words are grouped where the reader PAUSED: a break after any word followed
+-- by `min_pause` seconds of nothing (default vo.PARAGRAPH_PAUSE).
+--
+-- It used to break on sentence punctuation, and that was actively misleading.
+-- The panel showed `Do not tell master, not do tell master, do not tell
+-- master.` as one line and `on an island like this, on an island like this,
+-- on an island like this one...` as another, which reads like the transcript
+-- found long sentences. It did not: those are a reader going again, and again,
+-- and the punctuation whisper hung on them is a guess. Presenting a guess as
+-- structure invites the user to blame the transcript for damage that is not
+-- there.
+--
+-- A pause is the one boundary in this data that came from the performance
+-- rather than from the recognizer. It is still DISPLAY ONLY -- nothing is
+-- stored, and matching never sees it; the SCRIPT is what says where lines
+-- divide.
+--
+-- Caveat worth knowing: whisper stretches each word's end to the next word's
+-- start, so most gaps read as exactly zero and only real pauses survive. That
+-- is precisely why this works, and also why the breaks are sparser than the
+-- pauses a listener hears.
+--
 -- Returns: array of paragraphs, each an array of the original word tables (so
 -- a caller needing per-word timing -- the detail panel's word interaction --
 -- can index into the same objects vo.Paragraphs summarizes).
-function vo.ParagraphWords(words)
+vo.PARAGRAPH_PAUSE = 0.35
+
+function vo.ParagraphWords(words, min_pause)
+  min_pause = min_pause or vo.PARAGRAPH_PAUSE
   local paras, current = {}, {}
-  for _, w in ipairs(words or {}) do
+  local list = words or {}
+  for i, w in ipairs(list) do
     current[#current + 1] = w
-    if w.text:match("[%.%?%!]['\"]?$") then
+    local nxt = list[i + 1]
+    local gap = (nxt and w.t1 and nxt.t0) and (nxt.t0 - w.t1) or nil
+    if gap and gap >= min_pause then
       paras[#paras + 1] = current
       current = {}
     end
@@ -3844,9 +3892,9 @@ end
 
 -- vo.ParagraphWords, joined to display prose. Returns: array of paragraph
 -- strings.
-function vo.Paragraphs(words)
+function vo.Paragraphs(words, min_pause)
   local out = {}
-  for _, para in ipairs(vo.ParagraphWords(words)) do
+  for _, para in ipairs(vo.ParagraphWords(words, min_pause)) do
     local texts = {}
     for _, w in ipairs(para) do texts[#texts + 1] = w.text end
     out[#out + 1] = table.concat(texts, " ")
@@ -5506,12 +5554,15 @@ function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error
     return text or ""
   end
 
+  -- nil means NOT FINISHED. See vo.ParseExitFile: the launcher creates this
+  -- file with `>` and writes the code into it a moment later, so an empty read
+  -- is a race, not an exit code.
   local function finished()
     local f = io.open(done_file, "r")
     if not f then return nil end
-    local code = tonumber(f:read("l")) or -1
+    local text = f:read("a")
     f:close()
-    return code
+    return vo.ParseExitFile(text)
   end
 
   local ok_im, im = pcall(function()
@@ -5636,12 +5687,15 @@ function vo.RunDownloadAsync(cfg, url, dest_path, expected_bytes, on_done, on_ca
   end
   if not launched then on_error("Failed to launch curl") return end
 
+  -- nil means NOT FINISHED. See vo.ParseExitFile: the launcher creates this
+  -- file with `>` and writes the code into it a moment later, so an empty read
+  -- is a race, not an exit code.
   local function finished()
     local f = io.open(done_file, "r")
     if not f then return nil end
-    local code = tonumber(f:read("l")) or -1
+    local text = f:read("a")
     f:close()
-    return code
+    return vo.ParseExitFile(text)
   end
 
   local function read_log()

@@ -5981,31 +5981,56 @@ end)
 --------------------------------
 print("\nParagraphs / ParagraphWords:")
 
-test("a word ending in a sentence terminator closes a paragraph", function()
-  local words = {
+test("a pause closes a paragraph; punctuation alone does not", function()
+  -- Whisper stretches a word's end to the next word's start, so a run read
+  -- without pausing has zero gaps no matter how much punctuation it carries.
+  local paras = vo.Paragraphs({
     { t0 = 0, t1 = 1, text = "we" },
     { t0 = 1, t1 = 2, text = "should" },
     { t0 = 2, t1 = 3, text = "go." },
     { t0 = 3, t1 = 4, text = "okay" },
-  }
-  local paras = vo.Paragraphs(words)
-  assert(#paras == 2, "Expected 2 paragraphs, got " .. #paras)
-  assert(paras[1] == "we should go.", "Para 1: " .. tostring(paras[1]))
-  assert(paras[2] == "okay", "Para 2: " .. tostring(paras[2]))
-end)
-
-test("? and ! and a trailing closing quote also close a paragraph", function()
-  local paras = vo.Paragraphs({
-    { text = "really?" }, { text = "yes!" }, { text = "he" }, { text = "said" },
-    { text = 'stop."' }, { text = "done" },
   })
-  assert(#paras == 4, "Expected 4 paragraphs, got " .. #paras)
-  assert(paras[1] == "really?", "Para 1: " .. tostring(paras[1]))
-  assert(paras[2] == "yes!", "Para 2: " .. tostring(paras[2]))
-  assert(paras[3] == 'he said stop."', "Para 3: " .. tostring(paras[3]))
+  assert(#paras == 1, "Expected 1 paragraph, got " .. #paras)
+  assert(paras[1] == "we should go. okay", "Got: " .. tostring(paras[1]))
 end)
 
-test("a trailing run with no terminator still becomes its own paragraph", function()
+test("a gap at or over the pause threshold splits", function()
+  local paras = vo.Paragraphs({
+    { t0 = 0,   t1 = 1,   text = "first" },
+    { t0 = 1.4, t1 = 2,   text = "second" },
+    { t0 = 2,   t1 = 2.5, text = "third" },
+  })
+  assert(#paras == 2, "Expected 2 paragraphs, got " .. #paras)
+  assert(paras[1] == "first", "Para 1: " .. tostring(paras[1]))
+  assert(paras[2] == "second third", "Para 2: " .. tostring(paras[2]))
+end)
+
+test("the pause threshold is a parameter", function()
+  local words = {
+    { t0 = 0, t1 = 1, text = "a" },
+    { t0 = 1.5, t1 = 2, text = "b" },
+  }
+  assert(#vo.Paragraphs(words, 0.4) == 2, "0.5s gap must split at 0.4s")
+  assert(#vo.Paragraphs(words, 0.6) == 1, "0.5s gap must NOT split at 0.6s")
+end)
+
+test("four reads of one line become four paragraphs", function()
+  -- The real case from Grumbar: "Do not repeat that." read four times, which
+  -- the loop detector called a transcriber loop. The pauses between reads are
+  -- small but real, and they are what says these are four takes.
+  local words, t = {}, 0
+  for _ = 1, 4 do
+    words[#words + 1] = { t0 = t,       t1 = t + 0.6, text = "Do" }
+    words[#words + 1] = { t0 = t + 0.6, t1 = t + 1.2, text = "not" }
+    words[#words + 1] = { t0 = t + 1.2, t1 = t + 2.0, text = "repeat." }
+    t = t + 2.6
+  end
+  local paras = vo.Paragraphs(words)
+  assert(#paras == 4, "Expected 4 paragraphs, got " .. #paras)
+  assert(paras[1] == "Do not repeat.", "Got: " .. tostring(paras[1]))
+end)
+
+test("words with no timing at all stay one paragraph rather than erroring", function()
   local paras = vo.Paragraphs({ { text = "hello" }, { text = "there" } })
   assert(#paras == 1, "Expected 1 paragraph, got " .. #paras)
   assert(paras[1] == "hello there", "Got: " .. tostring(paras[1]))
@@ -6017,7 +6042,9 @@ test("an empty or nil word list produces no paragraphs", function()
 end)
 
 test("ParagraphWords groups the same original word tables Paragraphs summarizes", function()
-  local w1, w2, w3 = { t0 = 0, t1 = 1, text = "hi." }, { t0 = 1, t1 = 2, text = "there" }, { t0 = 2, t1 = 3, text = "friend." }
+  local w1 = { t0 = 0, t1 = 1, text = "hi." }
+  local w2 = { t0 = 2, t1 = 3, text = "there" }
+  local w3 = { t0 = 3, t1 = 4, text = "friend." }
   local groups = vo.ParagraphWords({ w1, w2, w3 })
   assert(#groups == 2, "Expected 2 groups, got " .. #groups)
   assert(#groups[1] == 1 and groups[1][1] == w1, "Group 1 should be {w1}")
