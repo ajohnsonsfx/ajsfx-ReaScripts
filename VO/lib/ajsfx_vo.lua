@@ -2167,6 +2167,25 @@ function vo.FindCandidates(word_tokens, lines, index, cfg)
   return candidates
 end
 
+-- How much of a candidate is agreement, measured in tokens rather than as a
+-- fraction.
+--
+-- Score is a RATE, and greedy selection needs a QUANTITY. A four-token line
+-- matched perfectly scores 1.0; a nine-token line with one word fused by the
+-- recognizer scores 0.89. Ranked on score the short line goes first and takes
+-- the words out of the middle of the long one -- but 1.0 of four tokens is four
+-- tokens of agreement and 0.89 of nine is eight, and eight tokens landing in a
+-- row is the thing that cannot be an accident. Length was only ever consulted to
+-- break an exact tie, which almost never happens between windows of different
+-- widths.
+--
+-- Uses `effective` where it exists, so a candidate that contradicts the read
+-- carries its order penalty into the comparison instead of around it.
+function vo.Agreement(c)
+  if not (c and c.i0 and c.i1) then return 0 end
+  return (c.effective or c.score or 0) * (c.i1 - c.i0 + 1)
+end
+
 -- The spine of the read: the matches that cannot be coincidences, in the order
 -- they were spoken.
 --
@@ -2197,10 +2216,13 @@ function vo.BuildBackbone(candidates, cfg)
       pool[#pool + 1] = c
     end
   end
+  -- Ranked by tokens of agreement, not by score: the pool has already been gated
+  -- on score and margin, so what is left to decide between two overlapping
+  -- windows is which one is more evidence, and that is a count (vo.Agreement).
   table.sort(pool, function(a, b)
+    local aa, ab = vo.Agreement(a), vo.Agreement(b)
+    if aa ~= ab then return aa > ab end
     if a.score ~= b.score then return a.score > b.score end
-    local la, lb = a.i1 - a.i0, b.i1 - b.i0
-    if la ~= lb then return la > lb end
     return a.i0 < b.i0
   end)
 
@@ -2329,13 +2351,14 @@ function vo.SelectSpans(candidates, cfg, backbone, pinned)
 
   table.sort(ordered, function(a, b)
     if a.tier ~= b.tier then return a.tier < b.tier end
+    -- Within a tier, by tokens of agreement: a twelve-word match and a one-word
+    -- match are not equal evidence, and waiting for their scores to tie exactly
+    -- before saying so leaves the short one winning almost every time.
+    local aa, ab = vo.Agreement(a), vo.Agreement(b)
+    if aa ~= ab then return aa > ab end
     if a.effective ~= b.effective then return a.effective > b.effective end
     local ma, mb = a.margin or 1.0, b.margin or 1.0
     if ma ~= mb then return ma > mb end
-    -- A twelve-word match and a one-word match scoring the same are not equal
-    -- evidence: only one of them could be an accident.
-    local la, lb = a.i1 - a.i0, b.i1 - b.i0
-    if la ~= lb then return la > lb end
     return a.i0 < b.i0
   end)
 

@@ -1541,6 +1541,32 @@ test("a long match beats a short one of equal score and margin", function()
   assert(spans[1].asset == "LINE", "Wrong winner: " .. spans[1].asset)
 end)
 
+test("a long near-match beats a short perfect one it contains", function()
+  -- The real shape of the bug, which the equal-score test above cannot reach:
+  -- the recognizer fuses one word of a nine-word line, dropping it to 0.89,
+  -- and a four-word line inside it scores a clean 1.0. Ranked on score the
+  -- short line goes first and cuts the long one in half. Eight tokens of
+  -- agreement outrank four.
+  local spans = vo.SelectSpans({ cand(3, 6, 1.00, 1.0, "SHORT"),
+                                 cand(1, 9, 0.89, 1.0, "LONG") }, {})
+  assert(#spans == 1, "Expected 1 span, got " .. #spans)
+  assert(spans[1].asset == "LONG", "Wrong winner: " .. spans[1].asset)
+end)
+
+test("agreement is tokens, not a rate", function()
+  assert(near(vo.Agreement({ i0 = 1, i1 = 9, score = 0.89 }), 8.01),
+    "nine tokens at 0.89: " .. tostring(vo.Agreement({ i0 = 1, i1 = 9, score = 0.89 })))
+  assert(near(vo.Agreement({ i0 = 3, i1 = 6, score = 1.0 }), 4.0), "four perfect tokens")
+  assert(vo.Agreement({}) == 0, "a candidate with no span is no evidence")
+end)
+
+test("agreement uses the order penalty where one has been applied", function()
+  -- effective, not score: a candidate that contradicts the read must not carry
+  -- its full length past the penalty it was just given.
+  local c = { i0 = 1, i1 = 10, score = 1.0, effective = 0.5 }
+  assert(near(vo.Agreement(c), 5.0), "got " .. tostring(vo.Agreement(c)))
+end)
+
 --------------------------------
 -- Read order: BuildBackbone, OrderConsistency
 --------------------------------
@@ -1577,6 +1603,16 @@ test("two takes of one line are in order, not out of it", function()
   local a, take1, take2 = ocand(1, 10, 1), ocand(20, 30, 2), ocand(40, 50, 2)
   local bone = vo.BuildBackbone({ a, take1, take2 }, {})
   assert(#bone == 3, "a retake broke the run: " .. #bone)
+end)
+
+test("the backbone prefers the candidate that is more evidence", function()
+  -- Both clear the gates, and they overlap, so only one can be the spine here.
+  -- Four perfect tokens is four tokens; ten at 0.85 is eight and a half.
+  local short_ = ocand(3, 6, 7, 1.00)
+  local long_  = ocand(1, 10, 4, 0.85)
+  local bone = vo.BuildBackbone({ short_, long_ }, {})
+  assert(#bone == 1, "Expected 1 backbone entry, got " .. #bone)
+  assert(bone[1] == long_, "the shorter perfect match defined the order")
 end)
 
 test("a candidate between its neighbours reads in sequence", function()
