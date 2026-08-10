@@ -436,18 +436,21 @@ local function DrawTableBody(visible)
       -- time the deferred action runs the key could already be up.
       local captured = ReadModifiers()
       local at = i
-      pending_action = function() ClickRow(row, at, captured, visible) end
-    end
-    -- Double-click toggles the per-file detail panel: a second double-click on
-    -- the same row that opened it closes it again.
-    if im.IsItemHovered(ctx) and im.IsMouseDoubleClicked(ctx, im.MouseButton_Left) then
       local target = row.path
       pending_action = function()
-        if state.detail == target then
-          state.detail = nil
-        else
+        ClickRow(row, at, captured, visible)
+        -- A SINGLE click shows the file's detail. It used to take a
+        -- double-click, which meant the log -- the only place a run says what
+        -- went wrong -- was behind a gesture nothing on screen suggested.
+        -- Clicking a row is asking about that row.
+        --
+        -- Not a toggle: with one click doing it, clicking the open row again
+        -- would close the panel the click was asking to read. Extending a
+        -- multi-select leaves the panel where it is; the detail follows the
+        -- row you actually pressed.
+        if not (captured.shortcut or captured.shift) then
+          if state.detail ~= target then state.detail_paragraph = 1 end
           state.detail = target
-          state.detail_paragraph = 1
         end
       end
     end
