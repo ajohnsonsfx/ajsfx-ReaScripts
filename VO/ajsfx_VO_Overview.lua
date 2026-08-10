@@ -1155,6 +1155,25 @@ end
 -- assignments the user stated and are never overwritten (vo.PlanAdopt).
 local function MarkTakesFromSession(adopt)
   Reload()
+
+  -- Scoped by the REAPER selection, when there is one.
+  --
+  -- "Find lines in items" is something the user does deliberately, at two or
+  -- three long items they have just picked out -- and it walked the whole
+  -- session regardless, so picking the items had no effect on what it did.
+  -- Nothing selected still means everything, which is how the batch pass and
+  -- every other verb here behaves.
+  --
+  -- Adoption is exempt: its name says "this whole session", and scoping the one
+  -- verb whose whole point is the sweep would be a different button.
+  local only, scoped = {}, false
+  if not adopt and r.CountSelectedMediaItems(0) > 0 then
+    scoped = true
+    for i = 0, r.CountSelectedMediaItems(0) - 1 do
+      only[r.GetSelectedMediaItem(0, i)] = true
+    end
+  end
+
   local taken = TakenMarkerIds()
   local per_item = {}   -- item -> { list = markers to add }
   local rekey = {}      -- old entry key -> new tkm key
@@ -1172,7 +1191,10 @@ local function MarkTakesFromSession(adopt)
           row.source_path, row.source_start, row.source_stop, state.items)
         span = item and { from = row.source_start, to = row.source_stop } or nil
       end
-      if item and span and span.to > span.from then
+      -- Judged on the RESOLVED item, not on row.item: a row whose audio was
+      -- found by source time has no item of its own until this point.
+      local in_scope = (not scoped) or (item ~= nil and only[item] == true)
+      if in_scope and item and span and span.to > span.from then
         local id = vo.MintMarkerId(taken)
         local rec = per_item[item]
         if not rec then rec = { list = {} }; per_item[item] = rec end
@@ -1180,7 +1202,7 @@ local function MarkTakesFromSession(adopt)
           { start = span.from, stop = span.to, asset = row.asset, id = id }
         rekey[row.key] = "tkm|" .. id
         marked = marked + 1
-      else
+      elseif in_scope then
         no_audio = no_audio + 1
       end
     end
@@ -1215,7 +1237,10 @@ local function MarkTakesFromSession(adopt)
   if marked == 0 and #renames == 0 then
     state.message, state.message_kind = adopt
       and "Nothing to adopt: every take has its marker and its name."
-      or  "Nothing to mark: every take already has a marker.", "info"
+      or  (scoped
+        and "Nothing to mark in the selected item(s): every take in them "
+         .. "already has a marker. Deselect everything to run over the session."
+        or  "Nothing to mark: every take already has a marker."), "info"
     return
   end
 
@@ -1271,7 +1296,8 @@ local function MarkTakesFromSession(adopt)
     state.message, state.message_kind = table.concat(parts, " "), "ok"
   else
     state.message, state.message_kind = string.format(
-      "Marked %d take(s).%s", marked,
+      "Marked %d take(s)%s.%s", marked,
+      scoped and " in the selected item(s)" or "",
       no_audio > 0
         and string.format(" %d row(s) had no audio to mark.", no_audio) or ""), "ok"
   end
@@ -6506,7 +6532,8 @@ local function loop()
           im.SetTooltip(ctx, "For items that hold several takes: work out where each one is\n" ..
                              "and mark it inside the item. Splits nothing and moves nothing --\n" ..
                              "the markers are the takes, and Cut can act on them later.\n\n" ..
-                             "Runs over the whole session, not just the selection.")
+                             "Runs over the items selected in REAPER, or the whole\n" ..
+                             "session when nothing is selected.")
         end
         if im.Selectable(ctx, "Assign items to lines") then
           pending_action = MarkSelectedItems
