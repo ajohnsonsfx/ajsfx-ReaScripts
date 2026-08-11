@@ -133,6 +133,59 @@ test("a tilde inside the asset does not fake an id", function()
 end)
 
 --------------------------------
+print("PlanTrimToRange:")
+
+local function near(a, b) return math.abs(a - b) < 1e-9 end
+
+test("trimming the head moves the item right, not left", function()
+  -- The audio must not shift: dropping 2s off the front means starting 2s
+  -- later in the source AND 2s later in the project.
+  local it = { pos = 100, length = 10, start_offs = 0, playrate = 1.0 }
+  local p = vo.PlanTrimToRange(it, 2, 8)
+  assert(near(p.pos, 102), "pos: " .. p.pos)
+  assert(near(p.length, 6), "length: " .. p.length)
+  assert(near(p.start_offs, 2), "start_offs: " .. p.start_offs)
+end)
+
+test("the same source sample stays at the same project time", function()
+  local it = { pos = 100, length = 10, start_offs = 5, playrate = 1.0 }
+  local before = vo.SourceTimeToProject(9, it)
+  local p = vo.PlanTrimToRange(it, 8, 12)
+  local after = vo.SourceTimeToProject(9,
+    { pos = p.pos, start_offs = p.start_offs, playrate = 1.0 })
+  assert(near(before, after), string.format("audio moved: %f -> %f", before, after))
+end)
+
+test("playrate scales the project length, not the source range", function()
+  local it = { pos = 0, length = 10, start_offs = 0, playrate = 2.0 }
+  local p = vo.PlanTrimToRange(it, 4, 8)
+  assert(near(p.length, 2), "length: " .. p.length)      -- 4s of source at 2x
+  assert(near(p.start_offs, 4), "start_offs: " .. p.start_offs)
+  assert(near(p.pos, 2), "pos: " .. p.pos)               -- 4s of source at 2x
+end)
+
+test("the result round-trips through SourceCoverageRanges", function()
+  local it = { pos = 3, length = 10, start_offs = 1, playrate = 1.5 }
+  local p = vo.PlanTrimToRange(it, 4, 9)
+  local cov = vo.SourceCoverageRanges({
+    { start_offs = p.start_offs, length = p.length, playrate = 1.5 } })[1]
+  assert(near(cov.from, 4) and near(cov.to, 9),
+    string.format("covers %f..%f, wanted 4..9", cov.from, cov.to))
+end)
+
+test("a range with no length is nothing to trim to", function()
+  local it = { pos = 0, length = 10, start_offs = 0, playrate = 1 }
+  assert(vo.PlanTrimToRange(it, 5, 5) == nil, "zero length accepted")
+  assert(vo.PlanTrimToRange(it, 8, 4) == nil, "reversed range accepted")
+  assert(vo.PlanTrimToRange(nil, 1, 2) == nil, "no item accepted")
+end)
+
+test("a zero playrate does not divide by zero", function()
+  local p = vo.PlanTrimToRange({ pos = 0, length = 4, start_offs = 0, playrate = 0 }, 1, 3)
+  assert(p and near(p.length, 2), "length: " .. tostring(p and p.length))
+end)
+
+--------------------------------
 print("CountingMarkers:")
 
 local function pi(from, to, markers)

@@ -56,7 +56,8 @@ the panel by itself.
 Acting on 12 selected row(s).
 
 Match:  [ Match transcript to script ]  [ Identify the lines in these items ]
-Cut:    [ Cut recording into takes ]  [ Auto-adjust head and tail ]
+Cut:    [ Cut recording into takes ]  [ Trim items to their markers ]
+        [ Auto-adjust head and tail ]
 Pick:   [ Auto-pick selects: last take ]  [ …first take ]  [ Auto-name the alts ]
 Pull:   [ Pull items to their tracks ]  [ Build the destination tracks ]
         [ Lay items out in script order ]
@@ -102,6 +103,15 @@ sheet-only verb with item-writing ones — and accepted deliberately.
   existed for. `vo.PlanAdopt` never overwrites a name that already resolves to
   a line, so re-running is safe.
 - **Cut** — make each take physically its own item, with the right edges.
+  *Trim items to their markers* is the manual half of "the marker is what the
+  cut will be": drag a marker to where the clip should start and end, then trim
+  the item onto it — no re-cut, no re-match, no split. The audio does not move
+  (`vo.PlanTrimToRange` moves the position by exactly what the start offset
+  changes, so the same source sample stays at the same project time). An item
+  holding SEVERAL markers is a recording, not a take, and is left alone. Its
+  per-row form sits in the take menu beside its opposite, *Snap marker to
+  item*.
+
   *Cut recording into takes* acts on the press (it used to open a panel whose
   only real control was a second copy of itself; the panel is now the report
   the run opens by itself); *Auto-adjust head and tail* (the old Tighten —

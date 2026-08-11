@@ -4105,6 +4105,30 @@ function vo.SourceCoverageRanges(items)
   return out
 end
 
+-- Where an item has to sit to show exactly one stretch of its source.
+--
+-- The other direction from vo.SourceCoverageRanges: given the SOURCE range you
+-- want visible, work out the item's position, length and start offset. This is
+-- what "trim the item to its take marker" is -- the marker says which audio the
+-- take is, and the item is moved and resized to show that and nothing else.
+--
+-- The audio stays where it is in the project: the same source sample sits at
+-- the same project time before and after, because the position moves by exactly
+-- the amount the start offset does (scaled by playrate). Trimming the head is
+-- not a nudge left, it is a nudge right by the amount removed.
+--
+-- Returns nil for a range with no length, which is a marker worth reporting
+-- rather than acting on.
+function vo.PlanTrimToRange(item, from, to)
+  if not (item and from and to) or to <= from then return nil end
+  local rate = safe_playrate(item)
+  return {
+    pos        = (item.pos or 0) + (from - (item.start_offs or 0)) / rate,
+    length     = (to - from) / rate,
+    start_offs = from,
+  }
+end
+
 --------------------------------
 -- Pure layer: the transcript sidecar
 --------------------------------

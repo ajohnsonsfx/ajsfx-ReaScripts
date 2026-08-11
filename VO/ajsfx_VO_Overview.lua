@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.15beta6
--- @changelog PRE-RELEASE: the toolbar is three tabs -- Setup, Edit and Settings -- and a tab never does anything: it only decides which buttons you are looking at, while every button under it acts. Edit leads with "Run the whole pass" (match, cut, pick, pull, in one undo step) above one row per step of the same name -- Match, Cut, Pick, Pull -- plus Check, the phase the batch button cannot run for you. EVERY verb now acts on the selection -- rows picked in the sheet, items picked in REAPER, or both -- and a line under the hero says what the next press will act on. Selecting an uncut recording selects every take inside it, so one rule reads correctly before and after the cut. The per-panel "Selected rows only" checkboxes are gone. "Find lines in items", "Assign items to lines" and "Adopt this whole session" are ONE button, "Identify the lines in these items": they differed only in what shape the audio was in, which the tool now counts for itself -- an item holding one take is marked at your own edges and named for its line, an item holding several gets a marker per take and no name. A take marker is now what the cut WILL be: Identify writes markers through the same speech-bounds and padding pass Cut uses, and Cut cuts TO the marker instead of skipping any span a marker overlapped -- which would have made Identify followed by Cut cut nothing at all. A marker you drag is honoured the same way; "Re-cut from the transcript" throws marker edges away and derives them from the words again. New: "Build the destination tracks" makes Selects/Alts/Review under each recording without moving anything, so they exist before the first pull. "Cut recording into takes" cuts on the press; its panel is now the report the run opens by itself. "Auto-pick selects" and "Auto-name the alts" join "Auto-adjust head and tail" as the Auto- family: each is the batch form of a per-row sheet gesture. Auto-adjust now moves the take marker with the edges it trims. Buttons wrap rather than running off a narrow window, and the ribbon holds one height so the sheet no longer jumps when you click between tabs. "Start over..." in Setup deletes this project's VO data, behind a confirm that names what goes and what stays. The blank sheet now asks for the two things it needs -- a script and a transcript -- with a button for each.
+-- @changelog PRE-RELEASE: the toolbar is three tabs -- Setup, Edit and Settings -- and a tab never does anything: it only decides which buttons you are looking at, while every button under it acts. Edit leads with "Run the whole pass" (match, cut, pick, pull, in one undo step) above one row per step of the same name -- Match, Cut, Pick, Pull -- plus Check, the phase the batch button cannot run for you. EVERY verb now acts on the selection -- rows picked in the sheet, items picked in REAPER, or both -- and a line under the hero says what the next press will act on. Selecting an uncut recording selects every take inside it, so one rule reads correctly before and after the cut. The per-panel "Selected rows only" checkboxes are gone. "Find lines in items", "Assign items to lines" and "Adopt this whole session" are ONE button, "Identify the lines in these items": they differed only in what shape the audio was in, which the tool now counts for itself -- an item holding one take is marked at your own edges and named for its line, an item holding several gets a marker per take and no name. A take marker is now what the cut WILL be: Identify writes markers through the same speech-bounds and padding pass Cut uses, and Cut cuts TO the marker instead of skipping any span a marker overlapped -- which would have made Identify followed by Cut cut nothing at all. A marker you drag is honoured the same way; "Re-cut from the transcript" throws marker edges away and derives them from the words again. New: "Trim items to their markers" sets each item's edges to the take marker inside it -- the manual half of "the marker is what the cut will be" -- with a per-row form in the take menu beside "Snap marker to item". Also new: "Build the destination tracks" makes Selects/Alts/Review under each recording without moving anything, so they exist before the first pull. "Cut recording into takes" cuts on the press; its panel is now the report the run opens by itself. "Auto-pick selects" and "Auto-name the alts" join "Auto-adjust head and tail" as the Auto- family: each is the batch form of a per-row sheet gesture. Auto-adjust now moves the take marker with the edges it trims. Buttons wrap rather than running off a narrow window, and the ribbon holds one height so the sheet no longer jumps when you click between tabs. "Start over..." in Setup deletes this project's VO data, behind a confirm that names what goes and what stays. The blank sheet now asks for the two things it needs -- a script and a transcript -- with a button for each.
 --   "Not on the script" is a queue instead of a dead end: right-click any orphan to hand it to a script line (best guesses first, scored against what was actually said) or dismiss it as junk, which is remembered and leaves the count -- so "0 orphans" now means every span has been looked at. Each orphan says why it is one. Matching ranks candidates by tokens of agreement rather than by score, so a short line matched perfectly no longer takes the words out of the middle of a long one. A transcript is drawn in one colour with the EXTRA words -- what the reader said that the line does not contain -- in amber; the colour used to encode a match threshold nobody could see. Notes are gone from the cards. A reader going again is no longer reported as a transcriber loop. In Sources: single-click opens a file's detail, "Copy report" puts everything on the clipboard, reported timecodes are clickable links that move the edit cursor, and a transcript can be deleted from the panel. "Find lines in items" honours the REAPER selection. Fixed: a race that reported "whisper-cli exited with code -1" on runs that had barely started.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
@@ -1150,6 +1150,105 @@ local function RewriteMarker(row, mutate)
   return vo.WriteTakeMarkers(item, list)
 end
 
+-- The items selected in REAPER, as a set, for scope resolution.
+local function SelectedItemSet()
+  local set = {}
+  for i = 0, r.CountSelectedMediaItems(0) - 1 do
+    set[r.GetSelectedMediaItem(0, i)] = true
+  end
+  return set
+end
+
+-- Trimming an item to the take marker inside it: the other direction from
+-- SnapMarkerToItem, and the manual half of "the marker is what the cut will
+-- be". Drag the marker to where the clip should start and end, then trim the
+-- item onto it -- no re-cut, no re-match, no split.
+--
+-- A table rather than file locals: the main chunk is at Lua's 200-local
+-- ceiling, which is a LOAD-time error, so a new local here would stop the
+-- whole script from parsing.
+local Trim = {}
+
+-- This item's own tool markers that its window actually shows.
+function Trim.markers_in(info)
+  local out = {}
+  local cov = info and info.item and vo.SourceCoverageRanges({ info })[1]
+  if not cov then return out end
+  -- NOT `cov and r.GetItemStateChunk(...)`: an `and` expression is adjusted to
+  -- ONE value, so the second return -- the chunk itself -- silently became nil
+  -- and every item read as holding no markers.
+  local ok, chunk = r.GetItemStateChunk(info.item, "", false)
+  if not ok then return out end
+  for _, m in ipairs(vo.ParseTKMChunk(chunk)) do
+    local asset, id = vo.ParseMarkerName(m.name)
+    local from, to = m.pos, m.pos + (m.length or 0)
+    if id and to > from and from < cov.to and to > cov.from then
+      out[#out + 1] = { start = from, stop = to, asset = asset, id = id }
+    end
+  end
+  table.sort(out, function(a, b) return a.start < b.start end)
+  return out
+end
+
+-- Set one item's edges to one marker's bounds. Returns true when it moved.
+function Trim.apply(info, mk)
+  local plan = vo.PlanTrimToRange(info, mk.start, mk.stop)
+  local take = plan and info.item and r.GetActiveTake(info.item)
+  if not (plan and take) then return false end
+  r.SetMediaItemInfo_Value(info.item, "D_POSITION", plan.pos)
+  r.SetMediaItemInfo_Value(info.item, "D_LENGTH",   plan.length)
+  r.SetMediaItemTakeInfo_Value(take,  "D_STARTOFFS", plan.start_offs)
+  return true
+end
+
+-- The batch verb. Scope is the selection, like everything else.
+--
+-- An item holding SEVERAL markers is left alone and reported: it is a
+-- recording, not a take, and there is no one marker to trim it to. Cut is what
+-- turns that into takes.
+function Trim.run()
+  Reload()
+  local picked = SelectedItemSet()
+  local scoped = next(picked) ~= nil
+
+  local jobs, several, none = {}, 0, 0
+  for _, info in ipairs(state.items or {}) do
+    local item = info.item
+    if item and not info.skip and ((not scoped) or picked[item]) then
+      local mks = Trim.markers_in(info)
+      if #mks == 1 then jobs[#jobs + 1] = { info = info, mk = mks[1] }
+      elseif #mks > 1 then several = several + 1
+      else none = none + 1 end
+    end
+  end
+
+  if #jobs == 0 then
+    state.message, state.message_kind = string.format(
+      "Nothing to trim. %d item(s) hold several takes (Cut splits those), " ..
+      "%d hold no take marker.", several, none), "warn"
+    return
+  end
+
+  local moved = 0
+  core.Transaction("VO Overview: trim items to their markers", function()
+    for _, j in ipairs(jobs) do
+      if Trim.apply(j.info, j.mk) then moved = moved + 1 end
+    end
+  end)
+  r.UpdateArrange()
+  Reload()
+
+  local parts = { string.format("Trimmed %d item(s) to their take marker.", moved) }
+  if several > 0 then
+    parts[#parts + 1] = string.format(
+      "%d hold several takes and were left alone.", several)
+  end
+  if none > 0 then
+    parts[#parts + 1] = string.format("%d have no take marker.", none)
+  end
+  state.message, state.message_kind = table.concat(parts, " "), "ok"
+end
+
 -- The user's rule for "I trimmed the head past the marker start": the row's
 -- own marker snaps to its item's current source coverage. That row's marker
 -- is by construction the counting marker of that item, so this IS the
@@ -1298,15 +1397,6 @@ local function SnapSpansToCut(info, spans, cfg, words)
     for i, s in ipairs(spans) do out[i] = { start = s.start, stop = s.stop } end
   end
   return out
-end
-
--- The items selected in REAPER, as a set, for scope resolution.
-local function SelectedItemSet()
-  local set = {}
-  for i = 0, r.CountSelectedMediaItems(0) - 1 do
-    set[r.GetSelectedMediaItem(0, i)] = true
-  end
-  return set
 end
 
 -- Work out what script lines are in the audio, and write it down.
@@ -4645,13 +4735,6 @@ local REPAIR_LIST_CAP = 12
 -- marks always shared the same Relink. Each button wears its count, so the
 -- Check row reads as state, not as navigation.
 
-local function RepairGoTo(row)
-  state.selection        = { [row.uid] = true }
-  state.focus_key        = row.uid
-  state.scroll_to_uid    = row.uid
-  state.scroll_to_frames = 2
-end
-
 local function DrawDisagreePanel()
   local cfg  = vo.LoadConfig()
   local plan = state.reconcile or vo.PlanReconcile(state.overview, cfg)
@@ -4663,7 +4746,13 @@ local function DrawDisagreePanel()
     return
   end
 
-  local GoTo = RepairGoTo
+  -- Bring a finding's row into view and select it.
+  local function GoTo(row)
+    state.selection        = { [row.uid] = true }
+    state.focus_key        = row.uid
+    state.scroll_to_uid    = row.uid
+    state.scroll_to_frames = 2
+  end
   do
     im.TextColored(ctx, 0xDDAA33FF, string.format(
       "%d take(s) disagree with where their item sits:", #plan.disagree))
@@ -5142,6 +5231,34 @@ local function DrawTakeRowMenu(row)
                  row.marker_id ~= nil and row.item ~= nil) then
     local captured = row
     pending_action = function() SnapMarkerToItem(captured) end
+  end
+  if im.MenuItem(ctx, "Trim item to marker", nil, nil,
+                 row.marker_id ~= nil and row.item_info ~= nil) then
+    local captured = row
+    pending_action = function()
+      local mk
+      for _, m in ipairs(Trim.markers_in(captured.item_info)) do
+        if m.id == captured.marker_id then mk = m break end
+      end
+      if not mk then
+        state.message, state.message_kind =
+          "That marker is not inside this item any more.", "warn"
+        return
+      end
+      local moved = false
+      core.Transaction("VO Overview: trim item to marker", function()
+        moved = Trim.apply(captured.item_info, mk)
+      end)
+      r.UpdateArrange()
+      Reload()
+      state.message, state.message_kind = moved
+        and "Trimmed the item to its take marker."
+        or  "Could not trim that item.", moved and "ok" or "error"
+    end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "The other direction: set the ITEM's edges to this\n" ..
+                       "take's marker. The audio does not move.")
   end
   if im.IsItemHovered(ctx) then
     im.SetTooltip(ctx, "Set this take's marker to the item's current edges --\n" ..
@@ -6350,7 +6467,7 @@ local REMOTE_HELP =
   "sync_markers | build_tracks | pull | name_alts | sort script|record | " ..
   "dupes | append script|asset|nth|text | " ..
   "rows [needle] | spans <needle> | missing | boundaries | verify | " ..
-  "make_select <takename> | place | tighten"
+  "make_select <takename> | place | tighten | trim_to_markers"
 
 local function RemoteStatus()
   local c, parts = state.check or {}, {}
@@ -6490,6 +6607,9 @@ local function RunRemoteCommand(command)
   elseif verb == "place" then
     PlaceSelectedItems()
     return state.message or "place ran"
+  elseif verb == "trim_to_markers" then
+    Trim.run()
+    return state.message or "trim_to_markers ran with no result string"
   elseif verb == "tighten" then
     TightenItems()
     return state.message or "tighten ran"
@@ -7020,6 +7140,18 @@ local function loop()
           "where a take's fate is settled.\n\n" ..
           "Select a recording to cut all of it, or rows to cut just those.\n" ..
           "The line above the rows says which.")
+
+      Flow("Trim items to their markers")
+      if im.Button(ctx, "Trim items to their markers") then
+        pending_action = Trim.run
+      end
+      Tip("Set each item's edges to the take marker inside it -- no re-cut,\n" ..
+          "no re-match, no split. The manual half of \"the marker is what\n" ..
+          "the cut will be\": drag a marker to where the clip should start\n" ..
+          "and end, then trim the item onto it.\n\n" ..
+          "The audio does not move: the same sample stays at the same\n" ..
+          "project time. An item holding SEVERAL markers is a recording,\n" ..
+          "not a take, and is left alone -- Cut is what splits those.")
 
       Flow("Auto-adjust head and tail")
       if im.Button(ctx, "Auto-adjust head and tail") then pending_action = TightenItems end
