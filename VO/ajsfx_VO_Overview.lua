@@ -139,7 +139,7 @@ end
 -- Six questions across the top; the parent row answers each for the LINE and
 -- the take rows answer it for the TAKE, so every cell is correlated with the
 -- cell above it. State is one visual group over four physical columns: the
--- status dot plus the Lock/Sel/Alt checkboxes, labelled once per expanded
+-- status dot plus the Lock/Keep/Sel checkboxes, labelled once per expanded
 -- line by a slim sub-header row rather than in the frozen header.
 --
 --   text  what a column's filter box (and the search) matches against. It sees
@@ -4902,8 +4902,8 @@ local function ApplyAltNames()
   end
 
   -- Named 0 with nothing skipped means nothing was TICKED, which is the likely
-  -- confusion: the button names alts, and an alt is a row with Alt ticked and
-  -- Sel not. (Alt is the label; the stored mark is still `keep`.)
+  -- confusion: the button names alts, and an alt is a row with Keep ticked
+  -- and Sel not.
   local why = ""
   if named == 0 and skipped == 0 then
     local keeps, sels = 0, 0
@@ -4912,8 +4912,8 @@ local function ApplyAltNames()
       if row.user_select then sels = sels + 1 end
     end
     why = string.format(
-      " No alts in range: %d row(s) shown, %d with Alt ticked, %d with Sel. " ..
-      "An alt is Alt ticked and Sel not.", #rows, keeps, sels)
+      " No alts in range: %d row(s) shown, %d with Keep ticked, %d with Sel. " ..
+      "An alt is Keep ticked and Sel not.", #rows, keeps, sels)
   end
 
   state.message, state.message_kind = string.format(
@@ -5059,7 +5059,7 @@ local function DrawPullPanel()
   im.Separator(ctx)
   im.TextWrapped(ctx,
     "Moves items onto Selects, Alts and Review tracks nested under the recording " ..
-    "they came from. Sel is the delivery, Alt is delivered alongside it as an " ..
+    "they came from. Sel is the delivery, Keep is delivered alongside it as an " ..
     "alt, and everything unticked waits on Review. Items are matched to the " ..
     "script by NAME, so this works on rendered files that were never cut here; " ..
     "an item whose name is not on the script is left alone.")
@@ -5213,7 +5213,7 @@ local function DrawDisagreePanel()
       end
     end
     if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, "Set each take's Sel/Alt to match the track its item is on.")
+      im.SetTooltip(ctx, "Set each take's Keep/Sel to match the track its item is on.")
     end
     im.SameLine(ctx)
     if im.Button(ctx, "Adopt sheet") then
@@ -5989,16 +5989,17 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
       end
       return out
     end
-    -- Lock, Sel, Alt -- in that order, matching DrawTakeHeaderRow. The two
-    -- ticks that decide DELIVERY sit together on the right: a take is shipped
-    -- when either is on, as the select or as an alt, and everything untouched
-    -- waits on Review.
+    -- Lock, Keep, Sel -- broad to specific, left to right. Each tick narrows
+    -- the one before it: Lock says leave this take alone, Keep says it is
+    -- worth shipping, Sel says it is THE one.
     --
-    -- "Alt" is the label; `user_keep` / `mark_keep` / the project file's ninth
-    -- column are still `keep`. The mark always meant "deliver this alongside
-    -- the select", so only the NAME was wrong -- it described the mechanism
-    -- rather than the outcome -- and renaming the field would touch Pull,
-    -- reconcile, the track-to-mark map and the stored file for no gain.
+    -- Keep is deliberately not called "Alt", though an alt is what Pull makes
+    -- of it. Sel WINS over Keep there (see PlanPull), so a take that is both
+    -- is the delivery and a take that is only Keep is an alt. That is what
+    -- lets you tick Keep on every good read once and then move Sel around
+    -- freely: the take Sel leaves behind becomes an alt on its own, with
+    -- nothing to re-tick. Labelled "Alt", the two would read as switches you
+    -- had to keep in sync, and changing your mind would look like two edits.
     im.SetCursorScreenPos(ctx, rx + z.marks, ry)
     local checked = row.user_status == "verified"
     local lhit, lnow = im.Checkbox(ctx, "##lock", checked)
@@ -6009,6 +6010,22 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
     end
     im.SameLine(ctx)
     im.SetCursorScreenPos(ctx, rx + z.marks + 34, ry)
+    local khit, know = im.Checkbox(ctx, "##keep", row.user_keep == true)
+    if khit then
+      local targets = MarkTargets()
+      pending_action = function()
+        for _, r2 in ipairs(targets) do SetKeep(r2, know) end
+      end
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Keep: a read worth keeping; Pull delivers it as an alt.\n" ..
+                         "Independent of Sel. Any number per line.\n\n" ..
+                         "Tick it on every good read. Sel wins over Keep, so\n" ..
+                         "moving Sel to another take leaves this one an alt --\n" ..
+                         "you never have to re-tick anything.")
+    end
+    im.SameLine(ctx)
+    im.SetCursorScreenPos(ctx, rx + z.marks + 68, ry)
     local hit, now = im.Checkbox(ctx, "##sel", row.user_select == true)
     if hit then
       local targets = MarkTargets()
@@ -6020,21 +6037,6 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
       im.SetTooltip(ctx, "Sel: the take you are delivering. One per line.\n" ..
                          "On a highlighted row, every highlighted row follows.")
     end
-    im.SameLine(ctx)
-    im.SetCursorScreenPos(ctx, rx + z.marks + 68, ry)
-    local khit, know = im.Checkbox(ctx, "##keep", row.user_keep == true)
-    if khit then
-      local targets = MarkTargets()
-      pending_action = function()
-        for _, r2 in ipairs(targets) do SetKeep(r2, know) end
-      end
-    end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, "Alt: ship this one too, beside the select.\n" ..
-                         "Independent of Sel. Any number per line.\n\n" ..
-                         "Sel or Alt means it is delivered; neither means it\n" ..
-                         "waits on Review.")
-    end
   end
 
   -- Text: the transcript, wrapped inside its zone, extra words in amber.
@@ -6044,7 +6046,7 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
   -- whole paragraph's colour, and from the outside read as random. Now it marks
   -- the words themselves: what the reader said that the line does not contain.
   -- Non-blocking, and deliberately so: a take with extra words is still a take
-  -- the user may want, and Lock/Sel/Alt is where that gets decided.
+  -- the user may want, and Lock/Keep/Sel is where that gets decided.
   local runs = ExtraRuns(row)
   im.SetCursorScreenPos(ctx, rx + z.text, ry)
   if row._extra_clean then
@@ -6319,11 +6321,9 @@ end
 local function DrawTakeHeaderRow(z, rx)
   local _, y = im.GetCursorScreenPos(ctx)
   local sf = PushCellFont("state")
-  -- Lock, Sel, Alt -- reading order matches the decision order: lock it down,
-  -- then say what it IS. "Alt" replaced "Keep", which named the mechanism (a
-  -- mark that survives) rather than the outcome (it ships as an alt). The
-  -- stored field is still `keep`; see DrawCardTakeRow.
-  for i, l in ipairs({ "Lock", "Sel", "Alt" }) do
+  -- Lock, Keep, Sel -- broad to specific, left to right. See DrawCardTakeRow
+  -- for why Keep is not called "Alt".
+  for i, l in ipairs({ "Lock", "Keep", "Sel" }) do
     im.SetCursorScreenPos(ctx, rx + z.marks + (i - 1) * 34 - 2, y)
     im.TextDisabled(ctx, l)
   end
@@ -7027,7 +7027,7 @@ local function RunRemoteCommand(command)
       end
     end
     local head = string.format(
-      "%d row(s), %d Sel, %d Alt, %d with no item (%d of them Sel), %d Sel not on Selects",
+      "%d row(s), %d Sel, %d Keep, %d with no item (%d of them Sel), %d Sel not on Selects",
       shown, sel, keep, no_item, sel_no_item, undelivered)
     if #out == 0 then return head end
     return head .. "\n" .. table.concat(out, "\n")
@@ -7466,7 +7466,7 @@ local function loop()
         im.TextDisabled(ctx, "Goes:")
         im.TextWrapped(ctx, "  " .. (state.project_path
           and vo.Basename(state.project_path) or "(no project file yet)") ..
-          "  -- every Lock, Sel, Alt, rename, Append, pin, and the script list.")
+          "  -- every Lock, Keep, Sel, rename, Append, pin, and the script list.")
         im.TextDisabled(ctx, "Stays:")
         im.TextWrapped(ctx, "  Every item, take name and take marker in the " ..
           "project. This deletes the tool's notes, not your audio -- and Cut " ..
@@ -7687,7 +7687,7 @@ local function loop()
 
       Flow("Auto-name the alts")
       if im.Button(ctx, "Auto-name the alts") then pending_action = ApplyAltNames end
-      Tip("Give every take marked Alt its own numbered alt name (the\n" ..
+      Tip("Give every take marked Keep its own numbered alt name (the\n" ..
           "pattern in Settings), so it can ship beside the select. The\n" ..
           "select keeps the plain name; a take that already has its own\n" ..
           "name is left alone.")
@@ -7739,7 +7739,7 @@ local function loop()
       local n_gone = #rec.unbacked_markers + #rec.orphan_marks
 
       PanelButton("disagree", string.format("Marks vs tracks (%d)", n_dis),
-        "Takes whose Sel/Alt marks contradict the track their item sits\n" ..
+        "Takes whose Keep/Sel marks contradict the track their item sits\n" ..
         "on. The panel lists each one and fixes them as a batch: adopt the\n" ..
         "timeline (the tracks are right) or adopt the sheet (the marks are\n" ..
         "right -- Pull moves the items to match).")
