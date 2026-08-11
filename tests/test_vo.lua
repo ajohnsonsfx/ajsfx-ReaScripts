@@ -5357,6 +5357,54 @@ test("one source's missing line and another's audio coexist in one list", functi
   assert(rows[3].status == "recorded" and rows[3].source_path == "s2.wav", "c from s2")
 end)
 
+-- A marker owns its take, and the words are what decide its text: a marker
+-- covering half a span must not read as the whole span.
+local MARKER_WORDS = { { path = "s.wav", words = {
+  { t0 = 10.0, t1 = 10.4, text = "open" },
+  { t0 = 10.5, t1 = 10.9, text = "the" },
+  { t0 = 11.0, t1 = 11.9, text = "gate" },
+  { t0 = 13.0, t1 = 13.5, text = "and" },
+  { t0 = 13.6, t1 = 14.9, text = "hurry" },
+} } }
+
+local function marker_at(id, start, stop)
+  return { VO_01 = { { id = id, asset = "VO_01", start = start, stop = stop,
+                       source_path = "s.wav" } } }
+end
+
+local MARKER_MATCH = { { path = "s.wav", spans = {
+  span(10, 15, "match", "VO_01", "open the gate and hurry", 0.9),
+} } }
+
+test("a marker row reads the words inside its range, not the whole span", function()
+  local rows = vo.BuildOverview({
+    lines   = { line("VO_01", "open the gate and hurry", nil, 1) },
+    matches = MARKER_MATCH,
+    entries = {},
+    takes_by_asset = marker_at(7, 10, 12),
+    transcripts    = MARKER_WORDS,
+  })
+  local row
+  for _, rw in ipairs(rows) do if rw.marker_id == 7 then row = rw end end
+  assert(row, "no marker row was built")
+  assert(row.transcript == "open the gate", "Got: " .. tostring(row.transcript))
+  assert(near(row.score, 0.9), "score lost: " .. tostring(row.score))
+end)
+
+test("a marker row without transcripts keeps the span text", function()
+  local rows = vo.BuildOverview({
+    lines   = { line("VO_01", "open the gate and hurry", nil, 1) },
+    matches = MARKER_MATCH,
+    entries = {},
+    takes_by_asset = marker_at(7, 10, 12),
+  })
+  local row
+  for _, rw in ipairs(rows) do if rw.marker_id == 7 then row = rw end end
+  assert(row, "no marker row was built")
+  assert(row.transcript == "open the gate and hurry",
+         "Got: " .. tostring(row.transcript))
+end)
+
 --------------------------------
 print("\nBuildOverview: project-file overlay and rematch:")
 

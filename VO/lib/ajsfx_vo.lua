@@ -4804,6 +4804,15 @@ function vo.BuildOverview(input)
   -- the generator.
   local takes_by_asset = input.takes_by_asset or {}
 
+  -- The per-source word lists, when the caller has them. A marker row's text
+  -- is the words INSIDE its range, and only the caller -- which already read
+  -- the transcripts to build the match -- can supply them. A caller that does
+  -- not falls back to span text inside vo.TranscriptForRange.
+  local words_by_source = {}
+  for _, t in ipairs(input.transcripts or {}) do
+    if t.path then words_by_source[t.path] = t.words or {} end
+  end
+
   -- Plain key lookup for marker-keyed marks. NOT via index_tracker: tkm keys
   -- have no source bucket, and letting them into by_asset would shadow the
   -- line-level "|<asset>" entry -- the same hazard planned keys hit.
@@ -4971,7 +4980,8 @@ function vo.BuildOverview(input)
     local t = by_key["tkm|" .. mk.id]
     -- The marker says WHICH take; the match still knows what was said there.
     local said, score, in_seq =
-      vo.TranscriptForRange(spans, mk.source_path, mk.start, mk.stop)
+      vo.TranscriptForRange(spans, mk.source_path, mk.start, mk.stop,
+                            words_by_source[mk.source_path])
     return {
       key           = "tkm|" .. mk.id,
       marker_id     = mk.id,
