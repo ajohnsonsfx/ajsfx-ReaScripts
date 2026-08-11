@@ -2100,6 +2100,60 @@ local function TightenItems()
       or ""), "ok"
 end
 
+-- Put the standard cut fades back on the selected items. The fades a cut
+-- writes are short and protective -- shorter in than out, sitting inside the
+-- head and tail room -- and an item that has been comped, re-trimmed or
+-- dragged in by hand carries whatever fades that gesture left it.
+--
+-- Note what this ALSO does. Default fades are how "nobody touched this by
+-- hand" is recorded: TightenItems above skips any item whose fades differ from
+-- the cut defaults, and that is the whole protection a hand-trimmed item has
+-- against being measured and moved. Pressing this re-enrols such an item into
+-- Auto-adjust. That is the right reading of the gesture -- "this one is
+-- finished and standard again" -- but it is not free, and the tooltip says so.
+--
+-- On the Trim table rather than a file local: the main chunk is at Lua's
+-- 200-local ceiling, which is a LOAD-time error, so a new local here would
+-- stop the whole script from parsing.
+function Trim.fades()
+  local cfg = vo.LoadConfig()
+  local fade_in  = vo.Opt(cfg, "cut_fade_in")
+  local fade_out = vo.Opt(cfg, "cut_fade_out")
+
+  local pool = {}
+  for i = 0, r.CountSelectedMediaItems(0) - 1 do
+    pool[#pool + 1] = r.GetSelectedMediaItem(0, i)
+  end
+  if #pool == 0 then
+    state.message, state.message_kind =
+      "Select the items in REAPER first.", "warn"
+    return
+  end
+
+  -- An item already carrying the defaults is not a write and is not counted:
+  -- a press over a tidy session should say so rather than claim work.
+  local changed = 0
+  core.Transaction("VO Overview: apply the cut fades", function()
+    for _, item in ipairs(pool) do
+      local was_in  = r.GetMediaItemInfo_Value(item, "D_FADEINLEN")
+      local was_out = r.GetMediaItemInfo_Value(item, "D_FADEOUTLEN")
+      if math.abs(was_in - fade_in) > 0.0005
+         or math.abs(was_out - fade_out) > 0.0005 then
+        r.SetMediaItemInfo_Value(item, "D_FADEINLEN",  fade_in)
+        r.SetMediaItemInfo_Value(item, "D_FADEOUTLEN", fade_out)
+        changed = changed + 1
+      end
+    end
+  end)
+  r.UpdateArrange()
+
+  state.message, state.message_kind = (changed > 0)
+    and string.format("Applied the cut fades to %d item(s) (%.0f ms in, %.0f ms out).",
+                      changed, fade_in * 1000, fade_out * 1000)
+    or  string.format("All %d selected item(s) already carry the cut fades.", #pool),
+    "ok"
+end
+
 -- -----------------------------------------------------------------------
 -- Selection
 --
@@ -7239,6 +7293,17 @@ local function loop()
           "take's marker follows the new edges. Works on the REAPER\n" ..
           "selection, or everything on Selects + Alts when nothing is\n" ..
           "selected.")
+
+      Flow("Apply the cut fades")
+      if im.Button(ctx, "Apply the cut fades") then pending_action = Trim.fades end
+      Tip("Put the standard short fades (Settings) back on the selected\n" ..
+          "items -- the ones a cut writes, and the ones a comp, a re-trim\n" ..
+          "or a hand-drawn crossfade replaces.\n\n" ..
+          "It also re-enrols the item into \"Auto-adjust head and tail\":\n" ..
+          "custom fades are how a hand-trimmed item is recognised and left\n" ..
+          "alone, so an item with the defaults back is one Auto-adjust is\n" ..
+          "willing to measure and move again.\n\n" ..
+          "Acts on the REAPER selection.")
 
       -- Two buttons, not a button and a rule combo. The combo was the one
       -- control on the toolbar that did nothing when clicked -- it set state
