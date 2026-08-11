@@ -1422,6 +1422,115 @@ function Trim.dupe_report(plan, removed)
   return parts
 end
 
+-- Put the selected items back the way they were before Identify ever ran.
+--
+-- "Clear take markers" alone does not do this, which is the trap: the tool
+-- reads THREE things, and a marker is only one of them.
+--
+--   1. the take markers        -- what a native clear-markers action removes
+--   2. the entries keyed tkm|<id> -- the Lock/Keep/Sel, status, notes and
+--      per-take names, which survive the marker and become orphan marks that
+--      Check then reports
+--   3. the item's take NAME    -- the name IS the assignment, so an item still
+--      named for a line is still that line's take to Pull and to Check,
+--      marker or no marker
+--
+-- Clearing one of three is why an item that looked untracked kept coming back.
+--
+-- What this does NOT do is empty the sheet. The transcript still matches the
+-- script, so those lines still show takes -- unmarked ones, exactly as they
+-- stood before Identify. There is no state in which recorded audio that
+-- matches a line shows nothing, and pretending otherwise would be a worse lie
+-- than the one this fixes.
+--
+-- Selection is REQUIRED. Every other verb treats "nothing selected" as
+-- "everything", and for a verb that throws away decisions that default is a
+-- foot-gun; Start over... is the whole-project form and has its own confirm.
+function Trim.untrack_count()
+  local picked = SelectedItemSet()
+  if next(picked) == nil then return nil end
+
+  local n_items, n_markers, n_names = 0, 0, 0
+  local ids = {}
+  for _, info in ipairs(state.items or {}) do
+    local item = info.item
+    if item and not info.skip and picked[item] then
+      n_items = n_items + 1
+      local ok, chunk = r.GetItemStateChunk(item, "", false)
+      if ok then
+        for _, m in ipairs(vo.ParseTKMChunk(chunk)) do
+          local _, id = vo.ParseMarkerName(m.name)
+          if id then
+            n_markers = n_markers + 1
+            ids[id] = true
+          end
+        end
+      end
+      local take = r.GetActiveTake(item)
+      if take then
+        local _, nm = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+        if nm and nm ~= "" then n_names = n_names + 1 end
+      end
+    end
+  end
+
+  local n_entries = 0
+  for _, e in ipairs(state.entries or {}) do
+    local id = e.key and e.key:match("^tkm|(.+)$")
+    if id and ids[id] then n_entries = n_entries + 1 end
+  end
+
+  return { items = n_items, markers = n_markers,
+           entries = n_entries, names = n_names, ids = ids }
+end
+
+function Trim.untrack()
+  Reload()
+  local count = Trim.untrack_count()
+  if not count then
+    state.message, state.message_kind =
+      "Select the items to untrack in REAPER first.", "warn"
+    return
+  end
+
+  core.Transaction("VO Overview: untrack items", function()
+    local picked = SelectedItemSet()
+    for _, info in ipairs(state.items or {}) do
+      local item = info.item
+      if item and not info.skip and picked[item] then
+        -- An EMPTY list, not a filtered one: every marker the tool owns goes,
+        -- residue included. vo.WriteTakeMarkers preserves the user's own.
+        vo.WriteTakeMarkers(item, {})
+        local take = r.GetActiveTake(item)
+        if take then
+          -- "" is the unassigned name: REAPER shows the source file, and
+          -- vo.ResolveItemName reads it as claiming no line.
+          r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", true)
+        end
+      end
+    end
+  end)
+
+  -- The stored decisions go with them. Rebuilt in place rather than filtered
+  -- into a new table, because state.entries is held by reference elsewhere.
+  local kept = {}
+  for _, e in ipairs(state.entries or {}) do
+    local id = e.key and e.key:match("^tkm|(.+)$")
+    if not (id and count.ids[id]) then kept[#kept + 1] = e end
+  end
+  state.entries = kept
+  state.dirty = true
+  state.name_baseline = nil
+  r.UpdateArrange()
+  Reload()
+
+  state.message, state.message_kind = string.format(
+    "Untracked %d item(s): %d marker(s), %d stored decision(s), %d name(s) " ..
+    "cleared. The lines still show their takes -- unmarked, as they were " ..
+    "before Identify.",
+    count.items, count.markers, count.entries, count.names), "ok"
+end
+
 -- The user's rule for "I trimmed the head past the marker start": the row's
 -- own marker snaps to its item's current source coverage. That row's marker
 -- is by construction the counting marker of that item, so this IS the
@@ -7680,6 +7789,58 @@ local function loop()
           "is what REAPER's split leaves behind when it copies the whole\n" ..
           "marker set into both halves.\n\n" ..
           "Acts on the selection, or everything when nothing is selected.")
+
+      Flow("Untrack these items…")
+      im.PushStyleColor(ctx, im.Col_Button,        0x8C3A3AFF)
+      im.PushStyleColor(ctx, im.Col_ButtonHovered, 0xA84A4AFF)
+      if im.Button(ctx, "Untrack these items…") then
+        im.OpenPopup(ctx, "##untrack_confirm")
+      end
+      im.PopStyleColor(ctx, 2)
+      Tip("Put the items selected in REAPER back the way they were before\n" ..
+          "Identify ran: their take markers go, the Lock / Keep / Sel,\n" ..
+          "status and notes stored against those markers go, and their take\n" ..
+          "names are cleared so nothing claims them.\n\n" ..
+          "Clearing the markers alone is not enough -- the stored decisions\n" ..
+          "outlive the marker, and the NAME is what assigns an item to a\n" ..
+          "line. That is why an item cleared with a native action kept\n" ..
+          "coming back.\n\n" ..
+          "It does not empty the sheet: the transcript still matches the\n" ..
+          "script, so those lines still show takes -- unmarked ones, ready\n" ..
+          "to identify again.\n\n" ..
+          "Audio is never touched. Requires a REAPER selection.")
+
+      if im.BeginPopup(ctx, "##untrack_confirm") then
+        local c = Trim.untrack_count()
+        if not c then
+          im.Text(ctx, "Select the items to untrack in REAPER first.")
+        else
+          im.Text(ctx, string.format("Untrack %d item(s)?", c.items))
+          im.Spacing(ctx)
+          im.TextDisabled(ctx, "Goes:")
+          im.TextWrapped(ctx, string.format(
+            "  %d take marker(s), %d stored decision(s) (Lock / Keep / Sel, " ..
+            "status, notes, per-take names), %d item name(s) cleared.",
+            c.markers, c.entries, c.names))
+          im.TextDisabled(ctx, "Stays:")
+          im.TextWrapped(ctx,
+            "  The audio, the item edges, the transcripts and the script. " ..
+            "Those lines keep showing takes -- unmarked, as they stood " ..
+            "before Identify.")
+        end
+        im.Spacing(ctx)
+        if c then
+          im.PushStyleColor(ctx, im.Col_Button, 0x8C3A3AFF)
+          if im.Button(ctx, "Untrack") then
+            pending_action = Trim.untrack
+            im.CloseCurrentPopup(ctx)
+          end
+          im.PopStyleColor(ctx)
+          im.SameLine(ctx)
+        end
+        if im.Button(ctx, "Cancel") then im.CloseCurrentPopup(ctx) end
+        im.EndPopup(ctx)
+      end
 
       Flow("Apply the cut fades")
       if im.Button(ctx, "Apply the cut fades") then pending_action = Trim.fades end

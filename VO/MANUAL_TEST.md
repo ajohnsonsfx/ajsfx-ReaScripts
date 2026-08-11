@@ -827,3 +827,19 @@ straddler — so swapping it back fails loudly.
 - **Apply the cut fades** (item 4 above).
 - **Deliver** (items 8 and 9 above) — in particular that ONE undo reverses all
   three steps.
+
+### Untrack these items — not yet executed
+
+10. Select an uncut recording holding many take markers. **Untrack these
+    items…** should offer a confirm naming three counts: markers, stored
+    decisions, item names. Cancel must change nothing.
+11. Press Untrack. Expect: every tool take marker gone from that item, any
+    Lock/Keep/Sel and notes stored against those markers gone from the project
+    file, the take name cleared to blank (REAPER then shows the source
+    filename). A take marker YOU placed by hand — no ` ~id` suffix — must
+    survive.
+12. The sheet must NOT go empty: the affected lines still show takes, derived
+    from the match, with no marker. Press **Identify the lines in these
+    items** and the markers come back.
+13. With nothing selected in REAPER, the button's popup must say to select
+    items first and offer no Untrack button.
