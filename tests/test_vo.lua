@@ -5188,6 +5188,13 @@ local function by_asset(rows, asset)
   return out
 end
 
+-- A counting marker, the shape vo.CountingMarkers emits and BuildOverview
+-- consumes. `path` is only needed when the test asserts transcript text:
+-- vo.TranscriptForRange matches spans on source_path.
+local function mk(id, start, stop, path)
+  return { id = id, start = start, stop = stop, source_path = path }
+end
+
 test("a script with no audio at all is entirely missing", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", "Guard", 1), line("b", "Bravo", "Hero", 2) },
@@ -5209,6 +5216,8 @@ test("rows follow script order, not audio order", function()
       span(10, 11, "match", "b", "bravo", 0.9),
       span(1, 2, "match", "a", "alpha", 0.9),
     } } },
+    takes_by_asset = { a = { mk("m_a", 1, 2, "s.wav") },
+                       b = { mk("m_b", 10, 11, "s.wav") } },
   })
   assert(rows[1].asset == "a" and rows[2].asset == "b",
     "Expected script order a,b; got " .. rows[1].asset .. "," .. rows[2].asset)
@@ -5290,6 +5299,8 @@ test("multiple takes become sibling rows, numbered chronologically", function()
       span(10, 11, "match", "a", "alpha one", 0.9),
       span(20, 21, "match", "a", "alpha two", 0.9),
     } } },
+    takes_by_asset = { a = { mk("m3", 30, 31, "s.wav"), mk("m1", 10, 11, "s.wav"),
+                             mk("m2", 20, 21, "s.wav") } },
   })
   assert(#rows == 3, "Expected 3 take rows, got " .. #rows)
   for i, row in ipairs(rows) do
@@ -5306,6 +5317,7 @@ test("with no select recorded, no take is the primary", function()
       span(10, 11, "match", "a", "one", 0.9),
       span(20, 21, "match", "a", "two", 0.9),
     } } },
+    takes_by_asset = { a = { mk("m1", 10, 11, "s.wav"), mk("m2", 20, 21, "s.wav") } },
   })
   assert(rows[1].is_primary == false and rows[2].is_primary == false,
     "Guessing a take is exactly what the Select column exists to stop")
@@ -5319,8 +5331,10 @@ test("an explicit select in the project file names the primary", function()
       span(20, 21, "match", "a", "two", 0.9),
       span(30, 31, "match", "a", "three", 0.9),
     } } },
-    entries = { { key = "s.wav|20000", source = "s.wav", source_start = 20,
-                  asset = "a", select = true } },
+    takes_by_asset = { a = { mk("m1", 10, 11, "s.wav"), mk("m2", 20, 21, "s.wav"),
+                             mk("m3", 30, 31, "s.wav") } },
+    -- Keyed by the marker, not by a source time. A marker id cannot drift.
+    entries = { { key = "tkm|m2", asset = "a", select = true } },
   })
   assert(rows[2].is_primary == true, "The user's chosen take is the select")
   assert(rows[3].is_primary == false, "The last take yields to the user's choice")
@@ -5351,11 +5365,16 @@ test("one source's missing line and another's audio coexist in one list", functi
       { path = "s1.wav", spans = { span(1, 2, "match", "a", "alpha", 0.9) } },
       { path = "s2.wav", spans = { span(1, 2, "match", "c", "charlie", 0.9) } },
     },
+    takes_by_asset = { a = { mk("m_a", 1, 2, "s1.wav") },
+                       c = { mk("m_c", 1, 2, "s2.wav") } },
   })
   assert(#rows == 3, "Expected 3 rows, got " .. #rows)
-  assert(rows[1].status == "recorded" and rows[1].source_path == "s1.wav", "a from s1")
+  -- A marker row carries no source_path out of BuildOverview -- the coupled
+  -- layer fills it from the item the marker lives in. Its transcript is what
+  -- says which session it came from here.
+  assert(rows[1].status == "recorded" and rows[1].transcript == "alpha", "a from s1")
   assert(rows[2].status == "missing", "b is still missing")
-  assert(rows[3].status == "recorded" and rows[3].source_path == "s2.wav", "c from s2")
+  assert(rows[3].status == "recorded" and rows[3].transcript == "charlie", "c from s2")
 end)
 
 -- A marker owns its take, and the words are what decide its text: a marker
