@@ -3817,7 +3817,13 @@ local function DoCut()
       -- The spans hold PROJECT time after resolution and padding; markers
       -- live in SOURCE time, so each converts back through its own item.
       for _, span in ipairs(g.spans) do
-        if span.dest ~= vo.DEST_IN_PLACE then
+        -- A span that came from a marker ALREADY HAS one -- the ride-along
+        -- above just copied it. Minting a second at the same bounds is how
+        -- this doubled every marker the moment Cut started honouring them
+        -- instead of skipping them, and it would have been worse than
+        -- cosmetic: the marks are keyed `tkm|<id>`, so a fresh id would
+        -- strand the take's Sel and Keep on a marker nothing points at.
+        if span.dest ~= vo.DEST_IN_PLACE and not span.from_marker then
           local from = vo.ProjectTimeToSource(span.start, g.info)
           local to   = vo.ProjectTimeToSource(span.stop,  g.info)
           if to > from then

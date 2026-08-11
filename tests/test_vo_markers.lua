@@ -165,6 +165,37 @@ test("two items covering one marker: the better-covering one wins", function()
   assert(#out == 1 and out[1].item_index == 2, "wrong winner")
 end)
 
+test("one take wearing two markers counts once", function()
+  -- The shape of a real bug: Cut minted a fresh marker for a take that already
+  -- had one, so the same performance carried two ids at the same bounds.
+  local out = vo.CountingMarkers({ pi(0, 10, {
+    mk(2, "A", "k9", 3), mk(2, "A", "k1", 3) }) })
+  assert(#out == 1, "counted a doubled marker twice: " .. #out)
+  assert(out[1].id == "k1", "unstable survivor: " .. tostring(out[1].id))
+end)
+
+test("the survivor is the same one every run", function()
+  -- Marks are keyed `tkm|<id>`, so a survivor that changed run to run would
+  -- move the user's Sel and Keep around under them.
+  local a = vo.CountingMarkers({ pi(0, 10, { mk(2, "A", "k9", 3), mk(2, "A", "k1", 3) }) })
+  local b = vo.CountingMarkers({ pi(0, 10, { mk(2, "A", "k1", 3), mk(2, "A", "k9", 3) }) })
+  assert(a[1].id == b[1].id, "survivor depends on chunk order")
+end)
+
+test("two takes of one line are two takes, not a duplicate", function()
+  -- Same asset, different audio: the whole point of the tool. Only OVERLAP
+  -- makes two markers one take.
+  local out = vo.CountingMarkers({ pi(0, 20, {
+    mk(2, "A", "k1", 3), mk(10, "A", "k2", 3) }) })
+  assert(#out == 2, "merged two genuine takes of one line: " .. #out)
+end)
+
+test("two different lines overlapping stay separate", function()
+  local out = vo.CountingMarkers({ pi(0, 10, {
+    mk(2, "A", "k1", 3), mk(2, "B", "k2", 3) }) })
+  assert(#out == 2, "merged two different lines: " .. #out)
+end)
+
 test("markers without our id suffix are not ours and are ignored", function()
   local out = vo.CountingMarkers({ pi(0, 10, {
     { pos = 1, name = "user note", color = 0, length = 0 } }) })

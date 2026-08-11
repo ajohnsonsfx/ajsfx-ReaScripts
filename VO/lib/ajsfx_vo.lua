@@ -1737,7 +1737,34 @@ function vo.CountingMarkers(per_item)
     if a.start ~= b.start then return a.start < b.start end
     return tostring(a.id) < tostring(b.id)
   end)
-  return out
+
+  -- Two markers for one take: same line, overlapping audio, different ids.
+  --
+  -- Deduped on OVERLAP, never on the name alone -- two takes of one line share
+  -- an asset and are two different performances, which is the whole point of
+  -- this tool. But one line cannot be performed twice in the same instant, so
+  -- same asset AND overlapping in time is one take wearing two markers.
+  --
+  -- The earliest id wins so the answer is stable between runs, and stability
+  -- is what matters here: the marks are keyed `tkm|<id>`, so a survivor that
+  -- changed run to run would move the user's Sel and Keep around under them.
+  local kept = {}
+  for _, rec in ipairs(out) do
+    local dup = nil
+    for _, k in ipairs(kept) do
+      if k.asset == rec.asset and k.start < rec.stop and k.stop > rec.start then
+        dup = k
+        break
+      end
+    end
+    if not dup then
+      kept[#kept + 1] = rec
+    elseif tostring(rec.id) < tostring(dup.id) then
+      dup.id, dup.start, dup.stop, dup.item_index =
+        rec.id, rec.start, rec.stop, rec.item_index
+    end
+  end
+  return kept
 end
 
 -- What was said inside a marker's range, and how well it matched.
