@@ -390,6 +390,51 @@ test("split residue on a non-covering item is dropped", function()
   assert(got and #got.markers == 0, "the residue copy survived")
 end)
 
+test("one id on two covering items survives only on the one covering more", function()
+  -- Comps and overlaps: two items genuinely play part of the same range. The
+  -- id is the take's identity, so exactly one item may hold it.
+  local rewrites = vo.PlanMarkerPrune({
+    pi(0, 4,  { mk(2, "A", "k1", 3) }),   -- covers 2..4 of the marker: 2s
+    pi(2, 10, { mk(2, "A", "k1", 3) }),   -- covers 2..5: 3s -- this one owns it
+  })
+  local got
+  for _, rw in ipairs(rewrites) do if rw.item_index == 1 then got = rw end end
+  assert(got and #got.markers == 0, "the lesser-covering copy survived")
+  for _, rw in ipairs(rewrites) do
+    assert(rw.item_index ~= 2, "the owning item must not be rewritten")
+  end
+end)
+
+test("one id twice INSIDE one item collapses to one", function()
+  local rewrites = vo.PlanMarkerPrune({
+    pi(0, 10, { mk(2, "A", "k1", 3), mk(2, "A", "k1", 3) }),
+  })
+  assert(#rewrites == 1, "the duplicate was left in place")
+  assert(#rewrites[1].markers == 1, "collapsed to " .. #rewrites[1].markers)
+end)
+
+test("an id no item covers is dropped everywhere, not kept somewhere", function()
+  local rewrites = vo.PlanMarkerPrune({
+    pi(0, 4,   { mk(20, "A", "k1", 3) }),
+    pi(30, 40, { mk(20, "A", "k1", 3) }),
+  })
+  assert(#rewrites == 2, "expected both items rewritten, got " .. #rewrites)
+  for _, rw in ipairs(rewrites) do
+    assert(#rw.markers == 0, "a marker with no audio under it survived")
+  end
+end)
+
+test("the duplicate planner never sees one id twice", function()
+  -- CountingMarkers is keyed by id, so PlanDuplicateMarkers is only ever
+  -- handed one marker per id. Same-id duplication is prune's job, not the
+  -- words'. This asserts the boundary rather than assuming it.
+  local counted = vo.CountingMarkers({
+    pi(0, 4,  { mk(2, "A", "k1", 3) }),
+    pi(2, 10, { mk(2, "A", "k1", 3) }),
+  })
+  assert(#counted == 1, "CountingMarkers returned " .. #counted .. " for one id")
+end)
+
 test("an item already holding just its own take needs no rewrite", function()
   local rewrites = vo.PlanMarkerPrune({ pi(0, 10, { mk(2, "A", "k1", 3) }) })
   assert(#rewrites == 0, "a tidy item was rewritten anyway")
