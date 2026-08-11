@@ -5434,17 +5434,29 @@ end)
 --------------------------------
 print("\nBuildOverview: project-file overlay and rematch:")
 
+-- Re-attaching an entry by SOURCE TIME within a tolerance is what these tests
+-- are about, and after "a marker is a row" that mechanism has exactly one
+-- customer left: ORPHAN rows. A take row keys `tkm|<id>`, which no
+-- re-transcription can move, so it needs no tolerance at all.
+--
+-- The orphans still do, and it still matters: an orphan the user DISMISSED
+-- must stay dismissed when the transcript is re-run, or "not on the script: 0"
+-- becomes unreachable and the whole queue goes back to being a wall. So these
+-- keep testing the tolerance, on the rows that still use it -- `lines` is empty
+-- here, which is what makes every span below an orphan.
 local function verified_at(start)
   return { { key = vo.OverviewKey("s.wav", start, "a"), source = "s.wav",
              source_start = start, asset = "a", status = "verified",
              notes = "checked" } }
 end
 
-test("an exact key match carries the verified flag and notes", function()
+test("an entry keyed by marker id carries the verified flag and notes", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
     matches = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
-    entries = verified_at(10),
+    takes_by_asset = { a = { mk("m1", 10, 11, "s.wav") } },
+    entries = { { key = "tkm|m1", asset = "a", status = "verified",
+                  notes = "checked" } },
   })
   assert(rows[1].user_status == "verified", "Got " .. tostring(rows[1].user_status))
   assert(rows[1].notes == "checked", "Notes carry through")
@@ -5452,17 +5464,18 @@ end)
 
 test("a boundary nudged 40ms by re-transcription keeps its checkmark", function()
   local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1) },
+    lines = {},
     matches = { { path = "s.wav", spans = { span(10.04, 11, "match", "a", "alpha", 0.9) } } },
     entries = verified_at(10),
   })
+  assert(rows[1].status == "orphan", "the fixture stopped producing an orphan")
   assert(rows[1].user_status == "verified",
     "A 40ms shift must not lose the mark; got " .. tostring(rows[1].user_status))
 end)
 
 test("a span two seconds away is different audio and does not inherit the mark", function()
   local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1) },
+    lines = {},
     matches = { { path = "s.wav", spans = { span(12, 13, "match", "a", "alpha", 0.9) } } },
     entries = verified_at(10),
   })
@@ -5470,10 +5483,10 @@ test("a span two seconds away is different audio and does not inherit the mark",
     "A 2s shift must not inherit the mark; got " .. tostring(rows[1].user_status))
 end)
 
-test("the rematch never crosses to a different script line", function()
+test("the rematch never crosses to a different asset", function()
   local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2) },
-    -- 'b' sits 100ms from where 'a' was verified, but it is a different line.
+    lines = {},
+    -- 'b' sits 100ms from where 'a' was verified, but it is a different name.
     matches = { { path = "s.wav", spans = { span(10.1, 11, "match", "b", "bravo", 0.9) } } },
     entries = verified_at(10),
   })
@@ -5484,7 +5497,7 @@ end)
 
 test("the nearest candidate wins when several are in tolerance", function()
   local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1) },
+    lines = {},
     matches = { { path = "s.wav", spans = {
       span(10.0, 10.5, "match", "a", "near", 0.9),
       span(10.4, 10.9, "match", "a", "far",  0.9),
@@ -5498,7 +5511,7 @@ end)
 
 test("a project moved to another drive still finds its marks", function()
   local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1) },
+    lines = {},
     matches = { { path = "E:\\Moved\\s.wav",
                    spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
     entries = { { key = "s.wav|10000", source = "D:\\Old\\s.wav", source_start = 10,
@@ -5510,7 +5523,7 @@ end)
 
 test("two recordings sharing a filename do not share a checkmark", function()
   local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1) },
+    lines = {},
     matches = {
       { path = "D:\\A\\take.wav", spans = { span(10, 11, "match", "a", "one", 0.9) } },
       { path = "D:\\B\\take.wav", spans = { span(10, 11, "match", "a", "two", 0.9) } },
@@ -5545,8 +5558,8 @@ test("a name override is carried but never overwrites the matched filename", fun
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
     matches = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
-    entries = { { key = "s.wav|10000", source = "s.wav", source_start = 10,
-                  asset = "a", name_override = "vo_alpha_final" } },
+    takes_by_asset = { a = { mk("m1", 10, 11, "s.wav") } },
+    entries = { { key = "tkm|m1", asset = "a", name_override = "vo_alpha_final" } },
   })
   assert(rows[1].asset == "a", "The script's filename is untouched")
   assert(rows[1].name_override == "vo_alpha_final", "The override rides alongside")
@@ -5556,17 +5569,19 @@ end)
 print("\nProjectEntriesFromRows / SummarizeOverview:")
 
 test("a full overview round-trips through the tracker unchanged", function()
+  local MARKS = { a = { mk("m1", 10, 11, "s.wav") } }
   local built = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2) },
     matches = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
-    entries = { { key = "s.wav|10000", source = "s.wav", source_start = 10,
-                  asset = "a", status = "verified", notes = "good" } },
+    takes_by_asset = MARKS,
+    entries = { { key = "tkm|m1", asset = "a", status = "verified", notes = "good" } },
   })
   local text   = vo.SerializeProjectFile(vo.ProjectEntriesFromRows(built))
   local parsed = vo.ParseProjectFile(text)
   local again  = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2) },
     matches = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
+    takes_by_asset = MARKS,
     entries = parsed.entries,
   })
   assert(again[1].user_status == "verified", "The mark survives a save/load cycle")
@@ -5574,10 +5589,15 @@ test("a full overview round-trips through the tracker unchanged", function()
 end)
 
 test("marks survive a re-transcription that shifts every boundary slightly", function()
+  -- THE point of keying a take by its marker id. Re-running the transcript
+  -- moves every span; the marker does not move, so there is nothing to
+  -- re-attach and no tolerance to get wrong.
   local lines = { line("a", "Alpha", nil, 1) }
+  local MARKS = { a = { mk("m1", 10, 11, "s.wav") } }
   local first = vo.BuildOverview({
     lines = lines,
     matches = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
+    takes_by_asset = MARKS,
   })
   first[1].user_status = "verified"
   first[1].notes = "keeper"
@@ -5587,6 +5607,7 @@ test("marks survive a re-transcription that shifts every boundary slightly", fun
   local second = vo.BuildOverview({
     lines = lines,
     matches = { { path = "s.wav", spans = { span(10.03, 11.02, "match", "a", "alpha", 0.91) } } },
+    takes_by_asset = MARKS,
     entries = saved.entries,
   })
   assert(second[1].user_status == "verified",
