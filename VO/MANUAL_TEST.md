@@ -788,3 +788,10 @@ project `631.4541` (source window `31.4541–34.8700`).
    must be untouched. One Ctrl+Z reverses the whole thing.
 7. Press Tidy Up Take twice: the second press should report zero snapped and
    zero faded.
+8. **Deliver** (Pull row, first button). On a session with takes picked but
+   nothing pulled: one press should build the tracks, file the items, and lay
+   them out, with the message reading back all three steps. **ONE** undo step
+   must reverse the whole thing — this relies on REAPER collapsing nested undo
+   blocks into the outermost, which is the part to actually check.
+9. Press Deliver twice: the second press should report the tracks already
+   existing and nothing left to pull, and still lay out without error.

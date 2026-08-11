@@ -4796,6 +4796,48 @@ local function Pull()
   Reload()
 end
 
+-- The whole of Pull, in one press: build the tracks, file the items onto them,
+-- lay them out on the timeline.
+--
+-- These three are almost never wanted apart. Building without pulling is for
+-- seeing the shape before the first pull; laying out without pulling sorts
+-- items that are still sitting on their recording. The normal case is all
+-- three, and until now that was three presses and three undo steps.
+--
+-- The three steps keep their own transactions, and this wraps them in one
+-- more: REAPER collapses nested undo blocks into the outermost, so the press
+-- is a single point in the undo history rather than three.
+--
+-- Each step reports through state.message as usual, so the messages are
+-- captured as they go and read back as one line. A step with nothing to do
+-- says so and the next one still runs -- the same "tidy up what it can" rule
+-- the marker verbs follow. Nothing here aborts the rest.
+function Dest.deliver()
+  local parts = {}
+  local worst = "ok"
+  local function step(fn)
+    state.message, state.message_kind = nil, nil
+    fn()
+    if state.message and state.message ~= "" then
+      parts[#parts + 1] = state.message
+      -- "error" here means "this step found nothing to do", not a failure of
+      -- the press: the run continues and the colour only has to carry that
+      -- SOMETHING wants looking at.
+      if state.message_kind ~= "ok" and worst == "ok" then worst = "warn" end
+    end
+  end
+
+  core.Transaction("VO Overview: deliver", function()
+    step(Dest.build)
+    step(Pull)
+    step(SortOnTimeline)
+  end)
+
+  r.UpdateArrange()
+  Reload()
+  state.message, state.message_kind = table.concat(parts, " "), worst
+end
+
 -- Names every alt that has none.
 --
 -- A PER-TAKE name, not an Append: an Append belongs to the script line and
@@ -7621,6 +7663,20 @@ local function loop()
           "name is left alone.")
 
       Group("Pull:")
+      -- The row's MACRO slot, same as Tidy Up Take leads Cut: one press for
+      -- the whole job, with the steps still behind it.
+      if im.Button(ctx, "Deliver") then pending_action = Dest.deliver end
+      Tip("The whole of Pull in one press, one undo step:\n\n" ..
+          "1. Build the destination tracks, then\n" ..
+          "2. Pull items to their tracks, then\n" ..
+          "3. Lay items out in script order.\n\n" ..
+          "These three are almost never wanted apart -- this is what you\n" ..
+          "press once the takes are picked.\n\n" ..
+          "A step with nothing to do says so and the next one still runs;\n" ..
+          "the message reads back what each of the three found. Safe to\n" ..
+          "re-run: all three already are.")
+
+      Flow("Pull items to their tracks")
       PanelButton("pull", "Pull items to their tracks",
         "Moves items onto Selects, Alts, Outs and Review tracks nested under\n" ..
         "the recording they came from, matched to the script by name.")
