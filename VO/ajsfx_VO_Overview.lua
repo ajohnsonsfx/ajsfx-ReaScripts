@@ -1327,11 +1327,14 @@ end
 -- per take, no overlap -- has no clusters and nothing to lose. The planner
 -- then refuses whenever the words do not clearly pick a winner, and the
 -- refusals are reported by name.
-function Trim.dedupe()
-  Reload()
+--
+-- The gather-and-decide half only. It writes nothing and reads no chunk twice,
+-- so both verbs that need it can run it inside their own transaction and
+-- report in their own words. Returns plan, drop_by_item.
+function Trim.dupe_plan(scope)
   local cfg = vo.LoadConfig()
-  local picked = SelectedItemSet()
-  local scoped = next(picked) ~= nil
+  local picked = scope
+  local scoped = picked ~= nil
 
   local words = {}
   for _, t in ipairs(state.transcripts or {}) do
@@ -1357,12 +1360,6 @@ function Trim.dedupe()
   local plan = vo.PlanDuplicateMarkers({
     markers = markers, lines = state.lines or {}, words = words, cfg = cfg })
 
-  if #plan.deletes == 0 and #plan.skipped == 0 then
-    state.message, state.message_kind =
-      "No take markers are competing for the same audio.", "ok"
-    return
-  end
-
   local drop_by_item = {}
   for _, d in ipairs(plan.deletes) do
     local item = owner[d.id]
@@ -1371,34 +1368,39 @@ function Trim.dedupe()
       drop_by_item[item][d.id] = true
     end
   end
+  return plan, drop_by_item
+end
 
+-- The write half. Caller supplies the transaction. Returns how many markers
+-- actually left the chunks.
+function Trim.drop_dupes(drop_by_item)
   local removed = 0
-  core.Transaction("VO Overview: remove duplicate take markers", function()
-    for item, drop in pairs(drop_by_item) do
-      local ok, chunk = r.GetItemStateChunk(item, "", false)
-      if ok then
-        -- A whole-list write, so every marker the item holds has to be carried
-        -- across; user markers are preserved by vo.WriteTakeMarkers itself.
-        local list, hit = {}, 0
-        for _, m in ipairs(vo.ParseTKMChunk(chunk)) do
-          local asset, id = vo.ParseMarkerName(m.name)
-          if id then
-            if drop[id] then
-              hit = hit + 1
-            else
-              list[#list + 1] = { start = m.pos, stop = m.pos + (m.length or 0),
-                                  asset = asset, id = id }
-            end
+  for item, drop in pairs(drop_by_item or {}) do
+    local ok, chunk = r.GetItemStateChunk(item, "", false)
+    if ok then
+      -- A whole-list write, so every marker the item holds has to be carried
+      -- across; user markers are preserved by vo.WriteTakeMarkers itself.
+      local list, hit = {}, 0
+      for _, m in ipairs(vo.ParseTKMChunk(chunk)) do
+        local asset, id = vo.ParseMarkerName(m.name)
+        if id then
+          if drop[id] then
+            hit = hit + 1
+          else
+            list[#list + 1] = { start = m.pos, stop = m.pos + (m.length or 0),
+                                asset = asset, id = id }
           end
         end
-        if hit > 0 and vo.WriteTakeMarkers(item, list) then removed = removed + hit end
       end
+      if hit > 0 and vo.WriteTakeMarkers(item, list) then removed = removed + hit end
     end
-  end)
-  state.dirty = true
-  r.UpdateArrange()
-  Reload()
+  end
+  return removed
+end
 
+-- The duplicate half of a report, as sentences. Shared so the two verbs that
+-- run this step cannot describe it differently.
+function Trim.dupe_report(plan, removed)
   local parts = {}
   if removed > 0 then
     local named = {}
@@ -1408,8 +1410,6 @@ function Trim.dedupe()
     end
     parts[#parts + 1] = string.format("Removed %d duplicate marker(s): %s.",
       removed, table.concat(named, ", "))
-  else
-    parts[#parts + 1] = "Removed nothing."
   end
   for _, s in ipairs(plan.skipped) do
     local named = {}
@@ -1419,8 +1419,7 @@ function Trim.dedupe()
     parts[#parts + 1] = string.format("Left alone -- %s (%s).",
       s.why, table.concat(named, " vs "))
   end
-  state.message, state.message_kind = table.concat(parts, " "),
-    (#plan.skipped > 0 and removed == 0) and "warn" or "ok"
+  return parts
 end
 
 -- The user's rule for "I trimmed the head past the marker start": the row's
@@ -1468,15 +1467,22 @@ end
 -- the mirror refresh stays its own press and its own undo step.
 -- The write half, without the reloads or the transaction, so a caller that is
 -- already inside both can prune as part of its own job. Returns touched, canon.
-local function MirrorTakeMarkers()
+--
+-- `picked`, when given, is the set of items the write is allowed to touch. The
+-- PLAN is still computed over the whole group either way: which copy of a
+-- marker is canonical is a fact about every item covering it, and deciding it
+-- from a subset would promote a residue copy the moment a user selected one
+-- item and not its neighbour.
+local function MirrorTakeMarkers(picked)
   local touched, canonical = 0, 0
   for _, group in pairs(state.take_markers or {}) do
     local rewrites, canon = vo.PlanMarkerMirror(group)
     canonical = canonical + canon
     for _, rw in ipairs(rewrites) do
       local rec = group[rw.item_index]
-      if rec and rec.info and rec.info.item then
-        if vo.WriteTakeMarkers(rec.info.item, rw.markers) then
+      local item = rec and rec.info and rec.info.item
+      if item and ((not picked) or picked[item]) then
+        if vo.WriteTakeMarkers(item, rw.markers) then
           touched = touched + 1
         end
       end
@@ -1497,6 +1503,142 @@ local function SyncTakeMarkers()
       "Tidied the take markers on %d item(s). %d take(s) in the session, one " ..
       "marker each, in the clip it belongs to.", touched, canonical)
     or "Every item already carries just its own take.", "ok"
+end
+
+-- Everything on an item that is not its own take marker, in one step.
+--
+-- Two different kinds of extra, which is why this is one verb rather than two
+-- buttons the user has to know the difference between:
+--
+--   1. DUPLICATES -- two lines claiming the same stretch of audio. Resolved by
+--      the words (vo.PlanDuplicateMarkers), and refused when they do not
+--      clearly decide.
+--   2. LEFTOVERS -- markers before and after this clip's own audio, which is
+--      what REAPER's split leaves behind when it copies the whole marker set
+--      into both halves. Dropped by the coverage rule (vo.PlanMarkerMirror).
+--
+-- Order matters. Duplicates go first: the mirror pass decides which COPY of a
+-- marker id is canonical, and running it first would faithfully preserve a
+-- duplicate that the words are about to delete.
+--
+-- Caller supplies the Reload and the transaction. Returns removed, dropped,
+-- plan -- so the wrapping verb writes its own report.
+function Trim.extras(picked)
+  local plan, drop_by_item = Trim.dupe_plan(picked)
+  local removed = Trim.drop_dupes(drop_by_item)
+  -- The mirror pass reads state.take_markers, which the drop above has just
+  -- made stale for the items it touched. Re-collect rather than trust it: a
+  -- plan built from pre-delete chunks would write the deleted markers back.
+  if removed > 0 then state.take_markers = vo.CollectTakeMarkers(state.items) end
+  local dropped = MirrorTakeMarkers(picked)
+  return removed, dropped, plan
+end
+
+-- The scope every verb here shares: the items picked in REAPER, or nil for
+-- "everything", which is what the collectors already mean by no filter.
+--
+-- On the Trim table, not a file local: the main chunk sits at Lua's 200-local
+-- ceiling and one more would be a LOAD-time error for the whole script.
+function Trim.scope()
+  local picked = SelectedItemSet()
+  return (next(picked) ~= nil) and picked or nil
+end
+
+function Trim.remove_extras()
+  Reload()
+  local picked = Trim.scope()
+  local removed, dropped, plan = 0, 0, nil
+  core.Transaction("VO Overview: remove extra take markers", function()
+    removed, dropped, plan = Trim.extras(picked)
+  end)
+  state.dirty = true
+  r.UpdateArrange()
+  Reload()
+
+  local parts = Trim.dupe_report(plan, removed)
+  if dropped > 0 then
+    parts[#parts + 1] = string.format(
+      "Dropped the leftover markers from %d clip(s).", dropped)
+  end
+  if #parts == 0 then
+    parts[1] = "Nothing extra: every clip already carries just its own take."
+  end
+  state.message, state.message_kind = table.concat(parts, " "),
+    (#plan.skipped > 0 and removed == 0) and "warn" or "ok"
+end
+
+-- The button for "I have just trimmed this clip by hand, make it right again".
+--
+-- Remove the extras, then bring what is left up to date with the audio the
+-- item now shows: the surviving marker follows the item's edges, and an edge
+-- left raw by the trim gets the standard fade back.
+--
+-- Fades are filled per SIDE, never overwritten. A trim leaves the edge it cut
+-- at zero and the other edge's fade intact, so filling only the zeros restores
+-- exactly what the trim removed -- and a fade drawn by hand, on either side,
+-- survives a press of this. That also keeps the hand-trimmed sentinel that
+-- TightenItems reads (custom fades mean "leave this alone") meaningful.
+function Trim.tidy_take()
+  Reload()
+  local cfg = vo.LoadConfig()
+  local fade_in  = vo.Opt(cfg, "cut_fade_in")
+  local fade_out = vo.Opt(cfg, "cut_fade_out")
+  local picked = Trim.scope()
+
+  local removed, dropped, plan = 0, 0, nil
+  local snapped, faded, several = 0, 0, 0
+
+  core.Transaction("VO Overview: tidy up take", function()
+    removed, dropped, plan = Trim.extras(picked)
+
+    for _, info in ipairs(state.items or {}) do
+      local item = info.item
+      if item and not info.skip and ((not picked) or picked[item]) then
+        -- Re-read per item: markers_in goes back to the chunk, so it sees the
+        -- deletes this transaction has already made rather than the collection
+        -- from before them.
+        local mks = Trim.markers_in(info)
+        if #mks == 1 then
+          if Trim.snap_apply(info, mks[1]) then snapped = snapped + 1 end
+        elseif #mks > 1 then
+          -- Still contested, because the words refused to choose. Snapping one
+          -- of several markers to the whole item would be a guess.
+          several = several + 1
+        end
+
+        local was_in  = r.GetMediaItemInfo_Value(item, "D_FADEINLEN")
+        local was_out = r.GetMediaItemInfo_Value(item, "D_FADEOUTLEN")
+        local hit = false
+        if was_in <= 0 and fade_in and fade_in > 0 then
+          r.SetMediaItemInfo_Value(item, "D_FADEINLEN", fade_in)
+          hit = true
+        end
+        if was_out <= 0 and fade_out and fade_out > 0 then
+          r.SetMediaItemInfo_Value(item, "D_FADEOUTLEN", fade_out)
+          hit = true
+        end
+        if hit then faded = faded + 1 end
+      end
+    end
+  end)
+  state.dirty = true
+  r.UpdateArrange()
+  Reload()
+
+  local parts = Trim.dupe_report(plan, removed)
+  if dropped > 0 then
+    parts[#parts + 1] = string.format(
+      "Dropped the leftover markers from %d clip(s).", dropped)
+  end
+  parts[#parts + 1] = string.format(
+    "Snapped %d marker(s) to their item; filled the missing fades on %d.",
+    snapped, faded)
+  if several > 0 then
+    parts[#parts + 1] = string.format(
+      "%d clip(s) still hold several markers and were not snapped.", several)
+  end
+  state.message, state.message_kind = table.concat(parts, " "),
+    (several > 0) and "warn" or "ok"
 end
 
 -- The edges a cut WOULD produce, for spans in one item.
@@ -5066,7 +5208,7 @@ local function DrawNoAudioPanel()
     end
     im.TextDisabled(ctx,
       "The item this marker lived in was deleted or trimmed past it. Relink\n" ..
-      "to the right item, or Tidy up take markers to drop the leftovers.")
+      "to the right item, or Remove Extra Take Markers to drop the leftovers.")
     im.Separator(ctx)
   end
 
@@ -7404,20 +7546,37 @@ local function loop()
           "selection, or everything on Selects + Alts when nothing is\n" ..
           "selected.")
 
-      Flow("Remove duplicate take markers")
-      if im.Button(ctx, "Remove duplicate take markers") then
-        pending_action = Trim.dedupe
+      Flow("Tidy Up Take")
+      if im.Button(ctx, "Tidy Up Take") then pending_action = Trim.tidy_take end
+      Tip("The button for \"I just trimmed this clip by hand -- make it right\n" ..
+          "again\". In one undo step:\n\n" ..
+          "1. Remove Extra Take Markers (below), then\n" ..
+          "2. snap the surviving marker to the item's new edges, then\n" ..
+          "3. put the standard fade on any edge left at zero.\n\n" ..
+          "Fades are FILLED, never overwritten: a trim leaves the edge it cut\n" ..
+          "raw and the other edge's fade intact, so only the raw one is\n" ..
+          "restored and a fade you drew by hand survives.\n\n" ..
+          "A clip still holding several markers -- because the words refused\n" ..
+          "to choose between them -- is not snapped, and is reported.\n\n" ..
+          "Acts on the selection, or everything when nothing is selected.")
+
+      Flow("Remove Extra Take Markers")
+      if im.Button(ctx, "Remove Extra Take Markers") then
+        pending_action = Trim.remove_extras
       end
-      Tip("When two script lines have both claimed the same stretch of audio,\n" ..
-          "the words spoken there decide which is right and the loser's\n" ..
-          "marker is deleted.\n\n" ..
-          "Only markers OVERLAPPING each other are ever compared -- an uncut\n" ..
-          "recording holds one marker per take, none of them overlapping, so\n" ..
-          "it has nothing to lose here.\n\n" ..
-          "It refuses whenever the words do not clearly pick a winner: no\n" ..
-          "transcript over the range, nothing matching it well, or two lines\n" ..
-          "too close to call. Those are reported by name and left exactly as\n" ..
-          "they are. Acts on the selection.")
+      Tip("Everything on a clip that is not its own take marker:\n\n" ..
+          "DUPLICATES -- two script lines that have both claimed the same\n" ..
+          "stretch of audio. The words spoken there decide which is right\n" ..
+          "and the loser's marker is deleted. Only OVERLAPPING markers are\n" ..
+          "ever compared, so an uncut recording -- one marker per take, none\n" ..
+          "overlapping -- has nothing to lose here. It refuses whenever the\n" ..
+          "words do not clearly pick a winner (no transcript, nothing\n" ..
+          "matching well, or two lines too close to call) and reports those\n" ..
+          "by name.\n\n" ..
+          "LEFTOVERS -- markers before and after this clip's own audio, which\n" ..
+          "is what REAPER's split leaves behind when it copies the whole\n" ..
+          "marker set into both halves.\n\n" ..
+          "Acts on the selection, or everything when nothing is selected.")
 
       Flow("Apply the cut fades")
       if im.Button(ctx, "Apply the cut fades") then pending_action = Trim.fades end
@@ -7502,14 +7661,6 @@ local function loop()
         "item was deleted, or trimmed past them. Relink each to the item\n" ..
         "it belongs to, or clear its marks on the row itself.")
 
-      Flow("Tidy up take markers")
-      if im.Button(ctx, "Tidy up take markers") then pending_action = SyncTakeMarkers end
-      Tip("Leave each clip holding only the take it IS, and drop the rest.\n" ..
-          "REAPER's split copies every take marker into both halves, so a\n" ..
-          "session cut by hand can end up carrying hundreds per clip --\n" ..
-          "harmless, but the tool re-reads them all whenever the project\n" ..
-          "changes, and that is felt as a pause. Cut tidies after itself;\n" ..
-          "this is for sessions cut before it did, or split by hand.")
     end
 
     im.EndGroup(ctx)

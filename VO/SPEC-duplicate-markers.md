@@ -123,24 +123,62 @@ planner, and writes.
 
 ---
 
-## 6. The verb
+## 6. The two verbs
 
-A toolbar button under **Edit**: **Remove duplicate take markers**.
+Scope for both is the REAPER selection, everything when nothing is selected.
+One `core.Transaction` each, one undo step. Writes go through
+`vo.WriteTakeMarkers`, so markers the tool does not own are preserved. Both
+mark the project file dirty: marker bounds are VO data.
 
-Scope is the selection, like every other verb — rows picked in the sheet, items
-picked in REAPER, or both; everything when nothing is selected. One
-`core.Transaction`, one undo step. Writes go through `vo.WriteTakeMarkers`, so
-markers the tool does not own are preserved.
+### 6.1 Remove Extra Take Markers
 
-Marks the project file dirty: marker bounds are VO data.
+Everything on a clip that is not its own take marker, in one step. Two kinds of
+extra, deliberately one button rather than two the user has to tell apart:
 
-### 6.1 The report
+1. **Duplicates** — §2–§4 above.
+2. **Leftovers** — markers before and after the clip's own audio, which is what
+   REAPER's split leaves when it copies the whole marker set into both halves.
+   Dropped by the coverage rule (`vo.PlanMarkerMirror`).
+
+**Order matters: duplicates first.** The mirror pass decides which *copy* of a
+marker id is canonical; running it first would faithfully preserve a duplicate
+the words are about to delete. The marker collection is re-read between the two
+passes, so the mirror plan is not built from pre-delete chunks.
+
+This replaces the old project-wide **Tidy up take markers** button, whose whole
+behaviour is the leftovers half. `SyncTakeMarkers` survives as the seam's
+`sync_markers` command.
+
+### 6.2 Tidy Up Take
+
+The button for *"I just trimmed this clip by hand — make it right again"*, in
+one undo step:
+
+1. **Remove Extra Take Markers**, exactly as §6.1.
+2. **Snap** the surviving marker to the item's current edges. A clip still
+   holding several markers — because the words refused to choose — is left
+   unsnapped and reported: snapping one of several to the whole item is a
+   guess.
+3. **Fill** the fades. Per side, never overwritten: a zero fade-in gets
+   `cut_fade_in`, a zero fade-out gets `cut_fade_out`, and any non-zero fade on
+   either side is left exactly alone.
+
+The fill-don't-overwrite rule is what makes this safe to press repeatedly. A
+trim leaves the edge it cut at zero and the other edge's fade intact, so this
+restores exactly what the trim removed — and a fade drawn by hand survives.
+It also keeps `TightenItems`'s hand-trimmed sentinel (custom fades mean "leave
+this alone") meaningful, which a blanket overwrite would destroy.
+
+### 6.3 The report
 
 Names the losers. A delete you cannot audit is a delete you stop trusting.
+Both verbs share one formatter so they cannot describe the same step
+differently.
 
 ```
-Removed 4 duplicate marker(s): Book (0.02) lost to IWinLittle (1.00), ...
-1 cluster left alone: too close to call (Book 0.31 vs OldBook 0.29).
+Removed 1 duplicate marker(s): Book (0.00) lost to IWinLittle (0.75).
+Left alone -- too close to call (Book 0.31 vs OldBook 0.29).
+Dropped the leftover markers from 12 clip(s).
 ```
 
 A press that finds nothing says so plainly rather than reporting success.

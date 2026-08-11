@@ -774,3 +774,17 @@ project `631.4541` (source window `31.4541–34.8700`).
    standard. The press should report one item changed, not two; a second
    press should report that all of them already carry the fades; one Ctrl+Z
    should restore both.
+
+### Not yet executed — the merged verbs
+
+5. **Remove Extra Take Markers** (replaces the duplicate-only verb and the old
+   project-wide "Tidy up take markers"). On item 12 at `634.870`, which carries
+   dead copies of both `31.87` markers from a split: one press should drop the
+   leftovers and report the clip count. On an uncut recording it must report
+   nothing removed.
+6. **Tidy Up Take.** Trim a clip's head by hand, leaving its fade-in at zero
+   and its fade-out intact. One press should: remove any extras, snap the
+   surviving marker to the new edges, and fill ONLY the fade-in. The fade-out
+   must be untouched. One Ctrl+Z reverses the whole thing.
+7. Press Tidy Up Take twice: the second press should report zero snapped and
+   zero faded.
