@@ -150,5 +150,7 @@ Against the mock REAPER environment in `tests/`:
 4. No word list for the source → the old span-concatenation text, unchanged.
 5. `BuildOverview` with `input.transcripts` produces marker rows whose text
    matches the range; without it, existing test expectations hold.
-6. The fades verb sets both fade lengths and reports zero changed when every
-   selected item already carries the defaults.
+The fades verb lives in `ajsfx_VO_Overview.lua`, which the harness does not
+load, so it is checked by hand in REAPER: two items, one hand-faded, one
+already standard — the press reports **one** changed, a second press reports
+none, and one undo restores both.
