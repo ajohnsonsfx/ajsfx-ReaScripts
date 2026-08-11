@@ -1473,10 +1473,17 @@ end
 -- marker is canonical is a fact about every item covering it, and deciding it
 -- from a subset would promote a residue copy the moment a user selected one
 -- item and not its neighbour.
-local function MirrorTakeMarkers(picked)
+--
+-- `plan_fn` is vo.PlanMarkerMirror or vo.PlanMarkerPrune. Cut's post-split
+-- tidy keeps the mirror it has always used; the Edit-tab verbs prune, because
+-- a marker written before its clip was trimmed can straddle two items and the
+-- mirror hands a copy to both -- which is a clip with two markers, which every
+-- verb needing "the one marker here" then refuses.
+local function MirrorTakeMarkers(picked, plan_fn)
+  plan_fn = plan_fn or vo.PlanMarkerMirror
   local touched, canonical = 0, 0
   for _, group in pairs(state.take_markers or {}) do
-    local rewrites, canon = vo.PlanMarkerMirror(group)
+    local rewrites, canon = plan_fn(group)
     canonical = canonical + canon
     for _, rw in ipairs(rewrites) do
       local rec = group[rw.item_index]
@@ -1513,9 +1520,16 @@ end
 --   1. DUPLICATES -- two lines claiming the same stretch of audio. Resolved by
 --      the words (vo.PlanDuplicateMarkers), and refused when they do not
 --      clearly decide.
---   2. LEFTOVERS -- markers before and after this clip's own audio, which is
---      what REAPER's split leaves behind when it copies the whole marker set
---      into both halves. Dropped by the coverage rule (vo.PlanMarkerMirror).
+--   2. LEFTOVERS -- markers this clip does not own: the copies REAPER's split
+--      leaves in both halves, and any marker whose audio mostly lives in a
+--      neighbouring item. Dropped by vo.PlanMarkerPrune.
+--
+-- Prune, NOT vo.PlanMarkerMirror. The mirror gives an item every canonical
+-- marker INTERSECTING its window, so a marker written from the transcript
+-- before the clip was trimmed -- starting inside this item, ending well into
+-- the next -- is handed to both. That turned a clip with one marker into a
+-- clip with two, and the snap below then refused it as a recording. Removing
+-- extras must never add one.
 --
 -- Order matters. Duplicates go first: the mirror pass decides which COPY of a
 -- marker id is canonical, and running it first would faithfully preserve a
@@ -1530,7 +1544,7 @@ function Trim.extras(picked)
   -- made stale for the items it touched. Re-collect rather than trust it: a
   -- plan built from pre-delete chunks would write the deleted markers back.
   if removed > 0 then state.take_markers = vo.CollectTakeMarkers(state.items) end
-  local dropped = MirrorTakeMarkers(picked)
+  local dropped = MirrorTakeMarkers(picked, vo.PlanMarkerPrune)
   return removed, dropped, plan
 end
 

@@ -331,6 +331,76 @@ test("planned takes still append after marker takes", function()
 end)
 
 --------------------------------
+-- PlanMarkerPrune
+--------------------------------
+print("\nPlanMarkerPrune:")
+
+-- The live geometry that exposed this, from a real session on 2026-08-10:
+-- item 21 covers 51.64-53.98 and holds its own short marker; the NEXT take's
+-- marker starts at 52.96, inside item 21's window, and runs to 59.04.
+local STRADDLE = {
+  pi(51.6413, 53.9771, { mk(52.27, "Storything",     "mlz", 0.69) }),
+  pi(54.0186, 59.0400, { mk(52.96, "ManWalkDownAnd", "mm6", 6.08) }),
+}
+
+test("the mirror pass ADDS the straddling marker -- this is what broke", function()
+  -- Not a wish, a record: PlanMarkerMirror is a mirror, and mirroring is why
+  -- pressing Tidy Up Take put a second marker on a clip that had one.
+  local rewrites = vo.PlanMarkerMirror(STRADDLE)
+  local got
+  for _, rw in ipairs(rewrites) do if rw.item_index == 1 then got = rw end end
+  assert(got and #got.markers == 2,
+    "PlanMarkerMirror no longer adds; this test documents why prune exists")
+end)
+
+test("prune never gives an item a marker it did not already hold", function()
+  local rewrites = vo.PlanMarkerPrune(STRADDLE)
+  for _, rw in ipairs(rewrites) do
+    assert(rw.item_index ~= 1,
+      "item 1 already holds exactly its own marker and needs no rewrite")
+  end
+end)
+
+test("a straddling marker stays only on the item that covers most of it", function()
+  -- Item 1 has been given a stray copy of mm6 -- what the mirror pass did.
+  -- Prune must take it away again, and leave item 2's copy alone.
+  local damaged = {
+    pi(51.6413, 53.9771, { mk(52.27, "Storything", "mlz", 0.69),
+                           mk(52.96, "ManWalkDownAnd", "mm6", 6.08) }),
+    pi(54.0186, 59.0400, { mk(52.96, "ManWalkDownAnd", "mm6", 6.08) }),
+  }
+  local rewrites = vo.PlanMarkerPrune(damaged)
+  local got
+  for _, rw in ipairs(rewrites) do if rw.item_index == 1 then got = rw end end
+  assert(got, "item 1 was left holding the stray")
+  assert(#got.markers == 1 and got.markers[1].id == "mlz",
+    "item 1 should keep only its own marker")
+  for _, rw in ipairs(rewrites) do
+    assert(rw.item_index ~= 2, "item 2 owns mm6 and must not be rewritten")
+  end
+end)
+
+test("split residue on a non-covering item is dropped", function()
+  local rewrites = vo.PlanMarkerPrune({
+    pi(0, 6,  { mk(2, "A", "k1", 3) }),
+    pi(20, 26, { mk(2, "A", "k1", 3) }),   -- the copy REAPER's split left
+  })
+  local got
+  for _, rw in ipairs(rewrites) do if rw.item_index == 2 then got = rw end end
+  assert(got and #got.markers == 0, "the residue copy survived")
+end)
+
+test("an item already holding just its own take needs no rewrite", function()
+  local rewrites = vo.PlanMarkerPrune({ pi(0, 10, { mk(2, "A", "k1", 3) }) })
+  assert(#rewrites == 0, "a tidy item was rewritten anyway")
+end)
+
+test("prune reports the canonical count, like the mirror pass", function()
+  local _, canon = vo.PlanMarkerPrune(STRADDLE)
+  assert(canon == 2, "canonical count: " .. tostring(canon))
+end)
+
+--------------------------------
 -- WordsInRange
 --------------------------------
 print("\nWordsInRange:")

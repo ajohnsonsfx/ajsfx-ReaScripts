@@ -1991,6 +1991,56 @@ function vo.PlanMarkerMirror(group)
   return rewrites, #canonical
 end
 
+-- The same idea as vo.PlanMarkerMirror, minus the mirroring: an item keeps the
+-- markers it OWNS and loses the rest. It can never gain one.
+--
+-- The difference matters, and cost a real session to learn. PlanMarkerMirror
+-- gives an item every canonical marker that INTERSECTS its window, which is
+-- not the same as every marker that belongs to it. A take marker written from
+-- the transcript before the clip was trimmed can start inside one item and run
+-- well into the next -- and the mirror pass then hands a copy to BOTH. The
+-- clip that had one marker now has two, so every verb needing "the one marker
+-- in this item" -- Trim, Snap -- refuses it as a recording. Pressing tidy made
+-- the session less tidy.
+--
+-- Ownership is vo.CountingMarkers' answer, which is already the rule the rest
+-- of the tool reads by: per marker id, the single item covering most of its
+-- range. Everything else on an item is a leftover, whether REAPER's split
+-- copied it there or an earlier mirror pass did.
+--
+-- Same shape as PlanMarkerMirror: `group` is CollectTakeMarkers' per-path
+-- form, and it returns rewrites { { item_index, markers } } for the items that
+-- differ, plus the canonical marker count. User markers are untouched.
+function vo.PlanMarkerPrune(group)
+  local canonical = vo.CountingMarkers(group)
+  local owner = {}
+  for _, c in ipairs(canonical) do owner[c.id] = c end
+
+  local rewrites = {}
+  for idx, rec in ipairs(group or {}) do
+    local want, have_n, seen = {}, 0, {}
+    for _, m in ipairs(rec.markers or {}) do
+      local _, id = vo.ParseMarkerName(m.name)
+      if id then
+        have_n = have_n + 1
+        local c = owner[id]
+        -- `seen` collapses an id duplicated INSIDE one item, which is split
+        -- residue by definition; have_n still counts both, so the mismatch
+        -- below forces the rewrite that drops the copy.
+        if c and c.item_index == idx and not seen[id] then
+          seen[id] = true
+          want[#want + 1] = { start = c.start, stop = c.stop,
+                              asset = c.asset, id = c.id }
+        end
+      end
+    end
+    if have_n ~= #want then
+      rewrites[#rewrites + 1] = { item_index = idx, markers = want }
+    end
+  end
+  return rewrites, #canonical
+end
+
 -- Markers that are arguing over the SAME stretch of audio, grouped.
 --
 -- The unit of work is the range, never the item. An uncut recording
