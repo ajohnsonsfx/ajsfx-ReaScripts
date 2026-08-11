@@ -1978,6 +1978,16 @@ local function SetSelect(row, on)
   Mutate(row, function(e)
     if on then
       e.select = true
+      -- Sel auto-ticks Keep. Sel is the NARROWER of the two -- "this is the one
+      -- I am keeping" -- so a select that is not kept is not a state worth
+      -- having. Writing it rather than inferring it means the project file
+      -- says what the sheet shows, and Pull's three destinations read exactly
+      -- as: Review is not-Keep, Selects is Keep and Sel, Alts is Keep not Sel.
+      --
+      -- Un-ticking Sel deliberately LEAVES Keep on: the take stays worth
+      -- shipping, as an alt, which is what lets the select move between takes
+      -- without re-ticking anything.
+      e.keep = true
     elseif vo.MarkFromTrack(row.track_name, cfg) == "select" then
       e.select = false
     else
@@ -1995,10 +2005,18 @@ local function SetKeep(row, on)
   Mutate(row, function(e)
     if on then
       e.keep = true
-    elseif vo.MarkFromTrack(row.track_name, cfg) == "keep" then
-      e.keep = false
     else
-      e.keep = nil
+      -- The inverse of Sel auto-ticking Keep: dropping Keep drops Sel with it,
+      -- because "the take I am delivering, which I am not keeping" is the same
+      -- contradiction read the other way round.
+      if e.select == true then
+        e.select = (vo.MarkFromTrack(row.track_name, cfg) == "select") and false or nil
+      end
+      if vo.MarkFromTrack(row.track_name, cfg) == "keep" then
+        e.keep = false
+      else
+        e.keep = nil
+      end
     end
   end)
 end
@@ -4605,10 +4623,14 @@ function Dest.build()
   local made = 0
   core.Transaction("VO Overview: build pull tracks", function()
     for _, parent in ipairs(parents) do
-      -- Created in REVERSE so they read Selects / Alts / Review top to bottom:
+      -- Created in REVERSE so they read Review / Selects / Alts top to bottom:
       -- EnsureChildTrack inserts directly below the parent, so each new one
       -- pushes the earlier ones down.
-      for _, cat in ipairs({ "review", "alts", "selects" }) do
+      --
+      -- Review first because that is where a take starts. The first Pull of a
+      -- session puts everything there, and the order then reads as the journey
+      -- a take makes: unreviewed, then kept and chosen, then kept and not.
+      for _, cat in ipairs({ "alts", "selects", "review" }) do
         local before = r.CountTracks(0)
         vo.EnsureChildTrack(parent, base[cat])
         if r.CountTracks(0) > before then made = made + 1 end
@@ -4650,7 +4672,7 @@ local function Pull()
   core.Transaction("VO Overview: pull", function()
     local tracks = {}
 
-    -- The trio reads Selects / Alts / Review top to bottom. EnsureChildTrack
+    -- The trio reads Review / Selects / Alts top to bottom. EnsureChildTrack
     -- inserts directly below the parent, so they are created in REVERSE --
     -- each new one pushes the earlier ones down.
     local seen_parents = {}
@@ -4658,7 +4680,7 @@ local function Pull()
       local parent = Dest.recording_of(move.id, bases)
       if parent and not seen_parents[parent] then
         seen_parents[parent] = true
-        for _, cat in ipairs({ "review", "alts", "selects" }) do
+        for _, cat in ipairs({ "alts", "selects", "review" }) do
           tracks[tostring(parent) .. "|" .. base[cat]] =
             vo.EnsureChildTrack(parent, base[cat])
         end
@@ -5059,8 +5081,9 @@ local function DrawPullPanel()
   im.Separator(ctx)
   im.TextWrapped(ctx,
     "Moves items onto Selects, Alts and Review tracks nested under the recording " ..
-    "they came from. Sel is the delivery, Keep is delivered alongside it as an " ..
-    "alt, and everything unticked waits on Review. Items are matched to the " ..
+    "they came from, in the order Review / Selects / Alts. Not kept waits on " ..
+    "Review; Keep and Sel is the delivery; Keep without Sel ships beside it " ..
+    "as an alt. Items are matched to the " ..
     "script by NAME, so this works on rendered files that were never cut here; " ..
     "an item whose name is not on the script is left alone.")
   im.Spacing(ctx)
@@ -6010,7 +6033,12 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
     end
     im.SameLine(ctx)
     im.SetCursorScreenPos(ctx, rx + z.marks + 34, ry)
-    local khit, know = im.Checkbox(ctx, "##keep", row.user_keep == true)
+    -- `or user_select`, so a row marked Sel before Sel auto-ticked Keep still
+    -- READS the way it routes. Pull has always sent a Sel to Selects whatever
+    -- Keep said, so showing Keep empty on those rows would be the display
+    -- lying about the destination, not a mark waiting to be set.
+    local kept = row.user_keep == true or row.user_select == true
+    local khit, know = im.Checkbox(ctx, "##keep", kept)
     if khit then
       local targets = MarkTargets()
       pending_action = function()
