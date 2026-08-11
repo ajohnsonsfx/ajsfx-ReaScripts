@@ -746,3 +746,31 @@ Setup: any project with a script loaded and a few cut takes.
 6. Tidy ▾ → Select takes + first/last combo still work as before.
 7. Untick both opt-ins afterwards; confirm they persist across a window
    close/reopen (config), and Tidy's tooltip returns to "Tracking only".
+
+## Duplicate markers, range-true transcripts, cut fades (unreleased)
+
+Real session, 2026-08-10: `ChristianBrently_Grumbar_2026_0801`, the item at
+project `631.4541` (source window `31.4541–34.8700`).
+
+### Verified
+
+1. **Remove duplicate take markers.** The item held two counting markers with
+   byte-identical ranges — `IWinLittle ~mkm` and `Book ~mkt`, both
+   `31.87 → 34.87` — while the words spoken there are "I only win little."
+   One press deleted the Book marker and kept IWinLittle, reporting
+   `Book (0.00) lost to IWinLittle (0.75)`. The winning score is 0.75 rather
+   than 1.00 because the script line and the transcript differ in wording;
+   well clear of both the 0.50 floor and the 0.20 gap.
+
+### Not yet executed
+
+2. Range-true transcripts: drag a marker's end inward on a take whose marker
+   sits inside a longer matched span, and confirm the grey transcript loses
+   the words the marker no longer covers, that the extra-word colouring
+   narrows with it, and that the take stays on the same script line.
+3. The score under that same row must NOT move — it still comes from the
+   greatest-overlap span.
+4. **Apply the cut fades.** Select two items, one hand-faded and one already
+   standard. The press should report one item changed, not two; a second
+   press should report that all of them already carry the fades; one Ctrl+Z
+   should restore both.
