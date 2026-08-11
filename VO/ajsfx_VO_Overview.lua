@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.15beta6
--- @changelog PRE-RELEASE: the toolbar is three tabs -- Setup, Edit and Settings -- and a tab never does anything: it only decides which buttons you are looking at, while every button under it acts. Edit leads with "Run the whole pass" (match, cut, pick, pull, in one undo step) above one row per step of the same name -- Match, Cut, Pick, Pull -- plus Check, the phase the batch button cannot run for you. EVERY verb now acts on the selection -- rows picked in the sheet, items picked in REAPER, or both -- and a line under the hero says what the next press will act on. Selecting an uncut recording selects every take inside it, so one rule reads correctly before and after the cut. The per-panel "Selected rows only" checkboxes are gone. "Find lines in items", "Assign items to lines" and "Adopt this whole session" are ONE button, "Identify the lines in these items": they differed only in what shape the audio was in, which the tool now counts for itself -- an item holding one take is marked at your own edges and named for its line, an item holding several gets a marker per take and no name. "Cut recording into takes" cuts on the press; its panel is now the report the run opens by itself. "Auto-pick selects" and "Auto-name the alts" join "Auto-adjust head and tail" as the Auto- family: each is the batch form of a per-row sheet gesture. Auto-adjust now moves the take marker with the edges it trims. Buttons wrap rather than running off a narrow window, and the ribbon holds one height so the sheet no longer jumps when you click between tabs. "Start over..." in Setup deletes this project's VO data, behind a confirm that names what goes and what stays. The blank sheet now asks for the two things it needs -- a script and a transcript -- with a button for each.
+-- @changelog PRE-RELEASE: the toolbar is three tabs -- Setup, Edit and Settings -- and a tab never does anything: it only decides which buttons you are looking at, while every button under it acts. Edit leads with "Run the whole pass" (match, cut, pick, pull, in one undo step) above one row per step of the same name -- Match, Cut, Pick, Pull -- plus Check, the phase the batch button cannot run for you. EVERY verb now acts on the selection -- rows picked in the sheet, items picked in REAPER, or both -- and a line under the hero says what the next press will act on. Selecting an uncut recording selects every take inside it, so one rule reads correctly before and after the cut. The per-panel "Selected rows only" checkboxes are gone. "Find lines in items", "Assign items to lines" and "Adopt this whole session" are ONE button, "Identify the lines in these items": they differed only in what shape the audio was in, which the tool now counts for itself -- an item holding one take is marked at your own edges and named for its line, an item holding several gets a marker per take and no name. A take marker is now what the cut WILL be: Identify writes markers through the same speech-bounds and padding pass Cut uses, and Cut cuts TO the marker instead of skipping any span a marker overlapped -- which would have made Identify followed by Cut cut nothing at all. A marker you drag is honoured the same way; "Re-cut from the transcript" throws marker edges away and derives them from the words again. "Cut recording into takes" cuts on the press; its panel is now the report the run opens by itself. "Auto-pick selects" and "Auto-name the alts" join "Auto-adjust head and tail" as the Auto- family: each is the batch form of a per-row sheet gesture. Auto-adjust now moves the take marker with the edges it trims. Buttons wrap rather than running off a narrow window, and the ribbon holds one height so the sheet no longer jumps when you click between tabs. "Start over..." in Setup deletes this project's VO data, behind a confirm that names what goes and what stays. The blank sheet now asks for the two things it needs -- a script and a transcript -- with a button for each.
 --   "Not on the script" is a queue instead of a dead end: right-click any orphan to hand it to a script line (best guesses first, scored against what was actually said) or dismiss it as junk, which is remembered and leaves the count -- so "0 orphans" now means every span has been looked at. Each orphan says why it is one. Matching ranks candidates by tokens of agreement rather than by score, so a short line matched perfectly no longer takes the words out of the middle of a long one. A transcript is drawn in one colour with the EXTRA words -- what the reader said that the line does not contain -- in amber; the colour used to encode a match threshold nobody could see. Notes are gone from the cards. A reader going again is no longer reported as a transcriber loop. In Sources: single-click opens a file's detail, "Copy report" puts everything on the clipboard, reported timecodes are clickable links that move the edit cursor, and a transcript can be deleted from the panel. "Find lines in items" honours the REAPER selection. Fixed: a race that reported "whisper-cli exited with code -1" on runs that had barely started.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
@@ -1226,6 +1226,80 @@ local function SyncTakeMarkers()
     or "Every item already carries just its own take.", "ok"
 end
 
+-- The edges a cut WOULD produce, for spans in one item.
+--
+-- A take marker is a promise about where the clip will land, so it has to be
+-- written at the edges the cut will actually use -- not at the raw whisper word
+-- times, which sit a pause-width outside the speech at both ends. Identify used
+-- to write the raw bounds, so the markers you inspected and the clips you got
+-- were different edges, and the marker taught you nothing about the cut.
+--
+-- This is the same speech-bounds → pad → snap-to-silence pass DoCut runs, at
+-- the same settings, through the same probe. One function, so the preview and
+-- the cut cannot drift apart: if this is wrong, it is wrong in both places and
+-- shows up in the clip.
+--
+-- `spans` are SOURCE-time { start, stop, ... } and are returned as a parallel
+-- list of SOURCE-time { start, stop }, since markers live in source time.
+-- Falls back to the input edges if the audio cannot be probed -- padding is a
+-- refinement, and losing it is worth far less than losing the marker.
+local function SnapSpansToCut(info, spans, cfg, words)
+  local out = {}
+  for i, s in ipairs(spans) do out[i] = { start = s.start, stop = s.stop } end
+  if #out == 0 or not info or not info.item then return out end
+
+  local take = r.GetActiveTake(info.item)
+  local probe, destroy = vo.MakeTakeProbe(take)
+  local ok = pcall(function()
+    if not probe then error("no audio accessor") end
+    local covered = vo.SourceCoverageRanges({ info })[1]
+    if not covered then error("no source coverage") end
+
+    -- Only the words this ITEM covers: probing outside the take answers
+    -- silence, which drags the measured floor down.
+    local proj_words = {}
+    for _, w in ipairs(words or {}) do
+      if w.t1 >= covered.from and w.t0 <= covered.to then
+        proj_words[#proj_words + 1] = {
+          t0 = vo.SourceTimeToProject(w.t0, info),
+          t1 = vo.SourceTimeToProject(w.t1, info),
+          text = w.text,
+        }
+      end
+    end
+
+    local proj = {}
+    for i, s in ipairs(spans) do
+      proj[i] = { start = vo.SourceTimeToProject(s.start, info),
+                  stop  = vo.SourceTimeToProject(s.stop,  info) }
+    end
+    table.sort(proj, function(a, b) return a.start < b.start end)
+
+    local floor_ = vo.MeasureNoiseFloor(vo.InterWordGaps(proj_words), probe, cfg)
+    vo.ApplyPadding(proj, cfg,
+      { start = info.pos, stop = info.pos + info.length }, probe, floor_, proj_words)
+
+    -- Back to source time, matched to the input by order: ApplyPadding sorts
+    -- and the caller's list may not have been sorted, so both are ordered by
+    -- start before pairing.
+    local order = {}
+    for i = 1, #spans do order[i] = i end
+    table.sort(order, function(a, b) return spans[a].start < spans[b].start end)
+    for k, idx in ipairs(order) do
+      local p = proj[k]
+      if p then
+        out[idx] = { start = vo.ProjectTimeToSource(p.start, info),
+                     stop  = vo.ProjectTimeToSource(p.stop,  info) }
+      end
+    end
+  end)
+  if destroy then destroy() end
+  if not ok then
+    for i, s in ipairs(spans) do out[i] = { start = s.start, stop = s.stop } end
+  end
+  return out
+end
+
 -- The items selected in REAPER, as a set, for scope resolution.
 local function SelectedItemSet()
   local set = {}
@@ -1260,6 +1334,15 @@ local function IdentifyItems()
 
   local spans_by_path = {}
   for _, m in ipairs(state.matches or {}) do spans_by_path[m.path] = m.spans end
+
+  -- The transcript's words, for the silence probe that decides where the cut
+  -- edges will fall. Read on the press, not held in state: this is a button,
+  -- not a frame.
+  local words_by_path = {}
+  for _, m in ipairs(state.matches or {}) do
+    local parsed = vo.ReadTranscript(m.path)
+    words_by_path[m.path] = parsed and parsed.words or {}
+  end
 
   -- Rows keyed by where their audio starts, so a span can find the row whose
   -- marks must ride onto the new marker's key.
@@ -1339,13 +1422,26 @@ local function IdentifyItems()
       local rec = by_key[plan.key]
       local item = rec and rec.item
       if item and #plan.markers > 0 then
+        -- The marker is a PROMISE about where the clip will land, so it is
+        -- written at the edges the cut will use. A single-take item keeps the
+        -- user's own edges (the item IS the take -- their trim is the truth);
+        -- spans inside a recording get the cut's speech-bounds-and-pad pass,
+        -- because their raw whisper bounds sit a pause outside the speech at
+        -- both ends and would promise a clip nobody is going to get.
+        local edges = plan.markers
+        if plan.kind == "many" then
+          edges = SnapSpansToCut(rec.info, plan.markers, cfg,
+                                 words_by_path[rec.info.path])
+        end
+
         -- Existing tool markers ride along: WriteTakeMarkers replaces the
         -- tool's whole set, and dropping them would orphan every take in this
         -- item that was already identified.
         local list = {}
-        for _, mk in ipairs(plan.markers) do
+        for i, mk in ipairs(plan.markers) do
           local id = vo.MintMarkerId(taken)
-          list[#list + 1] = { start = mk.start, stop = mk.stop,
+          local e = edges[i] or mk
+          list[#list + 1] = { start = e.start, stop = e.stop,
                               asset = mk.asset, id = id }
           local at = (plan.kind == "one") and plan.span or mk.span
           local row = at and rows_by_start[start_key(rec.info.path, at.start)]
@@ -3519,16 +3615,31 @@ local function CutCandidates()
       counts.cuttable = counts.cuttable + 1
       if in_range[key] then
         counts.in_range = counts.in_range + 1
-        -- Markers own this audio: a span overlapping a counting marker is a
-        -- take the user is already tracking, and cutting it would overwrite
-        -- their work. Re-cut anyway deletes those markers first, explicitly.
-        if marker_owning(s) and not state.force_recut then
+        local mk = (not state.force_recut) and marker_owning(s) or nil
+        -- A marker is what the cut WILL be, so the cut follows it.
+        --
+        -- This used to SKIP the span: a marker meant "the user is tracking
+        -- this take, do not overwrite their work". That was defensible while
+        -- markers were only ever put down by hand -- and fatal once Identify
+        -- started writing them, because Identify then Cut skipped every take
+        -- it had just marked and the session cut nothing.
+        --
+        -- Honouring the marker serves both cases better. A marker the user
+        -- dragged is their edit and the clip lands on it; a marker Identify
+        -- wrote is the cut's own plan and the clip lands where the preview
+        -- said. Nothing is silently overwritten either way, because the
+        -- marker decides. "Re-cut anyway" still exists to throw the markers
+        -- away and re-derive the edges from the transcript.
+        if mk then
           counts.edited = counts.edited + 1
-          edited_names[#edited_names + 1] = s.deliver or s.asset or "(unnamed)"
+          s.marker_start, s.marker_stop = mk.start, mk.stop
+        end
         -- Cutting to word timings the audio no longer matches would put the
         -- edges in the wrong places, so a stale source is skipped -- per
-        -- source, so one re-recorded file cannot stop the others.
-        elseif stale_paths[s.source_path] then
+        -- source, so one re-recorded file cannot stop the others. A marker
+        -- is exempt: its edges were decided against the audio as it is now,
+        -- not against the transcript, so a stale source cannot invalidate it.
+        if stale_paths[s.source_path] and not mk then
           counts.stale = counts.stale + 1
         else
           s.in_range = true
@@ -3597,6 +3708,14 @@ local function DoCut()
       local c = vo.ShallowCopy(s)
       c.start = proj_start
       c.stop  = vo.SourceTimeToProject(s.stop, info)
+      -- A marker decides this take's edges: they were already snapped (by
+      -- Identify) or set by hand (by a drag), so they are the answer and the
+      -- padding pass must not move them again.
+      if s.marker_start and s.marker_stop then
+        c.start = vo.SourceTimeToProject(s.marker_start, info)
+        c.stop  = vo.SourceTimeToProject(s.marker_stop,  info)
+        c.from_marker = true
+      end
       local g = by_item[item]
       if not g then
         g = { item = item, info = info, spans = {} }
@@ -3644,10 +3763,20 @@ local function DoCut()
         end
       end
 
-      local floor = vo.MeasureNoiseFloor(vo.InterWordGaps(proj_words), probe, cfg)
-      vo.ApplyPadding(g.spans, cfg,
-        { start = g.info.pos, stop = g.info.pos + g.info.length },
-        probe, floor, proj_words)
+      -- Only the spans whose edges are still open. A span carrying marker
+      -- bounds has already been decided -- by Identify's preview, or by the
+      -- user dragging the marker -- and re-padding it would move the clip off
+      -- the marker that promised it.
+      local open = {}
+      for _, s in ipairs(g.spans) do
+        if not s.from_marker then open[#open + 1] = s end
+      end
+      if #open > 0 then
+        local floor = vo.MeasureNoiseFloor(vo.InterWordGaps(proj_words), probe, cfg)
+        vo.ApplyPadding(open, cfg,
+          { start = g.info.pos, stop = g.info.pos + g.info.length },
+          probe, floor, proj_words)
+      end
     end)
     -- ALWAYS, including on the error path: the accessor holds the file open.
     if destroy then destroy() end
@@ -3881,8 +4010,10 @@ local function DrawCutPanel()
       end
     end
     if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, "Delete those takes' markers and cut their audio fresh.\n" ..
-                         "The same thing as deleting the markers by hand, then Cut.")
+      im.SetTooltip(ctx, "Throw those takes' markers away and work the edges out\n" ..
+                         "from the transcript again. For when a marker is in the\n" ..
+                         "wrong place; the same thing as deleting the markers by\n" ..
+                         "hand, then Cut.")
     end
   end
 

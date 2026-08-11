@@ -234,6 +234,38 @@ Each orphan says **why** it is one — *dismissed*, *no such line* (named for a
 line no loaded script has), or *unmatched* — since the three want different
 fixes.
 
+### The marker is what the cut will be
+
+A ranged take marker is a **promise about where the clip will land**, not a
+note about where whisper thought the words were. Identify writes markers
+through the same speech-bounds → pad → snap-to-silence pass Cut uses
+(`SnapSpansToCut`, one function, so preview and cut cannot drift), and Cut then
+**cuts to the marker** rather than re-deriving the edges.
+
+That closes a trap the merged Identify verb would otherwise have walked into.
+Cut used to SKIP any span a counting marker overlapped — a marker meant "the
+user is tracking this take, do not overwrite their work" — which was defensible
+while markers only ever arrived by hand, and fatal the moment Identify started
+writing them: *Identify → Cut* would have skipped every take just marked and
+cut nothing.
+
+Honouring the marker serves both cases better:
+
+- a marker the user **dragged** is their edit, and the clip lands on it;
+- a marker **Identify wrote** is the cut's own plan, and the clip lands where
+  the preview said.
+
+Neither is silently overwritten, because in both cases the marker decides. A
+single-take item keeps the user's own item edges (the item IS the take, so
+their trim is the truth); spans inside an uncut recording get the snapping pass,
+because raw whisper bounds sit a pause-width outside the speech at both ends.
+Spans carrying marker bounds are held out of Cut's padding pass entirely, and a
+stale source cannot invalidate them — marker edges were measured against the
+audio as it is now, not against the transcript.
+
+**Re-cut from the transcript** (in the Cut report) is the escape hatch: it
+deletes those takes' markers and derives the edges again from the words.
+
 ### Take identity: ranged take markers
 
 A recorded take's identity is a **ranged take marker** — one `TKM` line in the
