@@ -58,7 +58,8 @@ Acting on 12 selected row(s).
 Match:  [ Match transcript to script ]  [ Identify the lines in these items ]
 Cut:    [ Cut recording into takes ]  [ Auto-adjust head and tail ]
 Pick:   [ Auto-pick selects: last take ]  [ …first take ]  [ Auto-name the alts ]
-Pull:   [ Pull items to their tracks ]  [ Lay items out in script order ]
+Pull:   [ Pull items to their tracks ]  [ Build the destination tracks ]
+        [ Lay items out in script order ]
 Check:  [ Marks vs tracks (0) ]  [ Takes without audio (0) ]  [ Tidy up take markers ]
 ```
 
@@ -116,8 +117,20 @@ sheet-only verb with item-writing ones — and accepted deliberately.
   hand-trimmed edge), applying one rule everywhere the user has not already
   decided. Locked lines and hand-set values always stand.
 - **Pull** — deliver. *Pull items to their tracks* (its panel also carries
-  *Pull the selected item(s) only*, the same verb at a smaller scope) and
-  *Lay items out in script order*.
+  *Pull the selected item(s) only*, the same verb at a smaller scope),
+  *Build the destination tracks*, and *Lay items out in script order*.
+
+  **Build the destination tracks** makes Selects / Alts / Review under each
+  recording without moving anything. Pull creates them as a side effect of
+  having somewhere to put an item, so until the first successful pull there is
+  nowhere to drag a take by hand and no way to see the shape the session is
+  heading for. It shares Pull's own helpers (`Dest.names`,
+  `Dest.recording_of`, `vo.EnsureChildTrack`), so the folders it builds are
+  the folders Pull would have built — created in reverse so they read Selects
+  / Alts / Review top to bottom, and nested under the RECORDING rather than
+  under whatever destination an item currently sits on, which is what stops a
+  re-run burying a track inside a track. Idempotent: a track that already
+  exists is left alone, depth included.
 - **Check** — does the sheet agree with the timeline? *Fix a line* is gone:
   it was one panel holding three problems, and the button name said none of
   them. Split by REMEDY — *Marks vs tracks* (disagreements, fixed as a batch:

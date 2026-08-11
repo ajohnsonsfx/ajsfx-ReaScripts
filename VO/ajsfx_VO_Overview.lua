@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.15beta6
--- @changelog PRE-RELEASE: the toolbar is three tabs -- Setup, Edit and Settings -- and a tab never does anything: it only decides which buttons you are looking at, while every button under it acts. Edit leads with "Run the whole pass" (match, cut, pick, pull, in one undo step) above one row per step of the same name -- Match, Cut, Pick, Pull -- plus Check, the phase the batch button cannot run for you. EVERY verb now acts on the selection -- rows picked in the sheet, items picked in REAPER, or both -- and a line under the hero says what the next press will act on. Selecting an uncut recording selects every take inside it, so one rule reads correctly before and after the cut. The per-panel "Selected rows only" checkboxes are gone. "Find lines in items", "Assign items to lines" and "Adopt this whole session" are ONE button, "Identify the lines in these items": they differed only in what shape the audio was in, which the tool now counts for itself -- an item holding one take is marked at your own edges and named for its line, an item holding several gets a marker per take and no name. A take marker is now what the cut WILL be: Identify writes markers through the same speech-bounds and padding pass Cut uses, and Cut cuts TO the marker instead of skipping any span a marker overlapped -- which would have made Identify followed by Cut cut nothing at all. A marker you drag is honoured the same way; "Re-cut from the transcript" throws marker edges away and derives them from the words again. "Cut recording into takes" cuts on the press; its panel is now the report the run opens by itself. "Auto-pick selects" and "Auto-name the alts" join "Auto-adjust head and tail" as the Auto- family: each is the batch form of a per-row sheet gesture. Auto-adjust now moves the take marker with the edges it trims. Buttons wrap rather than running off a narrow window, and the ribbon holds one height so the sheet no longer jumps when you click between tabs. "Start over..." in Setup deletes this project's VO data, behind a confirm that names what goes and what stays. The blank sheet now asks for the two things it needs -- a script and a transcript -- with a button for each.
+-- @changelog PRE-RELEASE: the toolbar is three tabs -- Setup, Edit and Settings -- and a tab never does anything: it only decides which buttons you are looking at, while every button under it acts. Edit leads with "Run the whole pass" (match, cut, pick, pull, in one undo step) above one row per step of the same name -- Match, Cut, Pick, Pull -- plus Check, the phase the batch button cannot run for you. EVERY verb now acts on the selection -- rows picked in the sheet, items picked in REAPER, or both -- and a line under the hero says what the next press will act on. Selecting an uncut recording selects every take inside it, so one rule reads correctly before and after the cut. The per-panel "Selected rows only" checkboxes are gone. "Find lines in items", "Assign items to lines" and "Adopt this whole session" are ONE button, "Identify the lines in these items": they differed only in what shape the audio was in, which the tool now counts for itself -- an item holding one take is marked at your own edges and named for its line, an item holding several gets a marker per take and no name. A take marker is now what the cut WILL be: Identify writes markers through the same speech-bounds and padding pass Cut uses, and Cut cuts TO the marker instead of skipping any span a marker overlapped -- which would have made Identify followed by Cut cut nothing at all. A marker you drag is honoured the same way; "Re-cut from the transcript" throws marker edges away and derives them from the words again. New: "Build the destination tracks" makes Selects/Alts/Review under each recording without moving anything, so they exist before the first pull. "Cut recording into takes" cuts on the press; its panel is now the report the run opens by itself. "Auto-pick selects" and "Auto-name the alts" join "Auto-adjust head and tail" as the Auto- family: each is the batch form of a per-row sheet gesture. Auto-adjust now moves the take marker with the edges it trims. Buttons wrap rather than running off a narrow window, and the ribbon holds one height so the sheet no longer jumps when you click between tabs. "Start over..." in Setup deletes this project's VO data, behind a confirm that names what goes and what stays. The blank sheet now asks for the two things it needs -- a script and a transcript -- with a button for each.
 --   "Not on the script" is a queue instead of a dead end: right-click any orphan to hand it to a script line (best guesses first, scored against what was actually said) or dismiss it as junk, which is remembered and leaves the count -- so "0 orphans" now means every span has been looked at. Each orphan says why it is one. Matching ranks candidates by tokens of agreement rather than by score, so a short line matched perfectly no longer takes the words out of the middle of a long one. A transcript is drawn in one colour with the EXTRA words -- what the reader said that the line does not contain -- in amber; the colour used to encode a match threshold nobody could see. Notes are gone from the cards. A reader going again is no longer reported as a transcriber loop. In Sources: single-click opens a file's detail, "Copy report" puts everything on the clipboard, reported timecodes are clickable links that move the edit cursor, and a transcript can be deleted from the panel. "Find lines in items" honours the REAPER selection. Fixed: a race that reported "whisper-cli exited with code -1" on runs that had barely started.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
@@ -4050,6 +4050,107 @@ end
 -- -----------------------------------------------------------------------
 
 
+-- Pull's destinations: naming them, finding what they nest under, and building
+-- them. One table rather than three file locals -- the main chunk sits at Lua's
+-- 200-local ceiling, so related helpers share a namespace instead of each
+-- taking a slot.
+local Dest = {}
+
+-- The destination track names, from config.
+function Dest.names()
+  local cfg = vo.LoadConfig()
+  return { selects = cfg.track_selects or "Selects",
+           alts    = cfg.track_alts    or "Alts",
+           review  = cfg.track_review  or "Review" }
+end
+
+-- The recording an item came out of: the track it sits on, or the nearest
+-- ancestor that is not itself a destination.
+--
+-- Pull runs more than once -- that is the whole workflow -- so by the second
+-- pass an item is sitting on "<CHAR>_Review", and nesting its new destination
+-- under THAT would bury a track inside a track on every run.
+function Dest.recording_of(item, bases)
+  local track = r.GetMediaItem_Track(item)
+  while track do
+    local _, name = r.GetSetMediaTrackInfo_String(track, "P_NAME", "", false)
+    if not vo.IsDestTrackName(name, bases) then return track end
+    local parent = r.GetParentTrack(track)
+    if not parent then return track end
+    track = parent
+  end
+  return track
+end
+
+-- Selects / Alts / Review, nested under each recording, without moving
+-- anything.
+--
+-- Pull creates these as a side effect of having somewhere to put an item, so
+-- until the first successful pull there is nowhere to drag a take by hand and
+-- no way to see the shape the session is heading for. Making it its own verb
+-- costs nothing -- the folder work already existed inside Pull, and now both
+-- call the same two helpers -- and it means the destinations can exist before
+-- anything is decided.
+--
+-- Scope is the selection, like everything else: the recordings behind the
+-- selected items, or every recording when nothing is selected.
+function Dest.build()
+  Reload()
+  local base  = Dest.names()
+  local bases = { base.selects, base.alts, base.review }
+
+  local picked = SelectedItemSet()
+  local scoped = next(picked) ~= nil
+
+  -- One entry per recording track, in track order so the report is stable and
+  -- the folders are built top-down.
+  local parents, seen = {}, {}
+  for _, info in ipairs(state.items or {}) do
+    local item = info.item
+    if item and not info.skip and ((not scoped) or picked[item]) then
+      local parent = Dest.recording_of(item, bases)
+      if parent and not seen[parent] then
+        seen[parent] = true
+        parents[#parents + 1] = parent
+      end
+    end
+  end
+
+  if #parents == 0 then
+    state.message, state.message_kind = scoped
+      and "Nothing selected sits on a recording track."
+      or  "No audio in this project to build destinations under.", "warn"
+    return
+  end
+
+  table.sort(parents, function(a, b)
+    return r.GetMediaTrackInfo_Value(a, "IP_TRACKNUMBER")
+         < r.GetMediaTrackInfo_Value(b, "IP_TRACKNUMBER")
+  end)
+
+  local made = 0
+  core.Transaction("VO Overview: build pull tracks", function()
+    for _, parent in ipairs(parents) do
+      -- Created in REVERSE so they read Selects / Alts / Review top to bottom:
+      -- EnsureChildTrack inserts directly below the parent, so each new one
+      -- pushes the earlier ones down.
+      for _, cat in ipairs({ "review", "alts", "selects" }) do
+        local before = r.CountTracks(0)
+        vo.EnsureChildTrack(parent, base[cat])
+        if r.CountTracks(0) > before then made = made + 1 end
+      end
+    end
+  end)
+  r.UpdateArrange()
+  Reload()
+
+  state.message, state.message_kind = (made > 0)
+    and string.format("Built %d track(s) under %d recording(s): %s, %s, %s.",
+          made, #parents, base.selects, base.alts, base.review)
+    or  string.format("Every one of the %d recording(s) already has its %s, %s and %s.",
+          #parents, base.selects, base.alts, base.review), "ok"
+end
+
 local function Pull()
   Reload()
   state.name_baseline = nil
@@ -4065,30 +4166,12 @@ local function Pull()
   end
 
   local cfg  = vo.LoadConfig()
-  local base = { selects = cfg.track_selects or "Selects",
-                 alts    = cfg.track_alts    or "Alts",
-                 review  = cfg.track_review  or "Review" }
+  local base = Dest.names()
 
   local by_id = {}
   for _, it in ipairs(items) do by_id[it.id] = it end
 
   local bases = { base.selects, base.alts, base.review }
-
-  -- The recording an item came out of, which is what its destination nests
-  -- under. Pull runs more than once -- that is the whole workflow -- so by the
-  -- second pass an item is sitting on "<CHAR>_Review", and nesting its new
-  -- destination under THAT would bury a track inside a track on every run.
-  local function RecordingTrackOf(item)
-    local track = r.GetMediaItem_Track(item)
-    while track do
-      local _, name = r.GetSetMediaTrackInfo_String(track, "P_NAME", "", false)
-      if not vo.IsDestTrackName(name, bases) then return track end
-      local parent = r.GetParentTrack(track)
-      if not parent then return track end
-      track = parent
-    end
-    return track
-  end
 
   core.Transaction("VO Overview: pull", function()
     local tracks = {}
@@ -4098,7 +4181,7 @@ local function Pull()
     -- each new one pushes the earlier ones down.
     local seen_parents = {}
     for _, move in ipairs(moves) do
-      local parent = RecordingTrackOf(move.id)
+      local parent = Dest.recording_of(move.id, bases)
       if parent and not seen_parents[parent] then
         seen_parents[parent] = true
         for _, cat in ipairs({ "review", "alts", "selects" }) do
@@ -4122,7 +4205,7 @@ local function Pull()
       if tr then
         local _, tn = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
         if vo.IsDestTrackName(tn, bases) then
-          local p = RecordingTrackOf(it.id)
+          local p = Dest.recording_of(it.id, bases)
           if p then cleanup[p] = true end
         end
       end
@@ -4174,7 +4257,7 @@ local function Pull()
       local item   = move.id
       -- Read the track INSIDE the loop: an earlier move may already have taken
       -- this item off the one it started on.
-      local parent = RecordingTrackOf(item)
+      local parent = Dest.recording_of(item, bases)
       -- Plain Selects / Alts / Review, no character prefix: a recording is
       -- one performer's session, so its children need no telling apart --
       -- two characters never share a source track, and the separation that
@@ -6264,7 +6347,7 @@ end
 local REMOTE_SECTION = "ajsfx_vo_remote"
 local REMOTE_HELP =
   "status | rematch | cut | identify | " ..
-  "sync_markers | pull | name_alts | sort script|record | " ..
+  "sync_markers | build_tracks | pull | name_alts | sort script|record | " ..
   "dupes | append script|asset|nth|text | " ..
   "rows [needle] | spans <needle> | missing | boundaries | verify | " ..
   "make_select <takename> | place | tighten"
@@ -6316,6 +6399,9 @@ local function RunRemoteCommand(command)
   elseif verb == "sync_markers" then
     SyncTakeMarkers()
     return state.message or "sync_markers ran with no result string"
+  elseif verb == "build_tracks" then
+    Dest.build()
+    return state.message or "build_tracks ran with no result string"
   elseif verb == "pull" then
     Pull()
     return state.pull_result or "pull ran with no result string"
@@ -6976,6 +7062,17 @@ local function loop()
       PanelButton("pull", "Pull items to their tracks",
         "Moves items onto Selects, Alts, Outs and Review tracks nested under\n" ..
         "the recording they came from, matched to the script by name.")
+
+      Flow("Build the destination tracks")
+      if im.Button(ctx, "Build the destination tracks") then
+        pending_action = Dest.build
+      end
+      Tip("Make the Selects / Alts / Review tracks under each recording\n" ..
+          "without moving anything.\n\n" ..
+          "Pull builds them as a side effect of having somewhere to put an\n" ..
+          "item, so until the first pull there is nowhere to drag a take by\n" ..
+          "hand and no way to see the shape the session is heading for.\n" ..
+          "Safe to re-run: a track that already exists is left alone.")
 
       Flow("Lay items out in script order")
       PanelButton("sort", "Lay items out in script order",
