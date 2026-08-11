@@ -301,7 +301,7 @@ test("marker takes attach their stored marks by tkm key", function()
   assert(found.notes == "the good one", "marks did not attach")
 end)
 
-test("a line with no markers still builds from the match", function()
+test("a line with no markers is missing, however much audio matched it", function()
   local rows = vo.BuildOverview({
     lines = MK_LINES,
     matches = { { path = "sess.wav", spans = {
@@ -311,9 +311,14 @@ test("a line with no markers still builds from the match", function()
   })
   local found
   for _, row in ipairs(rows) do
-    if row.source_start == 90.0 then found = row end
+    if row.asset == "grum_01" then found = row end
   end
-  assert(found, "match fallback lost")
+  assert(found, "line row missing")
+  assert(found.status == "missing", "status: " .. tostring(found.status))
+  assert(found.heard == 1, "heard: " .. tostring(found.heard))
+  for _, row in ipairs(rows) do
+    assert(row.source_start ~= 90.0, "a span row survived")
+  end
 end)
 
 test("planned takes still append after marker takes", function()

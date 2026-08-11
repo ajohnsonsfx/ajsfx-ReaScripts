@@ -5289,36 +5289,6 @@ function vo.BuildOverview(input)
           rows[#rows + 1] = planned_row(e, line, #ordered + i, #ordered + #p)
         end
       end
-    elseif g and #g > 0 then
-      table.sort(g, function(a, b)
-        if a.source_order ~= b.source_order then return a.source_order < b.source_order end
-        return (a.span.start or 0) < (b.span.start or 0)
-      end)
-
-      local built = {}
-      for i, rec in ipairs(g) do
-        built[#built + 1] = make_row(rec, line, i, #g)
-      end
-
-      -- The user's explicit Select IS the primary. There is no first/last
-      -- fallback: guessing which take was meant is exactly what the Select
-      -- column exists to stop, and a group with no select simply has no
-      -- primary -- which Cut reports as needing a decision.
-      local chosen
-      for _, row in ipairs(built) do
-        if row.user_select then chosen = row; break end
-      end
-      for _, row in ipairs(built) do
-        row.is_primary = (row == chosen)
-        rows[#rows + 1] = row
-      end
-
-      local p = planned_by_row[line_row]
-      if p then
-        for i, e in ipairs(p) do
-          rows[#rows + 1] = planned_row(e, line, #g + i, #g + #p)
-        end
-      end
     else
       local key = vo.OverviewKey(nil, nil, line.asset)
       local t = index.by_asset[line.asset]
@@ -5334,6 +5304,11 @@ function vo.BuildOverview(input)
         character     = line.speaker,
         line_text     = line.text,
         take_count    = 0,
+        -- How many match or review spans this line has in the session, none of
+        -- them marked. Zero means nothing was recorded; four means the audio is
+        -- sitting there and Identify has not been run on it. "Missing" must
+        -- never read as "we looked and there is nothing" when there is.
+        heard         = g and #g or 0,
         script_row    = line.index or line.row,
         user_status   = t and t.status or nil,
         name_override = t and t.name_override or nil,

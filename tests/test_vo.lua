@@ -5204,6 +5204,7 @@ test("a script with no audio at all is entirely missing", function()
     assert(row.status == "missing", "Expected missing, got " .. row.status)
     assert(row.source_path == nil, "A missing row has no audio")
     assert(row.take_count == 0, "A missing row has no takes")
+    assert(row.heard == 0, "Nothing was recorded at all, so nothing was heard")
   end
   assert(rows[1].line_text == "Alpha" and rows[1].character == "Guard",
     "Script text and character carry through to missing rows")
@@ -5223,39 +5224,6 @@ test("rows follow script order, not audio order", function()
     "Expected script order a,b; got " .. rows[1].asset .. "," .. rows[2].asset)
 end)
 
-test("two script lines sharing a filename keep their own takes apart", function()
-  -- Regression: grouping by filename showed each line the other's takes -- five
-  -- takes of "Jump right in!" three of which were audibly a different line.
-  local a = span(1, 2, "match", "dup", "jump right in", 0.9)
-  local b = span(10, 11, "match", "dup", "the nightmares have been getting stronger", 0.9)
-  a.line_idx, b.line_idx = 1, 2
-  local rows = vo.BuildOverview({
-    lines = { line("dup", "Jump right in!", nil, 1),
-              line("dup", "The nightmares have been getting stronger...", nil, 2) },
-    matches = { { path = "s.wav", spans = { a, b } } },
-  })
-  assert(#rows == 2, "Expected 2 rows, got " .. #rows)
-  for _, row in ipairs(rows) do
-    assert(row.take_count == 1,
-      "Each line has one take of its own, got " .. tostring(row.take_count))
-  end
-  assert(rows[1].transcript == "jump right in", "Row 1 got: " .. tostring(rows[1].transcript))
-  assert(rows[2].transcript:find("nightmares"), "Row 2 got: " .. tostring(rows[2].transcript))
-end)
-
-test("a span with no line index still groups by filename", function()
-  -- The fallback for spans that predate line_idx: one line, two takes.
-  local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1) },
-    matches = { { path = "s.wav", spans = {
-      span(1, 2, "match", "a", "alpha", 0.9),
-      span(5, 6, "match", "a", "alpha", 0.9),
-    } } },
-  })
-  assert(#rows == 2 and rows[1].take_count == 2,
-    "Expected one line with two takes, got " .. #rows .. " rows")
-end)
-
 test("audio matching no script line becomes an orphan row, listed last", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
@@ -5263,6 +5231,7 @@ test("audio matching no script line becomes an orphan row, listed last", functio
       span(1, 2, "unmatched", nil, "take two", nil),
       span(5, 6, "match", "a", "alpha", 0.95),
     } } },
+    takes_by_asset = { a = { mk("m1", 5, 6, "s.wav") } },
   })
   assert(#rows == 2, "Expected 2 rows, got " .. #rows)
   assert(rows[1].status == "recorded" and rows[1].asset == "a", "Script row comes first")
@@ -5280,15 +5249,6 @@ test("audio for a line the filters excluded is an orphan, never dropped", functi
   local orphan = rows[2]
   assert(orphan.status == "orphan", "Got " .. orphan.status)
   assert(orphan.asset == "b", "The orphan keeps the asset it claimed")
-end)
-
-test("a review span reads as review, not recorded", function()
-  local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1) },
-    matches = { { path = "s.wav", spans = { span(1, 2, "review", "a", "alfa", 0.61) } } },
-  })
-  assert(rows[1].status == "review", "Got " .. rows[1].status)
-  assert(math.abs(rows[1].score - 0.61) < 1e-6, "The score carries through")
 end)
 
 test("multiple takes become sibling rows, numbered chronologically", function()
@@ -5415,6 +5375,115 @@ test("a marker row reads the words inside its range, not the whole span", functi
   assert(row, "no marker row was built")
   assert(row.transcript == "open the gate", "Got: " .. tostring(row.transcript))
   assert(near(row.score, 0.9), "score lost: " .. tostring(row.score))
+end)
+
+-- A take exists when, and only when, a marker says it does. Audio the matcher
+-- recognised but nothing has marked is HEARD, not recorded: the sheet must not
+-- show four tickable takes that no verb will act on.
+
+test("a line with spans but no markers is missing, and says how much it heard", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = {
+      span(1, 2, "match", "a", "alpha", 0.9),
+      span(5, 6, "match", "a", "alpha", 0.9),
+    } } },
+  })
+  assert(#rows == 1, "Expected one row, got " .. #rows)
+  assert(rows[1].status == "missing", "got " .. tostring(rows[1].status))
+  assert(rows[1].heard == 2, "heard: " .. tostring(rows[1].heard))
+  assert(rows[1].take_count == 0, "a heard span is not a take")
+end)
+
+test("a line with no audio at all is missing with heard 0", function()
+  local rows = vo.BuildOverview({ lines = { line("a", "Alpha", nil, 1) } })
+  assert(rows[1].status == "missing" and rows[1].heard == 0,
+    "heard: " .. tostring(rows[1].heard))
+end)
+
+test("a line with markers ignores its spans entirely, even when spans outnumber them", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = {
+      span(1, 2, "match", "a", "one", 0.9),
+      span(5, 6, "match", "a", "two", 0.9),
+      span(9, 10, "match", "a", "three", 0.9),
+    } } },
+    takes_by_asset = { a = { mk("m1", 1, 2, "s.wav") } },
+  })
+  assert(#rows == 1, "Expected one marker row, got " .. #rows)
+  assert(rows[1].key == "tkm|m1", "key: " .. tostring(rows[1].key))
+  assert(rows[1].take_count == 1, "take_count: " .. tostring(rows[1].take_count))
+  assert(rows[1].heard == nil, "a marker row is a take, not a count of reads")
+end)
+
+test("a span with no line index still counts toward its line's heard", function()
+  -- The fallback for spans that predate line_idx: they still group by filename,
+  -- which is what makes the count right.
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = {
+      span(1, 2, "match", "a", "alpha", 0.9),
+      span(5, 6, "match", "a", "alpha", 0.9),
+    } } },
+  })
+  assert(#rows == 1 and rows[1].heard == 2,
+    "Expected one missing line having heard 2, got " .. #rows .. " rows, heard "
+    .. tostring(rows[1].heard))
+end)
+
+test("a planned take appears on a line whose only other content is planned", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    entries = { { key = vo.PlannedKey("a", "p1"), asset = "a" } },
+  })
+  assert(#rows == 2, "Expected missing + planned, got " .. #rows)
+  assert(rows[1].status == "missing" and rows[2].status == "planned",
+    "got " .. rows[1].status .. "," .. rows[2].status)
+end)
+
+test("two lines sharing a filename both show every marker of that name", function()
+  -- KNOWN AND ACCEPTED (PLAN-marker-is-the-row.md, D3). A marker names an asset
+  -- and an id, so it cannot say WHICH of two same-named script lines it belongs
+  -- to. The span path separated them by line_idx; markers have no equivalent.
+  -- Fixing it means extending the marker name format, which is its own spec.
+  local rows = vo.BuildOverview({
+    lines = { line("dup", "Jump right in!", nil, 1),
+              line("dup", "The nightmares have been getting stronger...", nil, 2) },
+    matches = {},
+    takes_by_asset = { dup = { mk("m1", 1, 2), mk("m2", 10, 11) } },
+  })
+  assert(#rows == 4, "Expected both lines to show both markers, got " .. #rows)
+  assert(rows[1].take_count == 2 and rows[3].take_count == 2,
+    "each line shows both markers")
+end)
+
+test("with no markers, two lines sharing a filename are both missing", function()
+  local a = span(1, 2, "match", "dup", "jump right in", 0.9)
+  local b = span(10, 11, "match", "dup", "the nightmares have been getting stronger", 0.9)
+  a.line_idx, b.line_idx = 1, 2
+  local rows = vo.BuildOverview({
+    lines = { line("dup", "Jump right in!", nil, 1),
+              line("dup", "The nightmares have been getting stronger...", nil, 2) },
+    matches = { { path = "s.wav", spans = { a, b } } },
+  })
+  assert(#rows == 2, "Expected 2 rows, got " .. #rows)
+  for i, row in ipairs(rows) do
+    assert(row.status == "missing", "row " .. i .. ": " .. row.status)
+    assert(row.heard == 1, "row " .. i .. " heard: " .. tostring(row.heard))
+  end
+end)
+
+test("a review span is heard, not a take", function()
+  -- A marker means a person identified this read. The matcher's low-confidence
+  -- warning was never a take, so it cannot be a take row: it is one more thing
+  -- heard on a line still waiting to be identified.
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = { span(1, 2, "review", "a", "alfa", 0.61) } } },
+  })
+  assert(rows[1].status == "missing", "Got " .. rows[1].status)
+  assert(rows[1].heard == 1, "A review span still counts as heard")
 end)
 
 test("a marker row without transcripts keeps the span text", function()
@@ -5625,13 +5694,26 @@ test("the summary counts lines delivered, not takes recorded", function()
       span(5, 6, "review", "b", "bravo", 0.6),
       span(7, 8, "unmatched", nil, "slate", nil),
     } } },
+    -- Only 'a' has been identified. 'b' was heard and 'c' never recorded, and
+    -- the summary must not tell them apart: neither has a take.
+    takes_by_asset = { a = { mk("m1", 1, 2, "s.wav"), mk("m2", 3, 4, "s.wav") } },
   }))
   assert(n.lines == 3, "Three script lines, got " .. n.lines)
-  assert(n.delivered == 2, "Two lines have audio, got " .. n.delivered)
-  assert(n.recorded == 2, "Two matched take rows, got " .. n.recorded)
-  assert(n.review == 1, "One review row, got " .. n.review)
-  assert(n.missing == 1, "One missing line, got " .. n.missing)
+  assert(n.delivered == 1, "One line has takes, got " .. n.delivered)
+  assert(n.recorded == 2, "Two marker take rows, got " .. n.recorded)
+  assert(n.missing == 2, "Two lines with no take, got " .. n.missing)
   assert(n.orphan == 1, "One orphan, got " .. n.orphan)
+end)
+
+test("a heard-but-unmarked line counts as missing, not as delivered", function()
+  -- "40 of 131 lines have takes" must mean 40 have been IDENTIFIED, not that
+  -- the matcher had an opinion about 40.
+  local n = vo.SummarizeOverview(vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = { span(1, 2, "match", "a", "alpha", 0.9) } } },
+  }))
+  assert(n.missing == 1, "missing: " .. tostring(n.missing))
+  assert((n.delivered or 0) == 0, "delivered: " .. tostring(n.delivered))
 end)
 
 test("the summary counts the user's marks", function()

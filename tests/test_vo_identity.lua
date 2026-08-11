@@ -158,33 +158,35 @@ local function row_for_key(rows, key)
   return nil
 end
 
+-- A take exists where a marker says it does, so the one take here is a marker
+-- and its marks are keyed by the marker id.
+local ID_KEY = "tkm|k1"
+
 local function one_take_overview(entries)
   return vo.BuildOverview({
     lines = ID_LINES,
     matches = { { path = "sess.wav", spans = {
       { kind = "match", asset = "grum_01", start = 1.0, stop = 2.0, line_idx = 1 },
     } } },
+    takes_by_asset = { grum_01 = {
+      { id = "k1", start = 1.0, stop = 2.0, source_path = "sess.wav" },
+    } },
     entries = entries,
   })
 end
 
--- `source` and `source_start` are not optional decoration: index_tracker
--- buckets entries by source path, and resolve_tracker only ever looks in those
--- buckets -- an entry without them can never attach to a span row.
--- vo.ProjectEntriesFromRows always writes them, so real files always have them.
 test("an explicit no survives as mark_select false, not nil", function()
   local rows = one_take_overview({
-    { key = "sess.wav|1000", asset = "grum_01",
-      source = "sess.wav", source_start = 1.0, select = false },
+    { key = ID_KEY, asset = "grum_01", select = false },
   })
-  local row = assert(row_for_key(rows, "sess.wav|1000"))
+  local row = assert(row_for_key(rows, ID_KEY))
   assert(row.mark_select == false, "mark_select: " .. tostring(row.mark_select))
   assert(row.user_select == false, "user_select: " .. tostring(row.user_select))
 end)
 
 test("an absent mark is nil on the row, not false", function()
   local rows = one_take_overview({})
-  local row = assert(row_for_key(rows, "sess.wav|1000"))
+  local row = assert(row_for_key(rows, ID_KEY))
   assert(row.mark_select == nil, "mark_select: " .. tostring(row.mark_select))
   assert(row.user_select == false, "user_select should be a boolean for the UI")
 end)

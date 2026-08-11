@@ -75,13 +75,16 @@ test("planned rows sit after real takes and continue the numbering", function()
     matches = { { path = "sess.wav", spans = {
       { kind = "match", asset = "grum_01", start = 1.0, stop = 2.0, line_idx = 1 },
     } } },
+    takes_by_asset = { grum_01 = {
+      { id = "k1", start = 1.0, stop = 2.0, source_path = "sess.wav" },
+    } },
     entries = { { key = key, asset = "grum_01" } },
   })
   local planned = assert(find_key(rows, key), "planned row missing")
   assert(planned.take_index == 2, "take_index: " .. tostring(planned.take_index))
   local real
   for _, row in ipairs(rows) do
-    if row.source_path == "sess.wav" then real = row end
+    if row.marker_id == "k1" then real = row end
   end
   assert(real, "real take missing")
   assert(real.take_index == 1, "real take_index: " .. tostring(real.take_index))
