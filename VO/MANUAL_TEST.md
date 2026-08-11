@@ -795,3 +795,35 @@ project `631.4541` (source window `31.4541–34.8700`).
    blocks into the outermost, which is the part to actually check.
 9. Press Deliver twice: the second press should report the tracks already
    existing and nothing left to pull, and still lay out without error.
+
+### Verified 2026-08-10, second pass
+
+**Tidy Up Take**, on the item at project `651.6413` (source window
+`51.6413–53.9771`) holding one short marker `~mlz` at `52.27–52.96`: one press
+left a single marker and extended it to the clip's edges. Covers item 6 above
+apart from the fade detail.
+
+This press first failed, and the failure is worth recording. `Trim.extras`
+called `vo.PlanMarkerMirror`, which gives an item every canonical marker
+**intersecting** its window — and the next take's marker `~mm6` ran
+`52.96–59.04`, starting inside this clip. The mirror handed a copy to both
+items, so the clip then held two markers and the snap step correctly refused
+it as a recording. Removing extras had added one.
+
+Fixed by `vo.PlanMarkerPrune`, which keeps only the markers an item *owns*
+(`vo.CountingMarkers`' rule: the item covering most of that id's range) and
+structurally cannot add one. `tests/test_vo_markers.lua` carries the live
+geometry, including an assertion that `PlanMarkerMirror` *does* add the
+straddler — so swapping it back fails loudly.
+
+### Still not executed
+
+- The fade half of Tidy Up Take: trim a clip's head so its fade-in is zero
+  while the fade-out is intact, press once, and confirm ONLY the fade-in is
+  filled.
+- Tidy Up Take pressed twice: the second press should report zero snapped and
+  zero faded.
+- Range-true transcripts (items 2 and 3 above).
+- **Apply the cut fades** (item 4 above).
+- **Deliver** (items 8 and 9 above) — in particular that ONE undo reverses all
+  three steps.
