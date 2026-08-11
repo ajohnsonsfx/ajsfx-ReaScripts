@@ -1203,8 +1203,13 @@ end
 -- counts as extra when it cannot be paired with one in the line IN ORDER. A
 -- multiset would call the second half of a double-read extra and also let a word
 -- that moved across the line pass unmarked; the LCS gets both right. Comparison
--- is on Normalize()d tokens, display is the original text, so punctuation and
--- case survive.
+-- is on Normalize()d tokens.
+--
+-- A word that PAIRS is shown with the LINE's spelling, not the transcriber's:
+-- whisper's capitalisation and punctuation are a guess, the script's are the
+-- writer's, and two guesses side by side on one card read as a difference that
+-- means something when it does not. What the reader actually said still shows
+-- wherever it diverges -- an unpaired word keeps its own spelling and its amber.
 --
 -- Returns: array of { text = string, extra = boolean } in take order, adjacent
 -- runs of the same verdict merged. Marks nothing when there is no line to
@@ -1214,7 +1219,18 @@ function vo.ExtraWords(line_text, take_text, subs)
   for token in tostring(take_text or ""):gmatch("%S+") do raw[#raw + 1] = token end
   if #raw == 0 then return {} end
 
-  local line = vo.Tokenize(vo.Normalize(line_text or "", subs))
+  -- The line's display words, and which comparison tokens each one yields --
+  -- the mirror of the take side below, because a paired take word has to be
+  -- able to name the line word whose spelling it is about to borrow.
+  local line_raw = {}
+  for token in tostring(line_text or ""):gmatch("%S+") do line_raw[#line_raw + 1] = token end
+  local line, line_owner = {}, {}
+  for i, token in ipairs(line_raw) do
+    for _, t in ipairs(vo.Tokenize(vo.Normalize(token, subs))) do
+      line[#line + 1] = t
+      line_owner[#line] = i
+    end
+  end
   if #line == 0 then
     return { { text = table.concat(raw, " "), extra = false } }
   end
@@ -1248,30 +1264,65 @@ function vo.ExtraWords(line_text, take_text, subs)
   -- right tie to take: where a reader stumbled and went again, both halves pair
   -- equally well, and the half worth colouring is the false start, not the read
   -- they settled on.
+  -- paired[take token] = the line token it went with, so the walk below can
+  -- reach the line's display word and not just the fact that there was one.
   local paired = {}
   local i, j = n, m
   while i > 0 and j > 0 do
     if line[i] ~= "" and line[i] == take[j] then
-      paired[j] = true
+      paired[j] = i
       i, j = i - 1, j - 1
     elseif L[i - 1][j] >= L[i][j - 1] then i = i - 1
     else j = j - 1 end
   end
 
-  -- Back to display words: a word that Normalize split is extra if any part of
-  -- it went unpaired, and a word that normalizes to nothing at all (punctuation
-  -- on its own) is never extra -- there was nothing to fail to match.
-  local unpaired = {}
+  -- Back to display words. Each take word owns the comparison tokens it made.
+  local toks_of = {}
   for k = 1, m do
-    if not paired[k] then unpaired[owner[k]] = true end
+    local list = toks_of[owner[k]]
+    if not list then list = {} toks_of[owner[k]] = list end
+    list[#list + 1] = k
   end
 
   local runs = {}
-  for k = 1, #raw do
-    local extra = unpaired[k] == true
+  local function push(text, extra)
     local last = runs[#runs]
-    if last and last.extra == extra then last.text = last.text .. " " .. raw[k]
-    else runs[#runs + 1] = { text = raw[k], extra = extra } end
+    if last and last.extra == extra then last.text = last.text .. " " .. text
+    else runs[#runs + 1] = { text = text, extra = extra } end
+  end
+
+  local spoken_for = {}
+  for k = 1, #raw do
+    local toks = toks_of[k]
+    if not toks then
+      -- Normalizes to nothing at all (punctuation standing on its own): never
+      -- extra, because there was nothing here to fail to match.
+      push(raw[k], false)
+    else
+      -- A word Normalize split is extra if ANY part of it went unpaired.
+      local whole, owners = true, {}
+      for _, t in ipairs(toks) do
+        local li = paired[t]
+        if not li then whole = false break end
+        local o = line_owner[li]
+        if owners[#owners] ~= o then owners[#owners + 1] = o end
+      end
+      if not whole then
+        push(raw[k], true)
+      else
+        local text = {}
+        for _, o in ipairs(owners) do
+          if not spoken_for[o] then
+            spoken_for[o] = true
+            text[#text + 1] = line_raw[o]
+          end
+        end
+        -- Nothing left to say: several take words paired into one line word
+        -- ("well worn" read against a scripted "well-worn"), and that one word
+        -- is already on screen.
+        if #text > 0 then push(table.concat(text, " "), false) end
+      end
+    end
   end
   return runs
 end
@@ -1783,8 +1834,10 @@ end
 -- a fact about one placement and averaging two would mean nothing.
 --
 -- `flat` is the flattened { span, source_path } list BuildOverview already
--- builds. Returns: text, score, in_sequence -- all nil when nothing overlaps.
-function vo.TranscriptForRange(flat, path, from, to)
+-- builds. `words` is this source's word list when the caller has it, and is
+-- what the TEXT is cut from; without it the text falls back to the spans'.
+-- Returns: text, score, in_sequence -- all nil when nothing overlaps.
+function vo.TranscriptForRange(flat, path, from, to, words)
   if not (path and from and to and to > from) then return nil end
   local hits, best, best_overlap = {}, nil, 0
   for _, rec in ipairs(flat or {}) do
@@ -1801,13 +1854,38 @@ function vo.TranscriptForRange(flat, path, from, to)
   end
   if #hits == 0 then return nil end
 
-  table.sort(hits, function(a, b) return (a.start or 0) < (b.start or 0) end)
+  -- The words themselves when the caller has them. A span is a whole matched
+  -- stretch and a marker inside one holds only PART of it, so concatenating
+  -- every overlapping span reported a dozen words the take does not contain --
+  -- which is the entire reason this argument exists.
+  --
+  -- A word counts by its MIDPOINT. Whisper pads word ends into the silence
+  -- that follows, so testing t1 pulls in a word the range does not really
+  -- hold; testing t0 keeps a word whose audio is mostly outside. The midpoint
+  -- is the cheap answer that is right at both edges.
   local text = {}
-  for _, s in ipairs(hits) do
-    if s.transcript and s.transcript ~= "" then text[#text + 1] = s.transcript end
+  for _, w in ipairs(words or {}) do
+    if w.t0 and w.t1 and w.text and w.text ~= "" then
+      local mid = (w.t0 + w.t1) * 0.5
+      if mid >= from and mid <= to then text[#text + 1] = w.text end
+    end
   end
-  if #text == 0 then return nil end
-  return table.concat(text, " "), best and best.score or nil,
+  if #text > 0 then
+    return table.concat(text, " "), best and best.score or nil,
+           best and best.in_sequence or nil
+  end
+  -- Nothing to offer -- either the caller passed no words at all, or this
+  -- range really is silent. Only the FIRST may fall back to the spans: a
+  -- range the words say is empty must read as empty, not as its neighbours'.
+  if words and #words > 0 then return nil end
+
+  table.sort(hits, function(a, b) return (a.start or 0) < (b.start or 0) end)
+  local span_text = {}
+  for _, s in ipairs(hits) do
+    if s.transcript and s.transcript ~= "" then span_text[#span_text + 1] = s.transcript end
+  end
+  if #span_text == 0 then return nil end
+  return table.concat(span_text, " "), best and best.score or nil,
          best and best.in_sequence or nil
 end
 

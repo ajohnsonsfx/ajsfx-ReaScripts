@@ -1058,7 +1058,12 @@ end)
 
 test("words the take has and the line does not are marked", function()
   local s = marked("Open the gate.", "Uh, open the big gate.")
-  assert(s == "[Uh,] open the [big] gate.", "Got: " .. s)
+  assert(s == "[Uh,] Open the [big] gate.", "Got: " .. s)
+end)
+
+test("a paired word is shown with the line's capitalisation and punctuation", function()
+  local s = marked("Open the north gate, now!", "open the north gate now")
+  assert(s == "Open the north gate, now!", "Got: " .. s)
 end)
 
 test("words the line has and the take does not are not marked", function()
@@ -1072,15 +1077,21 @@ test("a false start is marked, and the read that followed it is not", function()
   -- what gets coloured is the stumble the reader abandoned rather than the read
   -- they went on to give.
   local s = marked("Do not repeat that.", "Do not repeat, do not repeat that.")
-  assert(s == "[Do not repeat,] do not repeat that.", "Got: " .. s)
+  assert(s == "[Do not repeat,] Do not repeat that.", "Got: " .. s)
 end)
 
 test("comparison ignores case and punctuation", function()
-  assert(marked("Don't!", "don\226\128\153t") == "don\226\128\153t", marked("Don't!", "don\226\128\153t"))
+  -- And the pairing it finds hands the line's spelling back.
+  assert(marked("Don't!", "don\226\128\153t") == "Don't!", marked("Don't!", "don\226\128\153t"))
 end)
 
 test("a word Normalize splits pairs against the split line", function()
   local s = marked("well worn", "well-worn")
+  assert(s == "well worn", "Got: " .. s)
+end)
+
+test("several take words paired into one line word are said once", function()
+  local s = marked("well-worn", "well worn")
   assert(s == "well-worn", "Got: " .. s)
 end)
 
@@ -1605,6 +1616,58 @@ test("audio nothing matched still reports what was heard", function()
   local text, score = vo.TranscriptForRange(flat, "a.wav", 0, 2)
   assert(text == "sorry again", "Got: " .. tostring(text))
   assert(score == nil, "an unmatched span has no score to report")
+end)
+
+-- The word list a range can be cut out of. Deliberately overlapping the TFR
+-- spans above so the two paths can be compared on the same fixture.
+local TFR_WORDS = {
+  { t0 = 0.0, t1 = 0.4, text = "open" },
+  { t0 = 0.5, t1 = 0.9, text = "the" },
+  { t0 = 1.0, t1 = 1.9, text = "gate" },
+  { t0 = 3.0, t1 = 3.5, text = "and" },
+  { t0 = 3.6, t1 = 4.9, text = "hurry" },
+}
+
+test("with words, a range reads only the words inside it", function()
+  -- The span says "open the gate"; the range holds two of its three words.
+  local text = vo.TranscriptForRange(TFR, "a.wav", 0, 0.95, TFR_WORDS)
+  assert(text == "open the", "Got: " .. tostring(text))
+end)
+
+test("a range across two spans no longer reads both spans in full", function()
+  -- The old path returned "open the gate and hurry" for this range. Midpoints:
+  -- open 0.2, the 0.7, gate 1.45, and 3.25, hurry 4.25 -- so 1.4-3.4 holds
+  -- exactly the two in the middle, one from each span.
+  local text = vo.TranscriptForRange(TFR, "a.wav", 1.4, 3.4, TFR_WORDS)
+  assert(text == "gate and", "Got: " .. tostring(text))
+end)
+
+test("a word counts by its midpoint, not by either edge", function()
+  -- "gate" runs 1.0-1.9, midpoint 1.45. A range starting at 1.2 holds its
+  -- midpoint and keeps it; one starting at 1.5 does not and drops it, even
+  -- though the word's tail is inside either way.
+  assert(vo.TranscriptForRange(TFR, "a.wav", 1.2, 2.0, TFR_WORDS) == "gate",
+         "midpoint inside was dropped")
+  local text = vo.TranscriptForRange(TFR, "a.wav", 1.5, 2.0, TFR_WORDS)
+  assert(text == nil, "midpoint outside was kept: " .. tostring(text))
+end)
+
+test("the score still comes from the greatest-overlap span, whatever the words", function()
+  local _, score, seq = vo.TranscriptForRange(TFR, "a.wav", 0, 1.9, TFR_WORDS)
+  assert(near(score, 0.9), "Got: " .. tostring(score))
+  assert(seq == true, "in_sequence not carried")
+end)
+
+test("words present but the range holds none is nil, not empty", function()
+  assert(vo.TranscriptForRange(TFR, "a.wav", 2.0, 2.9, TFR_WORDS) == nil,
+         "a silent gap returned text")
+end)
+
+test("no word list falls back to the span text", function()
+  assert(vo.TranscriptForRange(TFR, "a.wav", 0, 5) == "open the gate and hurry",
+         "the legacy path changed")
+  assert(vo.TranscriptForRange(TFR, "a.wav", 0, 5, {}) == "open the gate and hurry",
+         "an EMPTY word list must fall back, not report silence")
 end)
 
 --------------------------------
