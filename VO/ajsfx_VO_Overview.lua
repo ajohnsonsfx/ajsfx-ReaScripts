@@ -699,7 +699,7 @@ local function Rebuild()
   state.marker_info = marker_info
 
   local matches = LoadMatches(cfg)
-  state.overview = vo.BuildOverview({
+  local overview_input = {
     lines   = state.lines,
     matches = matches,
     entries = state.entries,
@@ -709,7 +709,12 @@ local function Rebuild()
     -- state.transcripts, and the order a table constructor evaluates its
     -- fields in is not something to rely on.
     transcripts = state.transcripts,
-  })
+  }
+  state.overview = vo.BuildOverview(overview_input)
+  -- The Check panel asks the same question of the same input: which recognised
+  -- audio has no marker on it. Rebuilt here so it can never go stale against
+  -- the sheet beside it.
+  state.unidentified = vo.UnidentifiedSpans(overview_input)
 
   -- Marker rows resolve straight to the item holding their counting marker:
   -- no occupancy guessing, which is the point. Before the adoption pass so an
@@ -5361,7 +5366,13 @@ local function DrawDisagreePanel()
   end
 end
 
-local function DrawNoAudioPanel()
+-- The two halves of "does the sheet agree with the audio": markers with no
+-- audio under them, and audio with no marker on it. One table, because this
+-- file is at Lua's 200-local ceiling for a main chunk and a pair of siblings
+-- has no business spending two slots.
+local Repair = {}
+
+function Repair.NoAudio()
   local plan = state.reconcile
                or vo.PlanReconcile(state.overview, vo.LoadConfig())
 
@@ -5427,6 +5438,50 @@ local function DrawNoAudioPanel()
     im.Separator(ctx)
   end
 
+  im.Separator(ctx)
+end
+
+-- Audio the matcher recognised that no marker claims. A take exists in this
+-- sheet only where a marker says it does, so these reads are heard but not
+-- tracked -- and the verb that acts on a row here is Identify, not a mark.
+function Repair.Unidentified()
+  local list = state.unidentified or {}
+  if #list == 0 then
+    im.TextColored(ctx, 0x66BB66FF,
+      "Every read the matcher found has a take marker on it.")
+    im.Separator(ctx)
+    return
+  end
+
+  im.TextColored(ctx, 0xDDAA33FF, string.format(
+    "%d read(s) matched a script line but have no take marker:", #list))
+  for i, s in ipairs(list) do
+    if i > REPAIR_LIST_CAP then
+      im.TextDisabled(ctx, string.format("   ...and %d more", #list - REPAIR_LIST_CAP))
+      break
+    end
+    im.Bullet(ctx)
+    im.SameLine(ctx)
+    im.TextDisabled(ctx, vo.Basename(s.source_path or "") )
+    im.SameLine(ctx)
+    if im.SmallButton(ctx, string.format("%s##uid%d", vo.FormatTime(s.start or 0), i)) then
+      local at = s.start or 0
+      pending_action = function()
+        reaper.SetEditCurPos(at, true, false)
+      end
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Move the edit cursor to this read.")
+    end
+    im.SameLine(ctx)
+    im.TextDisabled(ctx, string.format("%s  %.0f%%  %s",
+      s.deliver or s.asset or "(unnamed)", (s.score or 0) * 100,
+      s.transcript or ""))
+  end
+  im.TextDisabled(ctx,
+    "These reads scored against a script line, but nothing has marked them as\n" ..
+    "takes -- so no verb will act on them and they are not in the sheet. Run\n" ..
+    "Identify, or mark them by hand.")
   im.Separator(ctx)
 end
 
@@ -6173,6 +6228,21 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
     if im.IsItemHovered(ctx) then
       im.SetTooltip(ctx, "Sel: the take you are delivering. One per line.\n" ..
                          "On a highlighted row, every highlighted row follows.")
+    end
+
+    -- Heard, but not tracked. A missing line the matcher DID recognise says so,
+    -- rather than reading as "we looked and there is nothing" when there is.
+    -- Nothing to click: the verb that acts on it is Identify.
+    if row.status == "missing" and (row.heard or 0) > 0 then
+      im.SameLine(ctx)
+      im.SetCursorScreenPos(ctx, rx + z.marks + 102, ry)
+      im.TextDisabled(ctx, string.format("heard %dx", row.heard))
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, string.format(
+          "%d read(s) matched this line, but no take marker claims any of\n" ..
+          "them, so none of them is a take yet. Run Identify, or see\n" ..
+          "Check > Not yet identified.", row.heard))
+      end
     end
   end
 
@@ -7939,6 +8009,15 @@ local function loop()
         "item was deleted, or trimmed past them. Relink each to the item\n" ..
         "it belongs to, or clear its marks on the row itself.")
 
+      -- The mirror of the one above: that one is markers with no audio, this
+      -- one is audio with no marker.
+      local n_uid = #(state.unidentified or {})
+      Flow(string.format("Not yet identified (%d)", n_uid))
+      PanelButton("unidentified", string.format("Not yet identified (%d)", n_uid),
+        "Audio the matcher recognised that no take marker claims. A take\n" ..
+        "exists in this sheet only where a marker says it does, so these\n" ..
+        "reads are heard but not tracked. (0) means every read is marked.")
+
     end
 
     im.EndGroup(ctx)
@@ -7947,7 +8026,8 @@ local function loop()
     if ribbon_h < state.ribbon_h then im.Dummy(ctx, 1, state.ribbon_h - ribbon_h) end
 
     if     state.panel == "disagree" then DrawDisagreePanel()
-    elseif state.panel == "noaudio"  then DrawNoAudioPanel()
+    elseif state.panel == "noaudio"  then Repair.NoAudio()
+    elseif state.panel == "unidentified" then Repair.Unidentified()
     elseif state.panel == "script" then DrawScriptPanel()
     elseif state.panel == "cut"    then DrawCutPanel()
     elseif state.panel == "pull"   then DrawPullPanel()
