@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.15beta6
--- @changelog PRE-RELEASE: the toolbar is three tabs -- Setup, Edit and Settings -- and a tab never does anything: it only decides which buttons you are looking at, while every button under it acts. Edit leads with "Run the whole pass" (match, cut, pick, pull, in one undo step) above one row per step of the same name -- Match, Cut, Pick, Pull -- plus Check, the phase the batch button cannot run for you. EVERY verb now acts on the selection -- rows picked in the sheet, items picked in REAPER, or both -- and a line under the hero says what the next press will act on. Selecting an uncut recording selects every take inside it, so one rule reads correctly before and after the cut. The per-panel "Selected rows only" checkboxes are gone. "Cut recording into takes" cuts on the press; its panel is now the report the run opens by itself. "Auto-pick selects" and "Auto-name the alts" join "Auto-adjust head and tail" as the Auto- family: each is the batch form of a per-row sheet gesture. Auto-adjust now moves the take marker with the edges it trims. Buttons wrap rather than running off a narrow window, and the ribbon holds one height so the sheet no longer jumps when you click between tabs. "Start over..." in Setup deletes this project's VO data, behind a confirm that names what goes and what stays. The blank sheet now asks for the two things it needs -- a script and a transcript -- with a button for each.
+-- @changelog PRE-RELEASE: the toolbar is three tabs -- Setup, Edit and Settings -- and a tab never does anything: it only decides which buttons you are looking at, while every button under it acts. Edit leads with "Run the whole pass" (match, cut, pick, pull, in one undo step) above one row per step of the same name -- Match, Cut, Pick, Pull -- plus Check, the phase the batch button cannot run for you. EVERY verb now acts on the selection -- rows picked in the sheet, items picked in REAPER, or both -- and a line under the hero says what the next press will act on. Selecting an uncut recording selects every take inside it, so one rule reads correctly before and after the cut. The per-panel "Selected rows only" checkboxes are gone. "Find lines in items", "Assign items to lines" and "Adopt this whole session" are ONE button, "Identify the lines in these items": they differed only in what shape the audio was in, which the tool now counts for itself -- an item holding one take is marked at your own edges and named for its line, an item holding several gets a marker per take and no name. "Cut recording into takes" cuts on the press; its panel is now the report the run opens by itself. "Auto-pick selects" and "Auto-name the alts" join "Auto-adjust head and tail" as the Auto- family: each is the batch form of a per-row sheet gesture. Auto-adjust now moves the take marker with the edges it trims. Buttons wrap rather than running off a narrow window, and the ribbon holds one height so the sheet no longer jumps when you click between tabs. "Start over..." in Setup deletes this project's VO data, behind a confirm that names what goes and what stays. The blank sheet now asks for the two things it needs -- a script and a transcript -- with a button for each.
 --   "Not on the script" is a queue instead of a dead end: right-click any orphan to hand it to a script line (best guesses first, scored against what was actually said) or dismiss it as junk, which is remembered and leaves the count -- so "0 orphans" now means every span has been looked at. Each orphan says why it is one. Matching ranks candidates by tokens of agreement rather than by score, so a short line matched perfectly no longer takes the words out of the middle of a long one. A transcript is drawn in one colour with the EXTRA words -- what the reader said that the line does not contain -- in amber; the colour used to encode a match threshold nobody could see. Notes are gone from the cards. A reader going again is no longer reported as a transcriber loop. In Sources: single-click opens a file's detail, "Copy report" puts everything on the clipboard, reported timecodes are clickable links that move the edit cursor, and a transcript can be deleted from the panel. "Find lines in items" honours the REAPER selection. Fixed: a race that reported "whisper-cli exited with code -1" on runs that had barely started.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
@@ -1182,170 +1182,6 @@ local function DeleteTakeMarker(row)
   end
 end
 
--- Bank the session as marker truth: every take row that resolves to an item
--- but has no marker yet gets one spanning the item's CURRENT source coverage
--- -- hand-fixed edges captured as stored fact, reviewable in the arrange
--- view. Match rows whose audio is still uncut get their marker from the
--- match span, on the recording item covering it. The migration for sessions
--- cut before markers existed; new sessions never need it, Cut writes its own.
---
--- With `adopt`, the same pass also NAMES each matched take's item for its
--- line, at the item's current edges, cutting nothing -- the ingest path for
--- a session that was cut and edited before this tool arrived. Cut and Name
--- would re-slice those hand-fixed edges to fit whisper word timings; Pull
--- routes by name and so does nothing until the names exist. Adopt is the
--- bridge between them. Names that already resolve to a script line are
--- assignments the user stated and are never overwritten (vo.PlanAdopt).
-local function MarkTakesFromSession(adopt)
-  Reload()
-
-  -- Scoped by the REAPER selection, when there is one.
-  --
-  -- "Find lines in items" is something the user does deliberately, at two or
-  -- three long items they have just picked out -- and it walked the whole
-  -- session regardless, so picking the items had no effect on what it did.
-  -- Nothing selected still means everything, which is how the batch pass and
-  -- every other verb here behaves.
-  --
-  -- Adoption is exempt: its name says "this whole session", and scoping the one
-  -- verb whose whole point is the sweep would be a different button.
-  local only, scoped = {}, false
-  if not adopt and r.CountSelectedMediaItems(0) > 0 then
-    scoped = true
-    for i = 0, r.CountSelectedMediaItems(0) - 1 do
-      only[r.GetSelectedMediaItem(0, i)] = true
-    end
-  end
-
-  local taken = TakenMarkerIds()
-  local per_item = {}   -- item -> { list = markers to add }
-  local rekey = {}      -- old entry key -> new tkm key
-  local marked, no_audio = 0, 0
-
-  for _, row in ipairs(state.overview) do
-    if row.take_index and not row.marker_id and not row.planned
-       and row.status ~= "orphan" then
-      local item, span
-      if row.item and row.item_info then
-        item = row.item
-        span = vo.SourceCoverageRanges({ row.item_info })[1]
-      elseif row.source_path and row.source_start and row.source_stop then
-        item = vo.ResolveSourceSpanForCut(
-          row.source_path, row.source_start, row.source_stop, state.items)
-        span = item and { from = row.source_start, to = row.source_stop } or nil
-      end
-      -- Judged on the RESOLVED item, not on row.item: a row whose audio was
-      -- found by source time has no item of its own until this point.
-      local in_scope = (not scoped) or (item ~= nil and only[item] == true)
-      if in_scope and item and span and span.to > span.from then
-        local id = vo.MintMarkerId(taken)
-        local rec = per_item[item]
-        if not rec then rec = { list = {} }; per_item[item] = rec end
-        rec.list[#rec.list + 1] =
-          { start = span.from, stop = span.to, asset = row.asset, id = id }
-        rekey[row.key] = "tkm|" .. id
-        marked = marked + 1
-      elseif in_scope then
-        no_audio = no_audio + 1
-      end
-    end
-  end
-
-  -- Adoption reads the CURRENT name of every matched item and plans only the
-  -- renames that are not already assignments -- so a second run is a no-op,
-  -- and a name the user set by hand survives every run.
-  local renames, adopt_counts = {}, nil
-  if adopt then
-    local cfg = vo.LoadConfig()
-    local takes = {}
-    for _, row in ipairs(state.overview) do
-      if row.take_index and not row.planned and row.status ~= "orphan"
-         and row.item then
-        local take = r.GetActiveTake(row.item)
-        if take then
-          local _, name = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
-          takes[#takes + 1] = {
-            item    = row.item,
-            name    = name or "",
-            deliver = row.deliver or row.asset,
-            sel     = row.user_select == true,
-          }
-        end
-      end
-    end
-    renames, adopt_counts = vo.PlanAdopt(takes, vo.BuildNameIndex(state.lines),
-                                         { alt_pattern = cfg.alt_append_pattern })
-  end
-
-  if marked == 0 and #renames == 0 then
-    state.message, state.message_kind = adopt
-      and "Nothing to adopt: every take has its marker and its name."
-      or  (scoped
-        and "Nothing to mark in the selected item(s): every take in them "
-         .. "already has a marker. Deselect everything to run over the session."
-        or  "Nothing to mark: every take already has a marker."), "info"
-    return
-  end
-
-  if #renames > 0 then state.name_baseline = nil end
-
-  core.Transaction(adopt and "VO Overview: adopt session"
-                          or "VO Overview: mark takes", function()
-    for item, rec in pairs(per_item) do
-      -- Existing tool markers ride along, same rule as Cut's writes.
-      local ok0, chunk0 = r.GetItemStateChunk(item, "", false)
-      if ok0 then
-        for _, m in ipairs(vo.ParseTKMChunk(chunk0)) do
-          local asset0, id0 = vo.ParseMarkerName(m.name)
-          if id0 then
-            rec.list[#rec.list + 1] = { start = m.pos,
-              stop = m.pos + (m.length or 0), asset = asset0, id = id0 }
-          end
-        end
-      end
-      vo.WriteTakeMarkers(item, rec.list)
-    end
-    for _, rn in ipairs(renames) do
-      local take = r.GetActiveTake(rn.item)
-      if take then
-        r.GetSetMediaItemTakeInfo_String(take, "P_NAME", rn.name, true)
-      end
-    end
-  end)
-
-  -- The marks ride along: each rekeyed entry now lives under the marker id,
-  -- which no drag can move.
-  for _, e in ipairs(state.entries) do
-    if e.key and rekey[e.key] then e.key = rekey[e.key] end
-  end
-  state.dirty = true
-  Reload()
-  if adopt then
-    local c = adopt_counts or {}
-    local parts = { string.format(
-      "Adopted the session: %d take(s) marked, %d item(s) named for their lines.",
-      marked, #renames) }
-    if (c.already or 0) > 0 then
-      parts[#parts + 1] = string.format("%d already named.", c.already)
-    end
-    if (c.assigned or 0) > 0 then
-      parts[#parts + 1] = string.format(
-        "%d named for another line and left alone.", c.assigned)
-    end
-    if no_audio > 0 then
-      parts[#parts + 1] = string.format("%d row(s) had no audio.", no_audio)
-    end
-    parts[#parts + 1] = "Press Pull to route them."
-    state.message, state.message_kind = table.concat(parts, " "), "ok"
-  else
-    state.message, state.message_kind = string.format(
-      "Marked %d take(s)%s.%s", marked,
-      scoped and " in the selected item(s)" or "",
-      no_audio > 0
-        and string.format(" %d row(s) had no audio to mark.", no_audio) or ""), "ok"
-  end
-end
-
 -- One take, one marker, in the clip that IS that take: rewrite every item's
 -- tool markers as the ones its own window covers, dropping the rest. The
 -- canonical copy is the one the coverage rule already counts -- the copy the
@@ -1390,153 +1226,182 @@ local function SyncTakeMarkers()
     or "Every item already carries just its own take.", "ok"
 end
 
--- The button for "I have this item in my hand and it has no marker": a
--- best-effort match of the SELECTED items, one at a time. The best match
--- span the item's window covers gives the line; the marker is written at
--- the item's CURRENT edges (adopt rules: the user's editing is the truth)
--- and the item takes the line's name unless its name is already an
--- assignment. The guess is reported per item -- with the fraction -- so a
--- wrong one is visible the moment it is made rather than three tools later.
-local function MarkSelectedItems()
-  Reload()
-  local n = r.CountSelectedMediaItems(0)
-  if n == 0 then
-    state.message, state.message_kind =
-      "Select the item(s) in REAPER first, then press Mark selected.", "warn"
-    return
+-- The items selected in REAPER, as a set, for scope resolution.
+local function SelectedItemSet()
+  local set = {}
+  for i = 0, r.CountSelectedMediaItems(0) - 1 do
+    set[r.GetSelectedMediaItem(0, i)] = true
   end
+  return set
+end
 
+-- Work out what script lines are in the audio, and write it down.
+--
+-- ONE verb where there were three. "Find lines in items", "Assign items to
+-- lines" and "Adopt this whole session" differed only in what SHAPE the audio
+-- was in -- a recording holding many takes, a clip holding one, a session
+-- someone else had already cut -- and the tool can see that for itself
+-- (vo.PlanItemIdentity). Making the user classify their own audio before
+-- pressing anything was asking them to know the tool's internals, and choosing
+-- wrong did the wrong thing silently.
+--
+-- Scope is the selection, like everything else: the items picked in REAPER, or
+-- every item when nothing is picked.
+local function IdentifyItems()
+  Reload()
   local cfg   = vo.LoadConfig()
   local floor = vo.Opt(cfg, "mark_item_min_span")
   local taken = TakenMarkerIds()
   local index = vo.BuildNameIndex(state.lines)
 
-  local info_by_item = {}
-  for _, info in ipairs(state.items or {}) do
-    if info.item then info_by_item[info.item] = info end
-  end
-  -- Items whose window already holds a counting marker are already takes.
-  local marked_items = {}
-  for _, group in pairs(state.take_markers or {}) do
-    for _, c in ipairs(vo.CountingMarkers(group)) do
-      local rec = group[c.item_index]
-      if rec and rec.info then marked_items[rec.info.item] = true end
-    end
-  end
+  -- Scope: the items picked in REAPER, else every item in the project.
+  local picked = SelectedItemSet()
+  local scoped = next(picked) ~= nil
+
   local spans_by_path = {}
   for _, m in ipairs(state.matches or {}) do spans_by_path[m.path] = m.spans end
+
+  -- Rows keyed by where their audio starts, so a span can find the row whose
+  -- marks must ride onto the new marker's key.
   local rows_by_start = {}
+  local function start_key(path, at)
+    return tostring(path) .. "|" .. string.format("%.4f", at or 0)
+  end
   for _, row in ipairs(state.overview) do
     if row.source_path and row.source_start ~= nil then
-      rows_by_start[row.source_path .. "|" ..
-                    string.format("%.4f", row.source_start)] = row
+      rows_by_start[start_key(row.source_path, row.source_start)] = row
     end
   end
 
-  local jobs, already, unusable, unmatched, weak = {}, 0, 0, 0, nil
-  for i = 0, n - 1 do
-    local item = r.GetSelectedMediaItem(0, i)
-    local info = item and info_by_item[item]
-    if not info or info.skip then
-      unusable = unusable + 1
-    elseif marked_items[item] then
-      already = already + 1
-    else
-      local coverage = vo.SourceCoverageRanges({ info })[1]
-      local span, frac = vo.BestSpanForItem(coverage, spans_by_path[info.path])
-      if span and frac >= floor then
-        jobs[#jobs + 1] = { item = item, info = info, coverage = coverage,
-                            span = span, frac = frac }
-      else
-        unmatched = unmatched + 1
-        if span then
-          weak = string.format("best guess %s at %d%%, under the %d%% floor",
-            span.asset or "?", math.floor(frac * 100 + 0.5),
-            math.floor(floor * 100 + 0.5))
+  -- Which spans already have a marker. Per SPAN, not per item: an item can
+  -- hold four hundred takes with all but one of them already marked, and that
+  -- must not read as a single-take item.
+  local marked_span = {}
+  for _, row in ipairs(state.overview) do
+    if row.marker_id and row.source_path and row.source_start ~= nil then
+      marked_span[start_key(row.source_path, row.source_start)] = true
+    end
+  end
+
+  local items, by_key, unusable = {}, {}, 0
+  for _, info in ipairs(state.items or {}) do
+    local item = info.item
+    if item and not info.skip and ((not scoped) or picked[item]) then
+      local cov = vo.SourceCoverageRanges({ info })[1]
+      if cov then
+        local spans = {}
+        for _, sp in ipairs(spans_by_path[info.path] or {}) do
+          if (sp.kind == "match" or sp.kind == "review") and sp.asset then
+            spans[#spans + 1] = {
+              start = sp.start, stop = sp.stop,
+              asset = sp.asset, deliver = sp.deliver or sp.asset,
+              marked = marked_span[start_key(info.path, sp.start)] or nil,
+              path = info.path,
+            }
+          end
         end
+        local key = tostring(item)
+        by_key[key] = { item = item, info = info }
+        items[#items + 1] =
+          { key = key, from = cov.from, to = cov.to, spans = spans }
+      else
+        unusable = unusable + 1
       end
+    elseif item and info.skip and scoped and picked[item] then
+      unusable = unusable + 1
     end
   end
 
-  if #jobs == 0 then
-    local parts = { "Nothing marked." }
-    if already > 0 then
-      parts[#parts + 1] = string.format("%d already had a marker.", already)
-    end
-    if unmatched > 0 then
-      parts[#parts + 1] = string.format(
-        "%d matched no line%s.", unmatched, weak and (" (" .. weak .. ")") or "")
-    end
-    if unusable > 0 then
-      parts[#parts + 1] = string.format("%d had no usable audio.", unusable)
-    end
-    state.message, state.message_kind = table.concat(parts, " "), "warn"
+  if #items == 0 then
+    state.message, state.message_kind = scoped
+      and "Nothing usable in the selection: those item(s) have no audio this tool can read."
+      or  "No audio in this project to identify.", "warn"
+    return
+  end
+
+  local plans, counts = vo.PlanItemIdentity(items, { floor = floor })
+
+  local wrote, named, rekey = 0, 0, {}
+  local anything = false
+  for _, plan in ipairs(plans) do
+    if #plan.markers > 0 or plan.name then anything = true break end
+  end
+  if not anything then
+    state.message, state.message_kind = string.format(
+      "Everything in scope is already identified: %d take(s), %d recording(s), " ..
+      "%d item(s) matching no line.", counts.one, counts.many, counts.none), "info"
     return
   end
 
   state.name_baseline = nil
-  local rekey, named = {}, 0
-  core.Transaction("VO Overview: mark selected item(s)", function()
-    for _, j in ipairs(jobs) do
-      local id = vo.MintMarkerId(taken)
-      -- Existing tool markers on the item ride along, same rule as every
-      -- other marker write.
-      local list = { { start = j.coverage.from, stop = j.coverage.to,
-                       asset = j.span.asset, id = id } }
-      local ok0, chunk0 = r.GetItemStateChunk(j.item, "", false)
-      if ok0 then
-        for _, m in ipairs(vo.ParseTKMChunk(chunk0)) do
-          local a0, i0 = vo.ParseMarkerName(m.name)
-          if i0 then
-            list[#list + 1] = { start = m.pos, stop = m.pos + (m.length or 0),
-                                asset = a0, id = i0 }
+  core.Transaction("VO Overview: identify takes", function()
+    for _, plan in ipairs(plans) do
+      local rec = by_key[plan.key]
+      local item = rec and rec.item
+      if item and #plan.markers > 0 then
+        -- Existing tool markers ride along: WriteTakeMarkers replaces the
+        -- tool's whole set, and dropping them would orphan every take in this
+        -- item that was already identified.
+        local list = {}
+        for _, mk in ipairs(plan.markers) do
+          local id = vo.MintMarkerId(taken)
+          list[#list + 1] = { start = mk.start, stop = mk.stop,
+                              asset = mk.asset, id = id }
+          local at = (plan.kind == "one") and plan.span or mk.span
+          local row = at and rows_by_start[start_key(rec.info.path, at.start)]
+          if row and row.key then rekey[row.key] = "tkm|" .. id end
+        end
+        local ok0, chunk0 = r.GetItemStateChunk(item, "", false)
+        if ok0 then
+          for _, m in ipairs(vo.ParseTKMChunk(chunk0)) do
+            local a0, i0 = vo.ParseMarkerName(m.name)
+            if i0 then
+              list[#list + 1] = { start = m.pos, stop = m.pos + (m.length or 0),
+                                  asset = a0, id = i0 }
+            end
           end
         end
+        if vo.WriteTakeMarkers(item, list) then wrote = wrote + #plan.markers end
       end
-      vo.WriteTakeMarkers(j.item, list)
 
-      local row = rows_by_start[j.info.path .. "|" ..
-                                string.format("%.4f", j.span.start)]
-      if row and row.key then rekey[row.key] = "tkm|" .. id end
-
-      local take = r.GetActiveTake(j.item)
-      if take then
-        local _, cur = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
-        local renames = vo.PlanAdopt(
-          { { item = j.item, name = cur or "",
-              deliver = j.span.deliver or j.span.asset } },
-          index, { alt_pattern = cfg.alt_append_pattern })
-        if #renames == 1 then
-          r.GetSetMediaItemTakeInfo_String(take, "P_NAME", renames[1].name, true)
-          named = named + 1
+      -- Naming is independent of marking, so a session identified by an
+      -- earlier run still gets its names. vo.PlanAdopt never overwrites a name
+      -- that already resolves to a line, which is what makes re-running safe.
+      if item and plan.name then
+        local take = r.GetActiveTake(item)
+        if take then
+          local _, cur = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+          local renames = vo.PlanAdopt(
+            { { item = item, name = cur or "", deliver = plan.name } },
+            index, { alt_pattern = cfg.alt_append_pattern })
+          if #renames == 1 then
+            r.GetSetMediaItemTakeInfo_String(take, "P_NAME", renames[1].name, true)
+            named = named + 1
+          end
         end
       end
     end
   end)
 
+  -- The marks ride along: each rekeyed entry now lives under its marker id,
+  -- which no drag can move.
   for _, e in ipairs(state.entries) do
     if e.key and rekey[e.key] then e.key = rekey[e.key] end
   end
   state.dirty = true
   Reload()
 
-  local parts = {}
-  if #jobs <= 4 then
-    -- Few enough to say exactly what was decided; the guess must be visible.
-    for _, j in ipairs(jobs) do
-      parts[#parts + 1] = string.format("%s (%d%% of the take)",
-        j.span.asset or "?", math.floor(j.frac * 100 + 0.5))
-    end
-    parts = { string.format("Marked %d item(s): %s.", #jobs,
-                            table.concat(parts, ", ")) }
-  else
-    parts = { string.format("Marked %d item(s), named %d.", #jobs, named) }
+  local parts = { string.format("Identified %d item(s)%s: marked %d take(s), named %d.",
+    #items, scoped and " in the selection" or "", wrote, named) }
+  if counts.many > 0 then
+    parts[#parts + 1] = string.format(
+      "%d held several takes and were left unnamed -- Cut splits them.", counts.many)
   end
-  if already > 0 then
-    parts[#parts + 1] = string.format("%d already had a marker.", already)
+  if counts.none > 0 then
+    parts[#parts + 1] = string.format("%d matched no script line.", counts.none)
   end
-  if unmatched > 0 then
-    parts[#parts + 1] = string.format("%d matched no line.", unmatched)
+  if unusable > 0 then
+    parts[#parts + 1] = string.format("%d had no usable audio.", unusable)
   end
   state.message, state.message_kind = table.concat(parts, " "), "ok"
 end
@@ -2899,15 +2764,6 @@ end
 -- selected, and a tool that quietly narrowed to it would do a fraction of what
 -- its label says. The filters are the real scoping tool here; the tick boxes
 -- are how you mark individual takes.
--- The items selected in REAPER, as a set, for scope resolution.
-local function SelectedItemSet()
-  local set = {}
-  for i = 0, r.CountSelectedMediaItems(0) - 1 do
-    set[r.GetSelectedMediaItem(0, i)] = true
-  end
-  return set
-end
-
 -- What the next press acts on: the selection, made either way, else everything
 -- the filters are showing.
 --
@@ -6270,7 +6126,7 @@ end
 
 local REMOTE_SECTION = "ajsfx_vo_remote"
 local REMOTE_HELP =
-  "status | rematch | cut | adopt | mark_takes | mark_selected | " ..
+  "status | rematch | cut | identify | " ..
   "sync_markers | pull | name_alts | sort script|record | " ..
   "dupes | append script|asset|nth|text | " ..
   "rows [needle] | spans <needle> | missing | boundaries | verify | " ..
@@ -6313,17 +6169,13 @@ local function RunRemoteCommand(command)
   elseif verb == "cut" then
     DoCut()
     return state.cut_result or "cut ran with no result string"
-  elseif verb == "adopt" then
-    -- The ingest verb for a pre-cut session: mark + name at current edges,
-    -- cut nothing. See MarkTakesFromSession.
-    MarkTakesFromSession(true)
-    return state.message or "adopt ran with no result string"
-  elseif verb == "mark_takes" then
-    MarkTakesFromSession()
-    return state.message or "mark_takes ran with no result string"
-  elseif verb == "mark_selected" then
-    MarkSelectedItems()
-    return state.message or "mark_selected ran with no result string"
+  elseif verb == "identify" or verb == "adopt" or verb == "mark_takes"
+      or verb == "mark_selected" then
+    -- One verb now. The three old names are kept as aliases: they name the
+    -- three SHAPES of audio this used to make the user classify by hand, and
+    -- harness scripts were written against them.
+    IdentifyItems()
+    return state.message or "identify ran with no result string"
   elseif verb == "sync_markers" then
     SyncTakeMarkers()
     return state.message or "sync_markers ran with no result string"
@@ -6922,33 +6774,19 @@ local function loop()
       -- an "Identify line from item ▾" menu, which hid three distinct
       -- situations behind one generic name and an extra click; each button
       -- now names its situation itself.
-      Flow("Find lines in items")
-      if im.Button(ctx, "Find lines in items") then
-        pending_action = MarkTakesFromSession
+      Flow("Identify the lines in these items")
+      if im.Button(ctx, "Identify the lines in these items") then
+        pending_action = IdentifyItems
       end
-      Tip("For items that hold several takes: work out where each one is\n" ..
-          "and mark it inside the item. Splits nothing and moves nothing --\n" ..
-          "the markers are the takes, and Cut can act on them later.\n\n" ..
-          "Runs over the items selected in REAPER, or the whole session\n" ..
-          "when nothing is selected.")
-
-      Flow("Assign items to lines")
-      if im.Button(ctx, "Assign items to lines") then
-        pending_action = MarkSelectedItems
-      end
-      Tip("For items that are already one take each: work out which line\n" ..
-          "each selected item is, mark it at its CURRENT edges, name it,\n" ..
-          "and log it in the sheet. Nothing is trimmed or moved, and the\n" ..
-          "guess is reported so you can check it.")
-
-      Flow("Adopt the whole session")
-      if im.Button(ctx, "Adopt the whole session") then
-        pending_action = function() MarkTakesFromSession(true) end
-      end
-      Tip("For a session cut or edited BEFORE this tool: mark takes plus\n" ..
-          "name every matched item for its script line, at the item's\n" ..
-          "current edges. Nothing is cut and nothing moves. A name that\n" ..
-          "already means a line is never overwritten, so re-running is safe.")
+      Tip("Work out which script lines are in the audio, and write it down.\n\n" ..
+          "It sees for itself what shape each item is in. An item holding ONE\n" ..
+          "take becomes that take -- marked at your own edges, named for its\n" ..
+          "line. An item holding SEVERAL gets a marker per take and no name,\n" ..
+          "because it has no one line to be named after; Cut splits those.\n\n" ..
+          "This was three buttons -- Find lines in items, Assign items to\n" ..
+          "lines, Adopt this whole session -- which differed only in the shape\n" ..
+          "of the audio, and choosing wrong did the wrong thing. Safe to\n" ..
+          "re-run: a name that already means a line is never overwritten.")
 
       Group("Cut:")
       if im.Button(ctx, "Cut recording into takes") then

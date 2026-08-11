@@ -138,5 +138,106 @@ test("nil selections are the same as empty ones", function()
   assert(#rows == 3 and narrowed == false, "nil selections narrowed the scope")
 end)
 
+print("\nPlanItemIdentity:")
+
+local function span(start, stop, asset, marked)
+  return { start = start, stop = stop, asset = asset,
+           deliver = asset, marked = marked or nil }
+end
+
+local function plan_of(items, opts)
+  local plans, counts = vo.PlanItemIdentity(items, opts)
+  return plans[1], counts
+end
+
+test("a clip holding one take is that take, marked at its own edges", function()
+  -- The user's hand-trimmed edges are the truth, so the marker spans the ITEM,
+  -- not the span the matcher found inside it.
+  local p = plan_of({ { key = "i1", from = 10, to = 20,
+                        spans = { span(11, 19, "line_a") } } })
+  assert(p.kind == "one", "kind: " .. tostring(p.kind))
+  assert(p.name == "line_a", "not named for its line")
+  assert(#p.markers == 1, "markers: " .. #p.markers)
+  assert(p.markers[1].start == 10 and p.markers[1].stop == 20,
+    "marker did not span the item: " .. p.markers[1].start .. ".." .. p.markers[1].stop)
+end)
+
+test("a recording holding several takes gets one marker per take", function()
+  local p = plan_of({ { key = "rec", from = 0, to = 100,
+                        spans = { span(1, 5, "a"), span(10, 14, "b"),
+                                  span(20, 24, "c") } } })
+  assert(p.kind == "many", "kind: " .. tostring(p.kind))
+  assert(#p.markers == 3, "markers: " .. #p.markers)
+  assert(p.markers[1].start == 1 and p.markers[1].stop == 5,
+    "marker did not use the span's own bounds")
+end)
+
+test("an item holding several takes is never renamed", function()
+  -- It cannot be: an item holding four lines has no one line to be named for.
+  local p = plan_of({ { key = "rec", from = 0, to = 100,
+                        spans = { span(1, 5, "a"), span(10, 14, "b") } } })
+  assert(p.name == nil, "named a multi-take item " .. tostring(p.name))
+end)
+
+test("a take barely clipped by the item does not make it multi-take", function()
+  -- A clip holding one take plus the tail of the previous one is ONE take.
+  -- 20% of the neighbour is under the 35% floor, so it does not count.
+  local p = plan_of({ { key = "i1", from = 10, to = 20,
+                        spans = { span(8, 10.4, "prev"), span(11, 19, "mine") } } })
+  assert(p.kind == "one", "kind: " .. tostring(p.kind))
+  assert(p.name == "mine", "named after the neighbour: " .. tostring(p.name))
+end)
+
+test("two whole takes in one item is many, not one", function()
+  local p = plan_of({ { key = "i1", from = 0, to = 20,
+                        spans = { span(1, 5, "a"), span(10, 15, "b") } } })
+  assert(p.kind == "many", "kind: " .. tostring(p.kind))
+end)
+
+test("an item nothing matched is reported, not guessed at", function()
+  local p, counts = plan_of({ { key = "i1", from = 0, to = 5, spans = {} } })
+  assert(p.kind == "none" and #p.markers == 0, "invented a marker")
+  assert(counts.none == 1, "not counted")
+end)
+
+test("an already-marked take is still named, but not re-marked", function()
+  -- This is what "adopt an existing session" was a separate button for:
+  -- re-running has to be able to name without writing markers again.
+  local p = plan_of({ { key = "i1", from = 10, to = 20,
+                        spans = { span(11, 19, "line_a", true) } } })
+  assert(p.kind == "one", "kind: " .. tostring(p.kind))
+  assert(p.name == "line_a", "an already-marked take lost its name")
+  assert(#p.markers == 0, "re-marked an already-marked take")
+end)
+
+test("marked spans do not change one-vs-many", function()
+  -- 399 of 400 takes already marked must NOT read as a single-take item and
+  -- rename the whole recording after one line.
+  local spans = {}
+  for i = 1, 10 do spans[i] = span(i * 10, i * 10 + 5, "a" .. i, i > 1) end
+  local p = plan_of({ { key = "rec", from = 0, to = 200, spans = spans } })
+  assert(p.kind == "many", "kind: " .. tostring(p.kind))
+  assert(p.name == nil, "renamed a recording after one of its takes")
+  assert(#p.markers == 1, "re-marked takes that already had markers: " .. #p.markers)
+end)
+
+test("a zero-length item matches nothing", function()
+  local p = plan_of({ { key = "i1", from = 5, to = 5,
+                        spans = { span(1, 9, "a") } } })
+  assert(p.kind == "none", "kind: " .. tostring(p.kind))
+end)
+
+test("counts total the items, and no items is not an error", function()
+  local _, counts = vo.PlanItemIdentity({
+    { key = "a", from = 0, to = 10, spans = { span(1, 9, "x") } },
+    { key = "b", from = 0, to = 10, spans = { span(1, 3, "y"), span(5, 9, "z") } },
+    { key = "c", from = 0, to = 10, spans = {} },
+  })
+  assert(counts.one == 1 and counts.many == 1 and counts.none == 1,
+    string.format("one=%d many=%d none=%d", counts.one, counts.many, counts.none))
+  local plans, empty = vo.PlanItemIdentity(nil)
+  assert(#plans == 0 and empty.one == 0, "nil items errored")
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 if failed > 0 then os.exit(1) end

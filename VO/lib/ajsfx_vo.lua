@@ -1436,6 +1436,90 @@ function vo.EffectiveMarks(entry, track_name, cfg)
   return { select = sel, keep = keep }
 end
 
+-- What is in an item: one take, or several. Detected, not asked.
+--
+-- This used to be two buttons the user had to choose between -- "Find lines in
+-- items" for items holding several takes, "Assign items to lines" for items
+-- that are already one take each -- and choosing wrong did the wrong thing.
+-- But the tool can SEE which it is: count the match spans that fall inside the
+-- item. That was never a decision, only a fact nobody had asked for.
+--
+-- The two answers genuinely differ, which is why the split existed:
+--
+--   ONE span inside   the item IS that take. Its marker spans the whole item,
+--                     at the user's own edges (hand-trimmed edges are truth),
+--                     and the item takes the line's name -- the name IS the
+--                     assignment.
+--   MANY spans inside the item CONTAINS takes. One marker per span, at the
+--                     SPAN's bounds, and the item is NOT renamed: an item
+--                     holding four lines cannot be named after one of them.
+--
+-- A span counts as "inside" when `floor` of the SPAN's own length is within
+-- the item, not `floor` of the item -- so a clip holding one take plus the
+-- tail of the previous one still reads as one take, which is what it is.
+--
+-- Naming is decided independently of marking, so a session already marked by
+-- an earlier run still gets named: that is what "adopt an existing session"
+-- was a separate button for.
+--
+-- `items`: { { key, from, to, spans = { { start, stop, asset, deliver,
+--              marked } } } } -- from/to are SOURCE times.
+-- Returns: plans { { key, kind, markers = { { start, stop, asset } }, name } },
+--          counts { one, many, none }
+function vo.PlanItemIdentity(items, opts)
+  opts = opts or {}
+  local floor_ = opts.floor or 0.35
+
+  local plans = {}
+  local counts = { one = 0, many = 0, none = 0 }
+
+  for _, it in ipairs(items or {}) do
+    local from, to = it.from, it.to
+    local inside = {}
+    if from and to and to > from then
+      for _, s in ipairs(it.spans or {}) do
+        local len = (s.stop or 0) - (s.start or 0)
+        if len > 0 then
+          local overlap = math.min(s.stop, to) - math.max(s.start, from)
+          if overlap > 0 and (overlap / len) >= floor_ then
+            inside[#inside + 1] = s
+          end
+        end
+      end
+    end
+
+    local plan = { key = it.key, markers = {} }
+    if #inside == 0 then
+      plan.kind = "none"
+      counts.none = counts.none + 1
+    elseif #inside == 1 then
+      -- The item IS this take: marker at the item's own edges.
+      local s = inside[1]
+      plan.kind = "one"
+      plan.name = s.deliver or s.asset
+      plan.span = s
+      if not s.marked then
+        plan.markers[1] = { start = from, stop = to, asset = s.asset }
+      end
+      counts.one = counts.one + 1
+    else
+      -- The item CONTAINS takes: marker per span, at the span's own bounds.
+      plan.kind = "many"
+      table.sort(inside, function(a, b) return (a.start or 0) < (b.start or 0) end)
+      for _, s in ipairs(inside) do
+        if not s.marked then
+          plan.markers[#plan.markers + 1] =
+            { start = s.start, stop = s.stop, asset = s.asset, span = s }
+        end
+      end
+      counts.many = counts.many + 1
+    end
+    plans[#plans + 1] = plan
+  end
+
+  return plans, counts
+end
+
 -- What a batch action acts on: the selection, whichever way it was made.
 --
 -- There are two selections in this tool and they used to be different ideas --

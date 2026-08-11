@@ -245,29 +245,30 @@ Measured on this run, and it reframes several of the items above:
   line indices, non-decreasing exactly so retakes count as in order).
   Still unverified: how false starts (half a line, then a restart) are handled.
 
-## The two item verbs, in the user's words
+## The two item verbs — now one, and it detects rather than asks
 
-Both already exist; what was missing was the names and, in one case, the
-scope. Renamed in the Items tab's menu:
+- [x] **SUPERSEDED — both verbs merged into "Identify the lines in these
+      items" (2026-08-10).** AJ, running the tool: *"maybe 'find lines in
+      items' and 'assign items to lines' is not good naming, or not good
+      functions. Or it should be automatic... just try to figure out what
+      script lines are in the selected item(s)."* Right on all three counts.
+      The two differed only in the SHAPE of the audio — a recording holding
+      many takes versus a clip holding one — and that is something the tool can
+      count for itself (`vo.PlanItemIdentity`), not a decision to hand the
+      user. Choosing wrong did the wrong thing silently, which is the worst
+      property a pair of buttons can have. "Adopt this whole session" folded in
+      too: it was the same operation at session scope with naming on, and both
+      of those are now automatic — scope is the selection, and naming happens
+      wherever an item turns out to be one take.
 
-- **Assign items to lines** (`MarkSelectedItems`) — one or more already-split
-  items are selected; work out which line each one is, mark it at its CURRENT
-  edges, name it, log it in the sheet. Bidirectional and non-destructive: it
-  gets things STARTED, it does not decide Sel/Keep and it does not trim.
-- **Find lines in items** (`MarkTakesFromSession`) — one or more LONG items
-  are selected that hold several takes; find them all and write a marker per
-  take inside the item. Splits nothing.
-
-- [x] **FIXED — "Find lines in items" honours the REAPER selection**, and
-      nothing selected still means everything. Judged on the RESOLVED item, not
-      row.item, since a row whose audio is found by source time has no item of
-      its own until that point. "Adopt this whole session" is exempt: its name
-      is its scope.
-      ORIGINAL NOTE: It walks every matched take in the project. When the user
-      has picked the two long items they want dealt with, it should do those.
-      The per-item scoping is the same want as the orphan right-click's "try
-      again": run the matcher over ONE span, deliberately, at a threshold a
-      batch pass would not dare.
+      ORIGINAL NOTE, kept because the two descriptions are still exactly what
+      the merged verb does in each case:
+      - **Assign items to lines** — one or more already-split items are
+        selected; work out which line each one is, mark it at its CURRENT
+        edges, name it, log it in the sheet.
+      - **Find lines in items** — one or more LONG items are selected that hold
+        several takes; find them all and write a marker per take inside the
+        item. Splits nothing.
 
 - [~] DECIDED — keep the tabs, do not move Sources. Two things changed the case
       since the note was written: the empty sheet now offers **Transcribe**

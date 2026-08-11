@@ -55,8 +55,7 @@ the panel by itself.
 [ Run the whole pass ]   match → cut → pick → pull
 Acting on 12 selected row(s).
 
-Match:  [ Match transcript to script ]  [ Find lines in items ]
-        [ Assign items to lines ]  [ Adopt the whole session ]
+Match:  [ Match transcript to script ]  [ Identify the lines in these items ]
 Cut:    [ Cut recording into takes ]  [ Auto-adjust head and tail ]
 Pick:   [ Auto-pick selects: last take ]  [ …first take ]  [ Auto-name the alts ]
 Pull:   [ Pull items to their tracks ]  [ Lay items out in script order ]
@@ -76,11 +75,31 @@ the engineer thought about safety, and it now lives in each button's name and
 tooltip instead of in the layout. The cost is real — the Match row mixes a
 sheet-only verb with item-writing ones — and accepted deliberately.
 
-- **Match** — establish what everything is. *Match transcript to script*
-  (batch, sheet-only) and the per-item forms as plain buttons: *Find lines in
-  items* · *Assign items to lines* · *Adopt the whole session*. They lived in
-  an "Identify line from item ▾" menu, which hid three distinct situations
-  behind one generic name and an extra click.
+- **Match** — establish what everything is. Two verbs: *Match transcript to
+  script* re-derives the whole match from the words (sheet only), and
+  *Identify the lines in these items* writes what the match says into the
+  audio — take markers, and names where an item is one take.
+
+  **Identify detects the shape of the audio instead of asking.** It was three
+  buttons (*Find lines in items*, *Assign items to lines*, *Adopt this whole
+  session*) which differed only in what shape the audio was in, and choosing
+  wrong did the wrong thing silently. `vo.PlanItemIdentity` counts the match
+  spans falling inside each item:
+
+  | spans inside | the item is… | so… |
+  |---|---|---|
+  | **one** | that take | marker spans the ITEM, at the user's own edges; item takes the line's name |
+  | **many** | a recording holding takes | marker per span, at each SPAN's bounds; item is NOT renamed — it has no one line to be named after |
+  | **none** | not on the script | reported, never guessed at |
+
+  A span counts as inside when `mark_item_min_span` (0.35) of the SPAN's own
+  length is within the item — so a clip holding one take plus the tail of the
+  previous one still reads as one take, which is what it is.
+
+  Naming is decided independently of marking, so a session an earlier run
+  already marked still gets its names: that is what *Adopt this whole session*
+  existed for. `vo.PlanAdopt` never overwrites a name that already resolves to
+  a line, so re-running is safe.
 - **Cut** — make each take physically its own item, with the right edges.
   *Cut recording into takes* acts on the press (it used to open a panel whose
   only real control was a second copy of itself; the panel is now the report
