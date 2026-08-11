@@ -114,11 +114,16 @@ local function ExtraRuns(row)
   local hit = row._extra_runs
   if not hit then
     hit = vo.ExtraWords(row.line_text or "", row.transcript or "")
-    local clean = true
+    local clean, text = true, {}
     for _, run in ipairs(hit) do
-      if run.extra then clean = false break end
+      if run.extra then clean = false end
+      text[#text + 1] = run.text
     end
+    -- The fast path draws one string, and it has to be the SAME string the
+    -- slow path would have drawn word by word -- ExtraWords re-spells paired
+    -- words with the line's capitalisation, so row.transcript is no longer it.
     row._extra_runs, row._extra_clean = hit, clean
+    row._extra_text = table.concat(text, " ")
   end
   return hit
 end
@@ -267,6 +272,7 @@ local state = {
   last_flush    = 0,
 
   overview      = {},         -- vo.BuildOverview result
+  transcripts   = {},         -- { path, words } per source, for marker row text
   visible       = {},         -- after filters
   summary       = {},
 
@@ -622,8 +628,12 @@ local function LoadMatches(cfg)
     if parsed then transcripts[#transcripts + 1] = { path = path, words = parsed.words } end
   end
 
-  state.matches   = vo.BuildMatch(transcripts, state.lines or {}, cfg, state.pins)
-  state.match_key = key
+  -- Kept on state, not just handed to BuildMatch: this function is memoised on
+  -- the match key and returns early on a hit, so a local would be gone by the
+  -- time the rebuild after it needs the words for its marker rows.
+  state.transcripts = transcripts
+  state.matches     = vo.BuildMatch(transcripts, state.lines or {}, cfg, state.pins)
+  state.match_key   = key
 
   -- A pin that resolves to nothing must say so. Silently doing nothing is the
   -- one behaviour that would make hand-placement untrustworthy.
@@ -688,12 +698,17 @@ local function Rebuild()
   end
   state.marker_info = marker_info
 
+  local matches = LoadMatches(cfg)
   state.overview = vo.BuildOverview({
     lines   = state.lines,
-    matches = LoadMatches(cfg),
+    matches = matches,
     entries = state.entries,
     cfg     = cfg,
     takes_by_asset = takes_by_asset,
+    -- LoadMatches is hoisted above the constructor because it is what FILLS
+    -- state.transcripts, and the order a table constructor evaluates its
+    -- fields in is not something to rely on.
+    transcripts = state.transcripts,
   })
 
   -- Marker rows resolve straight to the item holding their counting marker:
@@ -1201,12 +1216,52 @@ function Trim.apply(info, mk)
   return true
 end
 
--- The batch verb. Scope is the selection, like everything else.
+-- Set one marker's bounds to its item's edges. The other direction from
+-- Trim.apply, and the batch form of SnapMarkerToItem. Returns true when it
+-- moved -- a marker already at the edges is not a write, so a press over a
+-- tidy session reports honestly instead of claiming work.
+--
+-- Every OTHER tool marker on the item rides along unchanged, the same as
+-- RewriteMarker: the caller has already established this item holds one, but
+-- the write is a whole-list write and a stray must not be dropped by it.
+function Trim.snap_apply(info, mk)
+  local cov = info and info.item and vo.SourceCoverageRanges({ info })[1]
+  if not cov then return false end
+  if math.abs(cov.from - mk.start) < 1e-9 and math.abs(cov.to - mk.stop) < 1e-9 then
+    return false
+  end
+  local ok, chunk = r.GetItemStateChunk(info.item, "", false)
+  if not ok then return false end
+  local list, hit = {}, false
+  for _, m in ipairs(vo.ParseTKMChunk(chunk)) do
+    local asset, id = vo.ParseMarkerName(m.name)
+    if id then
+      local e = { start = m.pos, stop = m.pos + (m.length or 0), asset = asset, id = id }
+      if id == mk.id then
+        hit = true
+        e.start, e.stop = cov.from, cov.to
+      end
+      list[#list + 1] = e
+    end
+  end
+  if not hit then return false end
+  return vo.WriteTakeMarkers(info.item, list) and true or false
+end
+
+-- The two batch verbs. Scope is the selection, like everything else.
 --
 -- An item holding SEVERAL markers is left alone and reported: it is a
--- recording, not a take, and there is no one marker to trim it to. Cut is what
--- turns that into takes.
-function Trim.run()
+-- recording, not a take, and there is no one marker to pair it with. Cut is
+-- what turns that into takes.
+--
+-- `dir` is "item" (edges follow the marker) or "marker" (marker follows the
+-- edges). One function because the scoping, the counting and the report are
+-- the whole verb and are identical either way; only the write differs, and
+-- two copies of this drifted apart is exactly how the per-row pair used to
+-- disagree with the batch one.
+function Trim.run(dir)
+  dir = dir or "item"
+  local to_marker = (dir == "item")
   Reload()
   local picked = SelectedItemSet()
   local scoped = next(picked) ~= nil
@@ -1224,21 +1279,30 @@ function Trim.run()
 
   if #jobs == 0 then
     state.message, state.message_kind = string.format(
-      "Nothing to trim. %d item(s) hold several takes (Cut splits those), " ..
-      "%d hold no take marker.", several, none), "warn"
+      "Nothing to %s. %d item(s) hold several takes (Cut splits those), " ..
+      "%d hold no take marker.",
+      to_marker and "trim" or "snap", several, none), "warn"
     return
   end
 
   local moved = 0
-  core.Transaction("VO Overview: trim items to their markers", function()
+  core.Transaction(to_marker and "VO Overview: trim items to their markers"
+                              or "VO Overview: snap markers to items", function()
     for _, j in ipairs(jobs) do
-      if Trim.apply(j.info, j.mk) then moved = moved + 1 end
+      local hit = to_marker and Trim.apply(j.info, j.mk)
+                             or Trim.snap_apply(j.info, j.mk)
+      if hit then moved = moved + 1 end
     end
   end)
+  -- Marker bounds are VO data; item edges are REAPER's. Only one of the two
+  -- directions has anything for the project file to hold onto.
+  if not to_marker then state.dirty = true end
   r.UpdateArrange()
   Reload()
 
-  local parts = { string.format("Trimmed %d item(s) to their take marker.", moved) }
+  local parts = { to_marker
+    and string.format("Trimmed %d item(s) to their take marker.", moved)
+    or  string.format("Snapped %d marker(s) to their item.", moved) }
   if several > 0 then
     parts[#parts + 1] = string.format(
       "%d hold several takes and were left alone.", several)
@@ -5612,7 +5676,7 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
   if row._extra_clean then
     im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + z.text_w)
     wrap_depth = wrap_depth + 1
-    im.TextDisabled(ctx, row.transcript or "")
+    im.TextDisabled(ctx, row._extra_text or row.transcript or "")
     im.PopTextWrapPos(ctx)
     wrap_depth = wrap_depth - 1
   else
@@ -7143,7 +7207,7 @@ local function loop()
 
       Flow("Trim items to their markers")
       if im.Button(ctx, "Trim items to their markers") then
-        pending_action = Trim.run
+        pending_action = function() Trim.run("item") end
       end
       Tip("Set each item's edges to the take marker inside it -- no re-cut,\n" ..
           "no re-match, no split. The manual half of \"the marker is what\n" ..
@@ -7152,6 +7216,20 @@ local function loop()
           "The audio does not move: the same sample stays at the same\n" ..
           "project time. An item holding SEVERAL markers is a recording,\n" ..
           "not a take, and is left alone -- Cut is what splits those.")
+
+      Flow("Snap markers to items")
+      if im.Button(ctx, "Snap markers to items") then
+        pending_action = function() Trim.run("marker") end
+      end
+      Tip("Set each take marker to the edges of the item it sits in -- the\n" ..
+          "other direction from Trim, and the batch form of \"Snap marker\n" ..
+          "to item\" in a take's menu.\n\n" ..
+          "This is what to press after adjusting a head or tail by hand:\n" ..
+          "the item is now the truth and the marker is stale. (Auto-adjust\n" ..
+          "head and tail already moves the marker for you; only a drag\n" ..
+          "leaves the two disagreeing.)\n\n" ..
+          "An item holding SEVERAL markers is a recording, not a take, and\n" ..
+          "is left alone -- there is no one marker to snap.")
 
       Flow("Auto-adjust head and tail")
       if im.Button(ctx, "Auto-adjust head and tail") then pending_action = TightenItems end
