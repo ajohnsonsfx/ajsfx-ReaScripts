@@ -1837,6 +1837,26 @@ end
 -- builds. `words` is this source's word list when the caller has it, and is
 -- what the TEXT is cut from; without it the text falls back to the spans'.
 -- Returns: text, score, in_sequence -- all nil when nothing overlaps.
+-- The words a range holds, by MIDPOINT. Whisper pads word ends into the
+-- silence that follows, so testing t1 pulls in a word the range does not
+-- really hold; testing t0 keeps a word whose audio is mostly outside. The
+-- midpoint is the cheap answer that is right at both edges.
+--
+-- Shared by the sheet's transcript and by the duplicate-marker planner, which
+-- must judge on exactly the words the sheet shows -- two rules here would mean
+-- a marker deleted on evidence the user was never shown.
+function vo.WordsInRange(words, from, to)
+  local out = {}
+  if not (from and to and to > from) then return out end
+  for _, w in ipairs(words or {}) do
+    if w.t0 and w.t1 and w.text and w.text ~= "" then
+      local mid = (w.t0 + w.t1) * 0.5
+      if mid >= from and mid <= to then out[#out + 1] = w end
+    end
+  end
+  return out
+end
+
 function vo.TranscriptForRange(flat, path, from, to, words)
   if not (path and from and to and to > from) then return nil end
   local hits, best, best_overlap = {}, nil, 0
@@ -1864,12 +1884,7 @@ function vo.TranscriptForRange(flat, path, from, to, words)
   -- hold; testing t0 keeps a word whose audio is mostly outside. The midpoint
   -- is the cheap answer that is right at both edges.
   local text = {}
-  for _, w in ipairs(words or {}) do
-    if w.t0 and w.t1 and w.text and w.text ~= "" then
-      local mid = (w.t0 + w.t1) * 0.5
-      if mid >= from and mid <= to then text[#text + 1] = w.text end
-    end
-  end
+  for _, w in ipairs(vo.WordsInRange(words, from, to)) do text[#text + 1] = w.text end
   if #text > 0 then
     return table.concat(text, " "), best and best.score or nil,
            best and best.in_sequence or nil
@@ -1974,6 +1989,157 @@ function vo.PlanMarkerMirror(group)
     end
   end
   return rewrites, #canonical
+end
+
+-- Markers that are arguing over the SAME stretch of audio, grouped.
+--
+-- The unit of work is the range, never the item. An uncut recording
+-- legitimately holds one counting marker per take, so a rule of the form
+-- "several markers on one item, keep the best" would destroy such a session on
+-- its first press. Two markers belong together only when they overlap by
+-- `fraction` of the SHORTER of the two -- fighting over the same audio, not
+-- merely adjacent.
+--
+-- Grouping is transitive within a source (A-B and B-C puts all three in one
+-- cluster: it is one argument about one stretch), and markers on different
+-- sources never cluster, whatever their timestamps say.
+--
+-- Returns an array of arrays. A cluster of one is every normal take, and is
+-- returned as such rather than dropped, so callers can count what they saw.
+function vo.ClusterMarkerRanges(markers, fraction)
+  fraction = fraction or 0.80
+  local list = {}
+  for _, m in ipairs(markers or {}) do
+    if m.start and m.stop and m.stop > m.start then list[#list + 1] = m end
+  end
+
+  -- Union-find over the pairs that overlap enough, which is what makes the
+  -- grouping transitive without an ordering assumption.
+  local parent = {}
+  for i = 1, #list do parent[i] = i end
+  local function root(i)
+    while parent[i] ~= i do parent[i] = parent[parent[i]]; i = parent[i] end
+    return i
+  end
+
+  for i = 1, #list do
+    for j = i + 1, #list do
+      local a, b = list[i], list[j]
+      if a.source_path == b.source_path then
+        local overlap = math.min(a.stop, b.stop) - math.max(a.start, b.start)
+        local shorter = math.min(a.stop - a.start, b.stop - b.start)
+        if shorter > 0 and overlap / shorter >= fraction - 1e-9 then
+          local ra, rb = root(i), root(j)
+          if ra ~= rb then parent[rb] = ra end
+        end
+      end
+    end
+  end
+
+  local by_root, order = {}, {}
+  for i = 1, #list do
+    local rt = root(i)
+    if not by_root[rt] then by_root[rt] = {}; order[#order + 1] = rt end
+    table.insert(by_root[rt], list[i])
+  end
+  local out = {}
+  for _, rt in ipairs(order) do out[#out + 1] = by_root[rt] end
+  return out
+end
+
+-- Which of several markers competing for one stretch of audio is the real one.
+--
+-- The words decide. Each marker's own script line is scored against the words
+-- inside that marker's own range -- the same normalise/tokenise/Levenshtein
+-- measure vo.FindSpanLines uses -- and the best keeps its marker while the
+-- rest are planned for deletion.
+--
+-- It refuses far more readily than it acts, and every refusal is per cluster
+-- rather than per press: a session with four clear duplicates and one
+-- ambiguous cluster cleans the four and reports the fifth. A verb that
+-- silently deleted the wrong take marker on a bad transcript is one nobody
+-- would press twice.
+--
+-- input: { markers, lines, words = { [source_path] = word list }, cfg, opts }
+-- opts:  { fraction = 0.80, floor = 0.50, gap = 0.20 }
+-- Returns { deletes, kept, skipped } -- see VO/SPEC-duplicate-markers.md.
+function vo.PlanDuplicateMarkers(input)
+  input = input or {}
+  local opts     = input.opts or {}
+  local fraction = opts.fraction or 0.80
+  local floor_   = opts.floor    or 0.50
+  local gap      = opts.gap      or 0.20
+  local cfg      = input.cfg
+  local words    = input.words or {}
+
+  -- First line wins an asset, matching every other lookup in this file.
+  local text_for = {}
+  for _, l in ipairs(input.lines or {}) do
+    if l.asset and text_for[l.asset] == nil then text_for[l.asset] = l.text or "" end
+  end
+
+  local plan = { deletes = {}, kept = {}, skipped = {} }
+
+  for _, cluster in ipairs(vo.ClusterMarkerRanges(input.markers, fraction)) do
+    if #cluster > 1 then
+      local scored, any_words = {}, false
+      for _, m in ipairs(cluster) do
+        local heard = vo.WordsInRange(words[m.source_path], m.start, m.stop)
+        local text = {}
+        for _, w in ipairs(heard) do text[#text + 1] = w.text end
+        local window = vo.Tokenize(vo.Normalize(table.concat(text, " "), cfg and cfg.subs))
+        if #window > 0 then any_words = true end
+        -- An asset naming no script line scores 0: it cannot win, and it loses
+        -- to any real match. Two of them together therefore fail the floor and
+        -- are reported rather than guessed between.
+        local toks = vo.Tokenize(vo.Normalize(text_for[m.asset] or "", cfg and cfg.subs))
+        local score = 0
+        if #toks > 0 and #window > 0 then
+          score = 1 - vo.Levenshtein(toks, window) / math.max(#toks, #window)
+        end
+        scored[#scored + 1] = { marker = m, score = score }
+      end
+
+      table.sort(scored, function(a, b)
+        if a.score ~= b.score then return a.score > b.score end
+        return tostring(a.marker.id) < tostring(b.marker.id)
+      end)
+
+      local why
+      if not any_words then
+        why = "no words"
+      elseif scored[1].score < floor_ then
+        why = "no clear match"
+      elseif scored[1].score - scored[2].score < gap then
+        why = "too close to call"
+      end
+
+      if why then
+        local named = {}
+        for _, s in ipairs(scored) do
+          named[#named + 1] = { id = s.marker.id, asset = s.marker.asset,
+                                score = s.score }
+        end
+        plan.skipped[#plan.skipped + 1] = { why = why, markers = named }
+      else
+        local win = scored[1]
+        plan.kept[#plan.kept + 1] = {
+          id = win.marker.id, asset = win.marker.asset, score = win.score,
+          source_path = win.marker.source_path, item_index = win.marker.item_index,
+        }
+        for k = 2, #scored do
+          local s = scored[k]
+          plan.deletes[#plan.deletes + 1] = {
+            id = s.marker.id, asset = s.marker.asset, score = s.score,
+            source_path = s.marker.source_path, item_index = s.marker.item_index,
+            lost_to = win.marker.asset, lost_to_score = win.score,
+          }
+        end
+      end
+    end
+  end
+
+  return plan
 end
 
 -- What the sheet and the timeline disagree about, and what is simply broken.

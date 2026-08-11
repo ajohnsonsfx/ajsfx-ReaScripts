@@ -331,5 +331,191 @@ test("planned takes still append after marker takes", function()
 end)
 
 --------------------------------
+-- WordsInRange
+--------------------------------
+print("\nWordsInRange:")
+
+local WR = {
+  { t0 = 0.0, t1 = 0.4, text = "open" },
+  { t0 = 0.5, t1 = 0.9, text = "the" },
+  { t0 = 1.0, t1 = 1.9, text = "gate" },
+}
+
+test("a word belongs to the range holding its midpoint", function()
+  local got = vo.WordsInRange(WR, 0, 0.95)
+  assert(#got == 2, "Got " .. #got)
+  assert(got[1].text == "open" and got[2].text == "the", "wrong words")
+end)
+
+test("no words, no range, or a zero-length range is an empty list", function()
+  assert(#vo.WordsInRange(nil, 0, 5) == 0, "nil words")
+  assert(#vo.WordsInRange(WR, 2, 2) == 0, "zero-length range")
+  assert(#vo.WordsInRange(WR, 5, 9) == 0, "silence")
+end)
+
+--------------------------------
+-- ClusterMarkerRanges
+--------------------------------
+print("\nClusterMarkerRanges:")
+
+local function dm(id, from, to, asset, src)
+  return { id = id, start = from, stop = to, asset = asset or "A",
+           source_path = src or "s.wav", item_index = 1 }
+end
+
+local function cluster_ids(clusters)
+  local out = {}
+  for _, c in ipairs(clusters) do
+    local ids = {}
+    for _, m in ipairs(c) do ids[#ids + 1] = m.id end
+    table.sort(ids)
+    out[#out + 1] = table.concat(ids, ",")
+  end
+  table.sort(out)
+  return out
+end
+
+test("an uncut recording's takes never cluster", function()
+  -- THE test that matters: five markers, one per take, no overlap at all.
+  -- A verb that reduced this to one would destroy the session.
+  local out = vo.ClusterMarkerRanges({
+    dm("a", 0, 2), dm("b", 3, 5), dm("c", 6, 8), dm("d", 9, 11), dm("e", 12, 14),
+  }, 0.8)
+  assert(#out == 5, "Expected 5 singleton clusters, got " .. #out)
+  for _, c in ipairs(out) do assert(#c == 1, "a take was clustered with another") end
+end)
+
+test("identical ranges cluster", function()
+  local out = vo.ClusterMarkerRanges({
+    dm("mkm", 31.87, 34.87), dm("mkt", 31.87, 34.87),
+  }, 0.8)
+  assert(#out == 1 and #out[1] == 2, "the live duplicate case did not cluster")
+end)
+
+test("the overlap fraction is of the SHORTER marker, at the boundary", function()
+  -- 0..10 and 2..12 overlap by 8; the shorter is 10; 0.8 exactly.
+  local at = vo.ClusterMarkerRanges({ dm("a", 0, 10), dm("b", 2, 12) }, 0.8)
+  assert(#at == 1, "0.80 must cluster")
+  -- 0..10 and 2.1..12.1 overlap by 7.9 of 10: 0.79.
+  local under = vo.ClusterMarkerRanges({ dm("a", 0, 10), dm("b", 2.1, 12.1) }, 0.8)
+  assert(#under == 2, "0.79 must not cluster")
+end)
+
+test("clustering is transitive", function()
+  -- A-B overlap 0.8 and B-C overlap 0.8, but A-C only 0.6: all three are one
+  -- argument about one stretch of audio, so all three travel together.
+  local out = vo.ClusterMarkerRanges({
+    dm("a", 0, 10), dm("b", 2, 12), dm("c", 4, 14),
+  }, 0.8)
+  assert(#out == 1 and #out[1] == 3, "transitivity lost: " ..
+         table.concat(cluster_ids(out), " | "))
+end)
+
+test("markers on different sources never cluster", function()
+  local out = vo.ClusterMarkerRanges({
+    dm("a", 0, 10, "A", "one.wav"), dm("b", 0, 10, "B", "two.wav"),
+  }, 0.8)
+  assert(#out == 2, "two sources became one cluster")
+end)
+
+--------------------------------
+-- PlanDuplicateMarkers
+--------------------------------
+print("\nPlanDuplicateMarkers:")
+
+-- Words that spell a real line, so a real script line can win on merit.
+local function words_for(text, from)
+  local out, t = {}, from or 0
+  for w in tostring(text):gmatch("%S+") do
+    out[#out + 1] = { t0 = t, t1 = t + 0.4, text = w }
+    t = t + 0.5
+  end
+  return out
+end
+
+test("the line the words actually spell keeps its marker", function()
+  local plan = vo.PlanDuplicateMarkers({
+    markers = { dm("mkm", 0, 5, "IWinLittle"), dm("mkt", 0, 5, "Book") },
+    lines = { { asset = "IWinLittle", text = "I only win little." },
+              { asset = "Book",       text = "Book." } },
+    words = { ["s.wav"] = words_for("I only win little.") },
+  })
+  assert(#plan.deletes == 1, "Expected 1 delete, got " .. #plan.deletes)
+  assert(plan.deletes[1].id == "mkt", "deleted the wrong one: " .. plan.deletes[1].id)
+  assert(plan.deletes[1].lost_to == "IWinLittle", "loser does not name its winner")
+  assert(#plan.kept == 1 and plan.kept[1].id == "mkm", "winner not kept")
+  assert(#plan.skipped == 0, "a clear case was skipped")
+end)
+
+test("an uncut recording plans no deletes at all", function()
+  local plan = vo.PlanDuplicateMarkers({
+    markers = { dm("a", 0, 2, "L1"), dm("b", 3, 5, "L2"), dm("c", 6, 8, "L3") },
+    lines = { { asset = "L1", text = "one" }, { asset = "L2", text = "two" },
+              { asset = "L3", text = "three" } },
+    words = { ["s.wav"] = words_for("one two three") },
+  })
+  assert(#plan.deletes == 0, "a recording lost markers")
+  assert(#plan.skipped == 0, "singletons must not be reported as problems")
+end)
+
+test("nothing matching the audio well is left alone", function()
+  -- Both lines score 0.4 against the words: below the 0.50 floor.
+  local plan = vo.PlanDuplicateMarkers({
+    markers = { dm("a", 0, 5, "L1"), dm("b", 0, 5, "L2") },
+    lines = { { asset = "L1", text = "a b x y z" },
+              { asset = "L2", text = "a b x y q" } },
+    words = { ["s.wav"] = words_for("a b c d e") },
+  })
+  assert(#plan.deletes == 0, "deleted on a bad match")
+  assert(#plan.skipped == 1 and plan.skipped[1].why == "no clear match",
+         "why: " .. tostring(plan.skipped[1] and plan.skipped[1].why))
+end)
+
+test("a near-tie is a judgement call, not an automation", function()
+  -- L1 scores 0.6, L2 scores 0.5: over the floor, but the gap is 0.10.
+  local plan = vo.PlanDuplicateMarkers({
+    markers = { dm("a", 0, 9, "L1"), dm("b", 0, 9, "L2") },
+    lines = { { asset = "L1", text = "a b c d e f x y z w" },
+              { asset = "L2", text = "a b c d e x y z w v" } },
+    words = { ["s.wav"] = words_for("a b c d e f g h i j") },
+  })
+  assert(#plan.deletes == 0, "deleted on a near-tie")
+  assert(#plan.skipped == 1 and plan.skipped[1].why == "too close to call",
+         "why: " .. tostring(plan.skipped[1] and plan.skipped[1].why))
+end)
+
+test("no words in the range means no opinion", function()
+  local plan = vo.PlanDuplicateMarkers({
+    markers = { dm("a", 40, 45, "L1"), dm("b", 40, 45, "L2") },
+    lines = { { asset = "L1", text = "one" }, { asset = "L2", text = "two" } },
+    words = { ["s.wav"] = words_for("one two") },
+  })
+  assert(#plan.deletes == 0, "deleted with nothing to judge on")
+  assert(#plan.skipped == 1 and plan.skipped[1].why == "no words",
+         "why: " .. tostring(plan.skipped[1] and plan.skipped[1].why))
+end)
+
+test("a marker naming no script line loses to a real match", function()
+  local plan = vo.PlanDuplicateMarkers({
+    markers = { dm("a", 0, 5, "L1"), dm("b", 0, 5, "GHOST") },
+    lines = { { asset = "L1", text = "one two three" } },
+    words = { ["s.wav"] = words_for("one two three") },
+  })
+  assert(#plan.deletes == 1 and plan.deletes[1].id == "b",
+         "the ghost survived")
+end)
+
+test("two ghosts together are reported, not guessed between", function()
+  local plan = vo.PlanDuplicateMarkers({
+    markers = { dm("a", 0, 5, "GHOST1"), dm("b", 0, 5, "GHOST2") },
+    lines = { { asset = "L1", text = "one two three" } },
+    words = { ["s.wav"] = words_for("one two three") },
+  })
+  assert(#plan.deletes == 0, "picked arbitrarily between two ghosts")
+  assert(#plan.skipped == 1 and plan.skipped[1].why == "no clear match",
+         "why: " .. tostring(plan.skipped[1] and plan.skipped[1].why))
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
