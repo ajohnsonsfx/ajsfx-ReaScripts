@@ -5346,6 +5346,90 @@ function vo.BuildOverview(input)
   return rows
 end
 
+-- Audio the matcher recognised that no marker has claimed.
+--
+-- Once a marker is the only thing that makes a take, the reads Identify scored
+-- too low would simply vanish from the sheet -- exactly the takes most in need
+-- of a person. This is where they go: the Check panel's "Not yet identified".
+--
+-- Covered means a marker on the SAME SOURCE overlaps at least HALF the span.
+-- Half, not any: a marker trimmed short still owns its take, and a marker that
+-- merely brushes a neighbouring span does not claim it.
+--
+-- Orphans -- spans matching no script line -- are deliberately absent. "Which
+-- line is this?" and "this line's audio is not tracked yet" are two different
+-- questions, and they have two different queues.
+--
+-- Pure. Same `input` shape as vo.BuildOverview.
+function vo.UnidentifiedSpans(input)
+  input = input or {}
+  local lines = input.lines or {}
+
+  -- Every counting marker, bucketed by the source it sits in.
+  local marks_by_source = {}
+  for _, mks in pairs(input.takes_by_asset or {}) do
+    for _, mk in ipairs(mks) do
+      local p = mk.source_path
+      if p and mk.start and mk.stop then
+        marks_by_source[p] = marks_by_source[p] or {}
+        table.insert(marks_by_source[p], mk)
+      end
+    end
+  end
+
+  -- A span claims a line the way BuildOverview groups it: its own line index
+  -- when that line agrees on the asset, else the first line using the name.
+  local first_row_using = {}
+  for i, l in ipairs(lines) do
+    if l.asset and first_row_using[l.asset] == nil then first_row_using[l.asset] = i end
+  end
+
+  local out = {}
+  for _, sc in ipairs(input.matches or {}) do
+    for _, s in ipairs((sc and sc.spans) or {}) do
+      local line
+      if s.asset then
+        local li = s.line_idx
+        if li and lines[li] and lines[li].asset == s.asset then
+          line = lines[li]
+        else
+          line = lines[first_row_using[s.asset] or 0]
+        end
+      end
+      if (s.kind == "match" or s.kind == "review") and line
+         and s.start and s.stop and s.stop > s.start then
+        local need = (s.stop - s.start) * 0.5
+        local covered = false
+        for _, mk in ipairs(marks_by_source[sc.path] or {}) do
+          if math.min(mk.stop, s.stop) - math.max(mk.start, s.start) >= need then
+            covered = true
+            break
+          end
+        end
+        if not covered then
+          out[#out + 1] = {
+            source_path = sc.path,
+            start       = s.start,
+            stop        = s.stop,
+            asset       = s.asset,
+            deliver     = line.deliver or s.deliver or s.asset,
+            score       = s.score,
+            transcript  = s.transcript,
+          }
+        end
+      end
+    end
+  end
+
+  table.sort(out, function(a, b)
+    if a.source_path ~= b.source_path then
+      return tostring(a.source_path) < tostring(b.source_path)
+    end
+    return (a.start or 0) < (b.start or 0)
+  end)
+  return out
+end
+
 -- Fold the overview back into project-file entries for writing. Rows carrying
 -- no user work are still returned; SerializeProjectFile is what drops them, so
 -- a row the user CLEARED is written as empty here and then vanishes from the

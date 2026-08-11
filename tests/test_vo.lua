@@ -5501,6 +5501,93 @@ test("a marker row without transcripts keeps the span text", function()
 end)
 
 --------------------------------
+print("\nUnidentifiedSpans:")
+
+test("a span no marker touches is returned", function()
+  local out = vo.UnidentifiedSpans({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = { span(1, 3, "match", "a", "alpha", 0.9) } } },
+    takes_by_asset = {},
+  })
+  assert(#out == 1, "Expected 1, got " .. #out)
+  assert(out[1].source_path == "s.wav" and out[1].start == 1, "wrong span returned")
+  assert(out[1].transcript == "alpha" and out[1].score == 0.9, "fields lost")
+end)
+
+test("a marker covering more than half the span hides it; less than half does not", function()
+  local input = {
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = { span(10, 20, "match", "a", "alpha", 0.9) } } },
+  }
+  -- 6 of 10 seconds covered: this take is identified.
+  input.takes_by_asset = { a = { mk("m1", 10, 16, "s.wav") } }
+  assert(#vo.UnidentifiedSpans(input) == 0, "a covered span was reported")
+  -- 4 of 10: a marker brushing a neighbour does not own this take.
+  input.takes_by_asset = { a = { mk("m1", 10, 14, "s.wav") } }
+  assert(#vo.UnidentifiedSpans(input) == 1, "a barely-touched span was hidden")
+end)
+
+test("a marker covering exactly half the span claims it", function()
+  local out = vo.UnidentifiedSpans({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = { span(10, 20, "match", "a", "alpha", 0.9) } } },
+    takes_by_asset = { a = { mk("m1", 10, 15, "s.wav") } },
+  })
+  assert(#out == 0, "half is covered, not uncovered")
+end)
+
+test("a marker on another source never covers this span", function()
+  local out = vo.UnidentifiedSpans({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = { span(10, 20, "match", "a", "alpha", 0.9) } } },
+    takes_by_asset = { a = { mk("m1", 10, 20, "other.wav") } },
+  })
+  assert(#out == 1, "a marker on another file covered this span")
+end)
+
+test("orphan spans are the other queue's business", function()
+  local out = vo.UnidentifiedSpans({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = {
+      span(1, 3, "match", "nosuchline", "who is this", 0.4),
+      span(5, 7, "unmatched", nil, "slate", nil),
+    } } },
+    takes_by_asset = {},
+  })
+  assert(#out == 0, "an orphan leaked into the unidentified list, got " .. #out)
+end)
+
+test("a review span is unidentified audio too", function()
+  local out = vo.UnidentifiedSpans({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = { span(1, 3, "review", "a", "alfa", 0.61) } } },
+    takes_by_asset = {},
+  })
+  assert(#out == 1, "a review span is exactly what most needs a person")
+end)
+
+test("results are sorted by source then start", function()
+  local out = vo.UnidentifiedSpans({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = {
+      { path = "z.wav", spans = { span(1, 2, "match", "a", "z one", 0.9) } },
+      { path = "a.wav", spans = { span(9, 10, "match", "a", "a two", 0.9),
+                                  span(1, 2,  "match", "a", "a one", 0.9) } },
+    },
+    takes_by_asset = {},
+  })
+  assert(#out == 3, "count: " .. #out)
+  assert(out[1].source_path == "a.wav" and out[1].start == 1, "sort broken at 1")
+  assert(out[2].source_path == "a.wav" and out[2].start == 9, "sort broken at 2")
+  assert(out[3].source_path == "z.wav", "sort broken at 3")
+end)
+
+test("nothing in, empty list out", function()
+  assert(#vo.UnidentifiedSpans({}) == 0, "an empty input is not an error")
+  assert(#vo.UnidentifiedSpans() == 0, "no input at all is not an error either")
+end)
+
+--------------------------------
 print("\nBuildOverview: project-file overlay and rematch:")
 
 -- Re-attaching an entry by SOURCE TIME within a tolerance is what these tests
