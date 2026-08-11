@@ -1313,6 +1313,116 @@ function Trim.run(dir)
   state.message, state.message_kind = table.concat(parts, " "), "ok"
 end
 
+-- Two lines both claiming one stretch of audio: the words decide which is
+-- right, and the loser's marker goes.
+--
+-- Where this comes from: identification can hand two script lines the same
+-- range, and the result is a clip that reads as a take of both. Every verb
+-- that needs "the one marker in this item" -- Trim, Snap -- then skips it as a
+-- recording, and Tidy cannot help, because Tidy dedupes by marker ID and these
+-- are two different ids arguing about one range.
+--
+-- The safety is entirely in vo.ClusterMarkerRanges: only markers overlapping
+-- by 80% of the shorter are ever compared, so an uncut recording -- one marker
+-- per take, no overlap -- has no clusters and nothing to lose. The planner
+-- then refuses whenever the words do not clearly pick a winner, and the
+-- refusals are reported by name.
+function Trim.dedupe()
+  Reload()
+  local cfg = vo.LoadConfig()
+  local picked = SelectedItemSet()
+  local scoped = next(picked) ~= nil
+
+  local words = {}
+  for _, t in ipairs(state.transcripts or {}) do
+    if t.path then words[t.path] = t.words or {} end
+  end
+
+  -- Counting markers only: the coverage rule has already thrown out the copies
+  -- a split scattered onto neighbouring items, which are Tidy's business and
+  -- would otherwise cluster with everything they were copied from.
+  local markers, owner = {}, {}
+  for path, group in pairs(state.take_markers or {}) do
+    for _, mk in ipairs(vo.CountingMarkers(group)) do
+      local rec  = group[mk.item_index]
+      local item = rec and rec.info and rec.info.item
+      if item and ((not scoped) or picked[item]) then
+        mk.source_path = path
+        markers[#markers + 1] = mk
+        owner[mk.id] = item
+      end
+    end
+  end
+
+  local plan = vo.PlanDuplicateMarkers({
+    markers = markers, lines = state.lines or {}, words = words, cfg = cfg })
+
+  if #plan.deletes == 0 and #plan.skipped == 0 then
+    state.message, state.message_kind =
+      "No take markers are competing for the same audio.", "ok"
+    return
+  end
+
+  local drop_by_item = {}
+  for _, d in ipairs(plan.deletes) do
+    local item = owner[d.id]
+    if item then
+      drop_by_item[item] = drop_by_item[item] or {}
+      drop_by_item[item][d.id] = true
+    end
+  end
+
+  local removed = 0
+  core.Transaction("VO Overview: remove duplicate take markers", function()
+    for item, drop in pairs(drop_by_item) do
+      local ok, chunk = r.GetItemStateChunk(item, "", false)
+      if ok then
+        -- A whole-list write, so every marker the item holds has to be carried
+        -- across; user markers are preserved by vo.WriteTakeMarkers itself.
+        local list, hit = {}, 0
+        for _, m in ipairs(vo.ParseTKMChunk(chunk)) do
+          local asset, id = vo.ParseMarkerName(m.name)
+          if id then
+            if drop[id] then
+              hit = hit + 1
+            else
+              list[#list + 1] = { start = m.pos, stop = m.pos + (m.length or 0),
+                                  asset = asset, id = id }
+            end
+          end
+        end
+        if hit > 0 and vo.WriteTakeMarkers(item, list) then removed = removed + hit end
+      end
+    end
+  end)
+  state.dirty = true
+  r.UpdateArrange()
+  Reload()
+
+  local parts = {}
+  if removed > 0 then
+    local named = {}
+    for _, d in ipairs(plan.deletes) do
+      named[#named + 1] = string.format("%s (%.2f) lost to %s (%.2f)",
+        d.asset or "?", d.score or 0, d.lost_to or "?", d.lost_to_score or 0)
+    end
+    parts[#parts + 1] = string.format("Removed %d duplicate marker(s): %s.",
+      removed, table.concat(named, ", "))
+  else
+    parts[#parts + 1] = "Removed nothing."
+  end
+  for _, s in ipairs(plan.skipped) do
+    local named = {}
+    for _, m in ipairs(s.markers) do
+      named[#named + 1] = string.format("%s %.2f", m.asset or "?", m.score or 0)
+    end
+    parts[#parts + 1] = string.format("Left alone -- %s (%s).",
+      s.why, table.concat(named, " vs "))
+  end
+  state.message, state.message_kind = table.concat(parts, " "),
+    (#plan.skipped > 0 and removed == 0) and "warn" or "ok"
+end
+
 -- The user's rule for "I trimmed the head past the marker start": the row's
 -- own marker snaps to its item's current source coverage. That row's marker
 -- is by construction the counting marker of that item, so this IS the
@@ -7293,6 +7403,21 @@ local function loop()
           "take's marker follows the new edges. Works on the REAPER\n" ..
           "selection, or everything on Selects + Alts when nothing is\n" ..
           "selected.")
+
+      Flow("Remove duplicate take markers")
+      if im.Button(ctx, "Remove duplicate take markers") then
+        pending_action = Trim.dedupe
+      end
+      Tip("When two script lines have both claimed the same stretch of audio,\n" ..
+          "the words spoken there decide which is right and the loser's\n" ..
+          "marker is deleted.\n\n" ..
+          "Only markers OVERLAPPING each other are ever compared -- an uncut\n" ..
+          "recording holds one marker per take, none of them overlapping, so\n" ..
+          "it has nothing to lose here.\n\n" ..
+          "It refuses whenever the words do not clearly pick a winner: no\n" ..
+          "transcript over the range, nothing matching it well, or two lines\n" ..
+          "too close to call. Those are reported by name and left exactly as\n" ..
+          "they are. Acts on the selection.")
 
       Flow("Apply the cut fades")
       if im.Button(ctx, "Apply the cut fades") then pending_action = Trim.fades end
