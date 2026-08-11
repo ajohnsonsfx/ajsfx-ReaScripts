@@ -7502,6 +7502,23 @@ local function loop()
           "re-run: a name that already means a line is never overwritten.")
 
       Group("Cut:")
+      -- First in the row, before the single-step verbs it is built out of:
+      -- this position is the row's MACRO slot -- the one press that does the
+      -- whole job, with the steps behind it for when it guesses wrong.
+      if im.Button(ctx, "Tidy Up Take") then pending_action = Trim.tidy_take end
+      Tip("The button for \"I just trimmed this clip by hand -- make it right\n" ..
+          "again\". In one undo step:\n\n" ..
+          "1. Remove Extra Take Markers (below), then\n" ..
+          "2. snap the surviving marker to the item's new edges, then\n" ..
+          "3. put the standard fade on any edge left at zero.\n\n" ..
+          "Fades are FILLED, never overwritten: a trim leaves the edge it cut\n" ..
+          "raw and the other edge's fade intact, so only the raw one is\n" ..
+          "restored and a fade you drew by hand survives.\n\n" ..
+          "A clip still holding several markers -- because the words refused\n" ..
+          "to choose between them -- is not snapped, and is reported.\n\n" ..
+          "Acts on the selection, or everything when nothing is selected.")
+
+      Flow("Cut recording into takes")
       if im.Button(ctx, "Cut recording into takes") then
         pending_action = RunCut
       end
@@ -7545,20 +7562,6 @@ local function loop()
           "take's marker follows the new edges. Works on the REAPER\n" ..
           "selection, or everything on Selects + Alts when nothing is\n" ..
           "selected.")
-
-      Flow("Tidy Up Take")
-      if im.Button(ctx, "Tidy Up Take") then pending_action = Trim.tidy_take end
-      Tip("The button for \"I just trimmed this clip by hand -- make it right\n" ..
-          "again\". In one undo step:\n\n" ..
-          "1. Remove Extra Take Markers (below), then\n" ..
-          "2. snap the surviving marker to the item's new edges, then\n" ..
-          "3. put the standard fade on any edge left at zero.\n\n" ..
-          "Fades are FILLED, never overwritten: a trim leaves the edge it cut\n" ..
-          "raw and the other edge's fade intact, so only the raw one is\n" ..
-          "restored and a fade you drew by hand survives.\n\n" ..
-          "A clip still holding several markers -- because the words refused\n" ..
-          "to choose between them -- is not snapped, and is reported.\n\n" ..
-          "Acts on the selection, or everything when nothing is selected.")
 
       Flow("Remove Extra Take Markers")
       if im.Button(ctx, "Remove Extra Take Markers") then
