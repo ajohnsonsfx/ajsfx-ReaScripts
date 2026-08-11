@@ -5055,6 +5055,14 @@ function vo.BuildOverview(input)
   end
   table.sort(by_source, function(a, b) return a.path < b.path end)
 
+  -- The canonical source order, for anything that has to number across files.
+  -- Marker takes sort by SOURCE first and time second: two sessions each start
+  -- their own file at zero, so ordering on time alone interleaves two unrelated
+  -- timebases and hands a line's takes their letters in an order that means
+  -- nothing. A source carrying no matches is not in this list and sorts last.
+  local source_rank = {}
+  for i, sc in ipairs(by_source) do source_rank[sc.path] = i end
+
   local index = index_tracker(entries)
 
   -- Flatten every span, tagged with its source and its global ordering key.
@@ -5253,6 +5261,13 @@ function vo.BuildOverview(input)
       local ordered = {}
       for _, mk in ipairs(mks) do ordered[#ordered + 1] = mk end
       table.sort(ordered, function(a, b)
+        local ra = source_rank[a.source_path] or math.huge
+        local rb = source_rank[b.source_path] or math.huge
+        if ra ~= rb then return ra < rb end
+        -- Two sources both outside the match list still need a stable answer.
+        if ra == math.huge and a.source_path ~= b.source_path then
+          return tostring(a.source_path) < tostring(b.source_path)
+        end
         if a.start ~= b.start then return (a.start or 0) < (b.start or 0) end
         return tostring(a.id) < tostring(b.id)
       end)

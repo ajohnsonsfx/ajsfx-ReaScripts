@@ -5347,10 +5347,16 @@ test("two transcripts fold into one list, takes numbered across both", function(
       { path = "B_session2.wav", spans = { span(5, 6, "match", "a", "second day", 0.9) } },
       { path = "A_session1.wav", spans = { span(9, 9.5, "match", "a", "first day", 0.9) } },
     },
+    -- Note the times: session 2's marker starts EARLIER in its own file than
+    -- session 1's does in its. Ordering on time alone would interleave two
+    -- unrelated timebases and hand the takes their letters in an order that
+    -- means nothing. Source first, then time.
+    takes_by_asset = { a = { mk("m_b", 5, 6, "B_session2.wav"),
+                             mk("m_a", 9, 9.5, "A_session1.wav") } },
   })
   assert(#rows == 2, "Expected both sessions' takes, got " .. #rows)
-  assert(rows[1].source_path == "A_session1.wav",
-    "Sources order stably by path, not by argument order; got " .. rows[1].source_path)
+  assert(rows[1].transcript == "first day",
+    "Sources order stably by path, not by argument order; got " .. tostring(rows[1].transcript))
   assert(rows[1].take_index == 1 and rows[2].take_index == 2,
     "Takes number continuously across sources")
   assert(rows[1].is_primary == false and rows[2].is_primary == false,
