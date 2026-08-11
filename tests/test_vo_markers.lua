@@ -456,10 +456,27 @@ local WR = {
   { t0 = 1.0, t1 = 1.9, text = "gate" },
 }
 
-test("a word belongs to the range holding its midpoint", function()
+test("a word belongs to the range holding its ONSET", function()
   local got = vo.WordsInRange(WR, 0, 0.95)
   assert(#got == 2, "Got " .. #got)
   assert(got[1].text == "open" and got[2].text == "the", "wrong words")
+end)
+
+test("a word followed by a long pause is judged on its start, not its middle", function()
+  -- Measured on a real transcript: 94% of whisper -ml 1 words END exactly where
+  -- the next one STARTS, so t1 is the next onset and a word before a pause has
+  -- its midpoint sitting in silence. "guards." was stamped 85.99-90.36 for a
+  -- word taking well under a second.
+  local pausey = { { t0 = 85.99, t1 = 90.36, text = "guards." } }
+  local got = vo.WordsInRange(pausey, 85.5, 87.0)
+  assert(#got == 1, "the whole spoken word was dropped: midpoint 88.17 is silence")
+  assert(got[1].text == "guards.", "wrong word")
+end)
+
+test("the range is half-open: a word starting exactly at the end belongs next", function()
+  -- Otherwise two touching markers both claim the word on the seam.
+  assert(#vo.WordsInRange(WR, 0, 0.5) == 1, "0.5 must belong to the NEXT range")
+  assert(#vo.WordsInRange(WR, 0.5, 1.0) == 1, "0.5 must belong to THIS range")
 end)
 
 test("no words, no range, or a zero-length range is an empty list", function()

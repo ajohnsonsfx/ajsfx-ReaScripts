@@ -1837,10 +1837,24 @@ end
 -- builds. `words` is this source's word list when the caller has it, and is
 -- what the TEXT is cut from; without it the text falls back to the spans'.
 -- Returns: text, score, in_sequence -- all nil when nothing overlaps.
--- The words a range holds, by MIDPOINT. Whisper pads word ends into the
--- silence that follows, so testing t1 pulls in a word the range does not
--- really hold; testing t0 keeps a word whose audio is mostly outside. The
--- midpoint is the cheap answer that is right at both edges.
+-- The words a range holds, by ONSET: t0 inside [from, to).
+--
+-- The onset is the only trustworthy number in this data. whisper-cli is run
+-- with `-ml 1`, which emits one word per SEGMENT, and its segments are
+-- contiguous -- a word's `end` is the next word's `start`, not where the
+-- speaker stopped. Measured on a real 1598-word transcript: 94% of words end
+-- exactly where the next begins.
+--
+-- So t1 is silence-padded by however long the following pause was, and any
+-- rule that reads it inherits that. This was a midpoint rule first, on the
+-- assumption that t1 was a word end; on real data a word before a pause has
+-- its MIDPOINT in the silence, and the rule dropped whole spoken words. In
+-- that transcript "guards." is stamped 85.99-90.36 for a word taking well
+-- under a second: a marker over 85.99-87.00 holds all of it and read as
+-- holding none.
+--
+-- Half-open on purpose. A word starting exactly at `to` belongs to the next
+-- range, so two markers meeting at a boundary cannot both claim it.
 --
 -- Shared by the sheet's transcript and by the duplicate-marker planner, which
 -- must judge on exactly the words the sheet shows -- two rules here would mean
@@ -1849,9 +1863,8 @@ function vo.WordsInRange(words, from, to)
   local out = {}
   if not (from and to and to > from) then return out end
   for _, w in ipairs(words or {}) do
-    if w.t0 and w.t1 and w.text and w.text ~= "" then
-      local mid = (w.t0 + w.t1) * 0.5
-      if mid >= from and mid <= to then out[#out + 1] = w end
+    if w.t0 and w.text and w.text ~= "" then
+      if w.t0 >= from and w.t0 < to then out[#out + 1] = w end
     end
   end
   return out
@@ -1879,10 +1892,8 @@ function vo.TranscriptForRange(flat, path, from, to, words)
   -- every overlapping span reported a dozen words the take does not contain --
   -- which is the entire reason this argument exists.
   --
-  -- A word counts by its MIDPOINT. Whisper pads word ends into the silence
-  -- that follows, so testing t1 pulls in a word the range does not really
-  -- hold; testing t0 keeps a word whose audio is mostly outside. The midpoint
-  -- is the cheap answer that is right at both edges.
+  -- Which words those are is vo.WordsInRange's rule, and it is the ONSET --
+  -- see the reasoning there, which is about what whisper's `end` actually is.
   local text = {}
   for _, w in ipairs(vo.WordsInRange(words, from, to)) do text[#text + 1] = w.text end
   if #text > 0 then

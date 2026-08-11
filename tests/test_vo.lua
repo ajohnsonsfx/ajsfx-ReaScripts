@@ -1635,21 +1635,22 @@ test("with words, a range reads only the words inside it", function()
 end)
 
 test("a range across two spans no longer reads both spans in full", function()
-  -- The old path returned "open the gate and hurry" for this range. Midpoints:
-  -- open 0.2, the 0.7, gate 1.45, and 3.25, hurry 4.25 -- so 1.4-3.4 holds
+  -- The old path returned "open the gate and hurry" for this range. Onsets:
+  -- open 0.0, the 0.5, gate 1.0, and 3.0, hurry 3.6 -- so 1.0-3.4 holds
   -- exactly the two in the middle, one from each span.
-  local text = vo.TranscriptForRange(TFR, "a.wav", 1.4, 3.4, TFR_WORDS)
+  local text = vo.TranscriptForRange(TFR, "a.wav", 1.0, 3.4, TFR_WORDS)
   assert(text == "gate and", "Got: " .. tostring(text))
 end)
 
-test("a word counts by its midpoint, not by either edge", function()
-  -- "gate" runs 1.0-1.9, midpoint 1.45. A range starting at 1.2 holds its
-  -- midpoint and keeps it; one starting at 1.5 does not and drops it, even
-  -- though the word's tail is inside either way.
-  assert(vo.TranscriptForRange(TFR, "a.wav", 1.2, 2.0, TFR_WORDS) == "gate",
-         "midpoint inside was dropped")
-  local text = vo.TranscriptForRange(TFR, "a.wav", 1.5, 2.0, TFR_WORDS)
-  assert(text == nil, "midpoint outside was kept: " .. tostring(text))
+test("a word counts by its ONSET, not by its middle or its end", function()
+  -- "gate" is stamped 1.0-1.9, but that 1.9 is the next word's start, not
+  -- where the speaker stopped. A range beginning at or before 1.0 holds the
+  -- word; one beginning after it does not, however much of the stamped
+  -- span lies inside.
+  assert(vo.TranscriptForRange(TFR, "a.wav", 1.0, 2.0, TFR_WORDS) == "gate",
+         "a word starting inside the range was dropped")
+  local text = vo.TranscriptForRange(TFR, "a.wav", 1.2, 2.0, TFR_WORDS)
+  assert(text == nil, "a word starting BEFORE the range was kept: " .. tostring(text))
 end)
 
 test("the score still comes from the greatest-overlap span, whatever the words", function()

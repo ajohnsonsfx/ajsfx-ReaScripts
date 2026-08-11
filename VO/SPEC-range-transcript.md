@@ -42,11 +42,22 @@ instead of from span transcripts:
   (`s.transcript = table.concat(text, " ")` in `vo.BuildMatch`), so nothing
   downstream sees a new shape.
 
-Inclusion rule: a word counts when its **midpoint** `(t0 + t1) / 2` lies inside
-the range. Whisper pads word ends into the following silence, so testing `t1`
-alone pulls in a word the range does not really hold; testing `t0` alone keeps
-a word whose audio is mostly outside. The midpoint is the cheap answer that is
-right at both edges.
+Inclusion rule: a word counts when its **onset** `t0` lies inside `[from, to)`.
+
+The onset is the only trustworthy number in this data. whisper-cli runs with
+`-ml 1`, one word per *segment*, and its segments are contiguous — a word's
+`end` is the next word's `start`, not where the speaker stopped. Measured on a
+real 1598-word transcript from this project: **94% of words end exactly where
+the next begins.** `t1` is therefore silence-padded by however long the
+following pause ran, and any rule reading it inherits that.
+
+This was specified as a midpoint rule first, on the assumption that `t1` was a
+word end. On real data that dropped whole spoken words: `guards.` is stamped
+`85.99–90.36` for a word taking well under a second, so a marker covering
+`85.99–87.00` holds all of it and read as holding none.
+
+Half-open on purpose: a word starting exactly at `to` belongs to the next
+range, so two markers meeting at a boundary cannot both claim it.
 
 The score and `in_sequence` returns are unchanged: still the single match or
 review span with the greatest overlap.
@@ -143,8 +154,11 @@ Against the mock REAPER environment in `tests/`:
 
 1. `TranscriptForRange` over a range covering part of two spans returns only
    the words inside it, not both spans in full.
-2. Midpoint inclusion: a word straddling the range start with most of its
-   duration outside is excluded; one with most inside is kept.
+2. Onset inclusion: a word starting before the range is excluded however much
+   of its stamped span lies inside; a word starting inside is kept however long
+   the pause after it stretches the stamp. The range is half-open, so a word
+   starting exactly at `to` belongs to the next range and touching markers
+   cannot both claim it.
 3. The score return still comes from the greatest-overlap match span, and is
    unaffected by which words the range holds.
 4. No word list for the source → the old span-concatenation text, unchanged.
