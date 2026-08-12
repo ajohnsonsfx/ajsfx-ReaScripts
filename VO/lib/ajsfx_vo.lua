@@ -4285,12 +4285,47 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
 
   for i, s in ipairs(spans) do
     if snap then
+      -- The span's own words' ANCHORS, and the nearest neighbouring words'
+      -- (SPEC-anchor-boundaries.md §5). Raw extents are partition edges, and
+      -- a word's anchor can sit on the far side of its own window's edge --
+      -- "chain." stamped to 586.210 with the word anchored at 586.52 -- so a
+      -- span's own last word can live PAST raw_stop. Ownership is judged by
+      -- window containment (the partition tiles exactly); the fence anchors
+      -- are the nearest words outside. A neighbour anchor that would sit at
+      -- or inside the span's own is a degenerate transcript, not a fence.
+      local own_a0, own_a1, prev_a, next_a
+      if words then
+        for _, w in ipairs(words) do
+          local a = w.anchor
+          if a and w.t0 and w.t1 then
+            if w.t0 >= s.raw_start - 1e-6 and w.t1 <= s.raw_stop + 1e-6 then
+              if not own_a0 or a < own_a0 then own_a0 = a end
+              if not own_a1 or a > own_a1 then own_a1 = a end
+            elseif w.t1 <= s.raw_start + 1e-6 then
+              if not prev_a or a > prev_a then prev_a = a end
+            elseif w.t0 >= s.raw_stop - 1e-6 then
+              if not next_a or a < next_a then next_a = a end
+            end
+          end
+        end
+        if prev_a and own_a0 and prev_a >= own_a0 then prev_a = nil end
+        if next_a and own_a1 and next_a <= own_a1 then next_a = nil end
+      end
+      -- For the overlap pass below: the dip between two takes is searched
+      -- between THESE, not between raw edges that may share an instant.
+      s._own_a0, s._own_a1 = own_a0, own_a1
+
       -- Where the speech in this span actually is. Whisper's word times put the
       -- surrounding pause INSIDE the span (see vo.FindSpeechBounds), so an edge
       -- has to be trimmed in to the sound before it is padded back out; without
       -- this every take runs to the next take and the clips tile the recording.
       -- Nothing found means the floor is untrustworthy here, so keep the edges.
-      local sp0, sp1 = vo.FindSpeechBounds(s.raw_start, s.raw_stop, floor_db, probe, cfg)
+      -- The window reaches to the span's own anchors: a raw extent cut at a
+      -- partition edge excludes part of the span's own last word, and speech
+      -- measured only inside it would never see what the extent already lost.
+      local sp0, sp1 = vo.FindSpeechBounds(
+        math.min(s.raw_start, own_a0 or s.raw_start),
+        math.max(s.raw_stop,  own_a1 or s.raw_stop), floor_db, probe, cfg)
       local at_start = sp0 or s.raw_start
       local at_stop  = sp1 or s.raw_stop
 
@@ -4339,31 +4374,54 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
       -- boundary. Chained word times make two takes share an instant exactly,
       -- and clamping to that collapses the reach to nothing -- the same trap as
       -- the word bound below. Overlap is prevented after the loop regardless.
-      local start_hard = at_start - pre
+      --
+      -- With a neighbour ANCHOR in hand the fence is that anchor and nothing
+      -- else: a point inside the neighbouring word, never chained, with the
+      -- whole inter-take window before it. The pad then stops limiting how far
+      -- an edge may TRAVEL -- it only ever limited travel because a t0/t1
+      -- fence could not be trusted -- and goes back to being what it always
+      -- claimed: room kept beyond the sound (`head`/`tail` below). Without an
+      -- anchor the old fence-and-settle path runs unchanged, which is what
+      -- keeps anchor-less transcripts exactly as they were.
+      local start_hard, start_fenced
+      if prev_a then
+        start_hard, start_fenced = prev_a, true
+      else
+        start_hard = at_start - pre
+      end
       local prev_edge = spans[i - 1] and spans[i - 1].raw_stop
       if prev_edge and math.abs(prev_edge - s.raw_start) > 1e-3 then
         start_hard = math.max(start_hard, prev_edge)
       end
       local start_limit = start_hard
-      local wb = word_end_before(words, s.raw_start)
-      if wb then
-        start_limit = math.max(start_limit, wb)
-        if collapsed(wb, s.raw_start) then
-          start_limit = settle(start_limit, start_hard, -1)
+      if not start_fenced then
+        local wb = word_end_before(words, s.raw_start)
+        if wb then
+          start_limit = math.max(start_limit, wb)
+          if collapsed(wb, s.raw_start) then
+            start_limit = settle(start_limit, start_hard, -1)
+          end
         end
       end
 
-      local stop_hard = at_stop + post
+      local stop_hard, stop_fenced
+      if next_a then
+        stop_hard, stop_fenced = next_a, true
+      else
+        stop_hard = at_stop + post
+      end
       local next_edge = spans[i + 1] and spans[i + 1].raw_start
       if next_edge and math.abs(next_edge - s.raw_stop) > 1e-3 then
         stop_hard = math.min(stop_hard, next_edge)
       end
       local stop_limit = stop_hard
-      local wa = word_start_after(words, s.raw_stop)
-      if wa then
-        stop_limit = math.min(stop_limit, wa)
-        if collapsed(wa, s.raw_stop) then
-          stop_limit = settle(stop_limit, stop_hard, 1)
+      if not stop_fenced then
+        local wa = word_start_after(words, s.raw_stop)
+        if wa then
+          stop_limit = math.min(stop_limit, wa)
+          if collapsed(wa, s.raw_stop) then
+            stop_limit = settle(stop_limit, stop_hard, 1)
+          end
         end
       end
 
@@ -4416,20 +4474,40 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
   for i = 2, #spans do
     local prev, cur = spans[i - 1], spans[i]
     if cur.start < prev.stop then
-      -- Colliding neighbours meet at the midpoint of their ORIGINAL gap, which
-      -- keeps the result independent of the order spans were selected in.
-      local mid = (prev.raw_stop + cur.raw_start) / 2
-      -- Unless there was no gap. Whisper chains word times, so two takes can
-      -- share an edge exactly -- and then "the midpoint" is that one instant,
-      -- which hands back every millimetre of head room the take just won and
-      -- leaves it cut on its own first syllable. A zero-width boundary is not
-      -- evidence of anything; an onset belongs to the word that FOLLOWS it, so
-      -- the later take's head wins and the earlier take's tail yields to it.
-      if math.abs(cur.raw_start - prev.raw_stop) <= 1e-3 then
-        prev.stop, prev.clamped = cur.start, true
+      -- When both sides carry anchors, the shared edge is the QUIETEST window
+      -- between the earlier take's last word and the later take's first
+      -- (SPEC-anchor-boundaries.md §5.4): sound never broke between them --
+      -- breath or lip noise bridged the takes -- and the dip is the one
+      -- instant that belongs to neither. Symmetric by construction, so the
+      -- result cannot depend on which span is visited first.
+      local shared
+      if probe and prev._own_a1 and cur._own_a0
+         and cur._own_a0 > prev._own_a1 + 0.02 then
+        local mid = (prev._own_a1 + cur._own_a0) / 2
+        shared = vo.QuietestBoundary(mid, (cur._own_a0 - prev._own_a1) / 2,
+                                     0.010, probe)
+      end
+      if shared then
+        if prev.stop > shared then prev.stop, prev.clamped = shared, true end
+        if cur.start < shared then cur.start, cur.clamped = shared, true end
       else
-        if prev.stop > mid then prev.stop, prev.clamped = mid, true end
-        if cur.start < mid then cur.start, cur.clamped = mid, true end
+        -- Colliding neighbours meet at the midpoint of their ORIGINAL gap,
+        -- which keeps the result independent of the order spans were
+        -- selected in.
+        local mid = (prev.raw_stop + cur.raw_start) / 2
+        -- Unless there was no gap. Whisper chains word times, so two takes
+        -- can share an edge exactly -- and then "the midpoint" is that one
+        -- instant, which hands back every millimetre of head room the take
+        -- just won and leaves it cut on its own first syllable. A zero-width
+        -- boundary is not evidence of anything; an onset belongs to the word
+        -- that FOLLOWS it, so the later take's head wins and the earlier
+        -- take's tail yields to it.
+        if math.abs(cur.raw_start - prev.raw_stop) <= 1e-3 then
+          prev.stop, prev.clamped = cur.start, true
+        else
+          if prev.stop > mid then prev.stop, prev.clamped = mid, true end
+          if cur.start < mid then cur.start, cur.clamped = mid, true end
+        end
       end
     end
   end

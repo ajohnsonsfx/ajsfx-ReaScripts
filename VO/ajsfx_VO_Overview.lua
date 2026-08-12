@@ -1810,6 +1810,10 @@ local function SnapSpansToCut(info, spans, cfg, words)
         proj_words[#proj_words + 1] = {
           t0 = vo.SourceTimeToProject(w.t0, info),
           t1 = vo.SourceTimeToProject(w.t1, info),
+          -- The anchor rides along: ApplyPadding's fences and dip windows
+          -- read it, and a converted word without it would silently fall
+          -- back to the partition-edge fences this field exists to replace.
+          anchor = w.anchor and vo.SourceTimeToProject(w.anchor, info) or nil,
           text = w.text,
         }
       end
@@ -4784,6 +4788,9 @@ local function DoCut()
           proj_words[#proj_words + 1] = {
             t0   = vo.SourceTimeToProject(w.t0, g.info),
             t1   = vo.SourceTimeToProject(w.t1, g.info),
+            -- Same reason as SnapSpansToCut: no anchor here means the
+            -- partition-edge fences quietly come back.
+            anchor = w.anchor and vo.SourceTimeToProject(w.anchor, g.info) or nil,
             text = w.text,
           }
         end

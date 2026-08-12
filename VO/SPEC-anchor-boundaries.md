@@ -1,7 +1,7 @@
 # ajsfx VO — Anchor-fenced boundaries: the cutting half
 
-**Status:** Catch half approved and implemented; placement half awaiting AJ's
-read · **Date:** 2026-08-12 · Completes `SPEC-word-anchors.md`
+**Status:** Implemented, both halves · **Date:** 2026-08-12 ·
+Completes `SPEC-word-anchors.md`
 
 Word anchors fixed what a range *reads as*. This spec points the same signal
 at what a range *is*: where Identify's cuts and take-marker boundaries land.
@@ -80,16 +80,20 @@ take. No auto-fix: the flag names the marker, the words, and the side
 
 Four changes, all in `VO/lib/ajsfx_vo.lua`:
 
-1. **Span extents from anchors.** `FindCandidates` (and the copies in
-   `SelectSpans`/`ResidualPass`/`FindGaps`): `start = words[i0].anchor or
-   t0`, `stop = words[i1].anchor or t1`. Extents land ON the take's first
-   and last words — always inside the take, never on a partition edge.
-2. **Fences from anchors.** `word_end_before`/`word_start_after` read
-   `w.anchor or (w.t1/w.t0)`. A fence is now a point inside the
-   neighbouring word — a hard wall an edge must never cross, with real
-   room before it. Fences never collapse (anchors are distinct points), so
-   the `collapsed()`/`settle()` special case and `chained_boundary_reach`
-   become dead paths for anchored transcripts (kept for the t0 fallback).
+1. **Span extents stay `t0`/`t1`** — amended at implementation. Changing
+   `FindCandidates` extents would shift every overlap consumer (span
+   scoring, coverage, the absorption pass's chaining tests) for no gain:
+   ApplyPadding receives the word list, so it derives the anchor picture
+   itself — each span's own first/last word anchors (ownership by window
+   containment; a word's anchor can sit past its own window's edge, which
+   is the whole disease) and the nearest neighbour anchors as fences. The
+   speech-bounds window stretches to the span's own anchors, so audio the
+   raw extent excluded is measured, not lost.
+2. **Fences from anchors.** With a neighbour anchor in hand the fence IS
+   that anchor — a point inside the neighbouring word, never chained, with
+   the whole inter-take window before it. Without one (t0-fallback words),
+   the old `word_end_before`/`word_start_after` + `collapsed()`/`settle()`
+   path runs unchanged.
 3. **Pads become room, not reach.** `extend_through_sound` walks from the
    speech bounds through contiguous sound until real silence, bounded by
    the anchor fences — the walk must be able to cross the whole inter-take

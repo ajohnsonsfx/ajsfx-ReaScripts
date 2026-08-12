@@ -3066,6 +3066,70 @@ test("with a probe the edges sit a FIXED room from the speech", function()
 end)
 
 --------------------------------
+print("\nApplyPadding (anchor fences):")
+
+-- The Chain/Even tear, numbers from the session (SPEC-anchor-boundaries.md).
+-- Whisper's partition chains the spans at 586.210 while the spoken "chain."
+-- anchors at 586.52 -- past its own span's raw stop. The audible layout the
+-- synthetic probe encodes: line A sounds 584.95-587.20, a real gap, line B
+-- sounds 588.00-589.90.
+local CE_WORDS = {
+  { t0 = 584.900, t1 = 585.090, text = "Chain", anchor = 585.060 },
+  { t0 = 585.090, t1 = 585.130, text = "is",    anchor = 585.860 },
+  { t0 = 585.130, t1 = 586.210, text = "chain", anchor = 586.520 },
+  { t0 = 586.210, t1 = 587.070, text = "even",  anchor = 588.160 },
+  { t0 = 587.070, t1 = 587.500, text = "if",    anchor = 588.640 },
+  { t0 = 587.500, t1 = 588.970, text = "you",   anchor = 588.960 },
+  { t0 = 588.970, t1 = 589.220, text = "smile", anchor = 589.540 },
+}
+local function ce_probe(t0, t1)
+  local function loud(a, b) return t1 > a and t0 < b end
+  if loud(584.95, 587.20) or loud(588.00, 589.90) then return -12 end
+  return -75
+end
+local function ce_spans()
+  return { pad_span(584.900, 586.210), pad_span(586.210, 589.220) }
+end
+
+test("chained spans with anchors cut in the dip, not at the partition edge", function()
+  local spans = ce_spans()
+  vo.ApplyPadding(spans, { snap_min_silence = 0.05 }, nil, ce_probe, -60, CE_WORDS)
+  local a, b = spans[1], spans[2]
+  assert(near(a.stop, b.start), "neighbours must share one edge: " ..
+         a.stop .. " vs " .. b.start)
+  assert(a.stop > 587.15 and a.stop < 588.05,
+         "the shared edge belongs in the audible gap, got " .. a.stop)
+  -- The whole point: the earlier take keeps its own last word.
+  assert(a.stop > 586.6, "'chain.' (through ~587.2) was clipped at " .. a.stop)
+end)
+
+test("the same spans without anchors keep the old chained-edge behaviour", function()
+  -- The t0 fallback must not silently improve OR regress: fences collapse,
+  -- chained_boundary_reach is 0, and the cut stays at the partition edge --
+  -- the documented failure the anchors exist to fix.
+  local bare = {}
+  for i, w in ipairs(CE_WORDS) do
+    bare[i] = { t0 = w.t0, t1 = w.t1, text = w.text }
+  end
+  local spans = ce_spans()
+  vo.ApplyPadding(spans, { snap_min_silence = 0.05 }, nil, ce_probe, -60, bare)
+  assert(spans[1].stop < 586.6,
+         "anchor-less fences changed behaviour: stop " .. spans[1].stop)
+end)
+
+test("a session-edge span without neighbours pads exactly as before", function()
+  -- Anchors on the span's own words but nothing on either side: fences fall
+  -- back to the pad arithmetic, and the head/tail room contract holds.
+  local spans = { pad_span(2.0, 3.0) }
+  local words = { { t0 = 2.0, t1 = 3.0, text = "solo", anchor = 2.4 } }
+  local probe = function(t0, t1) if t1 > 2.0 and t0 < 3.0 then return -10 end return -80 end
+  vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.05 },
+                  nil, probe, -60, words)
+  assert(near(spans[1].start, 2.0 - vo.DEFAULTS.snap_head_room), "start: " .. spans[1].start)
+  assert(near(spans[1].stop,  3.0 + vo.DEFAULTS.snap_tail_room), "stop: " .. spans[1].stop)
+end)
+
+--------------------------------
 print("\nResolveGate:")
 
 test("Auto off is the number you typed, whatever the room is doing", function()
