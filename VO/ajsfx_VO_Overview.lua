@@ -439,9 +439,10 @@ local function LoadScripts()
   -- line.text: the matcher, ExtraWords, BuildOverview, the search haystack. A
   -- second path is how the sheet and the matcher would come to disagree about
   -- what a line says.
-  vo.ApplyLineEdits(state.loaded.lines, vo.LineEditMap(state.line_edits))
+  vo.ApplyLineEdits(state.loaded.lines, vo.KeyedTextMap(state.line_edits))
 
-  vo.ResolveNames(state.loaded.lines, vo.AppendMap(state.appends))
+  vo.ResolveNames(state.loaded.lines, vo.AppendMap(state.appends),
+                  vo.KeyedTextMap(state.names))
 
   -- An Append that no loaded line answers to detaches silently -- a renamed
   -- or re-exported script CSV is enough -- and the clash it used to clear
@@ -449,7 +450,8 @@ local function LoadScripts()
   -- attach to is the user's call.
   state.orphan_appends = vo.OrphanAppends(state.appends, state.loaded.lines)
   state.orphan_line_edits =
-    vo.OrphanLineEdits(state.line_edits, state.loaded.lines)
+    vo.OrphanKeyedText(state.line_edits, state.loaded.lines)
+  state.orphan_names = vo.OrphanKeyedText(state.names, state.loaded.lines)
 end
 
 -- The script lines this project expects, after skip tokens and with every
@@ -475,7 +477,7 @@ end
 local function LoadProjectFile()
   state.entries, state.project_error, state.parse_failed = {}, "", false
   state.scripts, state.appends, state.pins = {}, {}, {}
-  state.line_edits = {}
+  state.line_edits, state.names = {}, {}
   state.expanded = {}
   -- Everything below describes the PREVIOUS project. A message like "Pulled 27
   -- select" surviving a tab switch reads as a claim about the new project.
@@ -501,6 +503,7 @@ local function LoadProjectFile()
     state.appends = parsed.appends or {}
     state.pins    = parsed.pins or {}
     state.line_edits = parsed.line_edits or {}
+    state.names      = parsed.names or {}
 
     -- The table is handed back the way it was left. A stored status or column
     -- this version no longer has is dropped rather than carried: it would filter
@@ -553,7 +556,7 @@ local function SaveProjectFile()
   local ok = WriteFileAtomic(path, vo.SerializeProjectFile(
     entries,
     { scripts = state.scripts, appends = state.appends, pins = state.pins,
-      line_edits = state.line_edits,
+      line_edits = state.line_edits, names = state.names,
       view = {
         character   = state.character,
         search      = state.search,
@@ -2285,39 +2288,51 @@ local function SetStatus(row, status)
   Mutate(row, function(e) e.status = status end)
 end
 
--- The two things the user can write onto a SCRIPT LINE rather than onto a
--- take: what it delivers as (Append) and what was actually said (Edit). Both
--- go to their own array rather than through EntryFor, because an entry is
--- keyed by a stretch of audio and these are keyed by the line -- so every take
--- of the line picks them up on the next rebuild.
+-- The two things the user writes onto a SCRIPT LINE rather than onto a take:
+-- what it delivers as (SetName) and what was actually said (SetEdit). Both go
+-- to their own array rather than through EntryFor, because an entry is keyed by
+-- a stretch of audio and these are keyed by the line -- so every take of the
+-- line picks them up on the next rebuild.
 --
 -- ONE table, and not two file locals, because this chunk is AT Lua's 200-local
--- ceiling: adding Line.Edit as a local was a LOAD-time error for the whole
--- script. Folding its sibling in beside it costs nothing and puts the pair
--- under a name that says what they have in common.
+-- ceiling: adding either as a local was a LOAD-time error for the whole script.
+--
+-- SetAppend used to live here too. The Append is gone from the card -- typing
+-- the whole filename replaced a base you could not edit plus a suffix you
+-- could -- so the only writer left is the remote seam's `append` verb, which
+-- calls vo.SetAppend directly. Existing Append records still resolve.
 local Line = {}
 
--- Nothing about the match changes here; only the delivered name moves.
-function Line.SetAppend(row, text)
-  if not row.append_key then return end
-  vo.SetAppend(state.appends, row.script or "", row.asset or "",
-               row.append_nth or 1, text)
-  state.dirty = true
-  Rebuild()
-end
-
--- UNLIKE the Append, an edit DOES invalidate the match: the matcher scores
+-- UNLIKE a filename, an edit DOES invalidate the match: the matcher scores
 -- against these words. LoadScripts re-applies the override so the sheet shows
 -- the new text immediately, and "Match transcript to script" is what re-scores
 -- -- the same contract as editing the CSV on disk, which carries no badge
 -- either.
 --
--- Passing "" is Revert: vo.SetLineEdit removes the record, so clearing the
+-- Passing "" is Revert: vo.SetKeyedText removes the record, so clearing the
 -- field and pressing Revert cannot disagree.
 function Line.SetEdit(row, text)
   if not row.line_key then return end
-  vo.SetLineEdit(state.line_edits, row.script or "", row.asset or "",
+  vo.SetKeyedText(state.line_edits, row.script or "", row.asset or "",
                  row.append_nth or 1, text)
+  state.dirty = true
+  LoadScripts()
+  Rebuild()
+end
+
+-- The filename this line delivers as, typed in full. This REPLACES the Append,
+-- which is no longer reachable from the card: one field for the whole name
+-- beats a base you cannot edit plus a suffix you can.
+--
+-- It renames NOTHING on the timeline. The name is the assignment, so items
+-- already carrying the old name stop resolving to this line and show up in
+-- Check as names not on the script -- honest, reversible, and the same thing
+-- that happens when a script CSV is re-exported with different filenames.
+-- Cut, Pull and Auto-name are what write the new name onto items.
+function Line.SetName(row, text)
+  if not row.line_key then return end
+  vo.SetKeyedText(state.names, row.script or "", row.asset or "",
+                  row.append_nth or 1, text)
   state.dirty = true
   LoadScripts()
   Rebuild()
@@ -5400,7 +5415,7 @@ local function ResetProject(also_transcripts)
   -- Forget everything read from those files BEFORE anything can save again,
   -- or the in-memory copy writes the sidecar straight back.
   state.entries, state.scripts, state.appends, state.pins = {}, {}, {}, {}
-  state.line_edits = {}
+  state.line_edits, state.names = {}, {}
   state.loaded = { scripts = {}, lines = {} }
   state.selection, state.expanded = {}, {}
   state.name_baseline, state.project_error = nil, ""
@@ -6904,6 +6919,22 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     y2 = math.max(select(2, im.GetCursorScreenPos(ctx)), y2 + line_h) + 2
   end
 
+  -- The script's own FILENAME, in the filename column of the provenance row --
+  -- directly under the name this line will deliver as, the same way the grey
+  -- line sits under the words. Same rule for when it shows: always on an open
+  -- card, and on a folded one only when the name was typed over.
+  if rep.asset and rep.asset ~= "" and (open or rep.name_edited) then
+    im.SetCursorScreenPos(ctx, rx + z.name, prov_y)
+    im.PushClipRect(ctx, rx + z.name, prov_y,
+                    rx + z.name + z.name_w, prov_y + line_h, true)
+    im.TextDisabled(ctx, rep.asset)
+    im.PopClipRect(ctx)
+    if im.BeginPopupContextItem(ctx, "##band_origname_menu") then
+      if im.MenuItem(ctx, "Copy original filename") then Copy(rep.asset) end
+      im.EndPopup(ctx)
+    end
+  end
+
   -- The one badge still worth the right edge: nothing is ticked for delivery.
   im.SetCursorScreenPos(ctx, rx + inner_w - 20, ry)
   if node.rollup.take_count > 0 and not node.rollup.has_sel then
@@ -6933,28 +6964,56 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   im.PopClipRect(ctx)
   if clash and im.IsItemHovered(ctx) then
     im.SetTooltip(ctx, "Another script line is delivered under this same name.\n" ..
-                       "Edit the Append (right-click) to tell them apart.")
+                       "Edit the filename (right-click) to tell them apart.")
   end
-  local open_append = false
+  -- The filename works exactly as the line does: right-click to edit, the
+  -- script's own filename kept in grey on the provenance row, both Copy items
+  -- always present.
+  --
+  -- This REPLACED the Append -- a base you could not edit plus a suffix you
+  -- could. One field for the whole name is fewer concepts and answers the
+  -- duplicate-name clash directly, which is what the Append was mostly used
+  -- for. Append records already in a project file still resolve (see
+  -- vo.ResolveNames); they are simply no longer reachable from here.
+  local open_name_edit = false
   if rep.line_key and im.IsItemHovered(ctx) and im.IsMouseDoubleClicked(ctx, 0) then
-    open_append = true
+    open_name_edit = true
   end
   if base ~= "" and im.BeginPopupContextItem(ctx, "##band_name_menu") then
     if im.MenuItem(ctx, "Copy") then Copy(shown) end
-    if im.MenuItem(ctx, "Edit Append", nil, nil, rep.line_key ~= nil) then
-      open_append = true
+    if im.MenuItem(ctx, "Copy original filename") then Copy(base) end
+    im.Separator(ctx)
+    if im.MenuItem(ctx, "Edit filename\226\128\166", nil, nil,
+                   rep.line_key ~= nil) then
+      open_name_edit = true
+    end
+    if im.MenuItem(ctx, "Revert to script filename", nil, nil,
+                   rep.name_edited == true) then
+      local captured = rep
+      pending_action = function() Line.SetName(captured, "") end
     end
     im.EndPopup(ctx)
   end
-  if open_append then im.OpenPopup(ctx, "##append_edit") end
-  if im.BeginPopup(ctx, "##append_edit") then
-    im.Text(ctx, "Append to " .. base .. ":")
-    im.SetNextItemWidth(ctx, 200)
-    local achanged, atext = im.InputText(ctx, "##append", rep.append or "")
-    if achanged then
-      local captured = atext
-      pending_action = function() Line.SetAppend(rep, captured) end
+  if open_name_edit then im.OpenPopup(ctx, "##name_edit") end
+  if im.BeginPopup(ctx, "##name_edit") then
+    im.Text(ctx, "Delivered filename:")
+    im.SetNextItemWidth(ctx, 320)
+    -- Single-line: a filename has no business wrapping, and the column it
+    -- lands in clips rather than wraps.
+    local nchanged, ntext = im.InputText(ctx, "##name", shown)
+    if nchanged then
+      local captured, text = rep, ntext
+      pending_action = function() Line.SetName(captured, text) end
     end
+    im.Spacing(ctx)
+    if im.Button(ctx, "Revert to script filename") then
+      local captured = rep
+      pending_action = function() Line.SetName(captured, "") end
+      im.CloseCurrentPopup(ctx)
+    end
+    im.SameLine(ctx)
+    -- Renaming changes what Pull matches items BY, so say so where it is done.
+    im.TextDisabled(ctx, "Items already named the old way stay as they are.")
     im.EndPopup(ctx)
   end
 
@@ -7983,12 +8042,23 @@ local function RunRemoteCommand(command)
     if not script or asset == "" then
       return "set_line needs script|asset|nth|text (text empty to revert)"
     end
-    vo.SetLineEdit(state.line_edits, script, asset, tonumber(nth) or 1, text)
+    vo.SetKeyedText(state.line_edits, script, asset, tonumber(nth) or 1, text)
     state.dirty = true
     LoadScripts()
     Rebuild()
     return string.format("set_line %s: %d edit(s) in the project",
       asset, #(state.line_edits or {}))
+  elseif verb == "set_name" then
+    local script, asset, nth, text = rest:match("^([^|]*)|([^|]*)|([^|]*)|(.*)$")
+    if not script or asset == "" then
+      return "set_name needs script|asset|nth|text (text empty to revert)"
+    end
+    vo.SetKeyedText(state.names, script, asset, tonumber(nth) or 1, text)
+    state.dirty = true
+    LoadScripts()
+    Rebuild()
+    return string.format("set_name %s: %d override(s) in the project",
+      asset, #(state.names or {}))
   end
 
   return "unknown command: " .. tostring(verb) .. ". Commands: " .. REMOTE_HELP

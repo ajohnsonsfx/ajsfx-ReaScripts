@@ -932,3 +932,25 @@ not — the suite cannot load the Overview script.
     row wraps with it.
 13. Edit a line that appears TWICE in one script. Only the occurrence you
     edited changes — the records are keyed by occurrence, not by filename.
+
+### Editing the filename (unreleased)
+
+Same gesture as the line, and it REPLACES the Append — that menu item is gone.
+
+14. Right-click a filename: Copy / Copy original filename / ─── / Edit
+    filename… / Revert to script filename, with Revert greyed when unedited.
+    There must be no **Edit Append** item anywhere.
+15. Double-click a filename opens the same Edit filename popup (it used to
+    open Edit Append).
+16. Type a name → the top row shows it, and the script's own filename appears
+    grey in the filename column of the provenance row, beside `Script:` and
+    the original line.
+17. Items already carrying the old name are NOT renamed, and turn up in Check
+    as names not on the script. That is the intended cost of renaming.
+18. Cut / Pull / Auto-name write the NEW name onto items.
+19. Two lines that clash under one delivered name: renaming one clears the
+    amber clash badge on both. This is what the Append used to be for.
+20. Open a project saved BEFORE this change whose lines carry Appends. The
+    delivered names must be exactly what they were — Append records still
+    resolve, they are just no longer editable from the card.
+21. Save and reopen. The override survives as a `Name,` row.

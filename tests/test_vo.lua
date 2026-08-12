@@ -977,6 +977,54 @@ test("a line with no append key still resolves", function()
   assert(lines[1].deliver == "a", "A key-less line must not error")
 end)
 
+print("\nFilename overrides:")
+
+test("a name override replaces the delivered filename", function()
+  local lines = { { asset = "line_042",
+                    append_key = vo.AppendKey("Ch2", "line_042", 1) } }
+  vo.ResolveNames(lines, {},
+    { [vo.AppendKey("Ch2", "line_042", 1)] = "grumbar_iwinlittle" })
+  assert(lines[1].deliver == "grumbar_iwinlittle",
+         "Got " .. tostring(lines[1].deliver))
+  assert(lines[1].name_edited == true, "not flagged as overridden")
+  assert(lines[1].asset == "line_042", "the script's own filename was lost")
+end)
+
+test("an override beats an append rather than stacking with it", function()
+  -- The override IS the delivered name. Append is the old mechanism it
+  -- replaces, so a leftover Append record must not tack onto the new name.
+  local lines = { { asset = "a", append_key = vo.AppendKey("Ch2", "a", 1) } }
+  vo.ResolveNames(lines,
+    { [vo.AppendKey("Ch2", "a", 1)] = "_ch2" },
+    { [vo.AppendKey("Ch2", "a", 1)] = "typed_name" })
+  assert(lines[1].deliver == "typed_name", "Got " .. tostring(lines[1].deliver))
+end)
+
+test("an append still applies where no override exists", function()
+  -- Back-compat: projects written before this feature keep their names.
+  local lines = { { asset = "a", append_key = vo.AppendKey("Ch2", "a", 1) } }
+  vo.ResolveNames(lines, { [vo.AppendKey("Ch2", "a", 1)] = "_ch2" }, {})
+  assert(lines[1].deliver == "a_ch2", "Got " .. tostring(lines[1].deliver))
+  assert(not lines[1].name_edited, "an append is not an override")
+end)
+
+test("ResolveNames is idempotent and reverts when the override goes", function()
+  local lines = { { asset = "a", append_key = vo.AppendKey("Ch2", "a", 1) } }
+  local key = vo.AppendKey("Ch2", "a", 1)
+  vo.ResolveNames(lines, {}, { [key] = "typed" })
+  vo.ResolveNames(lines, {}, { [key] = "typed" })
+  assert(lines[1].deliver == "typed", "second pass drifted")
+  vo.ResolveNames(lines, {}, {})
+  assert(lines[1].deliver == "a", "revert did not restore the script filename")
+  assert(not lines[1].name_edited, "still flagged after revert")
+end)
+
+test("a whitespace-only override is no override", function()
+  local lines = { { asset = "a", append_key = vo.AppendKey("Ch2", "a", 1) } }
+  vo.ResolveNames(lines, {}, { [vo.AppendKey("Ch2", "a", 1)] = "   " })
+  assert(lines[1].deliver == "a", "Got " .. tostring(lines[1].deliver))
+end)
+
 --------------------------------
 -- Line edits
 
@@ -984,23 +1032,23 @@ print("\nLine edits:")
 
 test("SetLineEdit stores, replaces, and empty removes", function()
   local rows = {}
-  vo.SetLineEdit(rows, "S", "a.wav", 1, "Bolvd no speak")
+  vo.SetKeyedText(rows, "S", "a.wav", 1, "Bolvd no speak")
   assert(#rows == 1 and rows[1].text == "Bolvd no speak", "not stored")
-  vo.SetLineEdit(rows, "S", "a.wav", 1, "Bolvd will not speak")
+  vo.SetKeyedText(rows, "S", "a.wav", 1, "Bolvd will not speak")
   assert(#rows == 1 and rows[1].text == "Bolvd will not speak", "not replaced")
-  vo.SetLineEdit(rows, "S", "a.wav", 1, "   ")
+  vo.SetKeyedText(rows, "S", "a.wav", 1, "   ")
   assert(#rows == 0, "empty did not remove the record")
 end)
 
 test("an edit equal to the original is still stored", function()
   -- Deciding the line is right as written is a judgement worth keeping.
   local rows = {}
-  vo.SetLineEdit(rows, "S", "a.wav", 1, "Adon no speak")
+  vo.SetKeyedText(rows, "S", "a.wav", 1, "Adon no speak")
   assert(#rows == 1, "dropped an edit for matching the original")
 end)
 
 test("LineEditMap keys by script, asset and occurrence", function()
-  local m = vo.LineEditMap({
+  local m = vo.KeyedTextMap({
     { script = "S1", asset = "a.wav", nth = 1, text = "one" },
     { script = "S2", asset = "a.wav", nth = 1, text = "two" },
     { script = "S1", asset = "a.wav", nth = 2, text = "three" },
@@ -1050,7 +1098,7 @@ test("OrphanLineEdits reports an edit whose line is gone", function()
     { script = "S", asset = "here.wav", nth = 1, text = "y" },
   }
   local lines = { { script = "S", asset = "here.wav", append_nth = 1 } }
-  local orphans = vo.OrphanLineEdits(edits, lines)
+  local orphans = vo.OrphanKeyedText(edits, lines)
   assert(#orphans == 1 and orphans[1].asset == "gone.wav",
          "orphans: " .. #orphans)
 end)
@@ -2233,6 +2281,21 @@ test("an unedited line's row falls back to its own text for the grey row", funct
   assert(rows[1].line_original == "Adon no speak",
          "line_original: " .. tostring(rows[1].line_original))
   assert(not rows[1].line_edited, "flagged an unedited line as edited")
+end)
+
+test("a filename override round-trips through the project file", function()
+  local text = vo.SerializeProjectFile({}, {
+    names = { { script = "S", asset = "a.wav", nth = 2,
+                text = "grumbar_iwinlittle" } },
+  })
+  assert(text:find("\nName,", 1, true) or text:find("^Name,"),
+         "no Name row written")
+  local parsed = assert(vo.ParseProjectFile(text))
+  assert(#parsed.names == 1, "count: " .. #parsed.names)
+  local n = parsed.names[1]
+  assert(n.script == "S" and n.asset == "a.wav" and n.nth == 2,
+         "key did not survive")
+  assert(n.text == "grumbar_iwinlittle", "text: " .. n.text)
 end)
 
 test("a Line row for a vanished line is read, not dropped", function()

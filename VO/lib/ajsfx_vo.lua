@@ -486,12 +486,33 @@ end
 -- The delivered name a script line asks for, before any per-take override.
 -- No separator is inserted: a user who wants "line_042_ch2" types "_ch2". That
 -- is the whole point -- nothing here renames anything the user did not spell.
-function vo.ResolveNames(lines, appends)
+-- `names` is the filename OVERRIDE: what the user typed over the script's own
+-- filename. It replaces the delivered name outright rather than stacking with
+-- the Append, because it REPLACES the Append -- typing the whole name is the
+-- mechanism now, and a leftover Append record tacking onto a name the user
+-- typed in full would be the tool arguing with them.
+--
+-- Appends still apply where no override exists. They are no longer reachable
+-- from the card, but a project written before this feature has real names
+-- stored that way and must open with the names it was saved with.
+--
+-- `l.asset` is untouched -- it is the script's own filename, drawn in grey
+-- under the name and copied by "Copy original filename".
+function vo.ResolveNames(lines, appends, names)
   appends = appends or {}
+  names   = names or {}
   for _, l in ipairs(lines or {}) do
-    local extra = l.append_key and appends[l.append_key] or nil
-    extra = extra and trim(extra) or ""
-    l.deliver = (l.asset or "") .. extra
+    local override = l.append_key and names[l.append_key] or nil
+    override = override and trim(override) or ""
+    if override ~= "" then
+      l.deliver     = override
+      l.name_edited = true
+    else
+      local extra = l.append_key and appends[l.append_key] or nil
+      extra = extra and trim(extra) or ""
+      l.deliver     = (l.asset or "") .. extra
+      l.name_edited = nil
+    end
   end
   return lines
 end
@@ -618,23 +639,28 @@ end
 -- every other line that says Bolvd.
 --
 -- Record: { script = <label>, asset = <filename>, nth = <integer>, text = <string> }
-function vo.LineEditMap(edit_rows)
+--
+-- THREE things now wear this shape -- the Append, the line edit, and the
+-- filename override -- so the map/set/orphan helpers are written once and
+-- named for the shape rather than for any one of them. They differ only in
+-- which array they are handed and what the caller does with the answer.
+function vo.KeyedTextMap(rows)
   local m = {}
-  for _, e in ipairs(edit_rows or {}) do
+  for _, e in ipairs(rows or {}) do
     m[vo.AppendKey(e.script, e.asset, e.nth)] = e.text or ""
   end
   return m
 end
 
--- The one mutator. Empty REMOVES the record: "no edit" is the absence of one,
--- the rule vo.SetAppend and SerializeProjectFile already share. That also makes
--- "Revert to script line" and "clear the field" the same operation, so they
+-- The one mutator for all three. Empty REMOVES the record: "not set" is the
+-- absence of one, the rule vo.SetAppend and SerializeProjectFile already share.
+-- That also makes "Revert" and "clear the field" the same operation, so they
 -- cannot disagree.
 --
--- An edit equal to the original is still stored. Deciding a line is right as
+-- A value equal to the original is still stored. Deciding a line reads right as
 -- written is a judgement, and dropping it would make the grey original row
 -- flicker away and back as the user typed toward what the script says.
-function vo.SetLineEdit(edit_rows, script, asset, nth, text)
+function vo.SetKeyedText(edit_rows, script, asset, nth, text)
   edit_rows = edit_rows or {}
   local clean = trim(tostring(text or ""))
 
@@ -654,7 +680,7 @@ end
 -- Edits no loaded line answers to -- a renamed or re-exported CSV is enough.
 -- Surfaced, not repaired, exactly as vo.OrphanAppends is: which line it should
 -- attach to is the user's call.
-function vo.OrphanLineEdits(edits, lines)
+function vo.OrphanKeyedText(edits, lines)
   local live = {}
   for _, l in ipairs(lines or {}) do
     live[vo.AppendKey(l.script, l.asset, l.append_nth)] = true
@@ -5227,6 +5253,18 @@ function vo.SerializeProjectFile(entries, meta)
     end
   end
 
+  -- The filename the user typed over the script's own. Same key, same rules;
+  -- it supersedes Append, which is no longer reachable from the card but is
+  -- still written above so a project saved by an older version keeps its names.
+  for _, n in ipairs(meta.names or {}) do
+    if n.text and n.text ~= "" then
+      out[#out + 1] = vo.FormatCSVRow({
+        "Name", n.script or "", n.asset or "",
+        tostring(n.nth or 1), n.text,
+      })
+    end
+  end
+
   -- Pins live in the preamble rather than the entry table because they are keyed
   -- by the SCRIPT LINE, while every entry row is keyed by a stretch of audio.
   -- Keeping them out of that table is also what lets them be added without
@@ -5329,7 +5367,7 @@ function vo.ParseProjectFile(text)
   end
 
   local parsed = { version = version, scripts = {}, appends = {},
-                   line_edits = {},
+                   line_edits = {}, names = {},
                    entries = {}, pins = {}, view = { col_filters = {}, expanded = {} } }
   -- The pre-multi-script format, folded in below only if no Script row appears.
   local legacy_path, legacy_mapping = nil, nil
@@ -5361,11 +5399,18 @@ function vo.ParseProjectFile(text)
     elseif key == "Line" then
       -- Read even when no loaded line answers to it: disabling a script, or
       -- re-exporting the CSV under a new name, must not destroy the user's
-      -- words. vo.OrphanLineEdits is what surfaces those.
+      -- words. vo.OrphanKeyedText is what surfaces those.
       local script, asset = rows[i][2] or "", rows[i][3] or ""
       local nth, text = tonumber(rows[i][4] or ""), rows[i][5] or ""
       if asset ~= "" and nth and text ~= "" then
         parsed.line_edits[#parsed.line_edits + 1] =
+          { script = script, asset = asset, nth = math.floor(nth), text = text }
+      end
+    elseif key == "Name" then
+      local script, asset = rows[i][2] or "", rows[i][3] or ""
+      local nth, text = tonumber(rows[i][4] or ""), rows[i][5] or ""
+      if asset ~= "" and nth and text ~= "" then
+        parsed.names[#parsed.names + 1] =
           { script = script, asset = asset, nth = math.floor(nth), text = text }
       end
     elseif key == "View" then
