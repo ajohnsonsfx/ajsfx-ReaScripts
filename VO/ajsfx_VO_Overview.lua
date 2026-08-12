@@ -7835,7 +7835,8 @@ local REMOTE_HELP =
   "status | rematch | cut | identify | " ..
   "sync_markers | build_tracks | pull | name_alts | sort script|record | " ..
   "dupes | append script|asset|nth|text | " ..
-  "rows [needle] | spans <needle> | missing | boundaries | verify | unheard | " ..
+  "rows [needle] | spans <needle> | missing | boundaries | marker_words | " ..
+  "verify | unheard | " ..
   "make_select <takename> | place | tighten | trim_to_markers"
 
 local function RemoteStatus()
@@ -8150,6 +8151,35 @@ local function RunRemoteCommand(command)
     end
     return string.format("%d item(s) checked, %d cut word(s)%s%s",
       checked, #out, (#out > 0) and "\n" or "", table.concat(out, "\n"))
+  elseif verb == "marker_words" then
+    -- Take-MARKER boundaries against the words (SPEC-anchor-boundaries.md
+    -- §4). `boundaries` above checks item edges; a consolidated block is one
+    -- item, so the marker edges inside it are invisible to it -- this is the
+    -- verb that sees them.
+    local markers = {}
+    for path, group in pairs(state.take_markers or {}) do
+      for _, mk in ipairs(vo.CountingMarkers(group)) do
+        mk.source_path = mk.source_path or path
+        markers[#markers + 1] = mk
+      end
+    end
+    table.sort(markers, function(a, b)
+      if a.source_path ~= b.source_path then return a.source_path < b.source_path end
+      return (a.start or 0) < (b.start or 0)
+    end)
+    local words_by_source = {}
+    for _, t in ipairs(state.transcripts or {}) do
+      if t.path then words_by_source[t.path] = t.words or {} end
+    end
+    local flags = vo.CheckMarkerWords(markers, state.lines or {},
+                                      words_by_source, vo.SubMap(state.subs))
+    local out = {}
+    for _, f in ipairs(flags) do
+      out[#out + 1] = string.format("%-7s %s %.3f-%.3f: %s",
+        f.kind, f.asset or "?", f.start or 0, f.stop or 0, f.words or "")
+    end
+    return string.format("%d marker(s) checked, %d flag(s)%s%s",
+      #markers, #flags, (#out > 0) and "\n" or "", table.concat(out, "\n"))
   elseif verb == "dupes" then
     -- Line-level clashes on the RESOLVED name, script and occurrence included,
     -- so a caller has everything an `append` needs to clear one.

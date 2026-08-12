@@ -576,6 +576,82 @@ test("no words, no range, or a zero-length range is an empty list", function()
 end)
 
 --------------------------------
+-- CheckMarkerWords
+--------------------------------
+print("\nCheckMarkerWords:")
+
+-- The Chain/Even failure verbatim (SPEC-anchor-boundaries.md §1): the marker
+-- edge at 586.210 is whisper's old partition edge, and the spoken "chain."
+-- anchors at 586.52 -- on the wrong side of it.
+local CMW_WORDS = { ["s.wav"] = {
+  { t0 = 584.900, t1 = 585.090, text = "Chain", anchor = 585.060 },
+  { t0 = 585.090, t1 = 585.130, text = "is",    anchor = 585.860 },
+  { t0 = 585.130, t1 = 586.210, text = "chain", anchor = 586.520 },
+  { t0 = 586.210, t1 = 587.070, text = "even",  anchor = 588.160 },
+  { t0 = 587.070, t1 = 587.500, text = "if",    anchor = 588.640 },
+  { t0 = 587.500, t1 = 588.970, text = "you",   anchor = 588.960 },
+  { t0 = 588.970, t1 = 589.220, text = "smile", anchor = 589.540 },
+} }
+local CMW_LINES = {
+  { asset = "ChainIsChain",   text = "Chain is chain." },
+  { asset = "EvenIfYouSmile", text = "Even if you smile." },
+  { asset = "OrdersLoud",     text = "Orders loud." },
+}
+local function cmw_marker(id, asset, a, b)
+  return { id = id, asset = asset, start = a, stop = b, source_path = "s.wav" }
+end
+
+test("a boundary tear flags both sides: the loser missing, the gainer extra", function()
+  local flags = vo.CheckMarkerWords({
+    cmw_marker(1, "ChainIsChain",   584.900, 586.210),
+    cmw_marker(2, "EvenIfYouSmile", 586.210, 590.470),
+  }, CMW_LINES, CMW_WORDS, nil)
+  assert(#flags == 2, "Expected 2 flags, got " .. #flags)
+  assert(flags[1].kind == "missing" and flags[1].asset == "ChainIsChain"
+         and flags[1].words:lower():find("chain"),
+         flags[1].kind .. ": " .. tostring(flags[1].words))
+  assert(flags[2].kind == "extra" and flags[2].asset == "EvenIfYouSmile"
+         and flags[2].words:lower():find("chain"),
+         flags[2].kind .. ": " .. tostring(flags[2].words))
+end)
+
+test("markers at the audible boundary flag nothing", function()
+  -- The dip is ~587.5: "chain." (anchor 586.52) stays, "even" (588.16) goes.
+  local flags = vo.CheckMarkerWords({
+    cmw_marker(1, "ChainIsChain",   584.900, 587.600),
+    cmw_marker(2, "EvenIfYouSmile", 587.600, 590.470),
+  }, CMW_LINES, CMW_WORDS, nil)
+  assert(#flags == 0, "clean markers flagged: " ..
+         (flags[1] and (flags[1].kind .. " " .. tostring(flags[1].words)) or ""))
+end)
+
+test("a stumble flags the doubled word only, and subs apply", function()
+  local words = { ["o.wav"] = {
+    { t0 = 0.0, t1 = 0.8, text = "orders", anchor = 0.2 },
+    { t0 = 0.8, t1 = 1.6, text = "orders", anchor = 1.0 },
+    { t0 = 1.6, t1 = 2.4, text = "loud,",  anchor = 1.8 },
+    { t0 = 2.4, t1 = 3.0, text = "rose",   anchor = 2.6 },
+  } }
+  local lines = { { asset = "OrdersLoud", text = "Orders loud rows." } }
+  local m = { { id = 1, asset = "OrdersLoud", start = 0, stop = 3,
+                source_path = "o.wav" } }
+  local flags = vo.CheckMarkerWords(m, lines, words, { rose = "rows" })
+  assert(#flags == 1, "Expected 1 flag, got " .. #flags)
+  assert(flags[1].kind == "extra" and flags[1].words == "orders",
+         flags[1].kind .. ": " .. tostring(flags[1].words))
+end)
+
+test("an empty range and an unknown asset say so instead of guessing", function()
+  local flags = vo.CheckMarkerWords({
+    cmw_marker(1, "ChainIsChain", 100.0, 101.0),   -- silence
+    cmw_marker(2, "NoSuchLine",   584.9, 586.2),   -- no script line
+  }, CMW_LINES, CMW_WORDS, nil)
+  assert(#flags == 2, "Expected 2 flags, got " .. #flags)
+  assert(flags[1].kind == "empty", flags[1].kind)
+  assert(flags[2].kind == "no-line", flags[2].kind)
+end)
+
+--------------------------------
 -- ClusterMarkerRanges
 --------------------------------
 print("\nClusterMarkerRanges:")

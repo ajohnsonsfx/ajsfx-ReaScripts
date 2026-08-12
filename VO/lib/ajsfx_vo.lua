@@ -2321,6 +2321,74 @@ function vo.TranscriptForRange(flat, path, from, to, words)
          best and best.in_sequence or nil
 end
 
+-- Every take-marker boundary that contradicts the words (SPEC-anchor-
+-- boundaries.md §4). Read-only: flags name the marker and the words so the
+-- user -- or a re-snap verb -- acts on them; nothing here moves anything.
+--
+-- The Chain/Even failure this exists for: a marker edge cut at whisper's old
+-- partition edge leaves the take's own last word ANCHORED on the far side.
+-- The sheet already shows that word amber in the NEIGHBOUR'S row; this walks
+-- every marker and reports both sides of the tear in one list -- the missing
+-- word from the row that lost it, the extra from the row that gained it.
+--
+-- Alignment is vo.ExtraWords in both directions, so a reader stumble flags
+-- only the doubled word, and substitutions apply the same way they do on the
+-- sheet. One rule everywhere, or a flag accuses a marker on evidence the
+-- sheet never showed.
+--
+-- markers: flat array of { id, asset, start, stop, source_path }.
+-- lines:   script lines; the first whose asset matches names the text, the
+--          same first-wins rule BuildOverview groups by.
+-- words_by_source: path -> word list. subs: normalized token -> replacement.
+-- Returns: array of { marker_id, asset, kind, words, start, stop,
+--          source_path } in marker order; kind is one of "extra", "missing",
+--          "empty", "no-line". A clean marker contributes nothing.
+function vo.CheckMarkerWords(markers, lines, words_by_source, subs)
+  local text_of = {}
+  for _, l in ipairs(lines or {}) do
+    if l.asset and text_of[l.asset] == nil then text_of[l.asset] = l.text end
+  end
+
+  local flags = {}
+  local function flag(m, kind, words)
+    flags[#flags + 1] = { marker_id = m.id, asset = m.asset, kind = kind,
+                          words = words, start = m.start, stop = m.stop,
+                          source_path = m.source_path }
+  end
+
+  local function extras_of(runs)
+    local out = {}
+    for _, run in ipairs(runs) do
+      if run.extra then out[#out + 1] = run.text end
+    end
+    return table.concat(out, " ")
+  end
+
+  for _, m in ipairs(markers or {}) do
+    local line_text = text_of[m.asset]
+    local words = words_by_source and words_by_source[m.source_path]
+    local got = {}
+    for _, w in ipairs(vo.WordsInRange(words, m.start, m.stop)) do
+      got[#got + 1] = w.text
+    end
+    local got_text = table.concat(got, " ")
+
+    if not line_text then
+      flag(m, "no-line", got_text)
+    elseif #got == 0 then
+      flag(m, "empty", "")
+    else
+      local extra = extras_of(vo.ExtraWords(line_text, got_text, subs))
+      if extra ~= "" then flag(m, "extra", extra) end
+      -- The mirror: the LINE read against the TAKE, so a line word the range
+      -- does not hold surfaces as that side's "extra".
+      local missing = extras_of(vo.ExtraWords(got_text, line_text, subs))
+      if missing ~= "" then flag(m, "missing", missing) end
+    end
+  end
+  return flags
+end
+
 -- The best-effort answer to "which line is this item?": the match span whose
 -- own audio this item's window covers most. Fraction is of the SPAN, not the
 -- item -- an item holding a whole take plus room reads 1.0, an item holding
