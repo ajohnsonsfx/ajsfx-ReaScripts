@@ -1460,6 +1460,85 @@ test("empty input yields no words", function()
 end)
 
 --------------------------------
+-- ParseWhisperJSON
+--------------------------------
+print("\nParseWhisperJSON:")
+
+-- The shape whisper-cli -ml 1 -sow -ojf actually writes: a preamble, then one
+-- segment per word, each with offsets in ms and sub-word tokens carrying
+-- t_dtw in CENTIseconds (-1 = never computed). Special tokens ride along.
+local OJF = [[
+{
+  "systeminfo": "WHISPER : COREML = 0",
+  "model": { "type": "large", "multilingual": true },
+  "params": { "model": "ggml-large-v3.bin", "language": "en" },
+  "result": { "language": "en" },
+  "transcription": [
+    {
+      "timestamps": { "from": "00:00:00,000", "to": "00:00:00,190" },
+      "offsets": { "from": 0, "to": 190 },
+      "text": "",
+      "tokens": [ { "text": "[_BEG_]", "t_dtw": -1 } ]
+    },
+    {
+      "offsets": { "from": 190, "to": 760 },
+      "text": " Brantley",
+      "tokens": [
+        { "text": " Br",  "t_dtw": 41 },
+        { "text": "ant",  "t_dtw": 55 },
+        { "text": "ley",  "t_dtw": 47 }
+      ]
+    },
+    {
+      "offsets": { "from": 760, "to": 1080 },
+      "text": " said \"go,\"\n",
+      "tokens": [
+        { "text": "[_TT_38]", "t_dtw": 12 },
+        { "text": " said",    "t_dtw": -1 }
+      ]
+    },
+    {
+      "offsets": { "from": 1080, "to": 1500 },
+      "text": " you",
+      "tokens": [ { "text": " you", "t_dtw": 132 } ]
+    }
+  ]
+}
+]]
+
+test("a segment is a word: offsets in ms, anchor from the smallest token t_dtw", function()
+  local w = vo.ParseWhisperJSON(OJF)
+  assert(#w == 3, "Expected 3 words, got " .. #w)
+  assert(w[1].text == "Brantley", "text: " .. tostring(w[1].text))
+  assert(near(w[1].t0, 0.19) and near(w[1].t1, 0.76), "window not converted")
+  -- Three sub-word tokens anchored 0.41/0.55/0.47s: the word starts at the
+  -- earliest, not the first-listed.
+  assert(near(w[1].anchor, 0.41), "anchor: " .. tostring(w[1].anchor))
+end)
+
+test("special tokens and unset t_dtw never supply an anchor", function()
+  local w = vo.ParseWhisperJSON(OJF)
+  -- Word 2's only candidates are a [_TT_38] (excluded by name) and an
+  -- unset -1 (excluded by value): no anchor at all, downstream falls to t0.
+  assert(w[2].text == 'said "go,"', "text: " .. string.format("%q", w[2].text))
+  assert(w[2].anchor == nil, "anchor: " .. tostring(w[2].anchor))
+end)
+
+test("empty segments are dropped and centiseconds become seconds", function()
+  local w = vo.ParseWhisperJSON(OJF)
+  -- The [_BEG_] segment had no text and is gone; `you` anchors at 1.32s.
+  assert(w[3].text == "you" and near(w[3].anchor, 1.32),
+         "Got " .. tostring(w[3].text) .. " @ " .. tostring(w[3].anchor))
+end)
+
+test("malformed or alien JSON yields no words, not an error", function()
+  assert(#vo.ParseWhisperJSON("") == 0, "empty")
+  assert(#vo.ParseWhisperJSON("{ not json") == 0, "malformed")
+  assert(#vo.ParseWhisperJSON('{"ok":true}') == 0, "no transcription array")
+  assert(#vo.ParseWhisperJSON(nil) == 0, "nil input")
+end)
+
+--------------------------------
 -- Levenshtein
 --------------------------------
 print("\nLevenshtein:")
@@ -1791,34 +1870,49 @@ local TFR = {
                                     kind = "match", score = 1.0 } },
 }
 
+-- The word list ranges are cut from. Deliberately overlapping the TFR spans
+-- above. No anchors here: this fixture exercises the t0 fallback, the anchor
+-- cases have their own fixtures below.
+local TFR_WORDS = {
+  { t0 = 0.0, t1 = 0.4, text = "open" },
+  { t0 = 0.5, t1 = 0.9, text = "the" },
+  { t0 = 1.0, t1 = 1.9, text = "gate" },
+  { t0 = 3.0, t1 = 3.5, text = "and" },
+  { t0 = 3.6, t1 = 4.9, text = "hurry" },
+}
+
 test("a marker's range reads back the words inside it", function()
-  local text, score, seq = vo.TranscriptForRange(TFR, "a.wav", 0, 2)
+  local text, score, seq = vo.TranscriptForRange(TFR, "a.wav", 0, 2, TFR_WORDS)
   assert(text == "open the gate", "Got: " .. tostring(text))
   assert(near(score, 0.9), "score not carried: " .. tostring(score))
   assert(seq == true, "in_sequence not carried")
 end)
 
 test("a marker spanning two spans reads as both, in time order", function()
-  local text = vo.TranscriptForRange(TFR, "a.wav", 0, 5)
+  local text = vo.TranscriptForRange(TFR, "a.wav", 0, 5, TFR_WORDS)
   assert(text == "open the gate and hurry", "Got: " .. tostring(text))
 end)
 
 test("the score comes from the span that overlaps most, not an average", function()
   -- Mostly the review span, a sliver of the match: the score is the review's.
-  local _, score = vo.TranscriptForRange(TFR, "a.wav", 1.9, 5)
+  local _, score = vo.TranscriptForRange(TFR, "a.wav", 1.9, 5, TFR_WORDS)
   assert(near(score, 0.6), "Got: " .. tostring(score))
 end)
 
 test("another source's words never leak in", function()
-  local text = vo.TranscriptForRange(TFR, "b.wav", 0, 5)
+  -- The caller passes the words FOR THE PATH IT ASKS ABOUT; a.wav's list
+  -- cannot answer for b.wav, and the spans filter by source_path.
+  local b_words = { { t0 = 0.0, t1 = 0.7, text = "other" },
+                    { t0 = 0.8, t1 = 1.6, text = "file" } }
+  local text = vo.TranscriptForRange(TFR, "b.wav", 0, 5, b_words)
   assert(text == "other file", "Got: " .. tostring(text))
 end)
 
 test("a range over nothing is nil, not empty", function()
-  assert(vo.TranscriptForRange(TFR, "a.wav", 6, 8) == nil, "silence returned text")
-  assert(vo.TranscriptForRange(TFR, "c.wav", 0, 5) == nil, "unknown source returned text")
-  assert(vo.TranscriptForRange(TFR, "a.wav", 2, 2) == nil, "zero-length range")
-  assert(vo.TranscriptForRange(nil, "a.wav", 0, 5) == nil, "no spans at all")
+  assert(vo.TranscriptForRange(TFR, "a.wav", 6, 8, TFR_WORDS) == nil, "silence returned text")
+  assert(vo.TranscriptForRange(TFR, "c.wav", 0, 5, TFR_WORDS) == nil, "unknown source returned text")
+  assert(vo.TranscriptForRange(TFR, "a.wav", 2, 2, TFR_WORDS) == nil, "zero-length range")
+  assert(vo.TranscriptForRange(nil, "a.wav", 0, 5, TFR_WORDS) == nil, "no spans at all")
 end)
 
 test("audio nothing matched still reports what was heard", function()
@@ -1827,20 +1921,12 @@ test("audio nothing matched still reports what was heard", function()
   local flat = { { source_path = "a.wav",
                    span = { start = 0, stop = 2, transcript = "sorry again",
                             kind = "orphan" } } }
-  local text, score = vo.TranscriptForRange(flat, "a.wav", 0, 2)
+  local heard = { { t0 = 0.0, t1 = 0.9, text = "sorry" },
+                  { t0 = 1.0, t1 = 1.9, text = "again" } }
+  local text, score = vo.TranscriptForRange(flat, "a.wav", 0, 2, heard)
   assert(text == "sorry again", "Got: " .. tostring(text))
   assert(score == nil, "an unmatched span has no score to report")
 end)
-
--- The word list a range can be cut out of. Deliberately overlapping the TFR
--- spans above so the two paths can be compared on the same fixture.
-local TFR_WORDS = {
-  { t0 = 0.0, t1 = 0.4, text = "open" },
-  { t0 = 0.5, t1 = 0.9, text = "the" },
-  { t0 = 1.0, t1 = 1.9, text = "gate" },
-  { t0 = 3.0, t1 = 3.5, text = "and" },
-  { t0 = 3.6, t1 = 4.9, text = "hurry" },
-}
 
 test("with words, a range reads only the words inside it", function()
   -- The span says "open the gate"; the range holds two of its three words.
@@ -1856,7 +1942,7 @@ test("a range across two spans no longer reads both spans in full", function()
   assert(text == "gate and", "Got: " .. tostring(text))
 end)
 
-test("a word counts by its ONSET, not by its middle or its end", function()
+test("an anchor-less word counts by its onset, the old rule intact", function()
   -- "gate" is stamped 1.0-1.9, but that 1.9 is the next word's start, not
   -- where the speaker stopped. A range beginning at or before 1.0 holds the
   -- word; one beginning after it does not, however much of the stamped
@@ -1865,6 +1951,37 @@ test("a word counts by its ONSET, not by its middle or its end", function()
          "a word starting inside the range was dropped")
   local text = vo.TranscriptForRange(TFR, "a.wav", 1.2, 2.0, TFR_WORDS)
   assert(text == nil, "a word starting BEFORE the range was kept: " .. tostring(text))
+end)
+
+test("the anchor outranks the window: the You. case, real numbers", function()
+  -- Grumbar 2026_0801, source 428-431. Whisper's windows put `you`'s t0
+  -- BEFORE the take marker and `tower`+`is` inside it, so the onset rule
+  -- showed "tower is" under a take that audibly says "You." The DTW anchors
+  -- sit on the words: you 428.66 (in), tower 430.64 / is 431.16 (out).
+  local words = {
+    { t0 = 427.110, t1 = 428.160, text = "mouth", anchor = 427.140 },
+    { t0 = 428.160, t1 = 428.920, text = "you",   anchor = 428.660 },
+    { t0 = 428.920, t1 = 429.890, text = "tower", anchor = 430.640 },
+    { t0 = 429.890, t1 = 430.990, text = "is",    anchor = 431.160 },
+  }
+  local flat = { { source_path = "g.wav",
+                   span = { start = 424, stop = 432, transcript = "",
+                            kind = "match", score = 1.0 } } }
+  local text = vo.TranscriptForRange(flat, "g.wav", 428.593, 429.894, words)
+  assert(text == "you", "Got: " .. tostring(text))
+end)
+
+test("anchored and anchor-less words mix under one rule", function()
+  -- A word whisper never anchored (t_dtw -1 end to end) falls back to t0
+  -- while its neighbours judge by anchor; membership stays one pass.
+  local words = {
+    { t0 = 0.0, t1 = 1.0, text = "a", anchor = 1.4 },  -- anchor pushes it IN
+    { t0 = 1.1, t1 = 2.0, text = "b" },                -- t0 fallback: IN
+    { t0 = 2.1, t1 = 3.0, text = "c", anchor = 3.6 },  -- anchor pushes it OUT
+  }
+  local kept = vo.WordsInRange(words, 1.0, 3.5)
+  assert(#kept == 2 and kept[1].text == "a" and kept[2].text == "b",
+         "Got " .. #kept .. " words")
 end)
 
 test("the score still comes from the greatest-overlap span, whatever the words", function()
@@ -1878,11 +1995,14 @@ test("words present but the range holds none is nil, not empty", function()
          "a silent gap returned text")
 end)
 
-test("no word list falls back to the span text", function()
-  assert(vo.TranscriptForRange(TFR, "a.wav", 0, 5) == "open the gate and hurry",
-         "the legacy path changed")
-  assert(vo.TranscriptForRange(TFR, "a.wav", 0, 5, {}) == "open the gate and hurry",
-         "an EMPTY word list must fall back, not report silence")
+test("no word list is nil, never a neighbour's span text", function()
+  -- The retired fallback concatenated every overlapping span's WHOLE
+  -- transcript -- how a marker holding part of a span read as all of it.
+  -- Empty is honest; a neighbour's words are not (SPEC-word-anchors.md §5.5).
+  assert(vo.TranscriptForRange(TFR, "a.wav", 0, 5) == nil,
+         "the span-concat fallback is back")
+  assert(vo.TranscriptForRange(TFR, "a.wav", 0, 5, {}) == nil,
+         "an empty word list resurrected the fallback")
 end)
 
 --------------------------------
@@ -3642,9 +3762,12 @@ test("word-level timestamps are forced with -ml 1 and -sow", function()
   assert(argv_index(argv, "-sow"), "-sow missing")
 end)
 
-test("CSV output is requested", function()
+test("JSON-full output is requested, never CSV", function()
+  -- -ojf is the only output that carries t_dtw, the per-token anchor
+  -- vo.ParseWhisperJSON turns into word.anchor (SPEC-word-anchors.md §5.1).
   local argv = vo.BuildWhisperArgv(WHISPER_CFG, "in.wav", "out")
-  assert(argv_index(argv, "-ocsv"), "-ocsv missing")
+  assert(argv_index(argv, "-ojf"), "-ojf missing")
+  assert(argv_index(argv, "-ocsv") == nil, "-ocsv is back")
 end)
 
 test("input file, model and output prefix are passed", function()
@@ -3660,9 +3783,15 @@ test("threads and language come from config", function()
   assert(argv_value(argv, "-l") == "en", "-l: " .. tostring(argv_value(argv, "-l")))
 end)
 
-test("a known model maps to its dtw preset", function()
+test("a known model maps to its dtw preset, and -nfa rides with it", function()
+  -- Flash attention (default on) silently prevents DTW: the fused kernel
+  -- never materialises the attention matrix DTW aligns against, and every
+  -- t_dtw comes back -1. Verified byte-identical output with and without
+  -- -dtw under -fa. So -dtw without -nfa is a no-op, and the pair travels
+  -- together or not at all.
   local argv = vo.BuildWhisperArgv(WHISPER_CFG, "in.wav", "out")
   assert(argv_value(argv, "-dtw") == "base", "-dtw: " .. tostring(argv_value(argv, "-dtw")))
+  assert(argv_index(argv, "-nfa"), "-nfa missing: -dtw is silently dead without it")
 end)
 
 test("large model versions map to their own presets", function()
@@ -3674,6 +3803,8 @@ end)
 test("an unrecognised model emits no dtw flag rather than an invalid one", function()
   local argv = vo.BuildWhisperArgv({ whisper_model = "/m/ggml-base.en.bin" }, "in.wav", "out")
   assert(argv_index(argv, "-dtw") == nil, "-dtw should be omitted for unverified presets")
+  -- No anchors to gain without -dtw, so keep flash attention's speed.
+  assert(argv_index(argv, "-nfa") == nil, "-nfa without -dtw only slows the decode")
 end)
 
 test("a missing binary falls back to the bare command name", function()
@@ -5810,6 +5941,11 @@ test("multiple takes become sibling rows, numbered chronologically", function()
     } } },
     takes_by_asset = { a = { mk("m3", 30, 31, "s.wav"), mk("m1", 10, 11, "s.wav"),
                              mk("m2", 20, 21, "s.wav") } },
+    transcripts = { { path = "s.wav", words = {
+      { t0 = 10.2, t1 = 10.5, text = "alpha" }, { t0 = 10.6, t1 = 10.9, text = "one" },
+      { t0 = 20.2, t1 = 20.5, text = "alpha" }, { t0 = 20.6, t1 = 20.9, text = "two" },
+      { t0 = 30.2, t1 = 30.5, text = "alpha" }, { t0 = 30.6, t1 = 30.9, text = "three" },
+    } } },
   })
   assert(#rows == 3, "Expected 3 take rows, got " .. #rows)
   for i, row in ipairs(rows) do
@@ -5862,6 +5998,12 @@ test("two transcripts fold into one list, takes numbered across both", function(
     -- means nothing. Source first, then time.
     takes_by_asset = { a = { mk("m_b", 5, 6, "B_session2.wav"),
                              mk("m_a", 9, 9.5, "A_session1.wav") } },
+    transcripts = {
+      { path = "B_session2.wav", words = {
+        { t0 = 5.1, t1 = 5.5, text = "second" }, { t0 = 5.6, t1 = 5.9, text = "day" } } },
+      { path = "A_session1.wav", words = {
+        { t0 = 9.1, t1 = 9.2, text = "first" }, { t0 = 9.3, t1 = 9.4, text = "day" } } },
+    },
   })
   assert(#rows == 2, "Expected both sessions' takes, got " .. #rows)
   assert(rows[1].transcript == "first day",
@@ -5882,6 +6024,10 @@ test("one source's missing line and another's audio coexist in one list", functi
     },
     takes_by_asset = { a = { mk("m_a", 1, 2, "s1.wav") },
                        c = { mk("m_c", 1, 2, "s2.wav") } },
+    transcripts = {
+      { path = "s1.wav", words = { { t0 = 1.2, t1 = 1.8, text = "alpha" } } },
+      { path = "s2.wav", words = { { t0 = 1.2, t1 = 1.8, text = "charlie" } } },
+    },
   })
   assert(#rows == 3, "Expected 3 rows, got " .. #rows)
   -- A marker row carries no source_path out of BuildOverview -- the coupled
@@ -6035,7 +6181,12 @@ test("a review span is heard, not a take", function()
   assert(rows[1].heard == 1, "A review span still counts as heard")
 end)
 
-test("a marker row without transcripts keeps the span text", function()
+test("a marker row without transcripts shows nothing, not the span text", function()
+  -- The span fallback used to answer here, and it answered with the WHOLE
+  -- span for a marker holding part of one -- the original bug. A caller with
+  -- no word list gets an empty transcript, which is honest
+  -- (SPEC-word-anchors.md §5.5). Production always has the words: the same
+  -- transcripts matching requires feed BuildOverview.
   local rows = vo.BuildOverview({
     lines   = { line("VO_01", "open the gate and hurry", nil, 1) },
     matches = MARKER_MATCH,
@@ -6045,8 +6196,7 @@ test("a marker row without transcripts keeps the span text", function()
   local row
   for _, rw in ipairs(rows) do if rw.marker_id == 7 then row = rw end end
   assert(row, "no marker row was built")
-  assert(row.transcript == "open the gate and hurry",
-         "Got: " .. tostring(row.transcript))
+  assert(row.transcript == nil, "Got: " .. tostring(row.transcript))
 end)
 
 --------------------------------
@@ -7028,9 +7178,11 @@ print("\nSerializeTranscript / ParseTranscript:")
 
 local function sample_words()
   return {
-    { t0 = 12.480, t1 = 12.660, text = "we" },
+    -- Middle word anchor-less on purpose: whisper leaves t_dtw unset on some
+    -- tokens, and the empty cell must round-trip as nil, not as zero.
+    { t0 = 12.480, t1 = 12.660, text = "we",     anchor = 12.510 },
     { t0 = 12.660, t1 = 12.910, text = "should" },
-    { t0 = 12.910, t1 = 13.040, text = "not," },
+    { t0 = 12.910, t1 = 13.040, text = "not,",   anchor = 12.980 },
   }
 end
 
@@ -7043,7 +7195,7 @@ test("round-trip preserves every word and every preamble field", function()
   local text = vo.SerializeTranscript(sample_words(), sample_meta())
   local got, why = vo.ParseTranscript(text)
   assert(got, "Parse failed: " .. tostring(why))
-  assert(got.version == 1, "Version: " .. tostring(got.version))
+  assert(got.version == 2, "Version: " .. tostring(got.version))
   assert(got.source == "RIVA.wav", "Source: " .. tostring(got.source))
   assert(got.source_bytes == 412839104, "Bytes: " .. tostring(got.source_bytes))
   assert(got.source_hash == "deadbeef", "Hash: " .. tostring(got.source_hash))
@@ -7054,6 +7206,10 @@ test("round-trip preserves every word and every preamble field", function()
   assert(math.abs(got.words[1].t0 - 12.480) < 1e-6, "t0: " .. tostring(got.words[1].t0))
   assert(math.abs(got.words[3].t1 - 13.040) < 1e-6, "t1: " .. tostring(got.words[3].t1))
   assert(got.words[3].text == "not,", "text: " .. tostring(got.words[3].text))
+  assert(math.abs(got.words[1].anchor - 12.510) < 1e-6,
+         "anchor: " .. tostring(got.words[1].anchor))
+  assert(got.words[2].anchor == nil,
+         "an empty anchor cell must stay nil, got " .. tostring(got.words[2].anchor))
 end)
 
 test("a word containing a comma, a quote and a newline survives", function()
@@ -7063,9 +7219,13 @@ test("a word containing a comma, a quote and a newline survives", function()
   assert(got.words[1].text == 'he said "go,"\nquietly', "Got: " .. tostring(got.words[1].text))
 end)
 
-test("times are written to three decimals", function()
-  local text = vo.SerializeTranscript({ { t0 = 1.23456, t1 = 2.5, text = "x" } }, sample_meta())
-  assert(text:find("1.235,2.500,x", 1, true), "Row not found in:\n" .. text)
+test("times are written to three decimals, anchor included", function()
+  local text = vo.SerializeTranscript(
+    { { t0 = 1.23456, t1 = 2.5, text = "x", anchor = 1.5001 } }, sample_meta())
+  assert(text:find("1.235,2.500,x,1.500", 1, true), "Row not found in:\n" .. text)
+  local bare = vo.SerializeTranscript({ { t0 = 1, t1 = 2, text = "y" } }, sample_meta())
+  assert(bare:find("1.000,2.000,y,\n", 1, true) or bare:find("1.000,2.000,y,$"),
+         "No-anchor row should end with an empty cell:\n" .. bare)
 end)
 
 test("an empty word list still produces a parseable file", function()
@@ -7085,12 +7245,22 @@ test("a foreign file is rejected with a reason", function()
 end)
 
 test("an unknown version is rejected with a reason", function()
-  local got, why = vo.ParseTranscript("ajsfx VO Transcript,99\n\nStart,End,Text\n")
+  local got, why = vo.ParseTranscript("ajsfx VO Transcript,99\n\nStart,End,Text,Anchor\n")
   assert(got == nil and type(why) == "string", "Expected nil + reason")
 end)
 
+test("a v1 sidecar (no anchors) is rejected, forcing the re-transcribe", function()
+  -- Deliberate hard cutoff (SPEC-word-anchors.md §5.3): an anchor-less
+  -- transcript reproduces exactly the wrong-words-under-a-take bug, and the
+  -- Sources window turns this rejection into its re-transcribe offer.
+  local got, why = vo.ParseTranscript(
+    "ajsfx VO Transcript,1\nSource,a.wav\n\nStart,End,Text\n1.000,2.000,hi\n")
+  assert(got == nil and type(why) == "string", "Expected nil + reason")
+  assert(why:find("version"), "The reason should name the version: " .. tostring(why))
+end)
+
 test("a missing word header is rejected with a reason", function()
-  local got, why = vo.ParseTranscript("ajsfx VO Transcript,1\nSource,a.wav\n")
+  local got, why = vo.ParseTranscript("ajsfx VO Transcript,2\nSource,a.wav\n")
   assert(got == nil and type(why) == "string", "Expected nil + reason")
 end)
 

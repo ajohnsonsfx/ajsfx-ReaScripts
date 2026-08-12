@@ -1182,11 +1182,18 @@ local function AddTakeMarkerFromSelection(row)
   end
 
   local id = vo.MintMarkerId(TakenMarkerIds())
-  local ok, why = vo.WriteTakeMarkers(item, {
-    { start = range.from, stop = range.to, asset = row.asset, id = id },
-  })
+  -- vo.AddMarkerToItem, not vo.WriteTakeMarkers: the write replaces the tool's
+  -- whole set, so handing it this one marker alone would wipe every other take
+  -- in the item -- the whole session, on an uncut recording.
+  local ok, added, why = vo.AddMarkerToItem(item,
+    { start = range.from, stop = range.to, asset = row.asset, id = id })
   if not ok then
     state.message, state.message_kind = "Could not write the marker: " .. tostring(why), "error"
+    return
+  end
+  if not added then
+    state.message, state.message_kind =
+      "That item is already marked for this line.", "warn"
     return
   end
 
@@ -3663,13 +3670,21 @@ end
 -- Several items at once become the line and its alts, numbered with the same
 -- pattern the Pull panel uses, so comping four takes of a line and assigning
 -- them in one go gives line_042, line_042_alt1, line_042_alt2, line_042_alt3.
+--
+-- The rename alone is not enough, and that gap was the bug: a marker is a row,
+-- so an item named for a line but carrying no take marker leaves the line still
+-- reading `missing` -- and on a line with no takes there is no take row to
+-- right-click, so "Add take marker from selected item" cannot be reached
+-- either. Naming was a dead end. Each assigned item therefore also gets a
+-- ranged marker spanning it, which is what every verb downstream reads.
 local function AssignSelectedItems(row, base_name)
   local n = r.CountSelectedMediaItems(0)
   if n == 0 or not base_name or base_name == "" then return end
   state.name_baseline = nil
 
   local cfg = vo.LoadConfig()
-  local named = 0
+  local taken = TakenMarkerIds()
+  local named, marked, first_id = 0, 0, nil
   core.Transaction("VO Overview: assign items to line", function()
     for i = 0, n - 1 do
       local item = r.GetSelectedMediaItem(0, i)
@@ -3684,13 +3699,42 @@ local function AssignSelectedItems(row, base_name)
         end
         r.GetSetMediaItemTakeInfo_String(take, "P_NAME", vo.SanitizeName(name), true)
         named = named + 1
+
+        -- The marker spans the item, because assigning says the item IS the
+        -- take. The asset, not the alt name: the marker says which LINE this
+        -- is, and an alt is the same line.
+        local range = row.asset and row.asset ~= "" and vo.SourceCoverageRanges({{
+          start_offs = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS"),
+          length     = r.GetMediaItemInfo_Value(item, "D_LENGTH"),
+          playrate   = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE"),
+        }})[1]
+        if range and range.to > range.from then
+          local id = vo.MintMarkerId(taken)
+          local ok, added = vo.AddMarkerToItem(item,
+            { start = range.from, stop = range.to, asset = row.asset, id = id })
+          if ok and added then
+            marked = marked + 1
+            first_id = first_id or id
+          end
+        end
       end
     end
   end)
   r.UpdateArrange()
 
+  -- The row's marks ride onto the first marker's key, so a planned or missing
+  -- row's decisions are not stranded on a key nothing builds any more.
+  if first_id then
+    for _, e in ipairs(state.entries) do
+      if e.key == row.key then e.key = "tkm|" .. first_id end
+    end
+    state.dirty = true
+  end
+
   state.message, state.message_kind = string.format(
-    "Named %d item%s for %s.%s", named, named == 1 and "" or "s", base_name,
+    "Named %d item%s for %s%s.%s", named, named == 1 and "" or "s", base_name,
+    marked > 0 and string.format(" and marked %d as take%s", marked,
+                                 marked == 1 and "" or "s") or "",
     named > 1 and " The first is the line; the rest are its alts." or ""), "ok"
   Reload()
 end
@@ -6427,7 +6471,8 @@ local function DrawTakeRowMenu(row)
   if im.IsItemHovered(ctx) then
     im.SetTooltip(ctx, n_sel > 0
       and ("Names the item(s) selected in REAPER \"" ..
-           tostring(row.deliver or row.asset) .. "\".\n\n" ..
+           tostring(row.deliver or row.asset) .. "\" and marks each as a\n" ..
+           "take, spanning the item.\n\n" ..
            "Several at once are numbered with the alt pattern, so the\n" ..
            "first is the line and the rest are its alts.")
       or  "Select the item in REAPER first.")
@@ -7251,8 +7296,9 @@ local function DrawAddTakeRow(rep, rx)
   end
   if im.IsItemHovered(ctx) then
     im.SetTooltip(ctx, n_sel > 0
-      and ("Names the selected item(s) for this line. Several at\n" ..
-           "once are numbered with the alt pattern.")
+      and ("Names the selected item(s) for this line and marks each\n" ..
+           "as a take, spanning the item. Several at once are numbered\n" ..
+           "with the alt pattern.")
       or  ("Adds an empty planned take -- nothing is selected in REAPER.\n" ..
            "Link an item to it later with the + in its Item column."))
   end

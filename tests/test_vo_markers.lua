@@ -739,5 +739,65 @@ test("two ghosts together are reported, not guessed between", function()
 end)
 
 --------------------------------
+print("PlanMarkerAdd:")
+
+-- ParseTKMChunk's shape, which is what every caller has in hand.
+local function tkm(pos, name, length)
+  return { pos = pos, name = name, color = 0, length = length }
+end
+
+test("the new marker joins the item's existing tool markers", function()
+  local list, added = vo.PlanMarkerAdd(
+    { tkm(0, "L1 ~aaa", 2), tkm(5, "L2 ~bbb", 3) },
+    { start = 10, stop = 14, asset = "L3", id = "ccc" })
+  assert(added == true, "reported as already there")
+  assert(#list == 3, "count: " .. #list)
+  local by_id = {}
+  for _, m in ipairs(list) do by_id[m.id] = m end
+  assert(by_id.aaa and by_id.aaa.asset == "L1" and by_id.aaa.stop == 2, "aaa lost")
+  assert(by_id.bbb and by_id.bbb.start == 5 and by_id.bbb.stop == 8, "bbb lost")
+  assert(by_id.ccc and by_id.ccc.asset == "L3", "the new one is missing")
+end)
+
+test("user markers are not returned -- WriteTakeMarkers preserves them", function()
+  local list = vo.PlanMarkerAdd({ tkm(0, "plain note", 0) },
+    { start = 1, stop = 2, asset = "L1", id = "aaa" })
+  assert(#list == 1 and list[1].id == "aaa", "count: " .. #list)
+end)
+
+test("nothing existing means a list of one", function()
+  local list, added = vo.PlanMarkerAdd(nil,
+    { start = 1, stop = 2, asset = "L1", id = "aaa" })
+  assert(added == true and #list == 1 and list[1].id == "aaa")
+end)
+
+test("the same line already marked over that audio is not duplicated", function()
+  local list, added = vo.PlanMarkerAdd({ tkm(0, "L1 ~aaa", 10) },
+    { start = 1, stop = 9, asset = "L1", id = "bbb" })
+  assert(added == false, "wrote a second marker for the same take")
+  assert(#list == 1 and list[1].id == "aaa", "the existing marker was disturbed")
+end)
+
+test("the same line marked elsewhere in the item is a second take", function()
+  local list, added = vo.PlanMarkerAdd({ tkm(0, "L1 ~aaa", 4) },
+    { start = 20, stop = 24, asset = "L1", id = "bbb" })
+  assert(added == true and #list == 2, "count: " .. #list)
+end)
+
+test("a different line over the same audio still gets its marker", function()
+  local list, added = vo.PlanMarkerAdd({ tkm(0, "L1 ~aaa", 10) },
+    { start = 0, stop = 10, asset = "L2", id = "bbb" })
+  assert(added == true and #list == 2, "count: " .. #list)
+end)
+
+test("a brush of under half the new range is not the same take", function()
+  -- 8..10 of a 8..18 range: a fifth. Marking a take that starts inside the
+  -- tail of another must not be swallowed by it.
+  local list, added = vo.PlanMarkerAdd({ tkm(0, "L1 ~aaa", 10) },
+    { start = 8, stop = 18, asset = "L1", id = "bbb" })
+  assert(added == true and #list == 2, "count: " .. #list)
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

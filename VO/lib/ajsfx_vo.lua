@@ -1497,6 +1497,110 @@ function vo.ParseWhisperCSV(text)
   return words
 end
 
+-- A minimal JSON reader, sized to whisper-cli's -ojf output and nothing more.
+--
+-- Hand-rolled on purpose: the repo vendors no dependencies, and every other
+-- format here (CSV, TKM chunks) is parsed the same way. Handles objects,
+-- arrays, strings with the JSON escapes whisper actually emits, numbers,
+-- true/false/null. Returns the decoded value and the next index, or nil on
+-- malformed input -- callers treat that as "not a transcript".
+local function json_decode(s, i)
+  i = s:find("[^ \t\r\n]", i or 1)
+  if not i then return nil end
+  local c = s:sub(i, i)
+  if c == "{" or c == "[" then
+    local out, want_key = {}, (c == "{")
+    i = i + 1
+    while true do
+      i = s:find("[^ \t\r\n]", i)
+      if not i then return nil end
+      local d = s:sub(i, i)
+      if d == (want_key and "}" or "]") then return out, i + 1 end
+      if d == "," then i = i + 1
+      elseif want_key then
+        local key; key, i = json_decode(s, i)
+        if type(key) ~= "string" then return nil end
+        i = s:find("[^ \t\r\n]", i)
+        if not i or s:sub(i, i) ~= ":" then return nil end
+        local val; val, i = json_decode(s, i + 1)
+        if i == nil then return nil end
+        out[key] = val
+      else
+        local val; val, i = json_decode(s, i)
+        if i == nil then return nil end
+        out[#out + 1] = val
+      end
+    end
+  elseif c == '"' then
+    local buf, j = {}, i + 1
+    while true do
+      local k = s:find('[\\"]', j)
+      if not k then return nil end
+      buf[#buf + 1] = s:sub(j, k - 1)
+      if s:sub(k, k) == '"' then
+        return table.concat(buf), k + 1
+      end
+      local e = s:sub(k + 1, k + 1)
+      if     e == "n" then buf[#buf + 1] = "\n"
+      elseif e == "t" then buf[#buf + 1] = "\t"
+      elseif e == "r" then buf[#buf + 1] = "\r"
+      elseif e == "u" then
+        -- Whisper text is UTF-8 in the string body; \u escapes only ever
+        -- carry ASCII here. Anything above is kept as a literal '?' rather
+        -- than growing a UTF-16 decoder for bytes no caller reads.
+        local hex = s:sub(k + 2, k + 5)
+        local cp = tonumber(hex, 16)
+        buf[#buf + 1] = (cp and cp < 128) and string.char(cp) or "?"
+        j = k + 6
+      else buf[#buf + 1] = e end
+      if e ~= "u" then j = k + 2 end
+    end
+  elseif s:find("^true", i)  then return true,  i + 4
+  elseif s:find("^false", i) then return false, i + 5
+  elseif s:find("^null", i)  then return nil,   i + 4
+  else
+    local num = s:match("^-?%d+%.?%d*[eE]?[+%-]?%d*", i)
+    if not num or num == "" then return nil end
+    return tonumber(num), i + #num
+  end
+end
+
+-- Parse the JSON written by `whisper-cli -ml 1 -sow -ojf`. With -ml 1 a
+-- SEGMENT is one word; its `tokens` are sub-word pieces ("Br"/"ant"/"ley").
+--
+-- The point of -ojf over -ocsv is the per-token `t_dtw`: a cross-attention
+-- anchor that sits ON the word, where `offsets` are a contiguous partition of
+-- the timeline that can miss the word entirely (SPEC-word-anchors.md §2). The
+-- word's anchor is the smallest qualifying token anchor; special tokens
+-- ("[_BEG_]" etc.) and unset anchors (t_dtw < 0, whisper's "never computed"
+-- sentinel) don't qualify. A word with no qualifying token gets anchor = nil
+-- and downstream falls back to t0.
+-- Returns: array of { t0, t1 = seconds, text = string, anchor = seconds|nil }
+function vo.ParseWhisperJSON(text)
+  local doc = type(text) == "string" and json_decode(text) or nil
+  local segs = doc and doc.transcription
+  if type(segs) ~= "table" then return {} end
+  local words = {}
+  for _, seg in ipairs(segs) do
+    local word = trim(seg.text or "")
+    local off = seg.offsets
+    if word ~= "" and type(off) == "table"
+       and tonumber(off.from) and tonumber(off.to) then
+      local anchor
+      for _, tok in ipairs(seg.tokens or {}) do
+        local dt = tonumber(tok.t_dtw)
+        if dt and dt >= 0 and not tostring(tok.text or ""):find("^%[_") then
+          local a = dt / 100.0
+          if not anchor or a < anchor then anchor = a end
+        end
+      end
+      words[#words + 1] = { t0 = off.from / 1000.0, t1 = off.to / 1000.0,
+                            text = word, anchor = anchor }
+    end
+  end
+  return words
+end
+
 -- Longest stretch of `words` that is one short phrase repeated back to back.
 --
 -- This is the signature of a whisper decoder that has fallen into a repetition
@@ -2140,33 +2244,38 @@ end
 -- tells you what a take actually says, gone at exactly the moment there are
 -- takes to read.
 --
--- The match still knows. Every span on this source that overlaps the range
--- contributes its words, in time order, so a marker spanning two spans reads as
--- both and a marker over audio nothing claimed still shows what was heard. The
--- SCORE comes from the single matched span that overlaps most, since a score is
--- a fact about one placement and averaging two would mean nothing.
+-- The match still knows. The TEXT is the words whose anchors fall inside the
+-- range (vo.WordsInRange); the SCORE comes from the single matched span that
+-- overlaps most, since a score is a fact about one placement and averaging
+-- two would mean nothing.
 --
 -- `flat` is the flattened { span, source_path } list BuildOverview already
--- builds. `words` is this source's word list when the caller has it, and is
--- what the TEXT is cut from; without it the text falls back to the spans'.
+-- builds. `words` is this source's word list; a caller without one gets nil,
+-- and the row shows empty. There used to be a fallback that concatenated
+-- every overlapping span's WHOLE transcript -- which is how a marker holding
+-- part of a span read as all of it, the original §1 bug of
+-- SPEC-range-transcript.md. Empty is honest; a neighbour's words are not.
 -- Returns: text, score, in_sequence -- all nil when nothing overlaps.
--- The words a range holds, by ONSET: t0 inside [from, to).
+-- The words a range holds, by ANCHOR: `w.anchor or w.t0` inside [from, to).
 --
--- The onset is the only trustworthy number in this data. whisper-cli is run
--- with `-ml 1`, which emits one word per SEGMENT, and its segments are
--- contiguous -- a word's `end` is the next word's `start`, not where the
--- speaker stopped. Measured on a real 1598-word transcript: 94% of words end
--- exactly where the next begins.
+-- The anchor is the word's DTW timestamp -- one point that sits ON the word
+-- (SPEC-word-anchors.md). It exists because no rule over t0/t1 can be right:
+-- with `-ml 1` whisper's segments are a contiguous PARTITION of the timeline,
+-- so t0 is really where the previous word stopped and t1 is where the next
+-- one starts, and a word after a long pause can sit past its own window's end
+-- entirely. A midpoint rule shipped and failed on "guards." (word at the
+-- window's start, 85.99-90.36 for a sub-second word); an onset rule shipped
+-- and failed on "you" (word at the window's end, stamped 428.16-428.92 for a
+-- word audible at 428.59). Opposite directions, same disease: the window is
+-- displaced, not imprecise.
 --
--- So t1 is silence-padded by however long the following pause was, and any
--- rule that reads it inherits that. This was a midpoint rule first, on the
--- assumption that t1 was a word end; on real data a word before a pause has
--- its MIDPOINT in the silence, and the rule dropped whole spoken words. In
--- that transcript "guards." is stamped 85.99-90.36 for a word taking well
--- under a second: a marker over 85.99-87.00 holds all of it and read as
--- holding none.
+-- t0 is the fallback for a word with no anchor -- a model without a DTW
+-- preset, or a token whisper never anchored -- and degrades to the old onset
+-- behaviour, never worse. Anchors are sharp: membership is exact, with no
+-- tolerance, because measured on 289 real cuts every widening of the range
+-- only stole neighbours' words.
 --
--- Half-open on purpose. A word starting exactly at `to` belongs to the next
+-- Half-open on purpose. A word anchored exactly at `to` belongs to the next
 -- range, so two markers meeting at a boundary cannot both claim it.
 --
 -- Shared by the sheet's transcript and by the duplicate-marker planner, which
@@ -2177,7 +2286,8 @@ function vo.WordsInRange(words, from, to)
   if not (from and to and to > from) then return out end
   for _, w in ipairs(words or {}) do
     if w.t0 and w.text and w.text ~= "" then
-      if w.t0 >= from and w.t0 < to then out[#out + 1] = w end
+      local at = w.anchor or w.t0
+      if at >= from and at < to then out[#out + 1] = w end
     end
   end
   return out
@@ -2200,31 +2310,14 @@ function vo.TranscriptForRange(flat, path, from, to, words)
   end
   if #hits == 0 then return nil end
 
-  -- The words themselves when the caller has them. A span is a whole matched
-  -- stretch and a marker inside one holds only PART of it, so concatenating
-  -- every overlapping span reported a dozen words the take does not contain --
-  -- which is the entire reason this argument exists.
-  --
-  -- Which words those are is vo.WordsInRange's rule, and it is the ONSET --
-  -- see the reasoning there, which is about what whisper's `end` actually is.
+  -- Which words is vo.WordsInRange's rule -- the ANCHOR; see the reasoning
+  -- there. A range the words say is empty reads as empty, not as its
+  -- neighbours': the retired span fallback showed whole overlapping spans and
+  -- was confidently wrong every time a marker held part of one.
   local text = {}
   for _, w in ipairs(vo.WordsInRange(words, from, to)) do text[#text + 1] = w.text end
-  if #text > 0 then
-    return table.concat(text, " "), best and best.score or nil,
-           best and best.in_sequence or nil
-  end
-  -- Nothing to offer -- either the caller passed no words at all, or this
-  -- range really is silent. Only the FIRST may fall back to the spans: a
-  -- range the words say is empty must read as empty, not as its neighbours'.
-  if words and #words > 0 then return nil end
-
-  table.sort(hits, function(a, b) return (a.start or 0) < (b.start or 0) end)
-  local span_text = {}
-  for _, s in ipairs(hits) do
-    if s.transcript and s.transcript ~= "" then span_text[#span_text + 1] = s.transcript end
-  end
-  if #span_text == 0 then return nil end
-  return table.concat(span_text, " "), best and best.score or nil,
+  if #text == 0 then return nil end
+  return table.concat(text, " "), best and best.score or nil,
          best and best.in_sequence or nil
 end
 
@@ -2363,6 +2456,43 @@ function vo.PlanMarkerPrune(group)
     end
   end
   return rewrites, #canonical
+end
+
+-- Add ONE marker to an item without losing the ones already there.
+--
+-- vo.WriteTakeMarkers replaces the tool's whole set, so every caller adding a
+-- single marker has to hand it the existing ones too. Forgetting that does not
+-- fail loudly: it silently wipes every other take in the item, which on an
+-- uncut recording is the entire session's identification.
+--
+-- `existing` is vo.ParseTKMChunk's shape ({ pos, name, length }); user markers
+-- (no ` ~id` suffix) are dropped from the result because WriteTakeMarkers
+-- preserves those itself, and returning them here would write them twice.
+--
+-- Returns the list to write, plus whether the marker was actually added. It is
+-- NOT added when this line is already marked over the same audio -- an overlap
+-- covering more than half the new range, the same rule vo.UnidentifiedSpans
+-- uses for "this span is claimed". Marking the same take twice is a duplicate
+-- row and a duplicate cut, and pressing a button twice must not cause either.
+function vo.PlanMarkerAdd(existing, add)
+  local list = {}
+  local claimed = false
+  local span = (add.stop or add.start) - add.start
+  for _, m in ipairs(existing or {}) do
+    local asset, id = vo.ParseMarkerName(m.name)
+    if id then
+      local start, stop = m.pos, m.pos + (m.length or 0)
+      list[#list + 1] = { start = start, stop = stop, asset = asset, id = id }
+      if asset == add.asset and span > 0 then
+        local over = math.min(stop, add.stop) - math.max(start, add.start)
+        if over > span / 2 then claimed = true end
+      end
+    end
+  end
+  if claimed then return list, false end
+  list[#list + 1] = { start = add.start, stop = add.stop,
+                      asset = add.asset, id = add.id }
+  return list, true
 end
 
 -- Markers that are arguing over the SAME stretch of audio, grouped.
@@ -4451,8 +4581,10 @@ function vo.DTWPresetForModel(model_path)
 end
 
 -- Build the whisper-cli command line.
--- `-ml 1 -sow -ocsv` is the load-bearing combination: it forces one word per
--- segment and writes start,end,text as CSV, so no JSON library is needed.
+-- `-ml 1 -sow -ojf` is the load-bearing combination: one word per segment,
+-- written as JSON-full — the only output that carries per-token `t_dtw`, the
+-- anchor vo.ParseWhisperJSON turns into word.anchor. CSV was used before it
+-- was known that `offsets` can miss the word entirely (SPEC-word-anchors.md).
 -- whisper.cpp resamples and downmixes internally, so the take's source file is
 -- passed straight through — no render step and no ffmpeg.
 -- `span`, when given, is { from, to } in source seconds and becomes -ot/-d in
@@ -4473,7 +4605,7 @@ function vo.BuildWhisperArgv(cfg, audio, out_prefix, span)
   end
   add("-f", audio)
   add("-of", out_prefix)
-  add("-ocsv")
+  add("-ojf")
   add("-ml", "1")  -- one word per segment; also enables token timestamps
   add("-sow")      -- split on word rather than mid-token
   add("-np")       -- no progress prints: we read the CSV, not stdout
@@ -4503,8 +4635,13 @@ function vo.BuildWhisperArgv(cfg, audio, out_prefix, span)
     add("-l", cfg.whisper_language)
   end
 
+  -- -nfa is paired with -dtw, never emitted alone: flash attention (default
+  -- on in v1.9.1) computes attention without ever materialising the matrix
+  -- DTW aligns against, so with -fa every t_dtw is silently -1 -- verified
+  -- byte-identical output with and without -dtw. A model with no preset gains
+  -- no anchors, so it keeps flash attention's speed.
   local preset = vo.DTWPresetForModel(cfg.whisper_model)
-  if preset then add("-dtw", preset) end
+  if preset then add("-dtw", preset) add("-nfa") end
 
   return argv
 end
@@ -5012,16 +5149,21 @@ end
 -- word anyway, so there is no grouping left to store.
 
 vo.TRANSCRIPT_MARKER  = "ajsfx VO Transcript"
-vo.TRANSCRIPT_VERSION = 1
-vo.TRANSCRIPT_HEADER  = { "Start", "End", "Text" }
+-- Version 2 added the Anchor column (SPEC-word-anchors.md). Matching is
+-- exact, so v1 sidecars read as unsupported and the Sources window offers the
+-- re-transcribe -- deliberate: an anchor-less transcript reproduces exactly
+-- the "wrong words under a take" bug that anchors exist to kill.
+vo.TRANSCRIPT_VERSION = 2
+vo.TRANSCRIPT_HEADER  = { "Start", "End", "Text", "Anchor" }
 
 function vo.TranscriptPath(source_path)
   if not source_path or source_path == "" then return nil end
   return strip_ext(source_path) .. "_vo_transcript.csv"
 end
 
--- `words` are in SOURCE time, as vo.ParseWhisperCSV produces them. This
+-- `words` are in SOURCE time, as vo.ParseWhisperJSON produces them. This
 -- function converts nothing, so it cannot silently write project times.
+-- Anchor is empty, not 0.000, when a word has none: zero is a real time.
 function vo.SerializeTranscript(words, meta)
   meta = meta or {}
   local out = {
@@ -5040,6 +5182,7 @@ function vo.SerializeTranscript(words, meta)
       string.format("%.3f", w.t0 or 0),
       string.format("%.3f", w.t1 or 0),
       w.text or "",
+      w.anchor and string.format("%.3f", w.anchor) or "",
     })
   end
   return table.concat(out, "\n") .. "\n"
@@ -5086,7 +5229,8 @@ function vo.ParseTranscript(text)
     local row = rows[j]
     local t0, t1 = tonumber(row[1] or ""), tonumber(row[2] or "")
     if t0 and t1 then
-      parsed.words[#parsed.words + 1] = { t0 = t0, t1 = t1, text = row[3] or "" }
+      parsed.words[#parsed.words + 1] = { t0 = t0, t1 = t1, text = row[3] or "",
+                                          anchor = tonumber(row[4] or "") }
     end
   end
 
@@ -7498,11 +7642,14 @@ function vo.RepairTranscriptGaps(cfg, source_path, scratch, prefix, words, on_do
         if code ~= 0 then
           note_failure(string.format("whisper-cli exited with code %d", code))
         else
-          local f = io.open(out .. ".csv", "r")
+          local f = io.open(out .. ".json", "r")
           if not f then
-            note_failure("whisper-cli wrote no CSV")
+            note_failure("whisper-cli wrote no JSON")
           else
-            repairs[#repairs + 1] = { span = plan, words = vo.ParseWhisperCSV(f:read("a")) }
+            -- t_dtw from an -ot offset run is absolute source time (verified
+            -- against a 415s-offset decode), so anchors merge without any
+            -- conversion, same as t0/t1.
+            repairs[#repairs + 1] = { span = plan, words = vo.ParseWhisperJSON(f:read("a")) }
             f:close()
           end
         end
@@ -7587,6 +7734,22 @@ function vo.WriteTakeMarkers(item, markers)
   return true
 end
 
+-- Write ONE marker onto an item, keeping every marker already in it.
+--
+-- The safe form of "mark this take": vo.PlanMarkerAdd decides what the item
+-- should hold, this writes it. Returns ok, added, why -- `added` false with ok
+-- true means this line was already marked over that audio and nothing changed,
+-- which is a no-op to report, not an error.
+-- UNVERIFIED outside REAPER — see SPEC.md §10.
+function vo.AddMarkerToItem(item, add)
+  local ok, chunk = r.GetItemStateChunk(item, "", false)
+  if not ok then return false, false, "cannot read item chunk" end
+  local list, added = vo.PlanMarkerAdd(vo.ParseTKMChunk(chunk), add)
+  if not added then return true, false end
+  local wrote, why = vo.WriteTakeMarkers(item, list)
+  return wrote and true or false, wrote and true or false, why
+end
+
 -- Transcribe a list of unique source files in sequence, reusing cached
 -- transcripts.
 --
@@ -7645,14 +7808,15 @@ function vo.TranscribeSources(cfg, sources, cb)
       return
     end
 
-    local source   = sources[index]
-    local key      = vo.CacheKey(source.path, source.size, cfg)
-    local prefix   = scratch .. "/" .. key
-    local csv_path = prefix .. ".csv"
+    local source    = sources[index]
+    local key       = vo.CacheKey(source.path, source.size, cfg)
+    local prefix    = scratch .. "/" .. key
+    local json_path = prefix .. ".json"
 
-    -- The raw whisper CSV is what is cached; repair happens on the way out on
+    -- The raw whisper JSON is what is cached; repair happens on the way out on
     -- both paths, so a cache hit gets the same mended transcript a fresh run
-    -- would.
+    -- would. An old .csv beside the wav is NOT a cache hit: it has no anchors,
+    -- and serving it would quietly reintroduce the bug the anchors fix.
     local function repair_then_finish(words)
       vo.RepairTranscriptGaps(cfg, source.path, scratch, prefix, words,
         function(merged, report)
@@ -7662,9 +7826,9 @@ function vo.TranscribeSources(cfg, sources, cb)
         cb.on_cancel)
     end
 
-    if not cfg.force_retranscribe and vo.FileExists(csv_path) then
-      local f = io.open(csv_path, "r")
-      local words = vo.ParseWhisperCSV(f:read("a"))
+    if not cfg.force_retranscribe and vo.FileExists(json_path) then
+      local f = io.open(json_path, "r")
+      local words = vo.ParseWhisperJSON(f:read("a"))
       f:close()
       repair_then_finish(words)
       return
@@ -7679,13 +7843,13 @@ function vo.TranscribeSources(cfg, sources, cb)
           step()
           return
         end
-        local f = io.open(csv_path, "r")
+        local f = io.open(json_path, "r")
         if not f then
-          fail(source, "whisper-cli reported success but wrote no CSV:\n" .. csv_path)
+          fail(source, "whisper-cli reported success but wrote no JSON:\n" .. json_path)
           step()
           return
         end
-        local words = vo.ParseWhisperCSV(f:read("a"))
+        local words = vo.ParseWhisperJSON(f:read("a"))
         f:close()
         repair_then_finish(words)
       end,

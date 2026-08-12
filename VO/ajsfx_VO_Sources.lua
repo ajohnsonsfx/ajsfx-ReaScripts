@@ -702,11 +702,18 @@ local function DrawFocusedWords(row, paragraph_words, index)
     end
 
     im.PushID(ctx, wi)
+    -- The anchor sits ON the word; t0 is the start of the pause before it.
+    -- Jumping to the anchor lands the cursor on the sound, not the silence.
     if im.SmallButton(ctx, w.text) then
-      GoToWord(row.path, w.t0)
+      GoToWord(row.path, w.anchor or w.t0)
     end
     if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, string.format("%.3f \226\128\147 %.3f s", w.t0, w.t1))
+      if w.anchor then
+        im.SetTooltip(ctx, string.format("%.3f s (window %.3f \226\128\147 %.3f)",
+                                         w.anchor, w.t0, w.t1))
+      else
+        im.SetTooltip(ctx, string.format("%.3f \226\128\147 %.3f s", w.t0, w.t1))
+      end
     end
     im.PopID(ctx)
 

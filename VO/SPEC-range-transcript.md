@@ -1,6 +1,14 @@
 # ajsfx VO — Range-true transcripts, and a fades verb
 
-**Status:** Designed, not implemented · **Date:** 2026-08-10
+**Status:** Implemented; §2's onset rule superseded by `SPEC-word-anchors.md`
+(2026-08-11) · **Date:** 2026-08-10
+
+> **Correction, 2026-08-11.** §2's premise — "the onset is the only
+> trustworthy number in this data" — is wrong. `t0` inherits the *preceding*
+> pause exactly as `t1` inherits the following one, and a word after a long
+> pause can sit past its own window's end (the "You."/"tower is" failure).
+> Membership is now decided by the word's DTW anchor (`w.anchor or w.t0` in
+> `vo.WordsInRange`); the half-open range and everything else here stands.
 
 Two small changes that fix one complaint: *the text captured for this line is
 wrong.* Neither of them reassigns a take to a different line — this spec is

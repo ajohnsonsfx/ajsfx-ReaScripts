@@ -25,32 +25,44 @@ confirm the panel shows **Backend ready** in green. Press **Save**.
 
 ---
 
-## 1. The single highest-value check: does the CSV look like we think?
+## 1. The single highest-value check: does the JSON look like we think?
 
-Everything downstream depends on `whisper-cli -ml 1 -sow -ocsv` writing
-`start,end,text` with times in **milliseconds**. This was read from upstream
-source, never observed.
+Everything downstream depends on `whisper-cli -ml 1 -sow -ojf` writing
+JSON-full with one **segment per word**, `offsets` in **milliseconds**, and
+per-token `t_dtw` in **centiseconds** when DTW is on. (Verified live
+2026-08-11 against v1.9.1; re-verify whenever `vo.WHISPER_RELEASE` bumps.)
 
-Run it by hand on any speech file:
+Run it by hand on any speech file — note **`-nfa`**, without which every
+`t_dtw` is silently `-1` (flash attention never materialises the attention
+matrix DTW reads):
 
 ```
-whisper-cli -m <model> -f <audio.wav> -of /tmp/probe -ocsv -ml 1 -sow -np
+whisper-cli -m <model> -f <audio.wav> -of /tmp/probe -ojf -ml 1 -sow -np -dtw <preset> -nfa
 ```
 
-Open `/tmp/probe.csv` and confirm:
+Open `/tmp/probe.json` and confirm:
 
-- [ ] A header row `start,end,text` is present.
-- [ ] Each row holds **one word**, not a sentence.
-- [ ] Times are **milliseconds** (a word ~2s in should read ~2000, not ~2).
-- [ ] Text is quoted, and any literal `"` is doubled.
+- [ ] A `"transcription"` array is present; each entry's `"text"` is **one
+      word**, not a sentence.
+- [ ] `"offsets"` are **milliseconds** (a word ~2s in reads ~2000, not ~2).
+- [ ] Tokens carry `"t_dtw"` values that are NOT all `-1`, and they read as
+      **centiseconds** (~2s in ≈ 200).
+- [ ] Rerun **without** `-nfa`: every `t_dtw` is `-1`. That asymmetry is why
+      `vo.BuildWhisperArgv` pairs the flags.
 
-**If any of these differ, stop.** `vo.ParseWhisperCSV` needs adjusting first, and
-its unit tests are the place to encode whatever the real format turns out to be.
+**If any of these differ, stop.** `vo.ParseWhisperJSON` needs adjusting first,
+and its unit tests are the place to encode whatever the real format turns out
+to be.
 
-Also confirm the DTW flag: rerun with `-dtw base` (matching your model). If
-whisper-cli rejects the preset name, `vo.DTW_PRESETS` needs correcting. If it
-accepts `base.en` for an `.en` model, that preset can be added — the table is
+Also confirm the DTW preset name: if whisper-cli rejects it
+(`unknown DTW preset`), `vo.DTW_PRESETS` needs correcting. If it accepts
+`base.en` for an `.en` model, that preset can be added — the table is
 deliberately conservative today.
+
+After the first in-tool transcription, open the `_vo_transcript.csv` sidecar
+and confirm the header is `Start,End,Text,Anchor` (version 2) and most rows
+carry a fourth value. A v1 sidecar from an older build must read as
+**Unsupported transcript version** in Sources, with re-transcribe offered.
 
 ---
 
