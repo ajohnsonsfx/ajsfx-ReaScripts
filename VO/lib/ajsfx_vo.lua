@@ -2461,12 +2461,12 @@ function vo.PlanDuplicateMarkers(input)
         local heard = vo.WordsInRange(words[m.source_path], m.start, m.stop)
         local text = {}
         for _, w in ipairs(heard) do text[#text + 1] = w.text end
-        local window = vo.Tokenize(vo.Normalize(table.concat(text, " "), cfg and cfg.subs))
+        local window = vo.Tokenize(vo.Normalize(table.concat(text, " "), cfg and cfg.substitutions))
         if #window > 0 then any_words = true end
         -- An asset naming no script line scores 0: it cannot win, and it loses
         -- to any real match. Two of them together therefore fail the floor and
         -- are reported rather than guessed between.
-        local toks = vo.Tokenize(vo.Normalize(text_for[m.asset] or "", cfg and cfg.subs))
+        local toks = vo.Tokenize(vo.Normalize(text_for[m.asset] or "", cfg and cfg.substitutions))
         local score = 0
         if #toks > 0 and #window > 0 then
           score = 1 - vo.Levenshtein(toks, window) / math.max(#toks, #window)
@@ -2884,7 +2884,7 @@ end
 -- carries the source word's timing so token indices stay mappable to time.
 -- Returns: array of { text, t0, t1, word = source word index }
 function vo.BuildWordTokens(words, cfg)
-  local subs = cfg and cfg.substitutions
+  local subs = cfg and cfg.substitutionstitutions
   local out = {}
   for i, w in ipairs(words or {}) do
     for token in vo.Normalize(w.text, subs):gmatch("%S+") do
@@ -2900,7 +2900,7 @@ end
 -- Returns: { n, tokens = {[line] = {token…}}, idf, postings, anchors }
 function vo.BuildIndex(lines, cfg)
   local anchor_count = vo.Opt(cfg, "anchor_count")
-  local subs = cfg and cfg.substitutions
+  local subs = cfg and cfg.substitutionstitutions
   local n = #lines
 
   local index = { n = n, tokens = {}, idf = {}, postings = {}, anchors = {} }
@@ -3483,12 +3483,12 @@ function vo.FindSpanLines(lines, text, cfg, opts)
   opts = opts or {}
   local floor_ = opts.floor or 0.25
   local limit  = opts.limit or 12
-  local window = vo.Tokenize(vo.Normalize(text or "", cfg and cfg.subs))
+  local window = vo.Tokenize(vo.Normalize(text or "", cfg and cfg.substitutions))
   if #window == 0 or not lines then return {} end
 
   local out = {}
   for idx, line in ipairs(lines) do
-    local toks = vo.Tokenize(vo.Normalize(line.text or "", cfg and cfg.subs))
+    local toks = vo.Tokenize(vo.Normalize(line.text or "", cfg and cfg.substitutions))
     if #toks > 0 then
       local score = 1 - vo.Levenshtein(toks, window) / math.max(#toks, #window)
       if score >= floor_ then
@@ -5302,6 +5302,15 @@ function vo.SerializeProjectFile(entries, meta)
     end
   end
 
+  -- The words this reader's transcriber mishears. A property of the session,
+  -- not of the machine, so it travels with the project rather than sitting in
+  -- global ExtState where it would follow you into unrelated work.
+  for _, s in ipairs(meta.subs or {}) do
+    if s.from and s.from ~= "" then
+      out[#out + 1] = vo.FormatCSVRow({ "Sub", s.from, s.to or "" })
+    end
+  end
+
   -- Pins live in the preamble rather than the entry table because they are keyed
   -- by the SCRIPT LINE, while every entry row is keyed by a stretch of audio.
   -- Keeping them out of that table is also what lets them be added without
@@ -5404,7 +5413,7 @@ function vo.ParseProjectFile(text)
   end
 
   local parsed = { version = version, scripts = {}, appends = {},
-                   line_edits = {}, names = {},
+                   line_edits = {}, names = {}, subs = {},
                    entries = {}, pins = {}, view = { col_filters = {}, expanded = {} } }
   -- The pre-multi-script format, folded in below only if no Script row appears.
   local legacy_path, legacy_mapping = nil, nil
@@ -5442,6 +5451,11 @@ function vo.ParseProjectFile(text)
       if asset ~= "" and nth and text ~= "" then
         parsed.line_edits[#parsed.line_edits + 1] =
           { script = script, asset = asset, nth = math.floor(nth), text = text }
+      end
+    elseif key == "Sub" then
+      local from, to = rows[i][2] or "", rows[i][3] or ""
+      if from ~= "" then
+        parsed.subs[#parsed.subs + 1] = { from = from, to = to }
       end
     elseif key == "Name" then
       local script, asset = rows[i][2] or "", rows[i][3] or ""
@@ -6539,6 +6553,40 @@ function vo.ParseSubstitutionText(text)
   return subs
 end
 
+-- Substitutions belong to the PROJECT, not to the machine.
+--
+-- They were global ExtState, which meant `bolvd = adon` followed you into every
+-- other project you opened -- and the words a transcriber mishears are facts
+-- about one reader on one day, not about the tool. Worse, they were invisible
+-- from the sheet: the place you notice a mishearing is the card, and the fix
+-- was two windows away.
+--
+-- Stored as records, like every other per-line judgement in the project file:
+-- `{ from = <folded token>, to = <replacement> }`. The `from = to` text box is
+-- still how they are EDITED -- it is a good editor for a short table -- so
+-- these two convert between the box and the records.
+function vo.SubRows(text)
+  local map = vo.ParseSubstitutionText(text)
+  local keys = {}
+  for from in pairs(map) do keys[#keys + 1] = from end
+  -- Sorted, so the box does not reshuffle under the cursor between edits and
+  -- so the project file's diff is stable.
+  table.sort(keys)
+  local rows = {}
+  for _, from in ipairs(keys) do
+    rows[#rows + 1] = { from = from, to = map[from] }
+  end
+  return rows
+end
+
+function vo.SubMap(rows)
+  local m = {}
+  for _, s in ipairs(rows or {}) do
+    if s.from and s.from ~= "" then m[s.from] = s.to or "" end
+  end
+  return m
+end
+
 -- Render the substitution table back to editable text, sorted so the panel
 -- shows a stable order rather than reshuffling on every open.
 function vo.FormatSubstitutionText(subs)
@@ -6615,6 +6663,23 @@ vo.CONFIG_SCHEMA = {
 }
 
 -- Load settings from ExtState, falling back to documented defaults.
+-- The PROJECT's substitutions, when a project has them.
+--
+-- Set once by the Overview after it reads the project file, and read by
+-- LoadConfig below -- so every existing `vo.LoadConfig()` call site picks up
+-- this session's table without knowing the feature moved. There are dozens of
+-- them across two scripts; threading an argument through all of them to say
+-- the same thing every time would be worse than one slot with one writer.
+--
+-- nil means "no project loaded yet", which is not the same as an empty table:
+-- a project that has deliberately no substitutions must not fall back to the
+-- global ones left over from the last one.
+local project_subs = nil
+
+function vo.SetProjectSubstitutions(map)
+  project_subs = map
+end
+
 function vo.LoadConfig()
   local function get(key)
     if r.HasExtState(vo.EXT_SECTION, key) then
@@ -6663,6 +6728,11 @@ function vo.LoadConfig()
       if from and from ~= "" then cfg.substitutions[from] = to end
     end
   end
+  -- The project wins outright once one is loaded -- not merged with the global
+  -- table. Merging would make a substitution impossible to REMOVE: deleting it
+  -- from the project would silently restore whatever the machine had, and the
+  -- user would be arguing with a table they cannot see from here.
+  if project_subs then cfg.substitutions = project_subs end
 
   return cfg
 end

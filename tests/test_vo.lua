@@ -977,6 +977,49 @@ test("a line with no append key still resolves", function()
   assert(lines[1].deliver == "a", "A key-less line must not error")
 end)
 
+print("\nSubstitutions live in the project:")
+
+test("substitutions round-trip through the project file", function()
+  local text = vo.SerializeProjectFile({}, {
+    subs = { { from = "archivists", to = "archivist" },
+             { from = "toadman",    to = "toad man" } },
+  })
+  assert(text:find("\nSub,", 1, true) or text:find("^Sub,"), "no Sub row")
+  local parsed = assert(vo.ParseProjectFile(text))
+  assert(#parsed.subs == 2, "count: " .. #parsed.subs)
+  local m = vo.SubMap(parsed.subs)
+  assert(m.archivists == "archivist", "from/to lost")
+  assert(m.toadman == "toad man", "a replacement with a space was split")
+end)
+
+test("a substitution whose replacement contains an = survives", function()
+  -- FormatCSVRow quotes the cell, so the separator is not the danger it is in
+  -- the "from = to" text box.
+  local parsed = assert(vo.ParseProjectFile(vo.SerializeProjectFile({}, {
+    subs = { { from = "eq", to = "a = b" } } })))
+  assert(vo.SubMap(parsed.subs).eq == "a = b",
+         "got " .. tostring(vo.SubMap(parsed.subs).eq))
+end)
+
+test("SubRows turns the edit box's text into records, folded", function()
+  local rows = vo.SubRows("Archivists = archivist\nTOADMAN = toad man\n")
+  assert(#rows == 2, "count: " .. #rows)
+  local m = vo.SubMap(rows)
+  assert(m.archivists == "archivist", "key not folded")
+  assert(m.toadman == "toad man", "key not folded")
+end)
+
+test("SubRows is stably ordered so the box does not reshuffle", function()
+  local a = vo.SubRows("b = 2\na = 1\nc = 3")
+  assert(a[1].from == "a" and a[2].from == "b" and a[3].from == "c",
+         "not sorted: " .. a[1].from .. a[2].from .. a[3].from)
+end)
+
+test("a blank or keyless line is dropped, not stored empty", function()
+  local rows = vo.SubRows("a = 1\n\n = nothing\nnokey\n")
+  assert(#rows == 1 and rows[1].from == "a", "count: " .. #rows)
+end)
+
 print("\nWrapping quotes:")
 
 test("a cell wrapped in quotes loses them", function()
