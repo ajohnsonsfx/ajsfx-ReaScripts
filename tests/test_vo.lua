@@ -2211,6 +2211,30 @@ test("a line edit round-trips through the project file", function()
   assert(e.text == 'Bolvd, "no", speak', "text: " .. e.text)
 end)
 
+test("an edited line's row carries the script's own words", function()
+  local lines = { { asset = "a.wav", text = "Bolvd no speak",
+                    text_original = "Adon no speak", text_edited = true,
+                    script = "S", append_nth = 1,
+                    append_key = vo.AppendKey("S", "a.wav", 1) } }
+  local rows = vo.BuildOverview({ lines = lines, matches = {}, entries = {} })
+  assert(#rows >= 1, "no rows")
+  assert(rows[1].line_text == "Bolvd no speak", "line_text: " ..
+         tostring(rows[1].line_text))
+  assert(rows[1].line_original == "Adon no speak", "line_original: " ..
+         tostring(rows[1].line_original))
+  assert(rows[1].line_edited == true, "line_edited not carried")
+end)
+
+test("an unedited line's row falls back to its own text for the grey row", function()
+  local lines = { { asset = "a.wav", text = "Adon no speak",
+                    script = "S", append_nth = 1,
+                    append_key = vo.AppendKey("S", "a.wav", 1) } }
+  local rows = vo.BuildOverview({ lines = lines, matches = {}, entries = {} })
+  assert(rows[1].line_original == "Adon no speak",
+         "line_original: " .. tostring(rows[1].line_original))
+  assert(not rows[1].line_edited, "flagged an unedited line as edited")
+end)
+
 test("a Line row for a vanished line is read, not dropped", function()
   -- Disabling a script must not destroy its edits; orphans are REPORTED.
   local parsed = assert(vo.ParseProjectFile(

@@ -5663,6 +5663,8 @@ function vo.BuildOverview(input)
       line_key      = line and line.append_key or nil,
       character     = line and line.speaker or nil,
       line_text     = line and line.text or nil,
+      line_original = line and (line.text_original or line.text) or nil,
+      line_edited   = line and line.text_edited or nil,
       take_index    = take_index,
       take_count    = take_count,
       script_row    = line and (line.index or line.row) or nil,
@@ -5708,6 +5710,8 @@ function vo.BuildOverview(input)
       line_key      = line and line.append_key or nil,
       character     = s.character or (line and line.speaker) or nil,
       line_text     = line and line.text or nil,
+      line_original = line and (line.text_original or line.text) or nil,
+      line_edited   = line and line.text_edited or nil,
       transcript    = s.transcript,
       score         = s.score,
       -- false when this match contradicts the order the rest of the read was in;
@@ -5761,6 +5765,8 @@ function vo.BuildOverview(input)
       line_key      = line.append_key,
       character     = line.speaker,
       line_text     = line.text,
+      line_original = line.text_original or line.text,
+      line_edited   = line.text_edited,
       source_start  = mk.start,
       source_stop   = mk.stop,
       take_index    = take_index,
@@ -5832,6 +5838,8 @@ function vo.BuildOverview(input)
         line_key      = line.append_key,
         character     = line.speaker,
         line_text     = line.text,
+        line_original = line.text_original or line.text,
+        line_edited   = line.text_edited,
         take_count    = 0,
         -- How many match or review spans this line has in the session, none of
         -- them marked. Zero means nothing was recorded; four means the audio is
