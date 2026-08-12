@@ -767,11 +767,25 @@ local function DrawOutput()
 end
 
 local function DrawScript()
-  local changed
-  im.TextDisabled(ctx, "One \"from = to\" per line, applied to both the script and the\n" ..
-                       "transcript. Use this to fix any reading the matcher gets wrong,\n" ..
-                       "e.g. \"1999 = nineteen ninety nine\" or \"hp = hit points\".")
-  changed, subs_text = im.InputTextMultiline(ctx, "##subs", subs_text, 380, 100)
+  -- The substitution box moved to the Overview, into the project.
+  --
+  -- It was here and it was GLOBAL, so a table built for one reader followed you
+  -- into every other project you opened -- and the words a transcriber mishears
+  -- are a fact about one reader on one day. It also sat two windows away from
+  -- the sheet, which is the only place a mishearing is ever noticed.
+  --
+  -- This panel is left in place, saying where it went, rather than removed: a
+  -- section that vanishes reads as a feature that vanished.
+  im.TextWrapped(ctx,
+    "Word substitutions have moved into the project, and are edited in the " ..
+    "VO Overview -- Main -> Match -> Word substitutions.")
+  im.Spacing(ctx)
+  im.TextDisabled(ctx,
+    "They were global, so one reader's misheard words followed you into\n" ..
+    "every other project. They now travel with the project that needs them,\n" ..
+    "beside the sheet where you notice one.\n\n" ..
+    "Substitutions already entered here were copied into this project the\n" ..
+    "first time it was opened; nothing was lost.")
 end
 
 local function DrawAdvanced()

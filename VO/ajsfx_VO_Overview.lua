@@ -409,6 +409,16 @@ end
 -- the mapping); the default skip list (vo.DEFAULT_SKIP_VALUES) is what
 -- vo.BuildScriptLines falls back to when none is supplied.
 local function LoadScripts()
+  -- Hand this project's substitutions to the lib before anything reads a
+  -- config. Every vo.LoadConfig() call below -- and there are dozens, across
+  -- the matcher, the cut and the panels -- picks them up from that one slot,
+  -- so nothing else has to know the table moved out of global ExtState.
+  --
+  -- Here rather than in LoadProjectFile because this runs after a project
+  -- load AND after every edit to the table, which is exactly when the answer
+  -- changes.
+  vo.SetProjectSubstitutions(vo.SubMap(state.subs))
+
   state.loaded = vo.LoadScripts(state.scripts, ReadFile)
   -- A script whose columns were never mapped gets the header's own suggestion,
   -- so a freshly added CSV usually just works. Auto-detection knows the usual
@@ -477,7 +487,8 @@ end
 local function LoadProjectFile()
   state.entries, state.project_error, state.parse_failed = {}, "", false
   state.scripts, state.appends, state.pins = {}, {}, {}
-  state.line_edits, state.names = {}, {}
+  state.line_edits, state.names, state.subs = {}, {}, {}
+  state.subs_text = nil
   state.expanded = {}
   -- Everything below describes the PREVIOUS project. A message like "Pulled 27
   -- select" surviving a tab switch reads as a claim about the new project.
@@ -504,6 +515,27 @@ local function LoadProjectFile()
     state.pins    = parsed.pins or {}
     state.line_edits = parsed.line_edits or {}
     state.names      = parsed.names or {}
+    state.subs       = parsed.subs or {}
+
+    -- Substitutions used to live in global ExtState. A project that has none of
+    -- its own adopts whatever the machine is still carrying, ONCE, so a table
+    -- built up over months is not silently dropped by the version that moved
+    -- it. Written into the project on the next save, after which the global
+    -- copy is never consulted for this project again.
+    --
+    -- Guarded on the project having NONE: a project that has deliberately
+    -- emptied its table must not have the old global one poured back in.
+    if #state.subs == 0 then
+      -- Clear the slot first, or LoadConfig hands back the LAST project's
+      -- table and this project adopts it -- the precise thing moving them out
+      -- of global state was meant to stop. LoadScripts fills it back in.
+      vo.SetProjectSubstitutions(nil)
+      local global_subs = vo.LoadConfig().substitutions
+      if global_subs and next(global_subs) then
+        state.subs = vo.SubRows(vo.FormatSubstitutionText(global_subs))
+        state.dirty = true
+      end
+    end
 
     -- The table is handed back the way it was left. A stored status or column
     -- this version no longer has is dropped rather than carried: it would filter
@@ -557,6 +589,7 @@ local function SaveProjectFile()
     entries,
     { scripts = state.scripts, appends = state.appends, pins = state.pins,
       line_edits = state.line_edits, names = state.names,
+      subs = state.subs,
       view = {
         character   = state.character,
         search      = state.search,
@@ -2336,6 +2369,63 @@ function Line.SetName(row, text)
   state.dirty = true
   LoadScripts()
   Rebuild()
+end
+
+-- The words this reader's transcriber mishears, edited where you notice them.
+--
+-- They used to be a box in the Settings window, filled from global ExtState, so
+-- a table built for one reader followed you into every other project. The place
+-- you SEE a mishearing is the sheet -- a take whose transcript reads "bolvd"
+-- against a line that says "Adon" -- and the fix now lives one panel away
+-- instead of two windows away.
+--
+-- A substitution and a line edit answer different questions, and the panel says
+-- so: a word the TRANSCRIBER got wrong is one entry covering every line that
+-- uses it; a line the READER changed is a line edit on that one line. Fixing a
+-- mishearing line-by-line would put words on the cards that nobody said.
+--
+-- The "from = to" box stays the editor -- it is a good one for a short table --
+-- but the records behind it now live in the project file. state.subs_text is
+-- the buffer while typing; nil means "reload it from the records".
+function Line.DrawSubs()
+  im.Separator(ctx)
+  im.Text(ctx, "Word substitutions")
+  im.TextDisabled(ctx,
+    "One \"heard = script\" per line, applied to the transcript AND the\n" ..
+    "script before they are compared. This is for words the TRANSCRIBER\n" ..
+    "gets wrong -- one entry fixes every line using that word.\n" ..
+    "A line the READER changed is not this: right-click the line and\n" ..
+    "Edit line, so the card shows what was actually said.")
+  im.Spacing(ctx)
+
+  if state.subs_text == nil then
+    state.subs_text = vo.FormatSubstitutionText(vo.SubMap(state.subs))
+  end
+  local changed, text = im.InputTextMultiline(ctx, "##subs", state.subs_text,
+                                              420, 120)
+  if changed then state.subs_text = text end
+
+  local dirty_box =
+    state.subs_text ~= vo.FormatSubstitutionText(vo.SubMap(state.subs))
+  if im.Button(ctx, "Apply") and dirty_box then
+    state.subs = vo.SubRows(state.subs_text)
+    state.subs_text = nil
+    state.dirty = true
+    -- Re-read the scripts so the new table reaches the matcher, then rebuild
+    -- the sheet. Scores do NOT move until Match transcript to script is run --
+    -- same contract as editing a line.
+    LoadScripts()
+    Rebuild()
+    state.message, state.message_kind = string.format(
+      "%d substitution(s) saved to this project. Run Match transcript to " ..
+      "script to re-score with them.", #state.subs), "ok"
+  end
+  im.SameLine(ctx)
+  if dirty_box then
+    im.TextDisabled(ctx, "unsaved")
+  else
+    im.TextDisabled(ctx, string.format("%d in this project", #state.subs))
+  end
 end
 
 -- Which takes of a line are the same line's takes, for the Sel exclusivity
@@ -5415,7 +5505,8 @@ local function ResetProject(also_transcripts)
   -- Forget everything read from those files BEFORE anything can save again,
   -- or the in-memory copy writes the sidecar straight back.
   state.entries, state.scripts, state.appends, state.pins = {}, {}, {}, {}
-  state.line_edits, state.names = {}, {}
+  state.line_edits, state.names, state.subs = {}, {}, {}
+  state.subs_text = nil
   state.loaded = { scripts = {}, lines = {} }
   state.selection, state.expanded = {}, {}
   state.name_baseline, state.project_error = nil, ""
@@ -8059,6 +8150,22 @@ local function RunRemoteCommand(command)
     Rebuild()
     return string.format("set_name %s: %d override(s) in the project",
       asset, #(state.names or {}))
+  elseif verb == "subs" then
+    -- rest is the whole table as "heard = script" lines, `;` for newline so it
+    -- survives the one-line command file. Empty rest reports without writing.
+    if rest ~= "" then
+      state.subs = vo.SubRows((rest:gsub(";", "\n")))
+      state.subs_text = nil
+      state.dirty = true
+      LoadScripts()
+      Rebuild()
+    end
+    local shown = {}
+    for _, s in ipairs(state.subs or {}) do
+      shown[#shown + 1] = s.from .. " = " .. tostring(s.to)
+    end
+    return string.format("%d substitution(s) in this project\n%s",
+      #(state.subs or {}), table.concat(shown, "\n"))
   end
 
   return "unknown command: " .. tostring(verb) .. ". Commands: " .. REMOTE_HELP
@@ -8484,6 +8591,18 @@ local function loop()
           "Select a recording to cut all of it, or rows to cut just those.\n" ..
           "The line above the rows says which.")
 
+      -- Closes Match, because a substitution is a fact about how the words
+      -- were HEARD -- the same subject as matching them, and the one thing on
+      -- this row that changes what a score means.
+      Flow("Word substitutions")
+      PanelButton("subs",
+        string.format("Word substitutions (%d)", #(state.subs or {})),
+        "Words the transcriber mishears, for THIS project: one\n" ..
+        "\"heard = script\" per line, applied to both sides before they\n" ..
+        "are compared. One entry fixes every line using that word.\n\n" ..
+        "A line the READER changed is not this -- right-click the line\n" ..
+        "and Edit line instead, so the card shows what was said.")
+
       -- EDIT, not Fix. Every verb here acts on takes that already exist, and
       -- every one of them starts with a human having changed something by
       -- hand: this is the tool's normal working state, not a repair bay. Match
@@ -8720,7 +8839,8 @@ local function loop()
     elseif state.panel == "script" then DrawScriptPanel()
     elseif state.panel == "cut"    then DrawCutPanel()
     elseif state.panel == "pull"   then DrawPullPanel()
-    elseif state.panel == "sort"   then DrawLayoutBar() end
+    elseif state.panel == "sort"   then DrawLayoutBar()
+    elseif state.panel == "subs"   then Line.DrawSubs() end
 
     local bad = BadScriptCount()
     if bad > 0 then
