@@ -5213,6 +5213,20 @@ function vo.SerializeProjectFile(entries, meta)
     end
   end
 
+  -- Line edits sit beside the Appends and for the same reason: both are keyed
+  -- by the script LINE, not by a stretch of audio, so neither can live in the
+  -- entry table. An edit whose script is no longer in the list is still
+  -- written -- removing a script and adding it back must not throw the user's
+  -- words away.
+  for _, e in ipairs(meta.line_edits or {}) do
+    if e.text and e.text ~= "" then
+      out[#out + 1] = vo.FormatCSVRow({
+        "Line", e.script or "", e.asset or "",
+        tostring(e.nth or 1), e.text,
+      })
+    end
+  end
+
   -- Pins live in the preamble rather than the entry table because they are keyed
   -- by the SCRIPT LINE, while every entry row is keyed by a stretch of audio.
   -- Keeping them out of that table is also what lets them be added without
@@ -5315,6 +5329,7 @@ function vo.ParseProjectFile(text)
   end
 
   local parsed = { version = version, scripts = {}, appends = {},
+                   line_edits = {},
                    entries = {}, pins = {}, view = { col_filters = {}, expanded = {} } }
   -- The pre-multi-script format, folded in below only if no Script row appears.
   local legacy_path, legacy_mapping = nil, nil
@@ -5341,6 +5356,16 @@ function vo.ParseProjectFile(text)
       local nth, text = tonumber(rows[i][4] or ""), rows[i][5] or ""
       if asset ~= "" and nth and text ~= "" then
         parsed.appends[#parsed.appends + 1] =
+          { script = script, asset = asset, nth = math.floor(nth), text = text }
+      end
+    elseif key == "Line" then
+      -- Read even when no loaded line answers to it: disabling a script, or
+      -- re-exporting the CSV under a new name, must not destroy the user's
+      -- words. vo.OrphanLineEdits is what surfaces those.
+      local script, asset = rows[i][2] or "", rows[i][3] or ""
+      local nth, text = tonumber(rows[i][4] or ""), rows[i][5] or ""
+      if asset ~= "" and nth and text ~= "" then
+        parsed.line_edits[#parsed.line_edits + 1] =
           { script = script, asset = asset, nth = math.floor(nth), text = text }
       end
     elseif key == "View" then

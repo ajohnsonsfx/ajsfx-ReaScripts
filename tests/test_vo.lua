@@ -2196,6 +2196,30 @@ test("a project file with no pins still reads, and a corrupt pin is dropped", fu
   assert(#reparsed.pins == 0, "a pin with no source or range was kept")
 end)
 
+test("a line edit round-trips through the project file", function()
+  local text = vo.SerializeProjectFile({}, {
+    line_edits = { { script = "S", asset = "a.wav", nth = 2,
+                     text = 'Bolvd, "no", speak' } },
+  })
+  assert(text:find("\nLine,", 1, true) or text:find("^Line,"),
+         "no Line row written")
+  local parsed = assert(vo.ParseProjectFile(text))
+  assert(#parsed.line_edits == 1, "count: " .. #parsed.line_edits)
+  local e = parsed.line_edits[1]
+  assert(e.script == "S" and e.asset == "a.wav" and e.nth == 2,
+         "key did not survive")
+  assert(e.text == 'Bolvd, "no", speak', "text: " .. e.text)
+end)
+
+test("a Line row for a vanished line is read, not dropped", function()
+  -- Disabling a script must not destroy its edits; orphans are REPORTED.
+  local parsed = assert(vo.ParseProjectFile(
+    vo.SerializeProjectFile({}, {
+      line_edits = { { script = "Gone", asset = "x.wav", nth = 1, text = "t" } },
+    })))
+  assert(#parsed.line_edits == 1, "dropped an edit at parse time")
+end)
+
 --------------------------------
 -- FindLineCandidates
 --------------------------------
