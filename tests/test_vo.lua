@@ -978,6 +978,84 @@ test("a line with no append key still resolves", function()
 end)
 
 --------------------------------
+-- Line edits
+
+print("\nLine edits:")
+
+test("SetLineEdit stores, replaces, and empty removes", function()
+  local rows = {}
+  vo.SetLineEdit(rows, "S", "a.wav", 1, "Bolvd no speak")
+  assert(#rows == 1 and rows[1].text == "Bolvd no speak", "not stored")
+  vo.SetLineEdit(rows, "S", "a.wav", 1, "Bolvd will not speak")
+  assert(#rows == 1 and rows[1].text == "Bolvd will not speak", "not replaced")
+  vo.SetLineEdit(rows, "S", "a.wav", 1, "   ")
+  assert(#rows == 0, "empty did not remove the record")
+end)
+
+test("an edit equal to the original is still stored", function()
+  -- Deciding the line is right as written is a judgement worth keeping.
+  local rows = {}
+  vo.SetLineEdit(rows, "S", "a.wav", 1, "Adon no speak")
+  assert(#rows == 1, "dropped an edit for matching the original")
+end)
+
+test("LineEditMap keys by script, asset and occurrence", function()
+  local m = vo.LineEditMap({
+    { script = "S1", asset = "a.wav", nth = 1, text = "one" },
+    { script = "S2", asset = "a.wav", nth = 1, text = "two" },
+    { script = "S1", asset = "a.wav", nth = 2, text = "three" },
+  })
+  assert(m[vo.AppendKey("S1", "a.wav", 1)] == "one", "S1 nth1")
+  assert(m[vo.AppendKey("S2", "a.wav", 1)] == "two", "same file, other script")
+  assert(m[vo.AppendKey("S1", "a.wav", 2)] == "three", "second occurrence")
+end)
+
+test("ApplyLineEdits overrides the text and keeps the original", function()
+  local lines = {
+    { asset = "a.wav", text = "Adon no speak",
+      append_key = vo.AppendKey("S", "a.wav", 1) },
+    { asset = "b.wav", text = "untouched",
+      append_key = vo.AppendKey("S", "b.wav", 1) },
+  }
+  vo.ApplyLineEdits(lines, { [vo.AppendKey("S", "a.wav", 1)] = "Bolvd no speak" })
+  assert(lines[1].text == "Bolvd no speak", "text: " .. lines[1].text)
+  assert(lines[1].text_original == "Adon no speak", "original lost")
+  assert(lines[1].text_edited == true, "not flagged as edited")
+  assert(lines[2].text == "untouched", "disturbed an unedited line")
+  assert(lines[2].text_original == "untouched", "original not set when unedited")
+  assert(not lines[2].text_edited, "unedited line flagged as edited")
+end)
+
+test("ApplyLineEdits is idempotent, and reverts when the edit goes", function()
+  -- Called on every script load, on the SAME table. Without this, a second
+  -- pass would record the edited text as the original and the script's own
+  -- words would be gone for good.
+  local lines = { { asset = "a.wav", text = "Adon",
+                    append_key = vo.AppendKey("S", "a.wav", 1) } }
+  local key = vo.AppendKey("S", "a.wav", 1)
+  vo.ApplyLineEdits(lines, { [key] = "Bolvd" })
+  vo.ApplyLineEdits(lines, { [key] = "Bolvd" })
+  assert(lines[1].text_original == "Adon", "original overwritten on re-apply")
+  vo.ApplyLineEdits(lines, { [key] = "Grumbar" })
+  assert(lines[1].text == "Grumbar" and lines[1].text_original == "Adon",
+         "changing the edit lost the original")
+  vo.ApplyLineEdits(lines, {})
+  assert(lines[1].text == "Adon", "revert did not restore the script line")
+  assert(not lines[1].text_edited, "still flagged as edited after revert")
+end)
+
+test("OrphanLineEdits reports an edit whose line is gone", function()
+  local edits = {
+    { script = "S", asset = "gone.wav", nth = 1, text = "x" },
+    { script = "S", asset = "here.wav", nth = 1, text = "y" },
+  }
+  local lines = { { script = "S", asset = "here.wav", append_nth = 1 } }
+  local orphans = vo.OrphanLineEdits(edits, lines)
+  assert(#orphans == 1 and orphans[1].asset == "gone.wav",
+         "orphans: " .. #orphans)
+end)
+
+--------------------------------
 -- DuplicateNames
 --------------------------------
 print("\nDuplicateNames:")

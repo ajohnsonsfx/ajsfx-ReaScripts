@@ -605,6 +605,93 @@ function vo.OrphanAppends(appends, lines)
   return orphans
 end
 
+-- A LINE EDIT is what was actually said, where the script says something else.
+--
+-- The same record as an Append, keyed the same way, for the same reason: it is
+-- a judgement about ONE line of ONE script, made by hand, that the CSV does not
+-- know about. The script CSV is the author's and is never written to; this is
+-- the project's opinion of it.
+--
+-- Not the substitution table. That is global -- one entry per misheard word,
+-- correct only when the word is wrong everywhere. A line the director changed
+-- on the day is not a transcription problem, and `bolvd=adon` would rewrite
+-- every other line that says Bolvd.
+--
+-- Record: { script = <label>, asset = <filename>, nth = <integer>, text = <string> }
+function vo.LineEditMap(edit_rows)
+  local m = {}
+  for _, e in ipairs(edit_rows or {}) do
+    m[vo.AppendKey(e.script, e.asset, e.nth)] = e.text or ""
+  end
+  return m
+end
+
+-- The one mutator. Empty REMOVES the record: "no edit" is the absence of one,
+-- the rule vo.SetAppend and SerializeProjectFile already share. That also makes
+-- "Revert to script line" and "clear the field" the same operation, so they
+-- cannot disagree.
+--
+-- An edit equal to the original is still stored. Deciding a line is right as
+-- written is a judgement, and dropping it would make the grey original row
+-- flicker away and back as the user typed toward what the script says.
+function vo.SetLineEdit(edit_rows, script, asset, nth, text)
+  edit_rows = edit_rows or {}
+  local clean = trim(tostring(text or ""))
+
+  for i, e in ipairs(edit_rows) do
+    if e.script == script and e.asset == asset and e.nth == nth then
+      if clean == "" then table.remove(edit_rows, i) else e.text = clean end
+      return edit_rows
+    end
+  end
+  if clean ~= "" then
+    edit_rows[#edit_rows + 1] =
+      { script = script, asset = asset, nth = nth, text = clean }
+  end
+  return edit_rows
+end
+
+-- Edits no loaded line answers to -- a renamed or re-exported CSV is enough.
+-- Surfaced, not repaired, exactly as vo.OrphanAppends is: which line it should
+-- attach to is the user's call.
+function vo.OrphanLineEdits(edits, lines)
+  local live = {}
+  for _, l in ipairs(lines or {}) do
+    live[vo.AppendKey(l.script, l.asset, l.append_nth)] = true
+  end
+  local orphans = {}
+  for _, e in ipairs(edits or {}) do
+    if e.text and e.text ~= ""
+       and not live[vo.AppendKey(e.script, e.asset, e.nth)] then
+      orphans[#orphans + 1] = e
+    end
+  end
+  return orphans
+end
+
+-- Put the edited words where every reader of a line already looks.
+--
+-- ONE override point. The matcher reads `l.text` (text_for[l.asset]),
+-- ExtraWords colours against it, BuildOverview copies it into row.line_text,
+-- and search puts it in the haystack -- so overriding here reaches all of them
+-- and none of them needs to know this feature exists. A second code path is
+-- how the sheet and the matcher would come to disagree about what a line says.
+--
+-- Called on every script load, on the SAME line tables, so it must be
+-- idempotent: `text_original` is written once and `text` is always rebuilt
+-- FROM it. Without that, the second pass would record the edited words as the
+-- original and the script's own words would be gone for good.
+function vo.ApplyLineEdits(lines, edit_map)
+  edit_map = edit_map or {}
+  for _, l in ipairs(lines or {}) do
+    if l.text_original == nil then l.text_original = l.text end
+    local e = l.append_key and edit_map[l.append_key] or nil
+    l.text        = (e ~= nil and e ~= "") and e or l.text_original
+    l.text_edited = ((e ~= nil and e ~= "") and true) or nil
+  end
+  return lines
+end
+
 -- A voiced leftover butted right up against a take's first sample usually
 -- HOLDS that take's real opening -- a spoken lead-in ('"Leave," he says')
 -- the matcher couldn't align to the script, so the span started at the
