@@ -430,6 +430,17 @@ local function LoadScripts()
     end
   end
 
+  -- What was actually said, where the script says something else. BEFORE
+  -- ResolveNames, because a name is derived from the line and the line is what
+  -- an edit changes -- they touch different fields today, so the order is
+  -- insurance rather than a dependency.
+  --
+  -- This is the ONE place the override is applied. Everything downstream reads
+  -- line.text: the matcher, ExtraWords, BuildOverview, the search haystack. A
+  -- second path is how the sheet and the matcher would come to disagree about
+  -- what a line says.
+  vo.ApplyLineEdits(state.loaded.lines, vo.LineEditMap(state.line_edits))
+
   vo.ResolveNames(state.loaded.lines, vo.AppendMap(state.appends))
 
   -- An Append that no loaded line answers to detaches silently -- a renamed
@@ -437,6 +448,8 @@ local function LoadScripts()
   -- comes back on the next cut. Surfaced, not repaired: which line it should
   -- attach to is the user's call.
   state.orphan_appends = vo.OrphanAppends(state.appends, state.loaded.lines)
+  state.orphan_line_edits =
+    vo.OrphanLineEdits(state.line_edits, state.loaded.lines)
 end
 
 -- The script lines this project expects, after skip tokens and with every
@@ -462,6 +475,7 @@ end
 local function LoadProjectFile()
   state.entries, state.project_error, state.parse_failed = {}, "", false
   state.scripts, state.appends, state.pins = {}, {}, {}
+  state.line_edits = {}
   state.expanded = {}
   -- Everything below describes the PREVIOUS project. A message like "Pulled 27
   -- select" surviving a tab switch reads as a claim about the new project.
@@ -486,6 +500,7 @@ local function LoadProjectFile()
     state.scripts = parsed.scripts or {}
     state.appends = parsed.appends or {}
     state.pins    = parsed.pins or {}
+    state.line_edits = parsed.line_edits or {}
 
     -- The table is handed back the way it was left. A stored status or column
     -- this version no longer has is dropped rather than carried: it would filter
@@ -538,6 +553,7 @@ local function SaveProjectFile()
   local ok = WriteFileAtomic(path, vo.SerializeProjectFile(
     entries,
     { scripts = state.scripts, appends = state.appends, pins = state.pins,
+      line_edits = state.line_edits,
       view = {
         character   = state.character,
         search      = state.search,
@@ -2269,15 +2285,41 @@ local function SetStatus(row, status)
   Mutate(row, function(e) e.status = status end)
 end
 
--- The Append belongs to the SCRIPT LINE, not to the take, so it is written to
--- state.appends rather than through EntryFor -- and every take of the line picks
--- it up on the next rebuild. Nothing about the match changes, so this does not
--- invalidate the match cache; only the delivered name moves.
-local function SetAppend(row, text)
+-- The two things the user can write onto a SCRIPT LINE rather than onto a
+-- take: what it delivers as (Append) and what was actually said (Edit). Both
+-- go to their own array rather than through EntryFor, because an entry is
+-- keyed by a stretch of audio and these are keyed by the line -- so every take
+-- of the line picks them up on the next rebuild.
+--
+-- ONE table, and not two file locals, because this chunk is AT Lua's 200-local
+-- ceiling: adding Line.Edit as a local was a LOAD-time error for the whole
+-- script. Folding its sibling in beside it costs nothing and puts the pair
+-- under a name that says what they have in common.
+local Line = {}
+
+-- Nothing about the match changes here; only the delivered name moves.
+function Line.SetAppend(row, text)
   if not row.append_key then return end
   vo.SetAppend(state.appends, row.script or "", row.asset or "",
                row.append_nth or 1, text)
   state.dirty = true
+  Rebuild()
+end
+
+-- UNLIKE the Append, an edit DOES invalidate the match: the matcher scores
+-- against these words. LoadScripts re-applies the override so the sheet shows
+-- the new text immediately, and "Match transcript to script" is what re-scores
+-- -- the same contract as editing the CSV on disk, which carries no badge
+-- either.
+--
+-- Passing "" is Revert: vo.SetLineEdit removes the record, so clearing the
+-- field and pressing Revert cannot disagree.
+function Line.SetEdit(row, text)
+  if not row.line_key then return end
+  vo.SetLineEdit(state.line_edits, row.script or "", row.asset or "",
+                 row.append_nth or 1, text)
+  state.dirty = true
+  LoadScripts()
   Rebuild()
 end
 
@@ -5358,6 +5400,7 @@ local function ResetProject(also_transcripts)
   -- Forget everything read from those files BEFORE anything can save again,
   -- or the in-memory copy writes the sidecar straight back.
   state.entries, state.scripts, state.appends, state.pins = {}, {}, {}, {}
+  state.line_edits = {}
   state.loaded = { scripts = {}, lines = {} }
   state.selection, state.expanded = {}, {}
   state.name_baseline, state.project_error = nil, ""
@@ -6849,7 +6892,7 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     local achanged, atext = im.InputText(ctx, "##append", rep.append or "")
     if achanged then
       local captured = atext
-      pending_action = function() SetAppend(rep, captured) end
+      pending_action = function() Line.SetAppend(rep, captured) end
     end
     im.EndPopup(ctx)
   end
@@ -7826,6 +7869,17 @@ local function RunRemoteCommand(command)
     Rebuild()
     return string.format("append %s: now %d duplicate delivered name(s)",
       asset, #(state.dupe_assets or {}))
+  elseif verb == "set_line" then
+    local script, asset, nth, text = rest:match("^([^|]*)|([^|]*)|([^|]*)|(.*)$")
+    if not script or asset == "" then
+      return "set_line needs script|asset|nth|text (text empty to revert)"
+    end
+    vo.SetLineEdit(state.line_edits, script, asset, tonumber(nth) or 1, text)
+    state.dirty = true
+    LoadScripts()
+    Rebuild()
+    return string.format("set_line %s: %d edit(s) in the project",
+      asset, #(state.line_edits or {}))
   end
 
   return "unknown command: " .. tostring(verb) .. ". Commands: " .. REMOTE_HELP
