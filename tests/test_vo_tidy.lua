@@ -84,10 +84,14 @@ local function cut()
   }
 end
 
-test("nothing selected acts on everything in view", function()
-  local rows, narrowed = vo.ResolveScope(cut(), {}, {})
-  assert(#rows == 3, "expected 3, got " .. #rows)
-  assert(narrowed == false, "reported as narrowed with no selection")
+test("nothing selected acts on NOTHING, never on everything", function()
+  -- The old rule was "no selection means everything in view", and the
+  -- difference between a three-take run and a whole-session run was whether a
+  -- click had landed. A verb with an empty scope is a no-op you can see
+  -- coming; one quietly acting on 169 lines is not.
+  local rows, picked = vo.ResolveScope(cut(), {}, {})
+  assert(#rows == 0, "widened to " .. #rows .. " rows with nothing selected")
+  assert(picked == false, "reported a selection where there is none")
 end)
 
 test("a selected row narrows to that take", function()
@@ -134,8 +138,18 @@ test("a row with no item is reachable only by its own selection", function()
 end)
 
 test("nil selections are the same as empty ones", function()
-  local rows, narrowed = vo.ResolveScope(cut(), nil, nil)
-  assert(#rows == 3 and narrowed == false, "nil selections narrowed the scope")
+  local rows, picked = vo.ResolveScope(cut(), nil, nil)
+  assert(#rows == 0 and picked == false, "nil selections acted on something")
+end)
+
+test("an empty scope and a hidden selection are told apart", function()
+  -- Both give zero rows and they need different words on screen: one says
+  -- "select something", the other says "the filters are hiding it".
+  local _, none = vo.ResolveScope(cut(), {}, {})
+  local hidden_rows, hidden = vo.ResolveScope(cut(), { u_hidden = true }, {})
+  assert(none == false, "nothing selected must report picked=false")
+  assert(hidden == true and #hidden_rows == 0,
+         "a hidden selection must report picked=true with no rows")
 end)
 
 print("\nPlanItemIdentity:")

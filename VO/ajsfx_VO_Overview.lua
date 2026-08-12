@@ -1340,13 +1340,13 @@ function Trim.run(dir)
   dir = dir or "item"
   local to_marker = (dir == "item")
   Reload()
-  local picked = SelectedItemSet()
-  local scoped = next(picked) ~= nil
+  -- Selection IS the scope; an empty one collects nothing (vo.ResolveScope).
+  local picked = Trim.scope()
 
   local jobs, several, none = {}, 0, 0
   for _, info in ipairs(state.items or {}) do
     local item = info.item
-    if item and not info.skip and ((not scoped) or picked[item]) then
+    if item and not info.skip and picked[item] then
       local mks = Trim.markers_in(info)
       if #mks == 1 then jobs[#jobs + 1] = { info = info, mk = mks[1] }
       elseif #mks > 1 then several = several + 1
@@ -1410,8 +1410,7 @@ end
 -- report in their own words. Returns plan, drop_by_item.
 function Trim.dupe_plan(scope)
   local cfg = vo.LoadConfig()
-  local picked = scope
-  local scoped = picked ~= nil
+  local picked = scope or {}
 
   local words = {}
   for _, t in ipairs(state.transcripts or {}) do
@@ -1426,7 +1425,7 @@ function Trim.dupe_plan(scope)
     for _, mk in ipairs(vo.CountingMarkers(group)) do
       local rec  = group[mk.item_index]
       local item = rec and rec.info and rec.info.item
-      if item and ((not scoped) or picked[item]) then
+      if item and picked[item] then
         mk.source_path = path
         markers[#markers + 1] = mk
         owner[mk.id] = item
@@ -1734,14 +1733,23 @@ function Trim.extras(picked)
   return removed, dropped, plan
 end
 
--- The scope every verb here shares: the items picked in REAPER, or nil for
--- "everything", which is what the collectors already mean by no filter.
+-- The scope every verb here shares: the items picked in REAPER. Empty when
+-- nothing is selected, and empty means NOTHING -- never "everything", which
+-- is what nil used to mean here (see vo.ResolveScope for why that rule went).
+-- Callers pass the set straight to a collector, so an empty set naturally
+-- collects nothing; the UI disables the button before it comes to that.
 --
 -- On the Trim table, not a file local: the main chunk sits at Lua's 200-local
 -- ceiling and one more would be a LOAD-time error for the whole script.
 function Trim.scope()
-  local picked = SelectedItemSet()
-  return (next(picked) ~= nil) and picked or nil
+  return SelectedItemSet()
+end
+
+-- Whether anything is selected at all, either way. The one question the
+-- toolbar asks before enabling a verb that touches items.
+function Trim.has_selection()
+  if next(SelectedItemSet()) ~= nil then return true end
+  return next(state.selection or {}) ~= nil
 end
 
 -- core.Transaction's signature, minus the transaction. A step borrowed by a
@@ -1894,9 +1902,9 @@ local function IdentifyItems(opts)
   local taken = TakenMarkerIds()
   local index = vo.BuildNameIndex(state.lines)
 
-  -- Scope: the items picked in REAPER, else every item in the project.
-  local picked = opts.picked or SelectedItemSet()
-  local scoped = next(picked) ~= nil
+  -- Scope: the items picked in REAPER, and only those. An empty selection
+  -- identifies nothing (vo.ResolveScope); the toolbar disables the button.
+  local picked = opts.picked or Trim.scope()
 
   local spans_by_path = {}
   for _, m in ipairs(state.matches or {}) do spans_by_path[m.path] = m.spans end
@@ -1948,7 +1956,7 @@ local function IdentifyItems(opts)
     local item = info.item
     -- `only_unmarked` reads the CHUNK, not state.overview: the macro calls this
     -- mid-transaction, where the chunk is the only thing already up to date.
-    if item and not info.skip and ((not scoped) or picked[item])
+    if item and not info.skip and picked[item]
        and not (opts.only_unmarked and #Trim.markers_in(info) > 0) then
       local cov = vo.SourceCoverageRanges({ info })[1]
       if cov then
@@ -1970,7 +1978,7 @@ local function IdentifyItems(opts)
       else
         unusable = unusable + 1
       end
-    elseif item and info.skip and scoped and picked[item] then
+    elseif item and info.skip and picked[item] then
       unusable = unusable + 1
     end
   end
@@ -1979,9 +1987,9 @@ local function IdentifyItems(opts)
     if opts.quiet then
       return { wrote = 0, named = 0, many = 0, none = 0, unusable = unusable }
     end
-    state.message, state.message_kind = scoped
+    state.message, state.message_kind = (next(picked) ~= nil)
       and "Nothing usable in the selection: those item(s) have no audio this tool can read."
-      or  "No audio in this project to identify.", "warn"
+      or  "Nothing selected. Select the items or rows to identify.", "warn"
     return
   end
 
@@ -3933,11 +3941,10 @@ local function TargetItems()
     end
   end
 
-  local scope = "every item in the project"
+  local scope = "nothing selected"
   if from_reaper and from_rows then scope = "the selected items and rows"
   elseif from_reaper           then scope = "the items selected in REAPER"
   elseif from_rows             then scope = "the items behind the selected rows" end
-  local everything = next(chosen) == nil
 
   -- Marks, characters and per-take names come from the row where one exists.
   -- An item with no row has none of them, which is exactly what a delivered
@@ -3956,7 +3963,7 @@ local function TargetItems()
   local items, marks = {}, {}
   for _, info in ipairs(state.items or {}) do
     local item = info.item
-    if item and not info.skip and (everything or chosen[item]) then
+    if item and not info.skip and chosen[item] then
       local take = r.GetActiveTake(item)
       local name = ""
       if take then
@@ -4187,12 +4194,12 @@ local ctx = NewContext()
 -- ignore the selection; it is to never let the scope be a surprise. If this
 -- line says "3 takes", nothing can act on 169.
 local function DrawScopeLine()
-  local rows, narrowed = AffectedRows()
+  local rows, picked = AffectedRows()
   local n = #rows
-  if not narrowed then
-    im.TextDisabled(ctx, string.format(
-      "Acting on all %d row(s) in view \226\128\148 select rows here, or items in " ..
-      "REAPER, to narrow.", n))
+  if not picked then
+    im.TextColored(ctx, 0xDDAA33FF,
+      "Nothing selected \226\128\148 select rows here, or items in REAPER. " ..
+      "Every button that touches audio is off until you do.")
     return
   end
   if n == 0 then
@@ -5132,15 +5139,14 @@ function Dest.build()
   local base  = Dest.names()
   local bases = { base.selects, base.alts, base.review }
 
-  local picked = SelectedItemSet()
-  local scoped = next(picked) ~= nil
+  local picked = Trim.scope()
 
   -- One entry per recording track, in track order so the report is stable and
   -- the folders are built top-down.
   local parents, seen = {}, {}
   for _, info in ipairs(state.items or {}) do
     local item = info.item
-    if item and not info.skip and ((not scoped) or picked[item]) then
+    if item and not info.skip and picked[item] then
       local parent = Dest.recording_of(item, bases)
       if parent and not seen[parent] then
         seen[parent] = true
@@ -5150,9 +5156,9 @@ function Dest.build()
   end
 
   if #parents == 0 then
-    state.message, state.message_kind = scoped
+    state.message, state.message_kind = (next(picked) ~= nil)
       and "Nothing selected sits on a recording track."
-      or  "No audio in this project to build destinations under.", "warn"
+      or  "Nothing selected. Select the items or rows to build tracks for.", "warn"
     return
   end
 
@@ -8457,9 +8463,20 @@ local function loop()
     end
 
     local function Tip(text)
-      if im.IsItemHovered(ctx) then im.SetTooltip(ctx, text) end
+      TooltipEvenWhenDisabled(text)
       im.SameLine(ctx)
     end
+
+    -- Nothing selected means no verb may touch audio. AJ, after a session of
+    -- using it: "I kept finding myself worried that pressing a button would
+    -- have unintended consequences. I'm more comfortable if I've intentionally
+    -- selected things I want it to work on." A greyed button that explains
+    -- itself is that comfort; a button quietly doing the whole session was not.
+    local acts_off = not Trim.has_selection()
+    local function ActsOn()  if acts_off then im.BeginDisabled(ctx, true) end end
+    local function ActsEnd() if acts_off then im.EndDisabled(ctx) end end
+    local NEEDS_SEL = "\n\nNeeds a selection: select rows here, or items in " ..
+      "REAPER.\nThe amber line under the blue button says what is in scope."
 
     if state.tab == "setup" then
       PanelButton("script", "Choose script…",
@@ -8533,7 +8550,9 @@ local function loop()
       im.SetCursorPosX(ctx, row_left)
       im.PushStyleColor(ctx, im.Col_Button,        0x3E6FA3FF)
       im.PushStyleColor(ctx, im.Col_ButtonHovered, 0x4E86C0FF)
+      ActsOn()
       if im.Button(ctx, "Run the whole pass") then pending_action = GoldenPath end
+      ActsEnd()
       im.PopStyleColor(ctx, 2)
       if im.IsItemHovered(ctx) then
         im.SetTooltip(ctx,
@@ -8548,7 +8567,7 @@ local function loop()
           "this one says what that is right now.\n\n" ..
           "Step 3 picks each line's " ..
           ((state.auto_select_take == "first") and "FIRST" or "LAST") ..
-          " take -- whichever of the two\nAuto-pick buttons you used last.")
+          " take -- whichever of the two\nAuto-pick buttons you used last." .. NEEDS_SEL)
       end
       im.SameLine(ctx)
       im.TextDisabled(ctx, "  match \226\134\146 cut \226\134\146 pick \226\134\146 pull")
@@ -8581,6 +8600,7 @@ local function loop()
       -- situations behind one generic name and an extra click; each button
       -- now names its situation itself.
       Flow("Identify lines in audio and update markers")
+      ActsOn()
       if im.Button(ctx, "Identify lines in audio and update markers") then
         pending_action = IdentifyItems
       end
@@ -8601,7 +8621,7 @@ local function loop()
           "Only takes inside a RECORDING are re-measured. An item holding one\n" ..
           "take is marked at your own edges, and those are not the tool's to\n" ..
           "change. An edge you dragged by hand inside a recording IS, so the\n" ..
-          "run reports how many moved.")
+          "run reports how many moved." .. NEEDS_SEL)
 
       -- Untrack lives in Match because it is Identify's undo: it removes the
       -- assignment -- markers, decisions, names -- and nothing else. Under Cut
@@ -8672,7 +8692,8 @@ local function loop()
           "script's filename. Nothing moves and nothing is decided -- Pull is\n" ..
           "where a take's fate is settled.\n\n" ..
           "Select a recording to cut all of it, or rows to cut just those.\n" ..
-          "The line above the rows says which.")
+          "The line above the rows says which." .. NEEDS_SEL)
+      ActsEnd()
 
       -- Closes Match, because a substitution is a fact about how the words
       -- were HEARD -- the same subject as matching them, and the one thing on
@@ -8691,6 +8712,7 @@ local function loop()
       -- hand: this is the tool's normal working state, not a repair bay. Match
       -- is the initial work; Edit is where the user lives afterwards.
       Group("Edit:")
+      ActsOn()
       -- First in the row, before the single-step verbs they are built out of:
       -- this position is the row's MACRO slot -- the one press that does the
       -- whole job, with the steps behind it for when it guesses wrong.
@@ -8808,7 +8830,9 @@ local function loop()
       -- of the row forbids. With two rules there is no menu to justify:
       -- each button says its whole rule and acts on the press. Whichever
       -- was pressed last is the rule the hero's batch run uses.
+      ActsEnd()
       Group("Pick:")
+      ActsOn()
       if im.Button(ctx, "Auto-pick selects: last take") then
         AutoSelectTakes(AffectedRows(), "last")
       end
@@ -8830,10 +8854,13 @@ local function loop()
           "select keeps the plain name; a take that already has its own\n" ..
           "name is left alone.")
 
+      ActsEnd()
       Group("Pull:")
       -- The row's MACRO slot, same as Update from Item leads Edit: one press for
       -- the whole job, with the steps still behind it.
+      ActsOn()
       if im.Button(ctx, "Deliver") then pending_action = Dest.deliver end
+      ActsEnd()
       Tip("The whole of Pull in one press, one undo step:\n\n" ..
           "1. Build the destination tracks, then\n" ..
           "2. Pull items to their tracks, then\n" ..
@@ -8850,6 +8877,7 @@ local function loop()
         "the recording they came from, matched to the script by name.")
 
       Flow("Build the destination tracks")
+      ActsOn()
       if im.Button(ctx, "Build the destination tracks") then
         pending_action = Dest.build
       end
@@ -8870,6 +8898,7 @@ local function loop()
       -- verbs need a person deciding. The first two buttons wear their
       -- counts, so this row reads as state before anything is clicked --
       -- "(0)" everywhere means the session agrees with itself.
+      ActsEnd()
       Group("Check:")
       local rec = state.reconcile
                   or { disagree = {}, unbacked_markers = {}, orphan_marks = {} }

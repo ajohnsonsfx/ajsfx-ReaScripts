@@ -1925,16 +1925,28 @@ end
 -- "cut this recording" should mean. The same rule reads correctly at both
 -- stages, so the UI never has to distinguish them.
 --
--- Never silently widens: a selection that matches nothing in view returns an
--- EMPTY scope rather than falling back to everything. Acting on 169 lines
--- because the one you picked was filtered out is the worst possible answer.
+-- Never silently widens. A selection that matches nothing in view returns an
+-- EMPTY scope rather than falling back to everything -- acting on 169 lines
+-- because the one you picked was filtered out is the worst possible answer --
+-- and NO selection returns an empty scope too.
 --
--- `rows` is the fallback scope (what the filters are showing).
--- Returns: rows in scope, narrowed (true when a selection decided it).
+-- That second rule replaced "no selection means everything". The old default
+-- was defensible on paper (the filters are the scoping tool) and wrong in the
+-- hand: the difference between a run over three takes and a run over the whole
+-- session was whether a click had landed, and the two look identical until
+-- after the press. A verb with nothing to act on is a no-op you can see
+-- coming; a verb quietly acting on everything is not. The caller shows the
+-- empty scope and disables the button rather than letting a press be a
+-- surprise.
+--
+-- `rows` is the pool a selection picks FROM (what the filters are showing).
+-- Returns: rows in scope, picked (whether any selection exists at all).
+-- picked == false always means #rows == 0; the two together let the caller
+-- tell "nothing selected" from "selection is hidden by the filters".
 function vo.ResolveScope(rows, selected_uids, selected_items)
   local picked = (selected_uids and next(selected_uids) ~= nil)
               or (selected_items and next(selected_items) ~= nil)
-  if not picked then return rows or {}, false end
+  if not picked then return {}, false end
 
   local out = {}
   for _, row in ipairs(rows or {}) do
