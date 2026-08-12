@@ -132,6 +132,13 @@ line as written is the reference under it.
 | unfolded | **always**, edited or not |
 | folded | only when edited |
 
+**`Script:` shares this row.** It used to have a row of its own directly below.
+Both are dim, both say where the line came from, and `Script:` sits out at the
+left margin in a column the transcript text never reaches — so stacking them
+spent a whole row of every open card on one short label. They are one
+provenance row now: `Script: <name>` on the left, the script's own words in the
+transcript column.
+
 A folded card is one horizontal row and nothing else — that rule stands, so an
 unedited folded card is unchanged. An unfolded card has a fixed shape you can
 rely on, which is worth one row of height on a card you have deliberately
@@ -185,8 +192,16 @@ The same errand, in the two other places it comes up:
 
 - **`Script:`** — right-click copies the FULL path. The card shows a basename
   with its extension stripped, so the thing displayed is not the thing anyone
-  needs to paste. It has a tooltip carrying the full path today; a tooltip
-  cannot be copied out of.
+  needs to paste.
+
+  **Corrected during implementation:** this spec claimed the tooltip already
+  carried the full path. It did not. `row.script` is the script's *label*
+  (`vo.ScriptLabel` — sanitized basename, no extension), so the tooltip was
+  showing the same string as the text beside it, and a naive `Copy(row.script)`
+  would have copied a label while promising a path. The path lives only on the
+  loaded script, so both the tooltip and the menu item now look it up by label
+  in `state.loaded.scripts`; `Copy full path` is greyed if no loaded script
+  answers to that label.
 - **the filename** — already has `Copy` (`##band_name_menu`). Unchanged.
 
 ## 5. Testing

@@ -6882,7 +6882,14 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   -- the same words twice costs less than checking whether a row is missing.
   -- Folded, only when edited, because a folded card is one horizontal row and
   -- nothing else; there the grey row MEANS the line was changed.
+  --
+  -- `prov_y` is where the provenance row starts -- the grey original in the
+  -- transcript column, and `Script:` out at the left margin. They SHARE a row:
+  -- both are dim, both say where this line came from, and the Script label sits
+  -- in a column the original never reaches. Stacking them spent a whole row of
+  -- every open card on one short label.
   local orig = rep.line_original
+  local prov_y = y2
   if orig and orig ~= "" and (open or rep.line_edited) then
     im.SetCursorScreenPos(ctx, said_x, y2)
     im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + (rx + z.name - 8 - said_x))
@@ -6983,19 +6990,30 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   -- else; open one and the second row appears with the provenance and with
   -- what still stands between this line and done.
   if open then
-    im.SetCursorScreenPos(ctx, rx + 22, y2)
+    -- prov_y, not y2: this shares the grey original's row. See above.
+    im.SetCursorScreenPos(ctx, rx + 22, prov_y)
     local script_name = (rep.script and rep.script ~= "")
                         and (vo.Basename(rep.script):gsub("%.%w+$", "")) or "—"
+    -- row.script is the script's LABEL (vo.ScriptLabel: sanitized basename, no
+    -- extension), not its path -- so neither the text above nor the tooltip
+    -- below has ever carried a path, whatever they looked like. The path lives
+    -- only on the loaded script, found by that label.
+    local script_path
+    for _, sc in ipairs((state.loaded and state.loaded.scripts) or {}) do
+      if sc.label == rep.script then script_path = sc.path break end
+    end
     im.TextDisabled(ctx, "Script: " .. script_name)
     if rep.script and rep.script ~= "" and im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, rep.script)
+      im.SetTooltip(ctx, script_path or rep.script)
     end
-    -- The card shows a basename with its extension stripped, so what is on
-    -- screen is not what anyone needs to paste. The tooltip carries the full
-    -- path and a tooltip cannot be copied out of.
+    -- Copyable, because a tooltip is not: the path is what you paste into a
+    -- file dialog or send to someone, and it is the one thing here the card
+    -- cannot show in full.
     if rep.script and rep.script ~= ""
        and im.BeginPopupContextItem(ctx, "##band_script_menu") then
-      if im.MenuItem(ctx, "Copy full path") then Copy(rep.script) end
+      if im.MenuItem(ctx, "Copy full path", nil, nil, script_path ~= nil) then
+        Copy(script_path)
+      end
       if im.MenuItem(ctx, "Copy script name") then Copy(script_name) end
       im.EndPopup(ctx)
     end
