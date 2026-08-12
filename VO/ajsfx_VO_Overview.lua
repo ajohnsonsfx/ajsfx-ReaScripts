@@ -6851,7 +6851,7 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     -- Wraps before the filename column, which shares this row.
     im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + (rx + z.name - 8 - said_x))
     wrap_depth = wrap_depth + 1
-    im.Text(ctx, '"' .. rep.line_text .. '"')
+    im.Text(ctx, rep.line_text)
     im.PopTextWrapPos(ctx)
     wrap_depth = wrap_depth - 1
     -- The words stay TEXT, not an input field. They are the biggest click
@@ -6909,7 +6909,7 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     im.SetCursorScreenPos(ctx, said_x, y2)
     im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + (rx + z.name - 8 - said_x))
     wrap_depth = wrap_depth + 1
-    im.TextDisabled(ctx, '"' .. orig .. '"')
+    im.TextDisabled(ctx, orig)
     im.PopTextWrapPos(ctx)
     wrap_depth = wrap_depth - 1
     if im.BeginPopupContextItem(ctx, "##band_orig_menu") then

@@ -276,6 +276,43 @@ end
 -- excluded from matching entirely.
 vo.DEFAULT_SKIP_VALUES = { "TO RECORD" }
 
+-- A cell wrapped in quotation marks loses them.
+--
+-- Scripts arrive with whole lines quoted -- a habit of the document the CSV was
+-- exported from, not a fact about the line -- and the card then drew a quote
+-- around that, so a line that quoted someone came out as `"Master say "No one
+-- leaves.""`. Three levels of quoting for one sentence.
+--
+-- START AND END, both, or nothing happens: a line that merely quotes someone
+-- (`Master say "No one leaves."`) keeps every mark it has, and so does one with
+-- a stray quote at a single end. Only the outermost pair goes, so a wrapped
+-- line that also quotes someone still reads as quoting them.
+--
+-- Smart quotes count. The same document habit produces them, and they are the
+-- ones a person is least likely to notice and strip by hand.
+local function quote_head(s)
+  if s:sub(1, 3) == "\226\128\156" or s:sub(1, 3) == "\226\128\158" then return 3 end
+  if s:sub(1, 1) == '"' then return 1 end
+  return 0
+end
+
+local function quote_tail(s)
+  if s:sub(-3) == "\226\128\157" then return 3 end
+  if s:sub(-1) == '"' then return 1 end
+  return 0
+end
+
+function vo.StripWrappingQuotes(s)
+  if type(s) ~= "string" then return s end
+  local head, tail = quote_head(s), quote_tail(s)
+  -- `> head + tail`, not `>=`: a string that is nothing BUT its two quotes has
+  -- no content to keep, and a single `"` must not read as its own wrapper.
+  if head > 0 and tail > 0 and #s > head + tail then
+    return trim(s:sub(head + 1, #s - tail))
+  end
+  return s
+end
+
 -- Turn data rows (header already removed) into script line records.
 -- filters: { skip_values = {...}, speakers = { folded_key = true }, canonicalize }
 -- The character filter is inert when no character column is mapped.
@@ -293,7 +330,7 @@ function vo.BuildScriptLines(rows, cols, filters)
 
   local lines = {}
   for i, row in ipairs(rows or {}) do
-    local text    = trim(row[cols.text])
+    local text    = vo.StripWrappingQuotes(trim(row[cols.text]))
     local asset   = trim(row[cols.asset])
 
     local speaker_raw = cols.speaker and trim(row[cols.speaker]) or nil

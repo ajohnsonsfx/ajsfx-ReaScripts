@@ -977,6 +977,51 @@ test("a line with no append key still resolves", function()
   assert(lines[1].deliver == "a", "A key-less line must not error")
 end)
 
+print("\nWrapping quotes:")
+
+test("a cell wrapped in quotes loses them", function()
+  local lines = vo.BuildScriptLines(
+    { { "a", '"Adon no speak to us."' } }, { asset = 1, text = 2 })
+  assert(lines[1].text == "Adon no speak to us.",
+         "got [" .. lines[1].text .. "]")
+end)
+
+test("quotes INSIDE the line are dialogue and stay", function()
+  -- The whole point of the rule being start-AND-end: a line that quotes
+  -- someone keeps its quotation marks.
+  local lines = vo.BuildScriptLines(
+    { { "a", 'Master say "No one leaves."' } }, { asset = 1, text = 2 })
+  assert(lines[1].text == 'Master say "No one leaves."',
+         "got [" .. lines[1].text .. "]")
+end)
+
+test("a quote at only one end is not a wrapper", function()
+  local lines = vo.BuildScriptLines(
+    { { "a", '"No one leaves.' } }, { asset = 1, text = 2 })
+  assert(lines[1].text == '"No one leaves.', "got [" .. lines[1].text .. "]")
+  local b = vo.BuildScriptLines(
+    { { "a", 'He said "go on"' } }, { asset = 1, text = 2 })
+  assert(b[1].text == 'He said "go on"', "got [" .. b[1].text .. "]")
+end)
+
+test("a wrapped line that also quotes someone strips only the wrapper", function()
+  local lines = vo.BuildScriptLines(
+    { { "a", '"Master say "No one leaves.""' } }, { asset = 1, text = 2 })
+  assert(lines[1].text == 'Master say "No one leaves."',
+         "got [" .. lines[1].text .. "]")
+end)
+
+test("smart quotes wrap too", function()
+  local lines = vo.BuildScriptLines(
+    { { "a", "\226\128\156Adon no speak.\226\128\157" } }, { asset = 1, text = 2 })
+  assert(lines[1].text == "Adon no speak.", "got [" .. lines[1].text .. "]")
+end)
+
+test("a lone quote character is left alone", function()
+  local lines = vo.BuildScriptLines({ { "a", '"' } }, { asset = 1, text = 2 })
+  assert(lines[1].text == '"', "got [" .. tostring(lines[1].text) .. "]")
+end)
+
 print("\nFilename overrides:")
 
 test("a name override replaces the delivered filename", function()
