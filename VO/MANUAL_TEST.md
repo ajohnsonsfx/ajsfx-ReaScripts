@@ -484,10 +484,12 @@ Open **ajsfx VO Settings → Speech backend → Download backend & models**.
 
 ## Cut and Name (2026-08-04)
 
-1. With **nothing selected**, press **Cut and Name**. Every take the match found
-   is split out of its recording and named the plain CSV filename, and every one
-   is STILL on the recording's own track. No new track appeared. Lines with no
-   SEL are cut too — cutting decides nothing.
+1. **Select the recording item** (since 2026-08-12 nothing selected means
+   nothing acts — the button is greyed and the scope line says so), then press
+   **Cut and Name**. Every take the match found is split out of its recording
+   and named the plain CSV filename, and every one is STILL on the recording's
+   own track. No new track appeared. Lines with no SEL are cut too — cutting
+   decides nothing.
 2. Two takes of one line both carry the same plain name. That is expected; Pull
    is what separates them.
 3. Select a few rows and press it again. Only those rows' takes are affected, and
@@ -623,9 +625,10 @@ no match, no stored mapping — so these checks are about names, not matching.
 ## Tighten (2026-08-04)
 
 1. Cut and pull a session, then drag a few Selects' edges outward so they have
-   over a second of head or tail room. Press Tighten with nothing selected in
-   REAPER: the message names how many items moved, and each loose edge now sits
-   at the standard room (60ms head / 150ms tail by default).
+   over a second of head or tail room. Select them (since 2026-08-12 an empty
+   selection acts on nothing) and press Tighten: the message names how many
+   items moved, and each loose edge now sits at the standard room (60ms head /
+   150ms tail by default).
 2. Select two items in REAPER and press Tighten: only those two are measured.
 3. Hand-trim one item (change its fades while you're at it) and make its edges
    loose again: Tighten reports it measured but leaves it alone — custom fades
@@ -966,3 +969,50 @@ Same gesture as the line, and it REPLACES the Append — that menu item is gone.
     delivered names must be exactly what they were — Append records still
     resolve, they are just no longer editable from the card.
 21. Save and reopen. The override survives as a `Name,` row.
+
+## Word anchors and the boundaries they place (2026-08-12)
+
+Covers `SPEC-word-anchors.md` and `SPEC-anchor-boundaries.md`. Anchors are the
+DTW timestamps that sit ON a word; whisper's `offsets` are a partition of the
+timeline and can miss the word entirely, which is what all of this fixes.
+
+1. **The sidecar is v2.** Transcribe a source and open its
+   `*_vo_transcript.csv`: the marker row reads `ajsfx VO Transcript,2`, the
+   header is `Start,End,Text,Anchor`, and most rows carry a fourth number.
+2. **A v1 sidecar is refused, not silently used.** Point the tool at a
+   transcript from before this change: Sources shows it as *Unsupported
+   transcript version* and offers to re-transcribe. It must NOT parse.
+3. **`-nfa` is doing the work.** Re-run whisper by hand without it (see §1) and
+   confirm every `t_dtw` comes back `-1`. With it, they are real. If this ever
+   flips, anchors are gone and the transcript quietly returns to §2's failure.
+4. **The take reads what it says.** Find a take whose marker was cut at a
+   partition edge (Grumbar: source 428.593–429.894, line "You."). Its card must
+   show the words actually inside it, not the neighbour's.
+5. **The marker check catches the rest.** Remote seam verb `marker_words`, or
+   the Check panel: it walks every take marker and reports both sides of a
+   boundary tear — the row that LOST a word as `missing`, the neighbour that
+   GAINED it as `extra`. On a session mid-edit, expect real flags; they are the
+   list to work through, not a failure.
+6. **A tear repairs itself on re-Identify.** Take a flagged pair (Grumbar:
+   ChainIsChain / EvenIfYouSmile at source 584.9–590.5, boundary at the
+   partition edge 586.210), delete their markers, select the item and Identify.
+   The new boundary lands in the audible gap (~587.8, in the breath), the
+   earlier take keeps its own last word, and both flags clear.
+7. **Anchor-less transcripts are unchanged.** A model with no DTW preset writes
+   no anchors and everything falls back to the old onset rule — worse, but
+   never different from what it always did.
+
+## The selection is the scope (2026-08-12)
+
+1. With **nothing** selected in REAPER and no rows selected in the sheet, the
+   Edit tab's scope line is amber and says so, and every verb that touches
+   audio is greyed: the hero, Identify, Untrack, Cut, the whole Edit and Pick
+   rows, Deliver, Build the destination tracks.
+2. Hovering a greyed button still shows its tooltip, ending in "Needs a
+   selection".
+3. Still live, deliberately: **Match transcript to script**, the four Check
+   panels, Word substitutions. They have no item scope to narrow.
+4. Select one row: the scope line turns blue and counts it, and the buttons
+   come back. Press Cut — only that take is cut.
+5. Select a row the filters are hiding: the line must say the selection is
+   hidden by the filters, NOT "nothing selected". Two different zero states.

@@ -199,6 +199,28 @@ because the filters are hiding it — gives an EMPTY scope and says so. Acting o
 169 lines because the one you picked was filtered out is the worst available
 answer.
 
+**And no selection is not "everything" (2026-08-12).** It used to be: with
+nothing picked, a verb acted on every row in view. That was defensible on paper
+— the filters are the scoping tool — and wrong in the hand, because the
+difference between a run over three takes and a run over the whole session was
+whether a click had landed, and the two states look identical until after the
+press. AJ, after a session of using it: *"I kept finding myself worried that
+pressing a button would have unintended consequences. I'm more comfortable if
+I've intentionally selected things I want it to work on."*
+
+So an empty selection is an empty scope, and every verb that touches audio is
+**greyed out** until something is selected (tooltips still readable while
+disabled, so a dead button explains itself). `vo.ResolveScope`'s second return
+answers *"is anything selected at all?"*, which is what lets the scope line
+tell **nothing selected** from **your selection is hidden by the filters** —
+two zero-row states that used to look the same.
+
+The exceptions are the verbs with no item scope to narrow: *Match transcript to
+script* (re-reads the transcripts and rewrites the sheet, project-wide by
+nature), the Check panels, and Word substitutions. Greying those would block
+the first thing you do on a fresh session and would be dishonest anyway, since
+a selection would not change what they do.
+
 **Why the scope line is not optional.** This replaced a "Selected rows only"
 checkbox that defaulted to OFF, because clicking a row to audition it also
 selects its item (`SyncProjectSelection`), so honouring the selection meant
