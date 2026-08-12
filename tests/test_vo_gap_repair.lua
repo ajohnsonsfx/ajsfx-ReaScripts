@@ -264,6 +264,19 @@ test("no repairs returns the words unchanged", function()
   assert(added == 0 and #merged == 1 and merged[1].text == "a")
 end)
 
+test("anchors ride through a merge untouched, on both sides", function()
+  -- t_dtw from an -ot offset run is absolute source time (verified against a
+  -- 415s-offset decode), so the merge neither converts nor strips it.
+  local words = { { t0 = 0.7, t1 = 1.4, text = "kept", anchor = 1.05 } }
+  local repairs = {
+    { span = { from = 1.65, to = 29.35 },
+      words = { { t0 = 2.0, t1 = 2.4, text = "found", anchor = 2.21 } } },
+  }
+  local merged = vo.MergeRepairWords(words, repairs)
+  assert(math.abs(merged[1].anchor - 1.05) < 1e-9, "original anchor lost")
+  assert(math.abs(merged[2].anchor - 2.21) < 1e-9, "repair anchor lost")
+end)
+
 test("original words are never removed by a merge", function()
   local words = {
     { t0 = 0.0, t1 = 1.0, text = "a" },

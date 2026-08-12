@@ -94,6 +94,10 @@ These were confirmed against upstream source rather than assumed. Anything **not
 verified is marked as such in §12.
 
 1. **Word-level timestamps require no JSON parsing.**
+   > **Superseded 2026-08-11** (`SPEC-word-anchors.md`): the CSV's `start,end` are a
+   > contiguous partition, not word extents, and the DTW anchors that fix this exist
+   > only in `-ojf` JSON-full output. The tool now runs `-ojf` and parses it with a
+   > hand-rolled reader (`vo.ParseWhisperJSON`) — still no vendored dependency.
    `whisper-cli -ml 1 -sow -ocsv` forces one word per segment and writes a CSV of
    `start,end,text` where times are **milliseconds** and text is RFC4180-quoted
    (doubled `"` via `escape_double_quotes_in_csv`). Setting `-ml > 0` automatically
@@ -105,6 +109,10 @@ verified is marked as such in §12.
    warping, improving boundary accuracy. Presets are model-specific
    (`tiny`, `base`, `small`, `medium`, `large.v1/v2/v3`), so the flag is only emitted
    when the configured model maps to a known preset.
+   > **Corrected 2026-08-11**: true only with flash attention off. `-fa` defaults to
+   > on in v1.9.1 and silently prevents DTW (every `t_dtw` = -1; verified byte-identical
+   > output with/without the flag). `vo.BuildWhisperArgv` emits `-nfa` alongside `-dtw`.
+   > See `SPEC-word-anchors.md` §3.
 
 3. **whisper.cpp resamples and downmixes internally.**
    `read_audio_data` uses miniaudio with

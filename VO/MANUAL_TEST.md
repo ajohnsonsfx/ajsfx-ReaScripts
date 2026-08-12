@@ -25,32 +25,44 @@ confirm the panel shows **Backend ready** in green. Press **Save**.
 
 ---
 
-## 1. The single highest-value check: does the CSV look like we think?
+## 1. The single highest-value check: does the JSON look like we think?
 
-Everything downstream depends on `whisper-cli -ml 1 -sow -ocsv` writing
-`start,end,text` with times in **milliseconds**. This was read from upstream
-source, never observed.
+Everything downstream depends on `whisper-cli -ml 1 -sow -ojf` writing
+JSON-full with one **segment per word**, `offsets` in **milliseconds**, and
+per-token `t_dtw` in **centiseconds** when DTW is on. (Verified live
+2026-08-11 against v1.9.1; re-verify whenever `vo.WHISPER_RELEASE` bumps.)
 
-Run it by hand on any speech file:
+Run it by hand on any speech file — note **`-nfa`**, without which every
+`t_dtw` is silently `-1` (flash attention never materialises the attention
+matrix DTW reads):
 
 ```
-whisper-cli -m <model> -f <audio.wav> -of /tmp/probe -ocsv -ml 1 -sow -np
+whisper-cli -m <model> -f <audio.wav> -of /tmp/probe -ojf -ml 1 -sow -np -dtw <preset> -nfa
 ```
 
-Open `/tmp/probe.csv` and confirm:
+Open `/tmp/probe.json` and confirm:
 
-- [ ] A header row `start,end,text` is present.
-- [ ] Each row holds **one word**, not a sentence.
-- [ ] Times are **milliseconds** (a word ~2s in should read ~2000, not ~2).
-- [ ] Text is quoted, and any literal `"` is doubled.
+- [ ] A `"transcription"` array is present; each entry's `"text"` is **one
+      word**, not a sentence.
+- [ ] `"offsets"` are **milliseconds** (a word ~2s in reads ~2000, not ~2).
+- [ ] Tokens carry `"t_dtw"` values that are NOT all `-1`, and they read as
+      **centiseconds** (~2s in ≈ 200).
+- [ ] Rerun **without** `-nfa`: every `t_dtw` is `-1`. That asymmetry is why
+      `vo.BuildWhisperArgv` pairs the flags.
 
-**If any of these differ, stop.** `vo.ParseWhisperCSV` needs adjusting first, and
-its unit tests are the place to encode whatever the real format turns out to be.
+**If any of these differ, stop.** `vo.ParseWhisperJSON` needs adjusting first,
+and its unit tests are the place to encode whatever the real format turns out
+to be.
 
-Also confirm the DTW flag: rerun with `-dtw base` (matching your model). If
-whisper-cli rejects the preset name, `vo.DTW_PRESETS` needs correcting. If it
-accepts `base.en` for an `.en` model, that preset can be added — the table is
+Also confirm the DTW preset name: if whisper-cli rejects it
+(`unknown DTW preset`), `vo.DTW_PRESETS` needs correcting. If it accepts
+`base.en` for an `.en` model, that preset can be added — the table is
 deliberately conservative today.
+
+After the first in-tool transcription, open the `_vo_transcript.csv` sidecar
+and confirm the header is `Start,End,Text,Anchor` (version 2) and most rows
+carry a fourth value. A v1 sidecar from an older build must read as
+**Unsupported transcript version** in Sources, with re-transcribe offered.
 
 ---
 
@@ -472,10 +484,12 @@ Open **ajsfx VO Settings → Speech backend → Download backend & models**.
 
 ## Cut and Name (2026-08-04)
 
-1. With **nothing selected**, press **Cut and Name**. Every take the match found
-   is split out of its recording and named the plain CSV filename, and every one
-   is STILL on the recording's own track. No new track appeared. Lines with no
-   SEL are cut too — cutting decides nothing.
+1. **Select the recording item** (since 2026-08-12 nothing selected means
+   nothing acts — the button is greyed and the scope line says so), then press
+   **Cut and Name**. Every take the match found is split out of its recording
+   and named the plain CSV filename, and every one is STILL on the recording's
+   own track. No new track appeared. Lines with no SEL are cut too — cutting
+   decides nothing.
 2. Two takes of one line both carry the same plain name. That is expected; Pull
    is what separates them.
 3. Select a few rows and press it again. Only those rows' takes are affected, and
@@ -611,9 +625,10 @@ no match, no stored mapping — so these checks are about names, not matching.
 ## Tighten (2026-08-04)
 
 1. Cut and pull a session, then drag a few Selects' edges outward so they have
-   over a second of head or tail room. Press Tighten with nothing selected in
-   REAPER: the message names how many items moved, and each loose edge now sits
-   at the standard room (60ms head / 150ms tail by default).
+   over a second of head or tail room. Select them (since 2026-08-12 an empty
+   selection acts on nothing) and press Tighten: the message names how many
+   items moved, and each loose edge now sits at the standard room (60ms head /
+   150ms tail by default).
 2. Select two items in REAPER and press Tighten: only those two are measured.
 3. Hand-trim one item (change its fades while you're at it) and make its edges
    loose again: Tighten reports it measured but leaves it alone — custom fades
@@ -724,3 +739,280 @@ below are the GUI-side confirmations of the same paths.
    copy is the truth, mirrors follow it.
 6. Sync twice: the second press says every item already carries the map.
 7. The seam knows `mark_selected` and `sync_markers`.
+
+## Toolbar zones + Tidy (0.15beta5)
+
+Setup: any project with a script loaded and a few cut takes.
+
+1. Row 1 reads `Sheet: [Refresh] [Tidy ▾] | Items: [Cut and Name] [Pull] [Sort]
+   [Place] [Tighten] [Repair] | [Script] [Sources…] [Settings] <script name>`.
+   Row 2 starts with the Search box; Rematch / Select takes / Place / Tighten
+   are gone from it.
+2. Refresh = old Rematch: message reports lines identified, locked lines skipped.
+3. Tidy with both opt-ins OFF: message reports refreshed count; NOTHING moves
+   or renames on the timeline (undo history gains no item edit).
+4. Drag a second item of one line onto Selects. The card shows the amber
+   "2 selects -- pick one" badge (band row 3, next to Script); the summary
+   line counts it. Press Tidy: message includes "1 line(s) with two selects".
+5. Tidy ▾ → tick both opt-ins (labelled "changes items"). Press Tidy on a
+   project with unnamed Sel-ticked takes: takes get named, Pull runs, one
+   undo step covers the item edits ("VO Overview: tidy"), Pull's own report
+   shows.
+6. Tidy ▾ → Select takes + first/last combo still work as before.
+7. Untick both opt-ins afterwards; confirm they persist across a window
+   close/reopen (config), and Tidy's tooltip returns to "Tracking only".
+
+## Duplicate markers, range-true transcripts, cut fades (unreleased)
+
+Real session, 2026-08-10: `ChristianBrently_Grumbar_2026_0801`, the item at
+project `631.4541` (source window `31.4541–34.8700`).
+
+### Verified
+
+1. **Remove duplicate take markers.** The item held two counting markers with
+   byte-identical ranges — `IWinLittle ~mkm` and `Book ~mkt`, both
+   `31.87 → 34.87` — while the words spoken there are "I only win little."
+   One press deleted the Book marker and kept IWinLittle, reporting
+   `Book (0.00) lost to IWinLittle (0.75)`. The winning score is 0.75 rather
+   than 1.00 because the script line and the transcript differ in wording;
+   well clear of both the 0.50 floor and the 0.20 gap.
+
+### Not yet executed
+
+2. Range-true transcripts: drag a marker's end inward on a take whose marker
+   sits inside a longer matched span, and confirm the grey transcript loses
+   the words the marker no longer covers, that the extra-word colouring
+   narrows with it, and that the take stays on the same script line.
+3. The score under that same row must NOT move — it still comes from the
+   greatest-overlap span.
+4. **Apply the cut fades.** Select two items, one hand-faded and one already
+   standard. The press should report one item changed, not two; a second
+   press should report that all of them already carry the fades; one Ctrl+Z
+   should restore both.
+
+### Not yet executed — the merged verbs
+
+5. **Remove Extra Take Markers** (replaces the duplicate-only verb and the old
+   project-wide "Tidy up take markers"). On item 12 at `634.870`, which carries
+   dead copies of both `31.87` markers from a split: one press should drop the
+   leftovers and report the clip count. On an uncut recording it must report
+   nothing removed.
+6. **Tidy Up Take.** Trim a clip's head by hand, leaving its fade-in at zero
+   and its fade-out intact. One press should: remove any extras, snap the
+   surviving marker to the new edges, and fill ONLY the fade-in. The fade-out
+   must be untouched. One Ctrl+Z reverses the whole thing.
+7. Press Tidy Up Take twice: the second press should report zero snapped and
+   zero faded.
+8. **Deliver** (Pull row, first button). On a session with takes picked but
+   nothing pulled: one press should build the tracks, file the items, and lay
+   them out, with the message reading back all three steps. **ONE** undo step
+   must reverse the whole thing — this relies on REAPER collapsing nested undo
+   blocks into the outermost, which is the part to actually check.
+9. Press Deliver twice: the second press should report the tracks already
+   existing and nothing left to pull, and still lay out without error.
+
+### Verified 2026-08-10, second pass
+
+**Tidy Up Take**, on the item at project `651.6413` (source window
+`51.6413–53.9771`) holding one short marker `~mlz` at `52.27–52.96`: one press
+left a single marker and extended it to the clip's edges. Covers item 6 above
+apart from the fade detail.
+
+This press first failed, and the failure is worth recording. `Trim.extras`
+called `vo.PlanMarkerMirror`, which gives an item every canonical marker
+**intersecting** its window — and the next take's marker `~mm6` ran
+`52.96–59.04`, starting inside this clip. The mirror handed a copy to both
+items, so the clip then held two markers and the snap step correctly refused
+it as a recording. Removing extras had added one.
+
+Fixed by `vo.PlanMarkerPrune`, which keeps only the markers an item *owns*
+(`vo.CountingMarkers`' rule: the item covering most of that id's range) and
+structurally cannot add one. `tests/test_vo_markers.lua` carries the live
+geometry, including an assertion that `PlanMarkerMirror` *does* add the
+straddler — so swapping it back fails loudly.
+
+### Still not executed
+
+- The fade half of Tidy Up Take: trim a clip's head so its fade-in is zero
+  while the fade-out is intact, press once, and confirm ONLY the fade-in is
+  filled.
+- Tidy Up Take pressed twice: the second press should report zero snapped and
+  zero faded.
+- Range-true transcripts (items 2 and 3 above).
+- **Apply the cut fades** (item 4 above).
+- **Deliver** (items 8 and 9 above) — in particular that ONE undo reverses all
+  three steps.
+
+### Untrack these items — not yet executed
+
+10. Select an uncut recording holding many take markers. **Untrack these
+    items…** should offer a confirm naming three counts: markers, stored
+    decisions, item names. Cancel must change nothing.
+11. Press Untrack. Expect: every tool take marker gone from that item, any
+    Lock/Keep/Sel and notes stored against those markers gone from the project
+    file, the take name cleared to blank (REAPER then shows the source
+    filename). A take marker YOU placed by hand — no ` ~id` suffix — must
+    survive.
+12. The sheet must NOT go empty: the affected lines still show takes, derived
+    from the match, with no marker. Press **Identify the lines in these
+    items** and the markers come back.
+13. With nothing selected in REAPER, the button's popup must say to select
+    items first and offer no Untrack button.
+
+## Update from Item / Update from Marker (unreleased)
+
+`Tidy Up Take` is now **Update from Item**, and it has a mirror. Nothing here
+has been executed in REAPER — the routing (`vo.PlanUpdatePass`) is unit-tested,
+every write is not. The tab is also renamed `Main`, and `Cut recording into
+takes` has moved up into the `Match:` group.
+
+### Layout
+
+1. The second tab reads **Main**, not Edit. Its groups read **Match: / Edit: /
+   Pick: / Pull: / Check:** and `Cut recording into takes` is the LAST button
+   in Match, after `Untrack these items…`.
+2. The ribbon must not jump when switching Setup ↔ Main. The reserved height is
+   measured per width, and this change moved a button between rows.
+
+### Update from Item
+
+3. **The missing-marker step.** Delete a take's marker (or Untrack one item),
+   leaving audio the matcher recognises. Press **Update from Item**. Expect: a
+   marker back at the ITEM's own edges — not the transcript's — the item named
+   for its line, and the report saying `Marked 1 item(s) that had no take
+   marker and named 1`.
+4. Same again on an item whose audio matches no script line. Expect nothing
+   written and `1 item(s) match no script line`. It must NOT invent a marker.
+5. **An already-marked item is not re-derived.** Drag a marker's edge inward by
+   hand, then press. The marker must move OUT to the item's edges (that is the
+   snap), never to the transcript's boundary settings — proving `only_unmarked`
+   kept the identify pass off it.
+6. **The fade half.** Trim a clip's head so its fade-in is zero while the
+   fade-out is intact. One press fills ONLY the fade-in. (Carried over from
+   Tidy Up Take, still unexecuted.)
+7. Press twice. The second press reports zero snapped, zero faded, and writes
+   nothing.
+8. An uncut recording in the selection is reported as `hold several markers and
+   were left alone`, and comes out untouched — no marker moved, no fade added
+   to the recording itself.
+
+### Update from Marker
+
+9. Drag a take marker to where the clip should start and end, then press
+   **Update from Marker**. Expect: the item's edges land on the marker, and the
+   same source sample stays at the same project time (spot-check by ear, or
+   read `D_STARTOFFS` before and after with the MCP harness).
+10. The item's name: an item with a blank or meaningless name takes the
+    marker's line name. An item already named for a real line is left alone
+    even if that line is the WRONG one — reassignment is Identify's job.
+11. An item with NO take marker is left alone and reported as
+    `have no take marker to update from`. Nothing is trimmed to zero length.
+12. Two contested markers the words cannot decide: nothing is trimmed, nothing
+    is renamed, and the refusal is named in the report.
+
+### One undo
+
+13. **The one that matters.** Both buttons must be ONE undo step. Update from
+    Item runs the identify pass inside the macro's own transaction
+    (`Trim.bare`, so the step opens no block of its own) — press it on a
+    selection that needs marking, snapping AND fading, then press Ctrl+Z once
+    and confirm the markers, the edges and the fades all revert together.
+
+## Editing a line (unreleased)
+
+Nothing here is executed. The pure layer is unit-tested (9 tests); the card is
+not — the suite cannot load the Overview script.
+
+1. Right-click a line's words. The menu reads Copy / Copy original line /
+   ─── / Edit line… / Revert to script line, with **Revert greyed** on an
+   unedited line and both Copy items always present.
+2. Both Copy items on an unedited line put the same text on the clipboard.
+3. **Edit line…** → type different words → the card shows them, and the
+   script's own words appear in grey directly BELOW, never above.
+4. Fold that card. The grey row stays, because the line is edited.
+5. Fold an UNEDITED card. One row only — unchanged from today.
+6. Unfold an unedited card. The grey row is there, identical to the line.
+7. Press **Match transcript to script**. The edited line now scores against
+   the edited words — a take that was missing should find its line. This is
+   the whole point of the feature; if only this one works, it was worth it.
+8. **Revert to script line**, from the menu and from the popup button. Both
+   clear the edit, and the grey row goes on a folded card.
+9. Save and reopen the project. The edit survives, as a `Line,` row in the
+   project file beside the `Append,` rows.
+10. Disable the script in Setup, then re-enable it. The edit is still there —
+    a disabled script must not destroy the user's words.
+11. Right-click `Script:` → **Copy full path** gives the whole path, not the
+    stripped basename shown on the card.
+12. A long edited line still wraps before the filename column, and the grey
+    row wraps with it.
+13. Edit a line that appears TWICE in one script. Only the occurrence you
+    edited changes — the records are keyed by occurrence, not by filename.
+
+### Editing the filename (unreleased)
+
+Same gesture as the line, and it REPLACES the Append — that menu item is gone.
+
+14. Right-click a filename: Copy / Copy original filename / ─── / Edit
+    filename… / Revert to script filename, with Revert greyed when unedited.
+    There must be no **Edit Append** item anywhere.
+15. Double-click a filename opens the same Edit filename popup (it used to
+    open Edit Append).
+16. Type a name → the top row shows it, and the script's own filename appears
+    grey in the filename column of the provenance row, beside `Script:` and
+    the original line.
+17. Items already carrying the old name are NOT renamed, and turn up in Check
+    as names not on the script. That is the intended cost of renaming.
+18. Cut / Pull / Auto-name write the NEW name onto items.
+19. Two lines that clash under one delivered name: renaming one clears the
+    amber clash badge on both. This is what the Append used to be for.
+20. Open a project saved BEFORE this change whose lines carry Appends. The
+    delivered names must be exactly what they were — Append records still
+    resolve, they are just no longer editable from the card.
+21. Save and reopen. The override survives as a `Name,` row.
+
+## Word anchors and the boundaries they place (2026-08-12)
+
+Covers `SPEC-word-anchors.md` and `SPEC-anchor-boundaries.md`. Anchors are the
+DTW timestamps that sit ON a word; whisper's `offsets` are a partition of the
+timeline and can miss the word entirely, which is what all of this fixes.
+
+1. **The sidecar is v2.** Transcribe a source and open its
+   `*_vo_transcript.csv`: the marker row reads `ajsfx VO Transcript,2`, the
+   header is `Start,End,Text,Anchor`, and most rows carry a fourth number.
+2. **A v1 sidecar is refused, not silently used.** Point the tool at a
+   transcript from before this change: Sources shows it as *Unsupported
+   transcript version* and offers to re-transcribe. It must NOT parse.
+3. **`-nfa` is doing the work.** Re-run whisper by hand without it (see §1) and
+   confirm every `t_dtw` comes back `-1`. With it, they are real. If this ever
+   flips, anchors are gone and the transcript quietly returns to §2's failure.
+4. **The take reads what it says.** Find a take whose marker was cut at a
+   partition edge (Grumbar: source 428.593–429.894, line "You."). Its card must
+   show the words actually inside it, not the neighbour's.
+5. **The marker check catches the rest.** Remote seam verb `marker_words`, or
+   the Check panel: it walks every take marker and reports both sides of a
+   boundary tear — the row that LOST a word as `missing`, the neighbour that
+   GAINED it as `extra`. On a session mid-edit, expect real flags; they are the
+   list to work through, not a failure.
+6. **A tear repairs itself on re-Identify.** Take a flagged pair (Grumbar:
+   ChainIsChain / EvenIfYouSmile at source 584.9–590.5, boundary at the
+   partition edge 586.210), delete their markers, select the item and Identify.
+   The new boundary lands in the audible gap (~587.8, in the breath), the
+   earlier take keeps its own last word, and both flags clear.
+7. **Anchor-less transcripts are unchanged.** A model with no DTW preset writes
+   no anchors and everything falls back to the old onset rule — worse, but
+   never different from what it always did.
+
+## The selection is the scope (2026-08-12)
+
+1. With **nothing** selected in REAPER and no rows selected in the sheet, the
+   Edit tab's scope line is amber and says so, and every verb that touches
+   audio is greyed: the hero, Identify, Untrack, Cut, the whole Edit and Pick
+   rows, Deliver, Build the destination tracks.
+2. Hovering a greyed button still shows its tooltip, ending in "Needs a
+   selection".
+3. Still live, deliberately: **Match transcript to script**, the four Check
+   panels, Word substitutions. They have no item scope to narrow.
+4. Select one row: the scope line turns blue and counts it, and the buttons
+   come back. Press Cut — only that take is cut.
+5. Select a row the filters are hiding: the line must say the selection is
+   hidden by the filters, NOT "nothing selected". Two different zero states.

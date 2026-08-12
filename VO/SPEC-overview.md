@@ -141,17 +141,31 @@ an unfolded parent and its neighbour ambiguous. A card's own chrome answers
 "where does this line end", and take rows sit on their own colour inside it,
 so the two levels can never be mistaken for one another.
 
-Each card is a **title band**, always visible, of a header row and two
-parallel columns:
+Each card is a **title band** of one row that is always there and a second
+that appears when it opens:
 
 | | |
 |---|---|
-| **who + said** | fold arrow · script position · status dot · speaker · **the line text**, quoted, right beside the speaker — the words are the main piece of information on the card, so they read in the same glance as who says them (`4 · Grumbar "Can"`) · badges right-aligned: `✓N` delivered, `!` when the line has takes but no Sel |
-| **left column** | `Filename:` the delivered name (CSV filename + Append), red on a clash · `Script:` the source script |
-| **right column** | the line note, editable in place, double height to sit parallel with Filename + Script, unlabelled — promoted from the old fold-only drawer, because a note you can only see by unfolding is a note you forget you wrote |
+| **row 1 — always** | `✓N` delivered (or `–`) in the far-left corner · script position · status dot · speaker · **the line text**, quoted · the delivered name (CSV filename + Append), red on a clash, **in the Item name column** · `!` at the right edge when the line has takes but no Sel |
+| **row 2 — open only** | `Script:` the source script · what still stands between this line and done (`N selects — pick one`) |
 
-Clicking **anywhere on the band** folds or unfolds; the arrow is an indicator,
-not the only target. Unfolding adds, in order: a header row naming the take
+A **folded card is one horizontal row**: one sentence about the line, ending
+in the name it ships under. Row 2 is provenance and unfinished business —
+worth reading when you are working on that line, noise when you are scanning
+169 of them.
+
+Two alignments do the card's real work, and both are vertical:
+
+- **the line as written sits directly above the line as read** — the quoted
+  line starts at the transcript zone, not wherever the speaker's name ended.
+- **the name it will be exported under sits directly above the names it has
+  now** — the delivered filename sits in the take rows' Item name column,
+  unlabelled, because a `Filename:` label would push it out of that column.
+
+The far-left corner holds `✓N` rather than a fold arrow: the whole band folds
+on click, so the arrow was an indicator occupying the best seat on the card.
+
+Unfolding adds, in order: a header row naming the take
 fields, the **take rows** (lettered `A, B, C … Z, AA, AB`, `vo.TakeLetter`),
 and a **`+ Add Take`** button. With items selected in REAPER it names them for
 this line — the only honest "add" under the name-is-the-assignment model
@@ -166,11 +180,91 @@ script line surfaces in the orphans card rather than vanishing.
 
 A take row answers, at shared x-offsets so it stays correlated with its
 neighbours: letter · status dot · `Sel` `Keep` `Lock` checkboxes · transcript ·
-the item's own editable name · item (recording @ time) · take note. The offsets
-are the alignment mechanism a table's columns used to provide; below ~720px the
-Item zone drops to a tooltip and below ~540px the Note zone follows, because
-at those widths they were unreadable slivers and the text is why the window is
-open.
+the item's own editable name. The offsets are the alignment mechanism a table's
+columns used to provide.
+
+Two zones were removed rather than shrunk, because both spent width on
+something the user cannot act on here: the **Note** boxes (line and take —
+free text the tool can never read), and **Item** (which recording, and when —
+the project bay's job). What is left is the text and the name, and the name
+got the width.
+
+**The transcript's colour marks extra words.** A take's transcript is drawn in
+one colour, with the words the reader said that the **line does not contain** in
+amber (`vo.ExtraWords`, a longest-common-subsequence alignment of the two token
+streams). The colour used to mean `status == "review"` — i.e. the match score
+fell below a threshold — which put a number nobody could see in charge of a
+whole paragraph's colour and read, from the outside, as random.
+
+Where a reader stumbled and went again, both halves align equally well; the tie
+goes to the **later** occurrence, so what is marked is the false start rather
+than the read they settled on.
+
+Amber, not red: an extra word is something to look at, not an error. It is
+non-blocking by design — a take with extra words is still a take the user may
+want, and `Sel`/`Keep`/`Lock` is where that gets decided, not a status the tool
+assigns.
+
+### The orphans card is a queue
+
+Audio that matched no script line sits in one card at the foot of the sheet, and
+every entry can be **resolved**, not just looked at. Right-click:
+
+- **This is line…** — the script lines those words could be, best first
+  (`vo.FindSpanLines`: the matcher run backwards, scoring every line against a
+  known window instead of searching for windows). Assigning **renames the item**
+  if the span has been cut out, or writes a **ranged take marker** where the
+  span is if it has not — the name is the assignment either way.
+- **This is junk** — slate, chatter, a cough, a false start. Stored as the row's
+  status, so it lives in the project file with the marks and survives a rematch.
+
+Dismissed spans **leave the orphan count**, and that is the point: `0 orphans`
+now means every span has been looked at and decided. Without it the number could
+only ever be ignored, which is what made the list feel like a wall.
+
+`vo.FindSpanLines` is deliberately looser than the batch pass. A person looking
+at one span can accept weaker evidence than a sweep over sixteen hundred words
+should — the risk that keeps the global threshold conservative is a wrong name
+written silently across the session, and it does not apply to one deliberate
+act. This is also why there is no batch "find what I missed" at a lower
+threshold: `vo.ResidualPass` already comes back for the leftovers at the normal
+threshold, and the loosening is safe only because someone is watching.
+
+Each orphan says **why** it is one — *dismissed*, *no such line* (named for a
+line no loaded script has), or *unmatched* — since the three want different
+fixes.
+
+### The marker is what the cut will be
+
+A ranged take marker is a **promise about where the clip will land**, not a
+note about where whisper thought the words were. Identify writes markers
+through the same speech-bounds → pad → snap-to-silence pass Cut uses
+(`SnapSpansToCut`, one function, so preview and cut cannot drift), and Cut then
+**cuts to the marker** rather than re-deriving the edges.
+
+That closes a trap the merged Identify verb would otherwise have walked into.
+Cut used to SKIP any span a counting marker overlapped — a marker meant "the
+user is tracking this take, do not overwrite their work" — which was defensible
+while markers only ever arrived by hand, and fatal the moment Identify started
+writing them: *Identify → Cut* would have skipped every take just marked and
+cut nothing.
+
+Honouring the marker serves both cases better:
+
+- a marker the user **dragged** is their edit, and the clip lands on it;
+- a marker **Identify wrote** is the cut's own plan, and the clip lands where
+  the preview said.
+
+Neither is silently overwritten, because in both cases the marker decides. A
+single-take item keeps the user's own item edges (the item IS the take, so
+their trim is the truth); spans inside an uncut recording get the snapping pass,
+because raw whisper bounds sit a pause-width outside the speech at both ends.
+Spans carrying marker bounds are held out of Cut's padding pass entirely, and a
+stale source cannot invalidate them — marker edges were measured against the
+audio as it is now, not against the transcript.
+
+**Re-cut from the transcript** (in the Cut report) is the escape hatch: it
+deletes those takes' markers and derives the edges again from the words.
 
 ### Take identity: ranged take markers
 
@@ -206,15 +300,29 @@ edges, cutting nothing and never overwriting a name that already resolves to
 a line — the ingest path for a session edited before the tool arrived.
 **Mark selected item(s)** is the same gesture for one item in the hand:
 best-effort match (`vo.BestSpanForItem`, floored by `mark_item_min_span`),
-marker at current edges, named for the line, guess reported. **Sync take
-markers** mirrors each source's canonical take map onto every item of that
-source within `marker_mirror_reach` of its window (`vo.PlanMarkerMirror`), so
-widening an item reveals the neighbouring takes as labelled ranges; the copy
-the user can see and drag is the canonical one, stale mirrors refresh from
-it, and off-window split residue collapses — it subsumes the old *Clean
-stray take markers*. The sync is an explicit press, never per-frame: a
-rebuild that rewrote chunks mid-drag would snap the marker out of the
-user's hand.
+marker at current edges, named for the line, guess reported. **Tidy up take markers**
+leaves every item holding only the takes its own window covers, dropping the
+rest (`vo.PlanMarkerMirror`); the copy the user can see and drag is the
+canonical one, and stale leftovers collapse against it. It subsumes the old
+*Clean stray take markers*.
+
+**One take, one marker, in the clip that IS that take.** This used to mirror
+each source's take map into every item within `marker_mirror_reach` (30s) of
+its window, so widening an item revealed its neighbours as labelled ranges.
+The idea was sound and the cost was not: markers live in the item's state
+CHUNK, which the tool re-reads whenever the project changes, so every spare
+copy is paid for on every rescan forever. REAPER's split makes this acute — it
+copies the WHOLE take-marker set into both halves, so one recording cut into
+451 clips carried all 409 of the session's markers in each: 184,459 marker
+lines and 24MB of chunk for 409 takes, 810ms to read and discard on every
+rescan, felt as REAPER pausing when clicking between items. The reach setting
+was removed rather than defaulted to 0, because a knob whose other positions
+are all slower is not a choice.
+
+Cut runs the tidy itself, in the same transaction, so a fresh session never
+accumulates residue. The standalone press is for sessions cut before it did,
+or after splitting by hand. It is never per-frame: a rebuild that rewrote
+chunks mid-drag would snap the marker out of the user's hand.
 
 **The track is the decision.** Sel and Keep are tri-state in the project file —
 `yes`, `no`, or blank meaning no opinion. A blank defers to where the item
@@ -428,13 +536,14 @@ the Settings dialog.
   is a visible vertical diff. The **Append** is edited on demand — double-click
   or right-click the cell — because it is rare; red marks a delivered-name
   clash until an Append separates the two lines.
-- **Notes** — editable free text at both levels, saved to the project file.
-  Line notes back onto `linenote|`-keyed entries no row claims, carried over
-  explicitly by every save.
+- **Notes** — REMOVED. Free text at both levels, saved to the project file,
+  never used and costing about a third of the card's width. The sidecar's
+  notes column stays in the file format so an existing project still
+  round-trips; nothing writes it and nothing reads it back.
 
 Filters: character, per-field boxes (their own line under the toolbar, behind
-the **Filters** toggle), and a text search across filename, line, transcript
-and notes — all selecting LINES, with takes travelling whole. There
+the **Filters** toggle), and a text search across filename, line and
+transcript — all selecting LINES, with takes travelling whole. There
 is no display sorting of any kind (0.15): script order is the one order.
 
 ### Refresh
@@ -648,8 +757,8 @@ touches the project or the project file. It lives in `ExtState` under section
 
 Widths are not stored at all any more. The table persisted its column widths
 and order into `REAPER/ReaImGui/<hash>.ini`; cards compute their zones from the
-window width every frame, which is also what lets the Where and Note zones drop
-out on a narrow window (§4).
+window width every frame, which is what lets the Item name zone grow with the
+window (§4).
 
 The pre-0.15 `view_mirror_text` setting is gone with the columns it paired:
 line text and transcript are no longer side by side, so there is nothing left

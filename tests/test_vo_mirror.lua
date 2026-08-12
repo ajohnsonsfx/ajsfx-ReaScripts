@@ -93,37 +93,33 @@ local function three_items()
   }
 end
 
-test("reach 0 with a clean session rewrites nothing", function()
-  local rewrites, canon = vo.PlanMarkerMirror(three_items(), 0)
+test("a clean session rewrites nothing", function()
+  local rewrites, canon = vo.PlanMarkerMirror(three_items())
   assert(#rewrites == 0, "rewrote a clean session: " .. #rewrites)
   assert(canon == 3, "canonical: " .. canon)
 end)
 
-test("with reach, every item gains its neighbours' markers", function()
-  local rewrites = vo.PlanMarkerMirror(three_items(), 30)
-  assert(#rewrites == 3, "rewrites: " .. #rewrites)
-  for _, rw in ipairs(rewrites) do
-    assert(#rw.markers == 3, "item " .. rw.item_index ..
-           " mirrors " .. #rw.markers .. " markers, wanted all 3")
-  end
-end)
-
-test("reach bounds the mirror: a far take stays out", function()
-  local rewrites = vo.PlanMarkerMirror(three_items(), 5)
-  -- item 1 (0..10, reach to 15): sees t1, t2(12..15 intersects) not t3(22..25)
+test("an item keeps only the take it IS, never its neighbours'", function()
+  -- The mirroring this used to do put a copy of every nearby take in every
+  -- item. Markers live in the item's state CHUNK, which is re-read whenever
+  -- the project changes, so each spare copy was paid for on every rescan
+  -- forever -- and on a 451-clip session that was felt as REAPER pausing.
+  local group = three_items()
+  -- Give item 1 a copy of both neighbours, as the old mirror would have.
+  group[1].markers[#group[1].markers + 1] = tkm(12, "line_b", "bb2", 3)
+  group[1].markers[#group[1].markers + 1] = tkm(22, "line_c", "cc3", 3)
+  local rewrites = vo.PlanMarkerMirror(group)
   local by_index = {}
   for _, rw in ipairs(rewrites) do by_index[rw.item_index] = rw end
-  assert(by_index[1], "item 1 not rewritten")
-  assert(#by_index[1].markers == 2, "item 1: " .. #by_index[1].markers)
-  -- item 2 (10..20, reach 5..25): gains t3 (22..25 intersects), but NOT t1 --
-  -- 2..5 merely touches the 5s edge, and touching is not intersecting.
-  assert(by_index[2] and #by_index[2].markers == 2,
-         "item 2: " .. (by_index[2] and #by_index[2].markers or -1))
+  assert(by_index[1], "the neighbours' copies survived")
+  assert(#by_index[1].markers == 1, "item 1 kept " .. #by_index[1].markers)
+  assert(by_index[1].markers[1].id == "aa1", "item 1 kept the wrong take")
 end)
 
-test("a second sync is a no-op: mirroring converges", function()
+test("a second pass is a no-op: tidying converges", function()
   local group = three_items()
-  local rewrites = vo.PlanMarkerMirror(group, 30)
+  group[1].markers[#group[1].markers + 1] = tkm(22, "line_c", "cc3", 3)
+  local rewrites = vo.PlanMarkerMirror(group)
   for _, rw in ipairs(rewrites) do
     group[rw.item_index].markers = {}
     for _, m in ipairs(rw.markers) do
@@ -131,16 +127,16 @@ test("a second sync is a no-op: mirroring converges", function()
         tkm(m.start, m.asset, m.id, m.stop - m.start)
     end
   end
-  local again = vo.PlanMarkerMirror(group, 30)
-  assert(#again == 0, "second sync still rewrites " .. #again .. " item(s)")
+  local again = vo.PlanMarkerMirror(group)
+  assert(#again == 0, "second pass still rewrites " .. #again .. " item(s)")
 end)
 
-test("a dragged counting copy wins over its stale mirrors", function()
+test("a dragged counting copy wins over a stale leftover", function()
   local group = three_items()
-  -- Mirror t1 into item 2 (stale position), then drag the real t1 to 3..6.
+  -- A leftover copy of t1 in item 2, then the real t1 dragged to 3..6.
   group[2].markers[#group[2].markers + 1] = tkm(2, "line_a", "aa1", 3)
   group[1].markers[1] = tkm(3, "line_a", "aa1", 3)
-  local rewrites = vo.PlanMarkerMirror(group, 30)
+  local rewrites = vo.PlanMarkerMirror(group)
   for _, rw in ipairs(rewrites) do
     for _, m in ipairs(rw.markers) do
       if m.id == "aa1" then
@@ -154,18 +150,18 @@ end)
 test("split residue -- the same id twice in one item -- collapses", function()
   local group = three_items()
   group[1].markers[#group[1].markers + 1] = tkm(2, "line_a", "aa1", 3)
-  local rewrites = vo.PlanMarkerMirror(group, 0)
+  local rewrites = vo.PlanMarkerMirror(group)
   local by_index = {}
   for _, rw in ipairs(rewrites) do by_index[rw.item_index] = rw end
   assert(by_index[1], "duplicate id survived")
   assert(#by_index[1].markers == 1, "markers: " .. #by_index[1].markers)
 end)
 
-test("reach 0 removes an off-window stray -- the old clean-stray", function()
+test("an off-window stray is removed", function()
   local group = three_items()
   -- A copy of t3 stranded on item 1, far outside its window.
   group[1].markers[#group[1].markers + 1] = tkm(22, "line_c", "cc3", 3)
-  local rewrites = vo.PlanMarkerMirror(group, 0)
+  local rewrites = vo.PlanMarkerMirror(group)
   local by_index = {}
   for _, rw in ipairs(rewrites) do by_index[rw.item_index] = rw end
   assert(by_index[1], "the stray survived")
@@ -173,14 +169,37 @@ test("reach 0 removes an off-window stray -- the old clean-stray", function()
   assert(by_index[1].markers[1].id == "aa1")
 end)
 
-test("items of an untouched source are not rewritten just for reach", function()
-  -- One item, one take: nothing to mirror in, nothing stray. Any reach.
+test("an item already holding just its own take is left alone", function()
+  -- One item, one take: nothing stray, nothing to drop, so no chunk is
+  -- rewritten. Writing chunks that do not need it is how a tidy pass becomes
+  -- the thing it was meant to prevent.
   local group = {
     { coverage = { from = 0, to = 10 },
       markers = { tkm(2, "line_a", "aa1", 3) }, info = { item = "i1" } },
   }
-  assert(#vo.PlanMarkerMirror(group, 0) == 0)
-  assert(#vo.PlanMarkerMirror(group, 60) == 0)
+  assert(#vo.PlanMarkerMirror(group) == 0)
+end)
+
+test("REAPER's split residue -- the whole set in every half -- collapses", function()
+  -- The shape of the real bug: one recording cut into three, each half handed
+  -- the complete take-marker set by REAPER's split. 3 items x 3 markers where
+  -- there should be 3 markers total; on the live session it was 451 x 409.
+  local group = three_items()
+  local all = { tkm(2, "line_a", "aa1", 3), tkm(12, "line_b", "bb2", 3),
+                tkm(22, "line_c", "cc3", 3) }
+  for i = 1, 3 do
+    group[i].markers = {}
+    for _, m in ipairs(all) do
+      group[i].markers[#group[i].markers + 1] = tkm(m.pos, nil, nil, m.length)
+      group[i].markers[#group[i].markers] = m
+    end
+  end
+  local rewrites, canon = vo.PlanMarkerMirror(group)
+  assert(canon == 3, "canonical takes: " .. canon)
+  assert(#rewrites == 3, "not every item was tidied: " .. #rewrites)
+  local total = 0
+  for _, rw in ipairs(rewrites) do total = total + #rw.markers end
+  assert(total == 3, "9 markers became " .. total .. ", wanted 3")
 end)
 
 --------------------------------

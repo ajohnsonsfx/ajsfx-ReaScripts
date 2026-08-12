@@ -977,6 +977,220 @@ test("a line with no append key still resolves", function()
   assert(lines[1].deliver == "a", "A key-less line must not error")
 end)
 
+print("\nSubstitutions live in the project:")
+
+test("substitutions round-trip through the project file", function()
+  local text = vo.SerializeProjectFile({}, {
+    subs = { { from = "archivists", to = "archivist" },
+             { from = "toadman",    to = "toad man" } },
+  })
+  assert(text:find("\nSub,", 1, true) or text:find("^Sub,"), "no Sub row")
+  local parsed = assert(vo.ParseProjectFile(text))
+  assert(#parsed.subs == 2, "count: " .. #parsed.subs)
+  local m = vo.SubMap(parsed.subs)
+  assert(m.archivists == "archivist", "from/to lost")
+  assert(m.toadman == "toad man", "a replacement with a space was split")
+end)
+
+test("a substitution whose replacement contains an = survives", function()
+  -- FormatCSVRow quotes the cell, so the separator is not the danger it is in
+  -- the "from = to" text box.
+  local parsed = assert(vo.ParseProjectFile(vo.SerializeProjectFile({}, {
+    subs = { { from = "eq", to = "a = b" } } })))
+  assert(vo.SubMap(parsed.subs).eq == "a = b",
+         "got " .. tostring(vo.SubMap(parsed.subs).eq))
+end)
+
+test("SubRows turns the edit box's text into records, folded", function()
+  local rows = vo.SubRows("Archivists = archivist\nTOADMAN = toad man\n")
+  assert(#rows == 2, "count: " .. #rows)
+  local m = vo.SubMap(rows)
+  assert(m.archivists == "archivist", "key not folded")
+  assert(m.toadman == "toad man", "key not folded")
+end)
+
+test("SubRows is stably ordered so the box does not reshuffle", function()
+  local a = vo.SubRows("b = 2\na = 1\nc = 3")
+  assert(a[1].from == "a" and a[2].from == "b" and a[3].from == "c",
+         "not sorted: " .. a[1].from .. a[2].from .. a[3].from)
+end)
+
+test("a blank or keyless line is dropped, not stored empty", function()
+  local rows = vo.SubRows("a = 1\n\n = nothing\nnokey\n")
+  assert(#rows == 1 and rows[1].from == "a", "count: " .. #rows)
+end)
+
+print("\nWrapping quotes:")
+
+test("a cell wrapped in quotes loses them", function()
+  local lines = vo.BuildScriptLines(
+    { { "a", '"Adon no speak to us."' } }, { asset = 1, text = 2 })
+  assert(lines[1].text == "Adon no speak to us.",
+         "got [" .. lines[1].text .. "]")
+end)
+
+test("quotes INSIDE the line are dialogue and stay", function()
+  -- The whole point of the rule being start-AND-end: a line that quotes
+  -- someone keeps its quotation marks.
+  local lines = vo.BuildScriptLines(
+    { { "a", 'Master say "No one leaves."' } }, { asset = 1, text = 2 })
+  assert(lines[1].text == 'Master say "No one leaves."',
+         "got [" .. lines[1].text .. "]")
+end)
+
+test("a quote at only one end is not a wrapper", function()
+  local lines = vo.BuildScriptLines(
+    { { "a", '"No one leaves.' } }, { asset = 1, text = 2 })
+  assert(lines[1].text == '"No one leaves.', "got [" .. lines[1].text .. "]")
+  local b = vo.BuildScriptLines(
+    { { "a", 'He said "go on"' } }, { asset = 1, text = 2 })
+  assert(b[1].text == 'He said "go on"', "got [" .. b[1].text .. "]")
+end)
+
+test("a wrapped line that also quotes someone strips only the wrapper", function()
+  local lines = vo.BuildScriptLines(
+    { { "a", '"Master say "No one leaves.""' } }, { asset = 1, text = 2 })
+  assert(lines[1].text == 'Master say "No one leaves."',
+         "got [" .. lines[1].text .. "]")
+end)
+
+test("smart quotes wrap too", function()
+  local lines = vo.BuildScriptLines(
+    { { "a", "\226\128\156Adon no speak.\226\128\157" } }, { asset = 1, text = 2 })
+  assert(lines[1].text == "Adon no speak.", "got [" .. lines[1].text .. "]")
+end)
+
+test("a lone quote character is left alone", function()
+  local lines = vo.BuildScriptLines({ { "a", '"' } }, { asset = 1, text = 2 })
+  assert(lines[1].text == '"', "got [" .. tostring(lines[1].text) .. "]")
+end)
+
+print("\nFilename overrides:")
+
+test("a name override replaces the delivered filename", function()
+  local lines = { { asset = "line_042",
+                    append_key = vo.AppendKey("Ch2", "line_042", 1) } }
+  vo.ResolveNames(lines, {},
+    { [vo.AppendKey("Ch2", "line_042", 1)] = "grumbar_iwinlittle" })
+  assert(lines[1].deliver == "grumbar_iwinlittle",
+         "Got " .. tostring(lines[1].deliver))
+  assert(lines[1].name_edited == true, "not flagged as overridden")
+  assert(lines[1].asset == "line_042", "the script's own filename was lost")
+end)
+
+test("an override beats an append rather than stacking with it", function()
+  -- The override IS the delivered name. Append is the old mechanism it
+  -- replaces, so a leftover Append record must not tack onto the new name.
+  local lines = { { asset = "a", append_key = vo.AppendKey("Ch2", "a", 1) } }
+  vo.ResolveNames(lines,
+    { [vo.AppendKey("Ch2", "a", 1)] = "_ch2" },
+    { [vo.AppendKey("Ch2", "a", 1)] = "typed_name" })
+  assert(lines[1].deliver == "typed_name", "Got " .. tostring(lines[1].deliver))
+end)
+
+test("an append still applies where no override exists", function()
+  -- Back-compat: projects written before this feature keep their names.
+  local lines = { { asset = "a", append_key = vo.AppendKey("Ch2", "a", 1) } }
+  vo.ResolveNames(lines, { [vo.AppendKey("Ch2", "a", 1)] = "_ch2" }, {})
+  assert(lines[1].deliver == "a_ch2", "Got " .. tostring(lines[1].deliver))
+  assert(not lines[1].name_edited, "an append is not an override")
+end)
+
+test("ResolveNames is idempotent and reverts when the override goes", function()
+  local lines = { { asset = "a", append_key = vo.AppendKey("Ch2", "a", 1) } }
+  local key = vo.AppendKey("Ch2", "a", 1)
+  vo.ResolveNames(lines, {}, { [key] = "typed" })
+  vo.ResolveNames(lines, {}, { [key] = "typed" })
+  assert(lines[1].deliver == "typed", "second pass drifted")
+  vo.ResolveNames(lines, {}, {})
+  assert(lines[1].deliver == "a", "revert did not restore the script filename")
+  assert(not lines[1].name_edited, "still flagged after revert")
+end)
+
+test("a whitespace-only override is no override", function()
+  local lines = { { asset = "a", append_key = vo.AppendKey("Ch2", "a", 1) } }
+  vo.ResolveNames(lines, {}, { [vo.AppendKey("Ch2", "a", 1)] = "   " })
+  assert(lines[1].deliver == "a", "Got " .. tostring(lines[1].deliver))
+end)
+
+--------------------------------
+-- Line edits
+
+print("\nLine edits:")
+
+test("SetLineEdit stores, replaces, and empty removes", function()
+  local rows = {}
+  vo.SetKeyedText(rows, "S", "a.wav", 1, "Bolvd no speak")
+  assert(#rows == 1 and rows[1].text == "Bolvd no speak", "not stored")
+  vo.SetKeyedText(rows, "S", "a.wav", 1, "Bolvd will not speak")
+  assert(#rows == 1 and rows[1].text == "Bolvd will not speak", "not replaced")
+  vo.SetKeyedText(rows, "S", "a.wav", 1, "   ")
+  assert(#rows == 0, "empty did not remove the record")
+end)
+
+test("an edit equal to the original is still stored", function()
+  -- Deciding the line is right as written is a judgement worth keeping.
+  local rows = {}
+  vo.SetKeyedText(rows, "S", "a.wav", 1, "Adon no speak")
+  assert(#rows == 1, "dropped an edit for matching the original")
+end)
+
+test("LineEditMap keys by script, asset and occurrence", function()
+  local m = vo.KeyedTextMap({
+    { script = "S1", asset = "a.wav", nth = 1, text = "one" },
+    { script = "S2", asset = "a.wav", nth = 1, text = "two" },
+    { script = "S1", asset = "a.wav", nth = 2, text = "three" },
+  })
+  assert(m[vo.AppendKey("S1", "a.wav", 1)] == "one", "S1 nth1")
+  assert(m[vo.AppendKey("S2", "a.wav", 1)] == "two", "same file, other script")
+  assert(m[vo.AppendKey("S1", "a.wav", 2)] == "three", "second occurrence")
+end)
+
+test("ApplyLineEdits overrides the text and keeps the original", function()
+  local lines = {
+    { asset = "a.wav", text = "Adon no speak",
+      append_key = vo.AppendKey("S", "a.wav", 1) },
+    { asset = "b.wav", text = "untouched",
+      append_key = vo.AppendKey("S", "b.wav", 1) },
+  }
+  vo.ApplyLineEdits(lines, { [vo.AppendKey("S", "a.wav", 1)] = "Bolvd no speak" })
+  assert(lines[1].text == "Bolvd no speak", "text: " .. lines[1].text)
+  assert(lines[1].text_original == "Adon no speak", "original lost")
+  assert(lines[1].text_edited == true, "not flagged as edited")
+  assert(lines[2].text == "untouched", "disturbed an unedited line")
+  assert(lines[2].text_original == "untouched", "original not set when unedited")
+  assert(not lines[2].text_edited, "unedited line flagged as edited")
+end)
+
+test("ApplyLineEdits is idempotent, and reverts when the edit goes", function()
+  -- Called on every script load, on the SAME table. Without this, a second
+  -- pass would record the edited text as the original and the script's own
+  -- words would be gone for good.
+  local lines = { { asset = "a.wav", text = "Adon",
+                    append_key = vo.AppendKey("S", "a.wav", 1) } }
+  local key = vo.AppendKey("S", "a.wav", 1)
+  vo.ApplyLineEdits(lines, { [key] = "Bolvd" })
+  vo.ApplyLineEdits(lines, { [key] = "Bolvd" })
+  assert(lines[1].text_original == "Adon", "original overwritten on re-apply")
+  vo.ApplyLineEdits(lines, { [key] = "Grumbar" })
+  assert(lines[1].text == "Grumbar" and lines[1].text_original == "Adon",
+         "changing the edit lost the original")
+  vo.ApplyLineEdits(lines, {})
+  assert(lines[1].text == "Adon", "revert did not restore the script line")
+  assert(not lines[1].text_edited, "still flagged as edited after revert")
+end)
+
+test("OrphanLineEdits reports an edit whose line is gone", function()
+  local edits = {
+    { script = "S", asset = "gone.wav", nth = 1, text = "x" },
+    { script = "S", asset = "here.wav", nth = 1, text = "y" },
+  }
+  local lines = { { script = "S", asset = "here.wav", append_nth = 1 } }
+  local orphans = vo.OrphanKeyedText(edits, lines)
+  assert(#orphans == 1 and orphans[1].asset == "gone.wav",
+         "orphans: " .. #orphans)
+end)
+
 --------------------------------
 -- DuplicateNames
 --------------------------------
@@ -1041,6 +1255,67 @@ end)
 --------------------------------
 -- Normalize
 --------------------------------
+print("\nExtraWords:")
+
+local function marked(line, take)
+  local out = {}
+  for _, run in ipairs(vo.ExtraWords(line, take)) do
+    out[#out + 1] = (run.extra and "[" .. run.text .. "]" or run.text)
+  end
+  return table.concat(out, " ")
+end
+
+test("a clean read marks nothing", function()
+  local s = marked("Open the north gate.", "Open the north gate.")
+  assert(s == "Open the north gate.", "Got: " .. s)
+end)
+
+test("words the take has and the line does not are marked", function()
+  local s = marked("Open the gate.", "Uh, open the big gate.")
+  assert(s == "[Uh,] Open the [big] gate.", "Got: " .. s)
+end)
+
+test("a paired word is shown with the line's capitalisation and punctuation", function()
+  local s = marked("Open the north gate, now!", "open the north gate now")
+  assert(s == "Open the north gate, now!", "Got: " .. s)
+end)
+
+test("words the line has and the take does not are not marked", function()
+  -- Nothing to colour: the reader dropped a word, there is no word on screen.
+  local s = marked("Open the north gate.", "Open the gate.")
+  assert(s == "Open the gate.", "Got: " .. s)
+end)
+
+test("a false start is marked, and the read that followed it is not", function()
+  -- Both halves are an equally valid pairing; the tie goes to the LATER one, so
+  -- what gets coloured is the stumble the reader abandoned rather than the read
+  -- they went on to give.
+  local s = marked("Do not repeat that.", "Do not repeat, do not repeat that.")
+  assert(s == "[Do not repeat,] Do not repeat that.", "Got: " .. s)
+end)
+
+test("comparison ignores case and punctuation", function()
+  -- And the pairing it finds hands the line's spelling back.
+  assert(marked("Don't!", "don\226\128\153t") == "Don't!", marked("Don't!", "don\226\128\153t"))
+end)
+
+test("a word Normalize splits pairs against the split line", function()
+  local s = marked("well worn", "well-worn")
+  assert(s == "well worn", "Got: " .. s)
+end)
+
+test("several take words paired into one line word are said once", function()
+  local s = marked("well-worn", "well worn")
+  assert(s == "well-worn", "Got: " .. s)
+end)
+
+test("with no line to compare, nothing is extra", function()
+  -- An orphan is not a take made entirely of extra words.
+  local s = marked("", "whatever he said here")
+  assert(s == "whatever he said here", "Got: " .. s)
+  assert(#vo.ExtraWords("a line", "") == 0, "empty take yields no runs")
+end)
+
 print("\nNormalize:")
 
 test("lowercases and strips terminal punctuation", function()
@@ -1182,6 +1457,85 @@ end)
 
 test("empty input yields no words", function()
   assert(#vo.ParseWhisperCSV("") == 0, "Expected 0 words")
+end)
+
+--------------------------------
+-- ParseWhisperJSON
+--------------------------------
+print("\nParseWhisperJSON:")
+
+-- The shape whisper-cli -ml 1 -sow -ojf actually writes: a preamble, then one
+-- segment per word, each with offsets in ms and sub-word tokens carrying
+-- t_dtw in CENTIseconds (-1 = never computed). Special tokens ride along.
+local OJF = [[
+{
+  "systeminfo": "WHISPER : COREML = 0",
+  "model": { "type": "large", "multilingual": true },
+  "params": { "model": "ggml-large-v3.bin", "language": "en" },
+  "result": { "language": "en" },
+  "transcription": [
+    {
+      "timestamps": { "from": "00:00:00,000", "to": "00:00:00,190" },
+      "offsets": { "from": 0, "to": 190 },
+      "text": "",
+      "tokens": [ { "text": "[_BEG_]", "t_dtw": -1 } ]
+    },
+    {
+      "offsets": { "from": 190, "to": 760 },
+      "text": " Brantley",
+      "tokens": [
+        { "text": " Br",  "t_dtw": 41 },
+        { "text": "ant",  "t_dtw": 55 },
+        { "text": "ley",  "t_dtw": 47 }
+      ]
+    },
+    {
+      "offsets": { "from": 760, "to": 1080 },
+      "text": " said \"go,\"\n",
+      "tokens": [
+        { "text": "[_TT_38]", "t_dtw": 12 },
+        { "text": " said",    "t_dtw": -1 }
+      ]
+    },
+    {
+      "offsets": { "from": 1080, "to": 1500 },
+      "text": " you",
+      "tokens": [ { "text": " you", "t_dtw": 132 } ]
+    }
+  ]
+}
+]]
+
+test("a segment is a word: offsets in ms, anchor from the smallest token t_dtw", function()
+  local w = vo.ParseWhisperJSON(OJF)
+  assert(#w == 3, "Expected 3 words, got " .. #w)
+  assert(w[1].text == "Brantley", "text: " .. tostring(w[1].text))
+  assert(near(w[1].t0, 0.19) and near(w[1].t1, 0.76), "window not converted")
+  -- Three sub-word tokens anchored 0.41/0.55/0.47s: the word starts at the
+  -- earliest, not the first-listed.
+  assert(near(w[1].anchor, 0.41), "anchor: " .. tostring(w[1].anchor))
+end)
+
+test("special tokens and unset t_dtw never supply an anchor", function()
+  local w = vo.ParseWhisperJSON(OJF)
+  -- Word 2's only candidates are a [_TT_38] (excluded by name) and an
+  -- unset -1 (excluded by value): no anchor at all, downstream falls to t0.
+  assert(w[2].text == 'said "go,"', "text: " .. string.format("%q", w[2].text))
+  assert(w[2].anchor == nil, "anchor: " .. tostring(w[2].anchor))
+end)
+
+test("empty segments are dropped and centiseconds become seconds", function()
+  local w = vo.ParseWhisperJSON(OJF)
+  -- The [_BEG_] segment had no text and is gone; `you` anchors at 1.32s.
+  assert(w[3].text == "you" and near(w[3].anchor, 1.32),
+         "Got " .. tostring(w[3].text) .. " @ " .. tostring(w[3].anchor))
+end)
+
+test("malformed or alien JSON yields no words, not an error", function()
+  assert(#vo.ParseWhisperJSON("") == 0, "empty")
+  assert(#vo.ParseWhisperJSON("{ not json") == 0, "malformed")
+  assert(#vo.ParseWhisperJSON('{"ok":true}') == 0, "no transcription array")
+  assert(#vo.ParseWhisperJSON(nil) == 0, "nil input")
 end)
 
 --------------------------------
@@ -1501,6 +1855,199 @@ test("candidates carry the script line's identity and times", function()
 end)
 
 --------------------------------
+-- TranscriptForRange
+--------------------------------
+print("\nTranscriptForRange:")
+
+local TFR = {
+  { source_path = "a.wav", span = { start = 0, stop = 2, transcript = "open the gate",
+                                    kind = "match", score = 0.9, in_sequence = true } },
+  { source_path = "a.wav", span = { start = 3, stop = 5, transcript = "and hurry",
+                                    kind = "review", score = 0.6 } },
+  { source_path = "a.wav", span = { start = 9, stop = 11, transcript = "elsewhere",
+                                    kind = "match", score = 1.0 } },
+  { source_path = "b.wav", span = { start = 0, stop = 2, transcript = "other file",
+                                    kind = "match", score = 1.0 } },
+}
+
+-- The word list ranges are cut from. Deliberately overlapping the TFR spans
+-- above. No anchors here: this fixture exercises the t0 fallback, the anchor
+-- cases have their own fixtures below.
+local TFR_WORDS = {
+  { t0 = 0.0, t1 = 0.4, text = "open" },
+  { t0 = 0.5, t1 = 0.9, text = "the" },
+  { t0 = 1.0, t1 = 1.9, text = "gate" },
+  { t0 = 3.0, t1 = 3.5, text = "and" },
+  { t0 = 3.6, t1 = 4.9, text = "hurry" },
+}
+
+test("a marker's range reads back the words inside it", function()
+  local text, score, seq = vo.TranscriptForRange(TFR, "a.wav", 0, 2, TFR_WORDS)
+  assert(text == "open the gate", "Got: " .. tostring(text))
+  assert(near(score, 0.9), "score not carried: " .. tostring(score))
+  assert(seq == true, "in_sequence not carried")
+end)
+
+test("a marker spanning two spans reads as both, in time order", function()
+  local text = vo.TranscriptForRange(TFR, "a.wav", 0, 5, TFR_WORDS)
+  assert(text == "open the gate and hurry", "Got: " .. tostring(text))
+end)
+
+test("the score comes from the span that overlaps most, not an average", function()
+  -- Mostly the review span, a sliver of the match: the score is the review's.
+  local _, score = vo.TranscriptForRange(TFR, "a.wav", 1.9, 5, TFR_WORDS)
+  assert(near(score, 0.6), "Got: " .. tostring(score))
+end)
+
+test("another source's words never leak in", function()
+  -- The caller passes the words FOR THE PATH IT ASKS ABOUT; a.wav's list
+  -- cannot answer for b.wav, and the spans filter by source_path.
+  local b_words = { { t0 = 0.0, t1 = 0.7, text = "other" },
+                    { t0 = 0.8, t1 = 1.6, text = "file" } }
+  local text = vo.TranscriptForRange(TFR, "b.wav", 0, 5, b_words)
+  assert(text == "other file", "Got: " .. tostring(text))
+end)
+
+test("a range over nothing is nil, not empty", function()
+  assert(vo.TranscriptForRange(TFR, "a.wav", 6, 8, TFR_WORDS) == nil, "silence returned text")
+  assert(vo.TranscriptForRange(TFR, "c.wav", 0, 5, TFR_WORDS) == nil, "unknown source returned text")
+  assert(vo.TranscriptForRange(TFR, "a.wav", 2, 2, TFR_WORDS) == nil, "zero-length range")
+  assert(vo.TranscriptForRange(nil, "a.wav", 0, 5, TFR_WORDS) == nil, "no spans at all")
+end)
+
+test("audio nothing matched still reports what was heard", function()
+  -- An orphan span has no line, but it has words, and a marker over it should
+  -- show them rather than nothing.
+  local flat = { { source_path = "a.wav",
+                   span = { start = 0, stop = 2, transcript = "sorry again",
+                            kind = "orphan" } } }
+  local heard = { { t0 = 0.0, t1 = 0.9, text = "sorry" },
+                  { t0 = 1.0, t1 = 1.9, text = "again" } }
+  local text, score = vo.TranscriptForRange(flat, "a.wav", 0, 2, heard)
+  assert(text == "sorry again", "Got: " .. tostring(text))
+  assert(score == nil, "an unmatched span has no score to report")
+end)
+
+test("with words, a range reads only the words inside it", function()
+  -- The span says "open the gate"; the range holds two of its three words.
+  local text = vo.TranscriptForRange(TFR, "a.wav", 0, 0.95, TFR_WORDS)
+  assert(text == "open the", "Got: " .. tostring(text))
+end)
+
+test("a range across two spans no longer reads both spans in full", function()
+  -- The old path returned "open the gate and hurry" for this range. Onsets:
+  -- open 0.0, the 0.5, gate 1.0, and 3.0, hurry 3.6 -- so 1.0-3.4 holds
+  -- exactly the two in the middle, one from each span.
+  local text = vo.TranscriptForRange(TFR, "a.wav", 1.0, 3.4, TFR_WORDS)
+  assert(text == "gate and", "Got: " .. tostring(text))
+end)
+
+test("an anchor-less word counts by its onset, the old rule intact", function()
+  -- "gate" is stamped 1.0-1.9, but that 1.9 is the next word's start, not
+  -- where the speaker stopped. A range beginning at or before 1.0 holds the
+  -- word; one beginning after it does not, however much of the stamped
+  -- span lies inside.
+  assert(vo.TranscriptForRange(TFR, "a.wav", 1.0, 2.0, TFR_WORDS) == "gate",
+         "a word starting inside the range was dropped")
+  local text = vo.TranscriptForRange(TFR, "a.wav", 1.2, 2.0, TFR_WORDS)
+  assert(text == nil, "a word starting BEFORE the range was kept: " .. tostring(text))
+end)
+
+test("the anchor outranks the window: the You. case, real numbers", function()
+  -- Grumbar 2026_0801, source 428-431. Whisper's windows put `you`'s t0
+  -- BEFORE the take marker and `tower`+`is` inside it, so the onset rule
+  -- showed "tower is" under a take that audibly says "You." The DTW anchors
+  -- sit on the words: you 428.66 (in), tower 430.64 / is 431.16 (out).
+  local words = {
+    { t0 = 427.110, t1 = 428.160, text = "mouth", anchor = 427.140 },
+    { t0 = 428.160, t1 = 428.920, text = "you",   anchor = 428.660 },
+    { t0 = 428.920, t1 = 429.890, text = "tower", anchor = 430.640 },
+    { t0 = 429.890, t1 = 430.990, text = "is",    anchor = 431.160 },
+  }
+  local flat = { { source_path = "g.wav",
+                   span = { start = 424, stop = 432, transcript = "",
+                            kind = "match", score = 1.0 } } }
+  local text = vo.TranscriptForRange(flat, "g.wav", 428.593, 429.894, words)
+  assert(text == "you", "Got: " .. tostring(text))
+end)
+
+test("anchored and anchor-less words mix under one rule", function()
+  -- A word whisper never anchored (t_dtw -1 end to end) falls back to t0
+  -- while its neighbours judge by anchor; membership stays one pass.
+  local words = {
+    { t0 = 0.0, t1 = 1.0, text = "a", anchor = 1.4 },  -- anchor pushes it IN
+    { t0 = 1.1, t1 = 2.0, text = "b" },                -- t0 fallback: IN
+    { t0 = 2.1, t1 = 3.0, text = "c", anchor = 3.6 },  -- anchor pushes it OUT
+  }
+  local kept = vo.WordsInRange(words, 1.0, 3.5)
+  assert(#kept == 2 and kept[1].text == "a" and kept[2].text == "b",
+         "Got " .. #kept .. " words")
+end)
+
+test("the score still comes from the greatest-overlap span, whatever the words", function()
+  local _, score, seq = vo.TranscriptForRange(TFR, "a.wav", 0, 1.9, TFR_WORDS)
+  assert(near(score, 0.9), "Got: " .. tostring(score))
+  assert(seq == true, "in_sequence not carried")
+end)
+
+test("words present but the range holds none is nil, not empty", function()
+  assert(vo.TranscriptForRange(TFR, "a.wav", 2.0, 2.9, TFR_WORDS) == nil,
+         "a silent gap returned text")
+end)
+
+test("no word list is nil, never a neighbour's span text", function()
+  -- The retired fallback concatenated every overlapping span's WHOLE
+  -- transcript -- how a marker holding part of a span read as all of it.
+  -- Empty is honest; a neighbour's words are not (SPEC-word-anchors.md §5.5).
+  assert(vo.TranscriptForRange(TFR, "a.wav", 0, 5) == nil,
+         "the span-concat fallback is back")
+  assert(vo.TranscriptForRange(TFR, "a.wav", 0, 5, {}) == nil,
+         "an empty word list resurrected the fallback")
+end)
+
+--------------------------------
+-- FindSpanLines
+--------------------------------
+print("\nFindSpanLines:")
+
+test("the closest line comes first", function()
+  local hits = vo.FindSpanLines(IDX_LINES, "open the south gate", {})
+  assert(#hits > 0, "no hits")
+  assert(hits[1].asset == "vo_gate_south", "Got: " .. tostring(hits[1].asset))
+  assert(near(hits[1].score, 1.0), "exact match did not score 1.0")
+end)
+
+test("near misses are offered, in order", function()
+  local hits = vo.FindSpanLines(IDX_LINES, "open the north gates", {})
+  assert(hits[1].asset == "vo_gate_north", "Got: " .. tostring(hits[1].asset))
+  assert(#hits >= 2, "only one line was offered")
+  assert(hits[2].score < hits[1].score, "runners-up were not ranked")
+end)
+
+test("words that are in no line offer nothing", function()
+  assert(#vo.FindSpanLines(IDX_LINES, "sorry can we go again", {}) == 0, "junk matched")
+end)
+
+test("the floor is loose by default and can be set", function()
+  local loose = vo.FindSpanLines(IDX_LINES, "open the gate now please", {})
+  assert(#loose > 0, "a person looking at one span gets nothing to work with")
+  assert(#vo.FindSpanLines(IDX_LINES, "open the gate now please", {}, { floor = 0.99 }) == 0,
+    "the floor was ignored")
+end)
+
+test("empty input is not a match for everything", function()
+  assert(#vo.FindSpanLines(IDX_LINES, "", {}) == 0, "empty text matched")
+  assert(#vo.FindSpanLines(nil, "open the gate", {}) == 0, "no lines matched")
+end)
+
+test("the list is capped", function()
+  local many = {}
+  for i = 1, 40 do many[i] = { text = "open the gate", asset = "a" .. i, row = i } end
+  assert(#vo.FindSpanLines(many, "open the gate", {}) == 12, "not capped to 12")
+  assert(#vo.FindSpanLines(many, "open the gate", {}, { limit = 3 }) == 3, "limit ignored")
+end)
+
+--------------------------------
 -- SelectSpans
 --------------------------------
 print("\nSelectSpans:")
@@ -1541,6 +2088,32 @@ test("a long match beats a short one of equal score and margin", function()
   assert(spans[1].asset == "LINE", "Wrong winner: " .. spans[1].asset)
 end)
 
+test("a long near-match beats a short perfect one it contains", function()
+  -- The real shape of the bug, which the equal-score test above cannot reach:
+  -- the recognizer fuses one word of a nine-word line, dropping it to 0.89,
+  -- and a four-word line inside it scores a clean 1.0. Ranked on score the
+  -- short line goes first and cuts the long one in half. Eight tokens of
+  -- agreement outrank four.
+  local spans = vo.SelectSpans({ cand(3, 6, 1.00, 1.0, "SHORT"),
+                                 cand(1, 9, 0.89, 1.0, "LONG") }, {})
+  assert(#spans == 1, "Expected 1 span, got " .. #spans)
+  assert(spans[1].asset == "LONG", "Wrong winner: " .. spans[1].asset)
+end)
+
+test("agreement is tokens, not a rate", function()
+  assert(near(vo.Agreement({ i0 = 1, i1 = 9, score = 0.89 }), 8.01),
+    "nine tokens at 0.89: " .. tostring(vo.Agreement({ i0 = 1, i1 = 9, score = 0.89 })))
+  assert(near(vo.Agreement({ i0 = 3, i1 = 6, score = 1.0 }), 4.0), "four perfect tokens")
+  assert(vo.Agreement({}) == 0, "a candidate with no span is no evidence")
+end)
+
+test("agreement uses the order penalty where one has been applied", function()
+  -- effective, not score: a candidate that contradicts the read must not carry
+  -- its full length past the penalty it was just given.
+  local c = { i0 = 1, i1 = 10, score = 1.0, effective = 0.5 }
+  assert(near(vo.Agreement(c), 5.0), "got " .. tostring(vo.Agreement(c)))
+end)
+
 --------------------------------
 -- Read order: BuildBackbone, OrderConsistency
 --------------------------------
@@ -1577,6 +2150,16 @@ test("two takes of one line are in order, not out of it", function()
   local a, take1, take2 = ocand(1, 10, 1), ocand(20, 30, 2), ocand(40, 50, 2)
   local bone = vo.BuildBackbone({ a, take1, take2 }, {})
   assert(#bone == 3, "a retake broke the run: " .. #bone)
+end)
+
+test("the backbone prefers the candidate that is more evidence", function()
+  -- Both clear the gates, and they overlap, so only one can be the spine here.
+  -- Four perfect tokens is four tokens; ten at 0.85 is eight and a half.
+  local short_ = ocand(3, 6, 7, 1.00)
+  local long_  = ocand(1, 10, 4, 0.85)
+  local bone = vo.BuildBackbone({ short_, long_ }, {})
+  assert(#bone == 1, "Expected 1 backbone entry, got " .. #bone)
+  assert(bone[1] == long_, "the shorter perfect match defined the order")
 end)
 
 test("a candidate between its neighbours reads in sequence", function()
@@ -1867,6 +2450,69 @@ test("a project file with no pins still reads, and a corrupt pin is dropped", fu
   local bad = text:gsub("Script,", "Pin,vo_x,,0,0\nScript,", 1)
   local reparsed = assert(vo.ParseProjectFile(bad))
   assert(#reparsed.pins == 0, "a pin with no source or range was kept")
+end)
+
+test("a line edit round-trips through the project file", function()
+  local text = vo.SerializeProjectFile({}, {
+    line_edits = { { script = "S", asset = "a.wav", nth = 2,
+                     text = 'Bolvd, "no", speak' } },
+  })
+  assert(text:find("\nLine,", 1, true) or text:find("^Line,"),
+         "no Line row written")
+  local parsed = assert(vo.ParseProjectFile(text))
+  assert(#parsed.line_edits == 1, "count: " .. #parsed.line_edits)
+  local e = parsed.line_edits[1]
+  assert(e.script == "S" and e.asset == "a.wav" and e.nth == 2,
+         "key did not survive")
+  assert(e.text == 'Bolvd, "no", speak', "text: " .. e.text)
+end)
+
+test("an edited line's row carries the script's own words", function()
+  local lines = { { asset = "a.wav", text = "Bolvd no speak",
+                    text_original = "Adon no speak", text_edited = true,
+                    script = "S", append_nth = 1,
+                    append_key = vo.AppendKey("S", "a.wav", 1) } }
+  local rows = vo.BuildOverview({ lines = lines, matches = {}, entries = {} })
+  assert(#rows >= 1, "no rows")
+  assert(rows[1].line_text == "Bolvd no speak", "line_text: " ..
+         tostring(rows[1].line_text))
+  assert(rows[1].line_original == "Adon no speak", "line_original: " ..
+         tostring(rows[1].line_original))
+  assert(rows[1].line_edited == true, "line_edited not carried")
+end)
+
+test("an unedited line's row falls back to its own text for the grey row", function()
+  local lines = { { asset = "a.wav", text = "Adon no speak",
+                    script = "S", append_nth = 1,
+                    append_key = vo.AppendKey("S", "a.wav", 1) } }
+  local rows = vo.BuildOverview({ lines = lines, matches = {}, entries = {} })
+  assert(rows[1].line_original == "Adon no speak",
+         "line_original: " .. tostring(rows[1].line_original))
+  assert(not rows[1].line_edited, "flagged an unedited line as edited")
+end)
+
+test("a filename override round-trips through the project file", function()
+  local text = vo.SerializeProjectFile({}, {
+    names = { { script = "S", asset = "a.wav", nth = 2,
+                text = "grumbar_iwinlittle" } },
+  })
+  assert(text:find("\nName,", 1, true) or text:find("^Name,"),
+         "no Name row written")
+  local parsed = assert(vo.ParseProjectFile(text))
+  assert(#parsed.names == 1, "count: " .. #parsed.names)
+  local n = parsed.names[1]
+  assert(n.script == "S" and n.asset == "a.wav" and n.nth == 2,
+         "key did not survive")
+  assert(n.text == "grumbar_iwinlittle", "text: " .. n.text)
+end)
+
+test("a Line row for a vanished line is read, not dropped", function()
+  -- Disabling a script must not destroy its edits; orphans are REPORTED.
+  local parsed = assert(vo.ParseProjectFile(
+    vo.SerializeProjectFile({}, {
+      line_edits = { { script = "Gone", asset = "x.wav", nth = 1, text = "t" } },
+    })))
+  assert(#parsed.line_edits == 1, "dropped an edit at parse time")
 end)
 
 --------------------------------
@@ -2216,6 +2862,87 @@ test("the result never crosses the limit, in either direction", function()
 end)
 
 --------------------------------
+print("\nUnheardBursts:")
+
+-- A probe describing loud regions; everything else reads as room tone.
+local function loud_in(regions)
+  return function(t0, t1)
+    for _, rg in ipairs(regions) do
+      if t1 > rg[1] and t0 < rg[2] then return -10.0 end
+    end
+    return -80.0
+  end
+end
+
+test("a burst in uncovered audio is found with its extent", function()
+  -- The real shape: an audible read whisper never transcribed, sitting in a
+  -- marker gap. No span, no word, no marker -- only the amplitude knows.
+  local bursts = vo.UnheardBursts(0.0, 10.0, {}, -60.0, loud_in({ { 4.0, 5.0 } }),
+                                  { snap_min_silence = 0.05 })
+  assert(#bursts == 1, "bursts: " .. #bursts)
+  assert(math.abs(bursts[1].from - 4.0) < 0.06, "from: " .. bursts[1].from)
+  assert(math.abs(bursts[1].to   - 5.0) < 0.06, "to: "   .. bursts[1].to)
+end)
+
+test("sound under a covered range is not reported", function()
+  -- Covered means a counting marker or a transcribed word: that audio is
+  -- already accounted for -- by the sheet, or by the other Check queues.
+  local bursts = vo.UnheardBursts(0.0, 10.0, { { from = 3.9, to = 5.1 } }, -60.0,
+                                  loud_in({ { 4.0, 5.0 } }),
+                                  { snap_min_silence = 0.05 })
+  assert(#bursts == 0, "reported covered audio: " .. #bursts)
+end)
+
+test("the uncovered remainder of a half-covered burst is still reported", function()
+  -- A marker's generous tail can lap the head of an unheard read that follows
+  -- it. The lapped part is spoken for; the rest is not, and hiding the whole
+  -- burst because its first tenth was covered would lose the take.
+  local bursts = vo.UnheardBursts(0.0, 10.0, { { from = 2.0, to = 4.2 } }, -60.0,
+                                  loud_in({ { 4.0, 5.0 } }),
+                                  { snap_min_silence = 0.05 })
+  assert(#bursts == 1, "bursts: " .. #bursts)
+  assert(bursts[1].from >= 4.2 - 1e-9, "reached into the covered range: " .. bursts[1].from)
+  assert(math.abs(bursts[1].to - 5.0) < 0.06, "to: " .. bursts[1].to)
+end)
+
+test("a blip shorter than the minimum is not a read", function()
+  local bursts = vo.UnheardBursts(0.0, 10.0, {}, -60.0, loud_in({ { 4.0, 4.15 } }),
+                                  { snap_min_silence = 0.05 })
+  assert(#bursts == 0, "a click was reported as a read: " .. #bursts)
+end)
+
+test("a short dip does not split one read into two", function()
+  -- Speech has stops and breaths in it; a dip shorter than the join is the
+  -- inside of a read, not a boundary between two.
+  local bursts = vo.UnheardBursts(0.0, 10.0, {}, -60.0,
+                                  loud_in({ { 4.0, 4.5 }, { 4.65, 5.2 } }),
+                                  { snap_min_silence = 0.05 })
+  assert(#bursts == 1, "a breath split the read: " .. #bursts)
+  assert(math.abs(bursts[1].to - 5.2) < 0.06, "to: " .. bursts[1].to)
+end)
+
+test("a real pause does split them", function()
+  local bursts = vo.UnheardBursts(0.0, 10.0, {}, -60.0,
+                                  loud_in({ { 2.0, 2.6 }, { 6.0, 6.6 } }),
+                                  { snap_min_silence = 0.05 })
+  assert(#bursts == 2, "two reads merged across a pause: " .. #bursts)
+end)
+
+test("no probe, no floor, or no room each answer nothing", function()
+  assert(#vo.UnheardBursts(0, 10, {}, -60, nil, {}) == 0, "no probe")
+  assert(#vo.UnheardBursts(0, 10, {}, nil, function() return -10 end, {}) == 0, "no floor")
+  assert(#vo.UnheardBursts(5, 5, {}, -60, function() return -10 end, {}) == 0, "no room")
+end)
+
+test("the scan knobs are loadable settings with defaults", function()
+  assert(vo.DEFAULTS.unheard_min_length and vo.DEFAULTS.unheard_join,
+    "defaults missing")
+  local keys = {}
+  for _, f in ipairs(vo.CONFIG_SCHEMA) do keys[f.key] = true end
+  assert(keys.unheard_min_length and keys.unheard_join, "not in the schema")
+end)
+
+--------------------------------
 print("\nApplyPadding:")
 
 test("spans are padded by pre_pad and post_pad", function()
@@ -2333,12 +3060,121 @@ test("with a probe the edges sit a FIXED room from the speech", function()
   local probe = function(t0, t1) if t1 > 2.0 and t0 < 3.0 then return -10 end return -80 end
   vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.05 },
                   nil, probe, -60)
-  assert(near(spans[1].start, 2.0 - 0.060), "start: " .. spans[1].start)
-  assert(near(spans[1].stop,  3.0 + 0.150), "stop: " .. spans[1].stop)
+  assert(near(spans[1].start, 2.0 - vo.DEFAULTS.snap_head_room), "start: " .. spans[1].start)
+  assert(near(spans[1].stop,  3.0 + vo.DEFAULTS.snap_tail_room), "stop: " .. spans[1].stop)
   assert(spans[1].snapped == "silence", "snapped: " .. tostring(spans[1].snapped))
 end)
 
 --------------------------------
+print("\nApplyPadding (anchor fences):")
+
+-- The Chain/Even tear, numbers from the session (SPEC-anchor-boundaries.md).
+-- Whisper's partition chains the spans at 586.210 while the spoken "chain."
+-- anchors at 586.52 -- past its own span's raw stop. The audible layout the
+-- synthetic probe encodes: line A sounds 584.95-587.20, a real gap, line B
+-- sounds 588.00-589.90.
+local CE_WORDS = {
+  { t0 = 584.900, t1 = 585.090, text = "Chain", anchor = 585.060 },
+  { t0 = 585.090, t1 = 585.130, text = "is",    anchor = 585.860 },
+  { t0 = 585.130, t1 = 586.210, text = "chain", anchor = 586.520 },
+  { t0 = 586.210, t1 = 587.070, text = "even",  anchor = 588.160 },
+  { t0 = 587.070, t1 = 587.500, text = "if",    anchor = 588.640 },
+  { t0 = 587.500, t1 = 588.970, text = "you",   anchor = 588.960 },
+  { t0 = 588.970, t1 = 589.220, text = "smile", anchor = 589.540 },
+}
+local function ce_probe(t0, t1)
+  local function loud(a, b) return t1 > a and t0 < b end
+  if loud(584.95, 587.20) or loud(588.00, 589.90) then return -12 end
+  return -75
+end
+local function ce_spans()
+  return { pad_span(584.900, 586.210), pad_span(586.210, 589.220) }
+end
+
+test("chained spans with anchors cut in the dip, not at the partition edge", function()
+  local spans = ce_spans()
+  vo.ApplyPadding(spans, { snap_min_silence = 0.05 }, nil, ce_probe, -60, CE_WORDS)
+  local a, b = spans[1], spans[2]
+  assert(near(a.stop, b.start), "neighbours must share one edge: " ..
+         a.stop .. " vs " .. b.start)
+  assert(a.stop > 587.15 and a.stop < 588.05,
+         "the shared edge belongs in the audible gap, got " .. a.stop)
+  -- The whole point: the earlier take keeps its own last word.
+  assert(a.stop > 586.6, "'chain.' (through ~587.2) was clipped at " .. a.stop)
+end)
+
+test("the same spans without anchors keep the old chained-edge behaviour", function()
+  -- The t0 fallback must not silently improve OR regress: fences collapse,
+  -- chained_boundary_reach is 0, and the cut stays at the partition edge --
+  -- the documented failure the anchors exist to fix.
+  local bare = {}
+  for i, w in ipairs(CE_WORDS) do
+    bare[i] = { t0 = w.t0, t1 = w.t1, text = w.text }
+  end
+  local spans = ce_spans()
+  vo.ApplyPadding(spans, { snap_min_silence = 0.05 }, nil, ce_probe, -60, bare)
+  assert(spans[1].stop < 586.6,
+         "anchor-less fences changed behaviour: stop " .. spans[1].stop)
+end)
+
+test("a session-edge span without neighbours pads exactly as before", function()
+  -- Anchors on the span's own words but nothing on either side: fences fall
+  -- back to the pad arithmetic, and the head/tail room contract holds.
+  local spans = { pad_span(2.0, 3.0) }
+  local words = { { t0 = 2.0, t1 = 3.0, text = "solo", anchor = 2.4 } }
+  local probe = function(t0, t1) if t1 > 2.0 and t0 < 3.0 then return -10 end return -80 end
+  vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.05 },
+                  nil, probe, -60, words)
+  assert(near(spans[1].start, 2.0 - vo.DEFAULTS.snap_head_room), "start: " .. spans[1].start)
+  assert(near(spans[1].stop,  3.0 + vo.DEFAULTS.snap_tail_room), "stop: " .. spans[1].stop)
+end)
+
+--------------------------------
+print("\nResolveGate:")
+
+test("Auto off is the number you typed, whatever the room is doing", function()
+  -- The panel now speaks in dBFS like Dynamic Split's Threshold, so the gate
+  -- has to BE that number -- not a starting point the measurement adjusts.
+  local loud = function() return -20.0 end
+  local gate, how = vo.ResolveGate({ { from = 0, to = 5 } }, loud,
+    { snap_gate_auto = false, snap_gate_db = -48.0 })
+  assert(gate == -48.0, "typed gate was overridden: " .. tostring(gate))
+  assert(how == "fixed", "how: " .. tostring(how))
+end)
+
+test("Auto measures the room and sits the headroom above it", function()
+  local probe = function() return -70.0 end
+  local gate, how = vo.ResolveGate({ { from = 0, to = 5 } }, probe,
+    { snap_gate_auto = true, snap_floor_offset = 6.0,
+      snap_min_silence = 0.06, snap_floor_window = 0.5 })
+  assert(near(gate, -64.0), "gate: " .. tostring(gate))
+  assert(how == "measured", "how: " .. tostring(how))
+end)
+
+test("Auto with nothing measurable is nil, never a gate of zero", function()
+  -- A gate of 0 dBFS calls every sample silent and snaps every edge to its
+  -- limit; the caller must read nil as "snapping is unavailable" instead.
+  assert(vo.ResolveGate({}, function() return -70.0 end,
+    { snap_gate_auto = true }) == nil, "invented a gate from no gaps")
+  assert(vo.ResolveGate({ { from = 0, to = 5 } }, nil,
+    { snap_gate_auto = true }) == nil, "invented a gate with no probe")
+end)
+
+test("a typed gate needs no probe and no gaps at all", function()
+  -- The fixed path is what makes the panel usable on a recording whose pauses
+  -- are all too short to measure.
+  local gate = vo.ResolveGate(nil, nil, { snap_gate_auto = false, snap_gate_db = -55.0 })
+  assert(gate == -55.0, "tostring: " .. tostring(gate))
+end)
+
+test("the gate defaults to Auto, so no session changes under anyone", function()
+  assert(vo.DEFAULTS.snap_gate_auto == true, "Auto is not the default")
+  assert(vo.DEFAULTS.snap_gate_db == -60.0, tostring(vo.DEFAULTS.snap_gate_db))
+  local keys = {}
+  for _, f in ipairs(vo.CONFIG_SCHEMA) do keys[f.key] = true end
+  assert(keys.snap_gate_auto and keys.snap_gate_db, "the gate is not loadable")
+end)
+
 print("\nFindSpeechBounds:")
 
 test("the sound inside a span is found, and the pause around it is not", function()
@@ -2477,8 +3313,8 @@ test("a take whose words are already tight gets the same fixed room", function()
   local probe = function(t0, t1) if t1 > 2.0 and t0 < 3.0 then return -10 end return -80 end
   vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.05 },
                   nil, probe, -60)
-  assert(near(spans[1].start, 2.0 - 0.060), "start: " .. spans[1].start)
-  assert(near(spans[1].stop,  3.0 + 0.150), "stop: " .. spans[1].stop)
+  assert(near(spans[1].start, 2.0 - vo.DEFAULTS.snap_head_room), "start: " .. spans[1].start)
+  assert(near(spans[1].stop,  3.0 + vo.DEFAULTS.snap_tail_room), "stop: " .. spans[1].stop)
 end)
 
 test("a boundary never crosses into the neighbouring take's audio", function()
@@ -2535,7 +3371,7 @@ test("without words the fixed room still applies from the raw span", function()
   local spans = { pad_span(2.0, 3.0) }
   vo.ApplyPadding(spans, { pre_pad = 0.4, post_pad = 0.4, snap_min_silence = 0.02 },
                   nil, function() return -80 end, -60)
-  assert(near(spans[1].start, 2.0 - 0.060), "start: " .. spans[1].start)
+  assert(near(spans[1].start, 2.0 - vo.DEFAULTS.snap_head_room), "start: " .. spans[1].start)
   assert(spans[1].snapped == "pad", "unmeasured bounds must not claim silence")
 end)
 
@@ -2564,6 +3400,92 @@ test("the walk through sound never crosses the neighbour limit", function()
                   nil, probe, -60, words)
   assert(spans[1].start >= 1.5 - 1e-9,
     "the extension crossed the previous word: " .. spans[1].start)
+end)
+
+test("a misheard last word chained to the take is not cut off", function()
+  -- The real shape, from a session: the line ends "...master is Archivist",
+  -- whisper heard "alchemist", the matcher could not consume it, and the word
+  -- fence then cut every take of that line at the START of its own last word.
+  -- The word's t0 IS the span's raw stop (whisper chained them: one utterance)
+  -- and no span claims it, so it is this take's own edge word, misheard.
+  local spans = { pad_span(2.0, 3.0) }
+  local words = {
+    { t0 = 2.0, t1 = 3.0, text = "chosen" },
+    { t0 = 3.0, t1 = 3.5, text = "misheard" },  -- chained, claimed by nobody
+  }
+  local probe = function(t0, t1) if t1 > 2.0 and t0 < 3.55 then return -10 end return -80 end
+  vo.ApplyPadding(spans, { pre_pad = 0.3, post_pad = 0.6, snap_min_silence = 0.05 },
+                  nil, probe, -60, words)
+  assert(spans[1].stop > 3.5,
+    "the take's own last word was cut off at " .. spans[1].stop)
+end)
+
+test("a misheard first word chained to the take is not cut off", function()
+  -- Mirror of the above: "Adon no speak..." heard as "both no speak...".
+  -- The unmatched "both" ends exactly where the span begins, welded there by
+  -- whisper's chained times, and used to be fenced out of its own take.
+  local spans = { pad_span(2.0, 3.0) }
+  local words = {
+    { t0 = 1.5, t1 = 2.0, text = "misheard" },
+    { t0 = 2.0, t1 = 3.0, text = "chosen" },
+  }
+  local probe = function(t0, t1) if t1 > 1.5 and t0 < 3.0 then return -10 end return -80 end
+  vo.ApplyPadding(spans, { pre_pad = 0.3, post_pad = 0.6, snap_min_silence = 0.05 },
+                  nil, probe, -60, words)
+  assert(spans[1].start < 1.5,
+    "the take's own first word was cut off at " .. spans[1].start)
+end)
+
+test("a chained word another span claims is never absorbed", function()
+  -- Two takes sharing an instant: the next take's first word is chained to
+  -- this take's stop, but a span CLAIMS it, so the earlier take must not
+  -- swallow it however the audio reads.
+  local spans = { pad_span(7.0, 10.0), pad_span(10.0, 12.0) }
+  local words = { { t0 = 7.0, t1 = 10.0 }, { t0 = 10.0, t1 = 12.0 } }
+  local probe = function() return -10 end
+  vo.ApplyPadding(spans, { pre_pad = 0.15, post_pad = 0.25, snap_min_silence = 0.06 },
+                  nil, probe, -60, words)
+  assert(spans[1].stop <= 10.0 + 1e-9,
+    "the earlier take absorbed the next take's first word: " .. spans[1].stop)
+end)
+
+test("an edge absorbs ONE word, never a chain of them", function()
+  -- Five unclaimed words chained end to end after the span. The failure
+  -- absorption repairs is a misheard word, singular; run deeper, a take's
+  -- start walked through its own first word and on through the PREVIOUS
+  -- take's unmatched last word and stole it. A run of unheard words is the
+  -- substitution list's job.
+  local spans = { pad_span(2.0, 3.0) }
+  local words = { { t0 = 2.0, t1 = 3.0, text = "chosen" } }
+  for k = 1, 5 do
+    words[#words + 1] = { t0 = 3.0 + (k - 1) * 0.5, t1 = 3.0 + k * 0.5, text = "x" }
+  end
+  local probe = function() return -10 end
+  vo.ApplyPadding(spans, { pre_pad = 0.3, post_pad = 0.6, snap_min_silence = 0.05 },
+                  nil, probe, -60, words)
+  assert(spans[1].stop <= 3.5 + 1e-9,
+    "the stop walked a chain of words: " .. spans[1].stop)
+end)
+
+test("a trailing word goes to the take before it when the next take absorbed its own", function()
+  -- The three-takes shape from a session: ...is(9-10) TRAIL(10-11) HEAD(11-12)
+  -- no(12-14)... -- take 1's unmatched last word and take 2's unmatched first
+  -- word chained between the spans. HEAD belongs to take 2, TRAIL to take 1,
+  -- and one-word absorption with starts running first files them exactly so.
+  local spans = { pad_span(7.0, 10.0), pad_span(12.0, 14.0) }
+  local words = {
+    { t0 = 7.0,  t1 = 10.0, text = "line-one" },
+    { t0 = 10.0, t1 = 11.0, text = "trail" },
+    { t0 = 11.0, t1 = 12.0, text = "head" },
+    { t0 = 12.0, t1 = 14.0, text = "line-two" },
+  }
+  local probe = function() return -10 end
+  vo.ApplyPadding(spans, { pre_pad = 0.3, post_pad = 0.6, snap_min_silence = 0.05 },
+                  nil, probe, -60, words)
+  assert(spans[1].stop > 11.0 - 1e-9 and spans[1].stop <= 11.0 + 1e-9,
+    "take 1 did not keep its trailing word: " .. spans[1].stop)
+  assert(spans[2].start >= 11.0 - 1e-9 and spans[2].start < 12.0,
+    "take 2 did not keep its own first word: " .. spans[2].start)
 end)
 
 test("loud room at the placed edge is reported as pad, not silence", function()
@@ -2904,9 +3826,12 @@ test("word-level timestamps are forced with -ml 1 and -sow", function()
   assert(argv_index(argv, "-sow"), "-sow missing")
 end)
 
-test("CSV output is requested", function()
+test("JSON-full output is requested, never CSV", function()
+  -- -ojf is the only output that carries t_dtw, the per-token anchor
+  -- vo.ParseWhisperJSON turns into word.anchor (SPEC-word-anchors.md §5.1).
   local argv = vo.BuildWhisperArgv(WHISPER_CFG, "in.wav", "out")
-  assert(argv_index(argv, "-ocsv"), "-ocsv missing")
+  assert(argv_index(argv, "-ojf"), "-ojf missing")
+  assert(argv_index(argv, "-ocsv") == nil, "-ocsv is back")
 end)
 
 test("input file, model and output prefix are passed", function()
@@ -2922,9 +3847,15 @@ test("threads and language come from config", function()
   assert(argv_value(argv, "-l") == "en", "-l: " .. tostring(argv_value(argv, "-l")))
 end)
 
-test("a known model maps to its dtw preset", function()
+test("a known model maps to its dtw preset, and -nfa rides with it", function()
+  -- Flash attention (default on) silently prevents DTW: the fused kernel
+  -- never materialises the attention matrix DTW aligns against, and every
+  -- t_dtw comes back -1. Verified byte-identical output with and without
+  -- -dtw under -fa. So -dtw without -nfa is a no-op, and the pair travels
+  -- together or not at all.
   local argv = vo.BuildWhisperArgv(WHISPER_CFG, "in.wav", "out")
   assert(argv_value(argv, "-dtw") == "base", "-dtw: " .. tostring(argv_value(argv, "-dtw")))
+  assert(argv_index(argv, "-nfa"), "-nfa missing: -dtw is silently dead without it")
 end)
 
 test("large model versions map to their own presets", function()
@@ -2936,6 +3867,8 @@ end)
 test("an unrecognised model emits no dtw flag rather than an invalid one", function()
   local argv = vo.BuildWhisperArgv({ whisper_model = "/m/ggml-base.en.bin" }, "in.wav", "out")
   assert(argv_index(argv, "-dtw") == nil, "-dtw should be omitted for unverified presets")
+  -- No anchors to gain without -dtw, so keep flash attention's speed.
+  assert(argv_index(argv, "-nfa") == nil, "-nfa without -dtw only slows the decode")
 end)
 
 test("a missing binary falls back to the bare command name", function()
@@ -2959,10 +3892,28 @@ end)
 --------------------------------
 print("\nDetectRepetitionLoop:")
 
+-- Back-to-back words, the way whisper actually writes them: each word's end
+-- IS the next word's start. A decoder loop has no gaps in it, so the fixture
+-- must not either -- with 0.5s holes between every word these tests were
+-- describing speech no recognizer produces.
 local function loop_words(list)
   local out = {}
   for i, w in ipairs(list) do
-    out[i] = { t0 = i * 1.0, t1 = i * 1.0 + 0.5, text = w }
+    out[i] = { t0 = i * 1.0, t1 = (i + 1) * 1.0, text = w }
+  end
+  return out
+end
+
+-- The same words, but with `pause` seconds of quiet before every repeat of a
+-- `k`-word phrase: a reader going again rather than a decoder stuck.
+local function reread(phrase, times, pause)
+  local out, t = {}, 0.0
+  for _ = 1, times do
+    for _, w in ipairs(phrase) do
+      out[#out + 1] = { t0 = t, t1 = t + 0.8, text = w }
+      t = t + 0.8
+    end
+    t = t + pause
   end
   return out
 end
@@ -2976,6 +3927,25 @@ local function repeated(phrase, times, before, after)
   for _, w in ipairs(after or {}) do list[#list + 1] = w end
   return loop_words(list)
 end
+
+test("four reads of one line are not a loop", function()
+  -- The Grumbar case: the actor read "Do not repeat that." four times, the
+  -- script has the line, and the detector told the user to re-transcribe a
+  -- 39-minute file. A breath between repeats means a person said it again.
+  local phrase = { "Do", "not", "repeat", "that." }
+  assert(vo.DetectRepetitionLoop(reread(phrase, 4, 0.6)) == nil,
+    "four re-reads flagged as a decoder loop")
+  assert(vo.DetectRepetitionLoop(reread(phrase, 12, 0.6)) == nil,
+    "twelve re-reads are still re-reads")
+end)
+
+test("a pause shorter than a breath does not rescue a loop", function()
+  -- 0.05s between cycles is decoder timing, not a person.
+  local found = vo.DetectRepetitionLoop(
+    reread({ "Riddle", "that", "punish", "you" }, 20, 0.05))
+  assert(found, "a back-to-back run must still be caught")
+  assert(found.cycles == 20, "cycles: " .. tostring(found.cycles))
+end)
 
 test("clean speech reports no loop", function()
   local words = loop_words({ "the", "quick", "brown", "fox", "jumps", "over",
@@ -3002,9 +3972,9 @@ end)
 test("the reported span is where the loop starts and ends, not the whole file", function()
   local found = vo.DetectRepetitionLoop(repeated({ "a", "b" }, 10, { "x", "y", "z" }))
   -- three leading words, so the loop's first word is index 4 (t0 = 4.0) and its
-  -- last is index 23 (t1 = 23.5).
+  -- last is index 23, whose end is the next word's start (24.0).
   assert(math.abs(found.from - 4.0) < 1e-9, "from: " .. tostring(found.from))
-  assert(math.abs(found.to - 23.5) < 1e-9, "to: " .. tostring(found.to))
+  assert(math.abs(found.to - 24.0) < 1e-9, "to: " .. tostring(found.to))
 end)
 
 test("the longest run wins when a file contains more than one", function()
@@ -3761,6 +4731,66 @@ test("binary catalog carries the exact verified asset sizes", function()
   for _, b in ipairs(vo.BINARY_CATALOG) do by_key[b.key] = b end
   assert(by_key["cuda-12.4"].expected_bytes == 677887125, "12.4 size drift")
   assert(by_key["cuda-11.8"].expected_bytes == 278557654, "11.8 size drift")
+end)
+
+test("the catalogs can say which entry is the one in use", function()
+  -- Both settings combos used to open on entry 1 whatever was configured, so
+  -- they named a build and a model the run was not using.
+  assert(vo.ModelCatalogIndex("C:/x/models/ggml-large-v3.bin") == 5,
+    tostring(vo.ModelCatalogIndex("C:/x/models/ggml-large-v3.bin")))
+  assert(vo.ModelCatalogIndex("/opt/GGML-Base.bin") == 1, "not case-insensitive")
+  assert(vo.ModelCatalogIndex("/opt/ggml-tiny.bin") == nil, "claimed an off-catalog model")
+  assert(vo.ModelCatalogIndex("") == nil and vo.ModelCatalogIndex(nil) == nil,
+    "an unset model matched something")
+
+  assert(vo.BinaryCatalogIndex("C:\\bin\\cuda-11.8\\Release\\whisper-cli.exe") == 2,
+    tostring(vo.BinaryCatalogIndex("C:\\bin\\cuda-11.8\\Release\\whisper-cli.exe")))
+  assert(vo.BinaryCatalogIndex("C:/bin/cuda-12.4/whisper-cli.exe") == 1, "forward slashes")
+  assert(vo.BinaryCatalogIndex("C:/tools/whisper-cli.exe") == nil,
+    "claimed a hand-picked exe as a catalog build")
+end)
+
+test("SuggestThreads leaves the machine room to run REAPER", function()
+  -- whisper.cpp scales with PHYSICAL cores and loses to itself past them.
+  assert(vo.SuggestThreads(16) == 7, tostring(vo.SuggestThreads(16)))
+  assert(vo.SuggestThreads(8)  == 3, tostring(vo.SuggestThreads(8)))
+  assert(vo.SuggestThreads(4)  == 2, tostring(vo.SuggestThreads(4)))
+  assert(vo.SuggestThreads(2)  == 1, tostring(vo.SuggestThreads(2)))
+  assert(vo.SuggestThreads(1)  == 1, tostring(vo.SuggestThreads(1)))
+  assert(vo.SuggestThreads(128) == 16, "never asks for more than whisper scales to")
+  assert(vo.SuggestThreads(0) == nil and vo.SuggestThreads(nil) == nil,
+    "invented a count from nothing")
+end)
+
+test("the room settings are loadable, not defaults-only", function()
+  -- vo.ApplyPadding clamps the exposed pads to snap_head_room/snap_tail_room,
+  -- so while these were missing from the schema no setting could change an
+  -- edge: vo.Opt could only ever see the built-in default.
+  local keys = {}
+  for _, f in ipairs(vo.CONFIG_SCHEMA) do keys[f.key] = f.default end
+  for _, k in ipairs({ "snap_head_room", "snap_tail_room",
+                       "trim_head_slack", "trim_tail_slack" }) do
+    assert(keys[k] ~= nil, k .. " is not in CONFIG_SCHEMA")
+    assert(keys[k] == vo.DEFAULTS[k], k .. " default drifted from DEFAULTS")
+  end
+end)
+
+test("a saved head room actually moves the edge", function()
+  -- The bug this pair guards: dragging "maximum head room" to 2.0 did nothing,
+  -- because min(pre_pad, snap_head_room) kept the hidden 0.060.
+  local quiet = function() return -80.0 end
+  local words = { { t0 = 5.0, t1 = 5.5 } }
+  local function edge(head)
+    local spans = { { start = 5.0, stop = 5.5 } }
+    vo.ApplyPadding(spans, { snap_boundaries = true, pre_pad = 1.0, post_pad = 1.0,
+                             snap_head_room = head, snap_tail_room = 0.150,
+                             snap_min_silence = 0.05 },
+                    { start = 0.0, stop = 10.0 }, quiet, -60.0, words)
+    return spans[1].start
+  end
+  local tight, loose = edge(0.060), edge(0.400)
+  assert(math.abs((tight - loose) - 0.340) < 1e-6,
+    string.format("head room did not reach the edge: %.3f vs %.3f", tight, loose))
 end)
 
 test("FormatBytes scales into human units", function()
@@ -4902,6 +5932,13 @@ local function by_asset(rows, asset)
   return out
 end
 
+-- A counting marker, the shape vo.CountingMarkers emits and BuildOverview
+-- consumes. `path` is only needed when the test asserts transcript text:
+-- vo.TranscriptForRange matches spans on source_path.
+local function mk(id, start, stop, path)
+  return { id = id, start = start, stop = stop, source_path = path }
+end
+
 test("a script with no audio at all is entirely missing", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", "Guard", 1), line("b", "Bravo", "Hero", 2) },
@@ -4911,6 +5948,7 @@ test("a script with no audio at all is entirely missing", function()
     assert(row.status == "missing", "Expected missing, got " .. row.status)
     assert(row.source_path == nil, "A missing row has no audio")
     assert(row.take_count == 0, "A missing row has no takes")
+    assert(row.heard == 0, "Nothing was recorded at all, so nothing was heard")
   end
   assert(rows[1].line_text == "Alpha" and rows[1].character == "Guard",
     "Script text and character carry through to missing rows")
@@ -4923,42 +5961,11 @@ test("rows follow script order, not audio order", function()
       span(10, 11, "match", "b", "bravo", 0.9),
       span(1, 2, "match", "a", "alpha", 0.9),
     } } },
+    takes_by_asset = { a = { mk("m_a", 1, 2, "s.wav") },
+                       b = { mk("m_b", 10, 11, "s.wav") } },
   })
   assert(rows[1].asset == "a" and rows[2].asset == "b",
     "Expected script order a,b; got " .. rows[1].asset .. "," .. rows[2].asset)
-end)
-
-test("two script lines sharing a filename keep their own takes apart", function()
-  -- Regression: grouping by filename showed each line the other's takes -- five
-  -- takes of "Jump right in!" three of which were audibly a different line.
-  local a = span(1, 2, "match", "dup", "jump right in", 0.9)
-  local b = span(10, 11, "match", "dup", "the nightmares have been getting stronger", 0.9)
-  a.line_idx, b.line_idx = 1, 2
-  local rows = vo.BuildOverview({
-    lines = { line("dup", "Jump right in!", nil, 1),
-              line("dup", "The nightmares have been getting stronger...", nil, 2) },
-    matches = { { path = "s.wav", spans = { a, b } } },
-  })
-  assert(#rows == 2, "Expected 2 rows, got " .. #rows)
-  for _, row in ipairs(rows) do
-    assert(row.take_count == 1,
-      "Each line has one take of its own, got " .. tostring(row.take_count))
-  end
-  assert(rows[1].transcript == "jump right in", "Row 1 got: " .. tostring(rows[1].transcript))
-  assert(rows[2].transcript:find("nightmares"), "Row 2 got: " .. tostring(rows[2].transcript))
-end)
-
-test("a span with no line index still groups by filename", function()
-  -- The fallback for spans that predate line_idx: one line, two takes.
-  local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1) },
-    matches = { { path = "s.wav", spans = {
-      span(1, 2, "match", "a", "alpha", 0.9),
-      span(5, 6, "match", "a", "alpha", 0.9),
-    } } },
-  })
-  assert(#rows == 2 and rows[1].take_count == 2,
-    "Expected one line with two takes, got " .. #rows .. " rows")
 end)
 
 test("audio matching no script line becomes an orphan row, listed last", function()
@@ -4968,6 +5975,7 @@ test("audio matching no script line becomes an orphan row, listed last", functio
       span(1, 2, "unmatched", nil, "take two", nil),
       span(5, 6, "match", "a", "alpha", 0.95),
     } } },
+    takes_by_asset = { a = { mk("m1", 5, 6, "s.wav") } },
   })
   assert(#rows == 2, "Expected 2 rows, got " .. #rows)
   assert(rows[1].status == "recorded" and rows[1].asset == "a", "Script row comes first")
@@ -4987,15 +5995,6 @@ test("audio for a line the filters excluded is an orphan, never dropped", functi
   assert(orphan.asset == "b", "The orphan keeps the asset it claimed")
 end)
 
-test("a review span reads as review, not recorded", function()
-  local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1) },
-    matches = { { path = "s.wav", spans = { span(1, 2, "review", "a", "alfa", 0.61) } } },
-  })
-  assert(rows[1].status == "review", "Got " .. rows[1].status)
-  assert(math.abs(rows[1].score - 0.61) < 1e-6, "The score carries through")
-end)
-
 test("multiple takes become sibling rows, numbered chronologically", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
@@ -5003,6 +6002,13 @@ test("multiple takes become sibling rows, numbered chronologically", function()
       span(30, 31, "match", "a", "alpha three", 0.9),
       span(10, 11, "match", "a", "alpha one", 0.9),
       span(20, 21, "match", "a", "alpha two", 0.9),
+    } } },
+    takes_by_asset = { a = { mk("m3", 30, 31, "s.wav"), mk("m1", 10, 11, "s.wav"),
+                             mk("m2", 20, 21, "s.wav") } },
+    transcripts = { { path = "s.wav", words = {
+      { t0 = 10.2, t1 = 10.5, text = "alpha" }, { t0 = 10.6, t1 = 10.9, text = "one" },
+      { t0 = 20.2, t1 = 20.5, text = "alpha" }, { t0 = 20.6, t1 = 20.9, text = "two" },
+      { t0 = 30.2, t1 = 30.5, text = "alpha" }, { t0 = 30.6, t1 = 30.9, text = "three" },
     } } },
   })
   assert(#rows == 3, "Expected 3 take rows, got " .. #rows)
@@ -5020,6 +6026,7 @@ test("with no select recorded, no take is the primary", function()
       span(10, 11, "match", "a", "one", 0.9),
       span(20, 21, "match", "a", "two", 0.9),
     } } },
+    takes_by_asset = { a = { mk("m1", 10, 11, "s.wav"), mk("m2", 20, 21, "s.wav") } },
   })
   assert(rows[1].is_primary == false and rows[2].is_primary == false,
     "Guessing a take is exactly what the Select column exists to stop")
@@ -5033,8 +6040,10 @@ test("an explicit select in the project file names the primary", function()
       span(20, 21, "match", "a", "two", 0.9),
       span(30, 31, "match", "a", "three", 0.9),
     } } },
-    entries = { { key = "s.wav|20000", source = "s.wav", source_start = 20,
-                  asset = "a", select = true } },
+    takes_by_asset = { a = { mk("m1", 10, 11, "s.wav"), mk("m2", 20, 21, "s.wav"),
+                             mk("m3", 30, 31, "s.wav") } },
+    -- Keyed by the marker, not by a source time. A marker id cannot drift.
+    entries = { { key = "tkm|m2", asset = "a", select = true } },
   })
   assert(rows[2].is_primary == true, "The user's chosen take is the select")
   assert(rows[3].is_primary == false, "The last take yields to the user's choice")
@@ -5047,10 +6056,22 @@ test("two transcripts fold into one list, takes numbered across both", function(
       { path = "B_session2.wav", spans = { span(5, 6, "match", "a", "second day", 0.9) } },
       { path = "A_session1.wav", spans = { span(9, 9.5, "match", "a", "first day", 0.9) } },
     },
+    -- Note the times: session 2's marker starts EARLIER in its own file than
+    -- session 1's does in its. Ordering on time alone would interleave two
+    -- unrelated timebases and hand the takes their letters in an order that
+    -- means nothing. Source first, then time.
+    takes_by_asset = { a = { mk("m_b", 5, 6, "B_session2.wav"),
+                             mk("m_a", 9, 9.5, "A_session1.wav") } },
+    transcripts = {
+      { path = "B_session2.wav", words = {
+        { t0 = 5.1, t1 = 5.5, text = "second" }, { t0 = 5.6, t1 = 5.9, text = "day" } } },
+      { path = "A_session1.wav", words = {
+        { t0 = 9.1, t1 = 9.2, text = "first" }, { t0 = 9.3, t1 = 9.4, text = "day" } } },
+    },
   })
   assert(#rows == 2, "Expected both sessions' takes, got " .. #rows)
-  assert(rows[1].source_path == "A_session1.wav",
-    "Sources order stably by path, not by argument order; got " .. rows[1].source_path)
+  assert(rows[1].transcript == "first day",
+    "Sources order stably by path, not by argument order; got " .. tostring(rows[1].transcript))
   assert(rows[1].take_index == 1 and rows[2].take_index == 2,
     "Takes number continuously across sources")
   assert(rows[1].is_primary == false and rows[2].is_primary == false,
@@ -5065,27 +6086,296 @@ test("one source's missing line and another's audio coexist in one list", functi
       { path = "s1.wav", spans = { span(1, 2, "match", "a", "alpha", 0.9) } },
       { path = "s2.wav", spans = { span(1, 2, "match", "c", "charlie", 0.9) } },
     },
+    takes_by_asset = { a = { mk("m_a", 1, 2, "s1.wav") },
+                       c = { mk("m_c", 1, 2, "s2.wav") } },
+    transcripts = {
+      { path = "s1.wav", words = { { t0 = 1.2, t1 = 1.8, text = "alpha" } } },
+      { path = "s2.wav", words = { { t0 = 1.2, t1 = 1.8, text = "charlie" } } },
+    },
   })
   assert(#rows == 3, "Expected 3 rows, got " .. #rows)
-  assert(rows[1].status == "recorded" and rows[1].source_path == "s1.wav", "a from s1")
+  -- A marker row carries no source_path out of BuildOverview -- the coupled
+  -- layer fills it from the item the marker lives in. Its transcript is what
+  -- says which session it came from here.
+  assert(rows[1].status == "recorded" and rows[1].transcript == "alpha", "a from s1")
   assert(rows[2].status == "missing", "b is still missing")
-  assert(rows[3].status == "recorded" and rows[3].source_path == "s2.wav", "c from s2")
+  assert(rows[3].status == "recorded" and rows[3].transcript == "charlie", "c from s2")
+end)
+
+-- A marker owns its take, and the words are what decide its text: a marker
+-- covering half a span must not read as the whole span.
+local MARKER_WORDS = { { path = "s.wav", words = {
+  { t0 = 10.0, t1 = 10.4, text = "open" },
+  { t0 = 10.5, t1 = 10.9, text = "the" },
+  { t0 = 11.0, t1 = 11.9, text = "gate" },
+  { t0 = 13.0, t1 = 13.5, text = "and" },
+  { t0 = 13.6, t1 = 14.9, text = "hurry" },
+} } }
+
+local function marker_at(id, start, stop)
+  return { VO_01 = { { id = id, asset = "VO_01", start = start, stop = stop,
+                       source_path = "s.wav" } } }
+end
+
+local MARKER_MATCH = { { path = "s.wav", spans = {
+  span(10, 15, "match", "VO_01", "open the gate and hurry", 0.9),
+} } }
+
+test("a marker row reads the words inside its range, not the whole span", function()
+  local rows = vo.BuildOverview({
+    lines   = { line("VO_01", "open the gate and hurry", nil, 1) },
+    matches = MARKER_MATCH,
+    entries = {},
+    takes_by_asset = marker_at(7, 10, 12),
+    transcripts    = MARKER_WORDS,
+  })
+  local row
+  for _, rw in ipairs(rows) do if rw.marker_id == 7 then row = rw end end
+  assert(row, "no marker row was built")
+  assert(row.transcript == "open the gate", "Got: " .. tostring(row.transcript))
+  assert(near(row.score, 0.9), "score lost: " .. tostring(row.score))
+end)
+
+-- A take exists when, and only when, a marker says it does. Audio the matcher
+-- recognised but nothing has marked is HEARD, not recorded: the sheet must not
+-- show four tickable takes that no verb will act on.
+
+test("a line with spans but no markers is missing, and says how much it heard", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = {
+      span(1, 2, "match", "a", "alpha", 0.9),
+      span(5, 6, "match", "a", "alpha", 0.9),
+    } } },
+  })
+  assert(#rows == 1, "Expected one row, got " .. #rows)
+  assert(rows[1].status == "missing", "got " .. tostring(rows[1].status))
+  assert(rows[1].heard == 2, "heard: " .. tostring(rows[1].heard))
+  assert(rows[1].take_count == 0, "a heard span is not a take")
+end)
+
+test("a line with no audio at all is missing with heard 0", function()
+  local rows = vo.BuildOverview({ lines = { line("a", "Alpha", nil, 1) } })
+  assert(rows[1].status == "missing" and rows[1].heard == 0,
+    "heard: " .. tostring(rows[1].heard))
+end)
+
+test("a line with markers ignores its spans entirely, even when spans outnumber them", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = {
+      span(1, 2, "match", "a", "one", 0.9),
+      span(5, 6, "match", "a", "two", 0.9),
+      span(9, 10, "match", "a", "three", 0.9),
+    } } },
+    takes_by_asset = { a = { mk("m1", 1, 2, "s.wav") } },
+  })
+  assert(#rows == 1, "Expected one marker row, got " .. #rows)
+  assert(rows[1].key == "tkm|m1", "key: " .. tostring(rows[1].key))
+  assert(rows[1].take_count == 1, "take_count: " .. tostring(rows[1].take_count))
+  assert(rows[1].heard == nil, "a marker row is a take, not a count of reads")
+end)
+
+test("a span with no line index still counts toward its line's heard", function()
+  -- The fallback for spans that predate line_idx: they still group by filename,
+  -- which is what makes the count right.
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = {
+      span(1, 2, "match", "a", "alpha", 0.9),
+      span(5, 6, "match", "a", "alpha", 0.9),
+    } } },
+  })
+  assert(#rows == 1 and rows[1].heard == 2,
+    "Expected one missing line having heard 2, got " .. #rows .. " rows, heard "
+    .. tostring(rows[1].heard))
+end)
+
+test("a planned take appears on a line whose only other content is planned", function()
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    entries = { { key = vo.PlannedKey("a", "p1"), asset = "a" } },
+  })
+  assert(#rows == 2, "Expected missing + planned, got " .. #rows)
+  assert(rows[1].status == "missing" and rows[2].status == "planned",
+    "got " .. rows[1].status .. "," .. rows[2].status)
+end)
+
+test("two lines sharing a filename both show every marker of that name", function()
+  -- KNOWN AND ACCEPTED (PLAN-marker-is-the-row.md, D3). A marker names an asset
+  -- and an id, so it cannot say WHICH of two same-named script lines it belongs
+  -- to. The span path separated them by line_idx; markers have no equivalent.
+  -- Fixing it means extending the marker name format, which is its own spec.
+  local rows = vo.BuildOverview({
+    lines = { line("dup", "Jump right in!", nil, 1),
+              line("dup", "The nightmares have been getting stronger...", nil, 2) },
+    matches = {},
+    takes_by_asset = { dup = { mk("m1", 1, 2), mk("m2", 10, 11) } },
+  })
+  assert(#rows == 4, "Expected both lines to show both markers, got " .. #rows)
+  assert(rows[1].take_count == 2 and rows[3].take_count == 2,
+    "each line shows both markers")
+end)
+
+test("with no markers, two lines sharing a filename are both missing", function()
+  local a = span(1, 2, "match", "dup", "jump right in", 0.9)
+  local b = span(10, 11, "match", "dup", "the nightmares have been getting stronger", 0.9)
+  a.line_idx, b.line_idx = 1, 2
+  local rows = vo.BuildOverview({
+    lines = { line("dup", "Jump right in!", nil, 1),
+              line("dup", "The nightmares have been getting stronger...", nil, 2) },
+    matches = { { path = "s.wav", spans = { a, b } } },
+  })
+  assert(#rows == 2, "Expected 2 rows, got " .. #rows)
+  for i, row in ipairs(rows) do
+    assert(row.status == "missing", "row " .. i .. ": " .. row.status)
+    assert(row.heard == 1, "row " .. i .. " heard: " .. tostring(row.heard))
+  end
+end)
+
+test("a review span is heard, not a take", function()
+  -- A marker means a person identified this read. The matcher's low-confidence
+  -- warning was never a take, so it cannot be a take row: it is one more thing
+  -- heard on a line still waiting to be identified.
+  local rows = vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = { span(1, 2, "review", "a", "alfa", 0.61) } } },
+  })
+  assert(rows[1].status == "missing", "Got " .. rows[1].status)
+  assert(rows[1].heard == 1, "A review span still counts as heard")
+end)
+
+test("a marker row without transcripts shows nothing, not the span text", function()
+  -- The span fallback used to answer here, and it answered with the WHOLE
+  -- span for a marker holding part of one -- the original bug. A caller with
+  -- no word list gets an empty transcript, which is honest
+  -- (SPEC-word-anchors.md §5.5). Production always has the words: the same
+  -- transcripts matching requires feed BuildOverview.
+  local rows = vo.BuildOverview({
+    lines   = { line("VO_01", "open the gate and hurry", nil, 1) },
+    matches = MARKER_MATCH,
+    entries = {},
+    takes_by_asset = marker_at(7, 10, 12),
+  })
+  local row
+  for _, rw in ipairs(rows) do if rw.marker_id == 7 then row = rw end end
+  assert(row, "no marker row was built")
+  assert(row.transcript == nil, "Got: " .. tostring(row.transcript))
+end)
+
+--------------------------------
+print("\nUnidentifiedSpans:")
+
+test("a span no marker touches is returned", function()
+  local out = vo.UnidentifiedSpans({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = { span(1, 3, "match", "a", "alpha", 0.9) } } },
+    takes_by_asset = {},
+  })
+  assert(#out == 1, "Expected 1, got " .. #out)
+  assert(out[1].source_path == "s.wav" and out[1].start == 1, "wrong span returned")
+  assert(out[1].transcript == "alpha" and out[1].score == 0.9, "fields lost")
+end)
+
+test("a marker covering more than half the span hides it; less than half does not", function()
+  local input = {
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = { span(10, 20, "match", "a", "alpha", 0.9) } } },
+  }
+  -- 6 of 10 seconds covered: this take is identified.
+  input.takes_by_asset = { a = { mk("m1", 10, 16, "s.wav") } }
+  assert(#vo.UnidentifiedSpans(input) == 0, "a covered span was reported")
+  -- 4 of 10: a marker brushing a neighbour does not own this take.
+  input.takes_by_asset = { a = { mk("m1", 10, 14, "s.wav") } }
+  assert(#vo.UnidentifiedSpans(input) == 1, "a barely-touched span was hidden")
+end)
+
+test("a marker covering exactly half the span claims it", function()
+  local out = vo.UnidentifiedSpans({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = { span(10, 20, "match", "a", "alpha", 0.9) } } },
+    takes_by_asset = { a = { mk("m1", 10, 15, "s.wav") } },
+  })
+  assert(#out == 0, "half is covered, not uncovered")
+end)
+
+test("a marker on another source never covers this span", function()
+  local out = vo.UnidentifiedSpans({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = { span(10, 20, "match", "a", "alpha", 0.9) } } },
+    takes_by_asset = { a = { mk("m1", 10, 20, "other.wav") } },
+  })
+  assert(#out == 1, "a marker on another file covered this span")
+end)
+
+test("orphan spans are the other queue's business", function()
+  local out = vo.UnidentifiedSpans({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = {
+      span(1, 3, "match", "nosuchline", "who is this", 0.4),
+      span(5, 7, "unmatched", nil, "slate", nil),
+    } } },
+    takes_by_asset = {},
+  })
+  assert(#out == 0, "an orphan leaked into the unidentified list, got " .. #out)
+end)
+
+test("a review span is unidentified audio too", function()
+  local out = vo.UnidentifiedSpans({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = { span(1, 3, "review", "a", "alfa", 0.61) } } },
+    takes_by_asset = {},
+  })
+  assert(#out == 1, "a review span is exactly what most needs a person")
+end)
+
+test("results are sorted by source then start", function()
+  local out = vo.UnidentifiedSpans({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = {
+      { path = "z.wav", spans = { span(1, 2, "match", "a", "z one", 0.9) } },
+      { path = "a.wav", spans = { span(9, 10, "match", "a", "a two", 0.9),
+                                  span(1, 2,  "match", "a", "a one", 0.9) } },
+    },
+    takes_by_asset = {},
+  })
+  assert(#out == 3, "count: " .. #out)
+  assert(out[1].source_path == "a.wav" and out[1].start == 1, "sort broken at 1")
+  assert(out[2].source_path == "a.wav" and out[2].start == 9, "sort broken at 2")
+  assert(out[3].source_path == "z.wav", "sort broken at 3")
+end)
+
+test("nothing in, empty list out", function()
+  assert(#vo.UnidentifiedSpans({}) == 0, "an empty input is not an error")
+  assert(#vo.UnidentifiedSpans() == 0, "no input at all is not an error either")
 end)
 
 --------------------------------
 print("\nBuildOverview: project-file overlay and rematch:")
 
+-- Re-attaching an entry by SOURCE TIME within a tolerance is what these tests
+-- are about, and after "a marker is a row" that mechanism has exactly one
+-- customer left: ORPHAN rows. A take row keys `tkm|<id>`, which no
+-- re-transcription can move, so it needs no tolerance at all.
+--
+-- The orphans still do, and it still matters: an orphan the user DISMISSED
+-- must stay dismissed when the transcript is re-run, or "not on the script: 0"
+-- becomes unreachable and the whole queue goes back to being a wall. So these
+-- keep testing the tolerance, on the rows that still use it -- `lines` is empty
+-- here, which is what makes every span below an orphan.
 local function verified_at(start)
   return { { key = vo.OverviewKey("s.wav", start, "a"), source = "s.wav",
              source_start = start, asset = "a", status = "verified",
              notes = "checked" } }
 end
 
-test("an exact key match carries the verified flag and notes", function()
+test("an entry keyed by marker id carries the verified flag and notes", function()
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
     matches = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
-    entries = verified_at(10),
+    takes_by_asset = { a = { mk("m1", 10, 11, "s.wav") } },
+    entries = { { key = "tkm|m1", asset = "a", status = "verified",
+                  notes = "checked" } },
   })
   assert(rows[1].user_status == "verified", "Got " .. tostring(rows[1].user_status))
   assert(rows[1].notes == "checked", "Notes carry through")
@@ -5093,17 +6383,18 @@ end)
 
 test("a boundary nudged 40ms by re-transcription keeps its checkmark", function()
   local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1) },
+    lines = {},
     matches = { { path = "s.wav", spans = { span(10.04, 11, "match", "a", "alpha", 0.9) } } },
     entries = verified_at(10),
   })
+  assert(rows[1].status == "orphan", "the fixture stopped producing an orphan")
   assert(rows[1].user_status == "verified",
     "A 40ms shift must not lose the mark; got " .. tostring(rows[1].user_status))
 end)
 
 test("a span two seconds away is different audio and does not inherit the mark", function()
   local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1) },
+    lines = {},
     matches = { { path = "s.wav", spans = { span(12, 13, "match", "a", "alpha", 0.9) } } },
     entries = verified_at(10),
   })
@@ -5111,10 +6402,10 @@ test("a span two seconds away is different audio and does not inherit the mark",
     "A 2s shift must not inherit the mark; got " .. tostring(rows[1].user_status))
 end)
 
-test("the rematch never crosses to a different script line", function()
+test("the rematch never crosses to a different asset", function()
   local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2) },
-    -- 'b' sits 100ms from where 'a' was verified, but it is a different line.
+    lines = {},
+    -- 'b' sits 100ms from where 'a' was verified, but it is a different name.
     matches = { { path = "s.wav", spans = { span(10.1, 11, "match", "b", "bravo", 0.9) } } },
     entries = verified_at(10),
   })
@@ -5125,7 +6416,7 @@ end)
 
 test("the nearest candidate wins when several are in tolerance", function()
   local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1) },
+    lines = {},
     matches = { { path = "s.wav", spans = {
       span(10.0, 10.5, "match", "a", "near", 0.9),
       span(10.4, 10.9, "match", "a", "far",  0.9),
@@ -5139,7 +6430,7 @@ end)
 
 test("a project moved to another drive still finds its marks", function()
   local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1) },
+    lines = {},
     matches = { { path = "E:\\Moved\\s.wav",
                    spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
     entries = { { key = "s.wav|10000", source = "D:\\Old\\s.wav", source_start = 10,
@@ -5151,7 +6442,7 @@ end)
 
 test("two recordings sharing a filename do not share a checkmark", function()
   local rows = vo.BuildOverview({
-    lines = { line("a", "Alpha", nil, 1) },
+    lines = {},
     matches = {
       { path = "D:\\A\\take.wav", spans = { span(10, 11, "match", "a", "one", 0.9) } },
       { path = "D:\\B\\take.wav", spans = { span(10, 11, "match", "a", "two", 0.9) } },
@@ -5186,8 +6477,8 @@ test("a name override is carried but never overwrites the matched filename", fun
   local rows = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1) },
     matches = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
-    entries = { { key = "s.wav|10000", source = "s.wav", source_start = 10,
-                  asset = "a", name_override = "vo_alpha_final" } },
+    takes_by_asset = { a = { mk("m1", 10, 11, "s.wav") } },
+    entries = { { key = "tkm|m1", asset = "a", name_override = "vo_alpha_final" } },
   })
   assert(rows[1].asset == "a", "The script's filename is untouched")
   assert(rows[1].name_override == "vo_alpha_final", "The override rides alongside")
@@ -5197,17 +6488,19 @@ end)
 print("\nProjectEntriesFromRows / SummarizeOverview:")
 
 test("a full overview round-trips through the tracker unchanged", function()
+  local MARKS = { a = { mk("m1", 10, 11, "s.wav") } }
   local built = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2) },
     matches = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
-    entries = { { key = "s.wav|10000", source = "s.wav", source_start = 10,
-                  asset = "a", status = "verified", notes = "good" } },
+    takes_by_asset = MARKS,
+    entries = { { key = "tkm|m1", asset = "a", status = "verified", notes = "good" } },
   })
   local text   = vo.SerializeProjectFile(vo.ProjectEntriesFromRows(built))
   local parsed = vo.ParseProjectFile(text)
   local again  = vo.BuildOverview({
     lines = { line("a", "Alpha", nil, 1), line("b", "Bravo", nil, 2) },
     matches = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
+    takes_by_asset = MARKS,
     entries = parsed.entries,
   })
   assert(again[1].user_status == "verified", "The mark survives a save/load cycle")
@@ -5215,10 +6508,15 @@ test("a full overview round-trips through the tracker unchanged", function()
 end)
 
 test("marks survive a re-transcription that shifts every boundary slightly", function()
+  -- THE point of keying a take by its marker id. Re-running the transcript
+  -- moves every span; the marker does not move, so there is nothing to
+  -- re-attach and no tolerance to get wrong.
   local lines = { line("a", "Alpha", nil, 1) }
+  local MARKS = { a = { mk("m1", 10, 11, "s.wav") } }
   local first = vo.BuildOverview({
     lines = lines,
     matches = { { path = "s.wav", spans = { span(10, 11, "match", "a", "alpha", 0.9) } } },
+    takes_by_asset = MARKS,
   })
   first[1].user_status = "verified"
   first[1].notes = "keeper"
@@ -5228,6 +6526,7 @@ test("marks survive a re-transcription that shifts every boundary slightly", fun
   local second = vo.BuildOverview({
     lines = lines,
     matches = { { path = "s.wav", spans = { span(10.03, 11.02, "match", "a", "alpha", 0.91) } } },
+    takes_by_asset = MARKS,
     entries = saved.entries,
   })
   assert(second[1].user_status == "verified",
@@ -5245,13 +6544,26 @@ test("the summary counts lines delivered, not takes recorded", function()
       span(5, 6, "review", "b", "bravo", 0.6),
       span(7, 8, "unmatched", nil, "slate", nil),
     } } },
+    -- Only 'a' has been identified. 'b' was heard and 'c' never recorded, and
+    -- the summary must not tell them apart: neither has a take.
+    takes_by_asset = { a = { mk("m1", 1, 2, "s.wav"), mk("m2", 3, 4, "s.wav") } },
   }))
   assert(n.lines == 3, "Three script lines, got " .. n.lines)
-  assert(n.delivered == 2, "Two lines have audio, got " .. n.delivered)
-  assert(n.recorded == 2, "Two matched take rows, got " .. n.recorded)
-  assert(n.review == 1, "One review row, got " .. n.review)
-  assert(n.missing == 1, "One missing line, got " .. n.missing)
+  assert(n.delivered == 1, "One line has takes, got " .. n.delivered)
+  assert(n.recorded == 2, "Two marker take rows, got " .. n.recorded)
+  assert(n.missing == 2, "Two lines with no take, got " .. n.missing)
   assert(n.orphan == 1, "One orphan, got " .. n.orphan)
+end)
+
+test("a heard-but-unmarked line counts as missing, not as delivered", function()
+  -- "40 of 131 lines have takes" must mean 40 have been IDENTIFIED, not that
+  -- the matcher had an opinion about 40.
+  local n = vo.SummarizeOverview(vo.BuildOverview({
+    lines = { line("a", "Alpha", nil, 1) },
+    matches = { { path = "s.wav", spans = { span(1, 2, "match", "a", "alpha", 0.9) } } },
+  }))
+  assert(n.missing == 1, "missing: " .. tostring(n.missing))
+  assert((n.delivered or 0) == 0, "delivered: " .. tostring(n.delivered))
 end)
 
 test("the summary counts the user's marks", function()
@@ -5262,6 +6574,24 @@ test("the summary counts the user's marks", function()
   })
   assert(n.verified == 1 and n.flagged == 1, "Marks counted independently of status")
   assert(n.total == 3, "Total counts every row")
+end)
+
+test("dismissed audio leaves the orphan count", function()
+  -- Without this, "not on the script: N" can never reach zero and the number
+  -- can only be ignored.
+  local n = vo.SummarizeOverview({
+    { status = "orphan" },
+    { status = "orphan", user_status = "junk" },
+    { status = "orphan", user_status = "junk" },
+  })
+  assert(n.orphan == 1, "Expected 1 orphan, got " .. n.orphan)
+  assert(n.junk == 2, "Expected 2 dismissed, got " .. n.junk)
+  assert(n.total == 3, "Dismissed rows are still rows")
+end)
+
+test("dismissing is not locking", function()
+  local n = vo.SummarizeOverview({ { status = "orphan", user_status = "junk" } })
+  assert(n.verified == 0 and n.flagged == 0, "junk leaked into another count")
 end)
 
 test("summarizing nothing is zero, not an error", function()
@@ -5912,9 +7242,11 @@ print("\nSerializeTranscript / ParseTranscript:")
 
 local function sample_words()
   return {
-    { t0 = 12.480, t1 = 12.660, text = "we" },
+    -- Middle word anchor-less on purpose: whisper leaves t_dtw unset on some
+    -- tokens, and the empty cell must round-trip as nil, not as zero.
+    { t0 = 12.480, t1 = 12.660, text = "we",     anchor = 12.510 },
     { t0 = 12.660, t1 = 12.910, text = "should" },
-    { t0 = 12.910, t1 = 13.040, text = "not," },
+    { t0 = 12.910, t1 = 13.040, text = "not,",   anchor = 12.980 },
   }
 end
 
@@ -5927,7 +7259,7 @@ test("round-trip preserves every word and every preamble field", function()
   local text = vo.SerializeTranscript(sample_words(), sample_meta())
   local got, why = vo.ParseTranscript(text)
   assert(got, "Parse failed: " .. tostring(why))
-  assert(got.version == 1, "Version: " .. tostring(got.version))
+  assert(got.version == 2, "Version: " .. tostring(got.version))
   assert(got.source == "RIVA.wav", "Source: " .. tostring(got.source))
   assert(got.source_bytes == 412839104, "Bytes: " .. tostring(got.source_bytes))
   assert(got.source_hash == "deadbeef", "Hash: " .. tostring(got.source_hash))
@@ -5938,6 +7270,10 @@ test("round-trip preserves every word and every preamble field", function()
   assert(math.abs(got.words[1].t0 - 12.480) < 1e-6, "t0: " .. tostring(got.words[1].t0))
   assert(math.abs(got.words[3].t1 - 13.040) < 1e-6, "t1: " .. tostring(got.words[3].t1))
   assert(got.words[3].text == "not,", "text: " .. tostring(got.words[3].text))
+  assert(math.abs(got.words[1].anchor - 12.510) < 1e-6,
+         "anchor: " .. tostring(got.words[1].anchor))
+  assert(got.words[2].anchor == nil,
+         "an empty anchor cell must stay nil, got " .. tostring(got.words[2].anchor))
 end)
 
 test("a word containing a comma, a quote and a newline survives", function()
@@ -5947,9 +7283,13 @@ test("a word containing a comma, a quote and a newline survives", function()
   assert(got.words[1].text == 'he said "go,"\nquietly', "Got: " .. tostring(got.words[1].text))
 end)
 
-test("times are written to three decimals", function()
-  local text = vo.SerializeTranscript({ { t0 = 1.23456, t1 = 2.5, text = "x" } }, sample_meta())
-  assert(text:find("1.235,2.500,x", 1, true), "Row not found in:\n" .. text)
+test("times are written to three decimals, anchor included", function()
+  local text = vo.SerializeTranscript(
+    { { t0 = 1.23456, t1 = 2.5, text = "x", anchor = 1.5001 } }, sample_meta())
+  assert(text:find("1.235,2.500,x,1.500", 1, true), "Row not found in:\n" .. text)
+  local bare = vo.SerializeTranscript({ { t0 = 1, t1 = 2, text = "y" } }, sample_meta())
+  assert(bare:find("1.000,2.000,y,\n", 1, true) or bare:find("1.000,2.000,y,$"),
+         "No-anchor row should end with an empty cell:\n" .. bare)
 end)
 
 test("an empty word list still produces a parseable file", function()
@@ -5969,43 +7309,78 @@ test("a foreign file is rejected with a reason", function()
 end)
 
 test("an unknown version is rejected with a reason", function()
-  local got, why = vo.ParseTranscript("ajsfx VO Transcript,99\n\nStart,End,Text\n")
+  local got, why = vo.ParseTranscript("ajsfx VO Transcript,99\n\nStart,End,Text,Anchor\n")
   assert(got == nil and type(why) == "string", "Expected nil + reason")
 end)
 
+test("a v1 sidecar (no anchors) is rejected, forcing the re-transcribe", function()
+  -- Deliberate hard cutoff (SPEC-word-anchors.md §5.3): an anchor-less
+  -- transcript reproduces exactly the wrong-words-under-a-take bug, and the
+  -- Sources window turns this rejection into its re-transcribe offer.
+  local got, why = vo.ParseTranscript(
+    "ajsfx VO Transcript,1\nSource,a.wav\n\nStart,End,Text\n1.000,2.000,hi\n")
+  assert(got == nil and type(why) == "string", "Expected nil + reason")
+  assert(why:find("version"), "The reason should name the version: " .. tostring(why))
+end)
+
 test("a missing word header is rejected with a reason", function()
-  local got, why = vo.ParseTranscript("ajsfx VO Transcript,1\nSource,a.wav\n")
+  local got, why = vo.ParseTranscript("ajsfx VO Transcript,2\nSource,a.wav\n")
   assert(got == nil and type(why) == "string", "Expected nil + reason")
 end)
 
 --------------------------------
 print("\nParagraphs / ParagraphWords:")
 
-test("a word ending in a sentence terminator closes a paragraph", function()
-  local words = {
+test("a pause closes a paragraph; punctuation alone does not", function()
+  -- Whisper stretches a word's end to the next word's start, so a run read
+  -- without pausing has zero gaps no matter how much punctuation it carries.
+  local paras = vo.Paragraphs({
     { t0 = 0, t1 = 1, text = "we" },
     { t0 = 1, t1 = 2, text = "should" },
     { t0 = 2, t1 = 3, text = "go." },
     { t0 = 3, t1 = 4, text = "okay" },
-  }
-  local paras = vo.Paragraphs(words)
-  assert(#paras == 2, "Expected 2 paragraphs, got " .. #paras)
-  assert(paras[1] == "we should go.", "Para 1: " .. tostring(paras[1]))
-  assert(paras[2] == "okay", "Para 2: " .. tostring(paras[2]))
-end)
-
-test("? and ! and a trailing closing quote also close a paragraph", function()
-  local paras = vo.Paragraphs({
-    { text = "really?" }, { text = "yes!" }, { text = "he" }, { text = "said" },
-    { text = 'stop."' }, { text = "done" },
   })
-  assert(#paras == 4, "Expected 4 paragraphs, got " .. #paras)
-  assert(paras[1] == "really?", "Para 1: " .. tostring(paras[1]))
-  assert(paras[2] == "yes!", "Para 2: " .. tostring(paras[2]))
-  assert(paras[3] == 'he said stop."', "Para 3: " .. tostring(paras[3]))
+  assert(#paras == 1, "Expected 1 paragraph, got " .. #paras)
+  assert(paras[1] == "we should go. okay", "Got: " .. tostring(paras[1]))
 end)
 
-test("a trailing run with no terminator still becomes its own paragraph", function()
+test("a gap at or over the pause threshold splits", function()
+  local paras = vo.Paragraphs({
+    { t0 = 0,   t1 = 1,   text = "first" },
+    { t0 = 1.4, t1 = 2,   text = "second" },
+    { t0 = 2,   t1 = 2.5, text = "third" },
+  })
+  assert(#paras == 2, "Expected 2 paragraphs, got " .. #paras)
+  assert(paras[1] == "first", "Para 1: " .. tostring(paras[1]))
+  assert(paras[2] == "second third", "Para 2: " .. tostring(paras[2]))
+end)
+
+test("the pause threshold is a parameter", function()
+  local words = {
+    { t0 = 0, t1 = 1, text = "a" },
+    { t0 = 1.5, t1 = 2, text = "b" },
+  }
+  assert(#vo.Paragraphs(words, 0.4) == 2, "0.5s gap must split at 0.4s")
+  assert(#vo.Paragraphs(words, 0.6) == 1, "0.5s gap must NOT split at 0.6s")
+end)
+
+test("four reads of one line become four paragraphs", function()
+  -- The real case from Grumbar: "Do not repeat that." read four times, which
+  -- the loop detector called a transcriber loop. The pauses between reads are
+  -- small but real, and they are what says these are four takes.
+  local words, t = {}, 0
+  for _ = 1, 4 do
+    words[#words + 1] = { t0 = t,       t1 = t + 0.6, text = "Do" }
+    words[#words + 1] = { t0 = t + 0.6, t1 = t + 1.2, text = "not" }
+    words[#words + 1] = { t0 = t + 1.2, t1 = t + 2.0, text = "repeat." }
+    t = t + 2.6
+  end
+  local paras = vo.Paragraphs(words)
+  assert(#paras == 4, "Expected 4 paragraphs, got " .. #paras)
+  assert(paras[1] == "Do not repeat.", "Got: " .. tostring(paras[1]))
+end)
+
+test("words with no timing at all stay one paragraph rather than erroring", function()
   local paras = vo.Paragraphs({ { text = "hello" }, { text = "there" } })
   assert(#paras == 1, "Expected 1 paragraph, got " .. #paras)
   assert(paras[1] == "hello there", "Got: " .. tostring(paras[1]))
@@ -6017,7 +7392,9 @@ test("an empty or nil word list produces no paragraphs", function()
 end)
 
 test("ParagraphWords groups the same original word tables Paragraphs summarizes", function()
-  local w1, w2, w3 = { t0 = 0, t1 = 1, text = "hi." }, { t0 = 1, t1 = 2, text = "there" }, { t0 = 2, t1 = 3, text = "friend." }
+  local w1 = { t0 = 0, t1 = 1, text = "hi." }
+  local w2 = { t0 = 2, t1 = 3, text = "there" }
+  local w3 = { t0 = 3, t1 = 4, text = "friend." }
   local groups = vo.ParagraphWords({ w1, w2, w3 })
   assert(#groups == 2, "Expected 2 groups, got " .. #groups)
   assert(#groups[1] == 1 and groups[1][1] == w1, "Group 1 should be {w1}")

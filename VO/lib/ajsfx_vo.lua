@@ -1,7 +1,7 @@
 -- @description ajsfx VO Shared Library
 -- @author ajsfx
--- @version 0.8
--- @changelog PlanAdopt: the pure planner behind "Adopt session" -- rename matched items to their lines at current edges, never overwriting a name that already resolves to a line. MakeSourceProbe now probes through an item that shows the WHOLE source, or a temporary full-length item when the session is already cut into clips (take accessors are item-bounded; the old first-item probe read silence outside one clip's window, which made gap repair a silent no-op on cut sessions). RepairTranscriptGaps reports holes it could not check instead of passing them as silence. From 0.7: take identity via ranged take markers: the TKM chunk line's undocumented length field becomes the tool's substrate (ParseTKMChunk / PatchTKMChunk / FormatTKMLine), CountingMarkers applies the coverage rule that absorbs split residue, and BuildOverview builds a marked line's takes from its markers instead of the match. Sel/Keep become tri-state so a blank can defer to the track the item sits on, and PlanReconcile reports where the sheet and the timeline disagree. Also, from 0.6: transcript gap repair for whisper's swallowed-window failure.
+-- @version 0.9
+-- @changelog Agreement: candidates are ranked by TOKENS of agreement (score x window length) rather than by score, so a short line matched perfectly no longer takes the words out of the middle of a long one. ExtraWords: an LCS alignment of a line against a take, for colouring the words the take has and the line does not. FindSpanLines: the matcher backwards -- which script lines could THESE words be -- behind the orphan right-click. TranscriptForRange: what was said inside a take marker's range, so marker-owned rows keep their transcript and score after a Cut. SummarizeOverview counts dismissed spans separately and leaves them out of the orphan count. ParagraphWords and the loop detector break on the reader's PAUSES, so four reads of one line are no longer reported as a transcriber loop. ParseExitFile: a launcher that has not written its exit code yet reads as not finished, not as failure. From 0.8: PlanAdopt, MakeSourceProbe, gap-hole reporting.
 -- @noindex
 -- @about Shared logic for the ajsfx VO windows.
 --        Split into a pure layer (parsing, normalization, matching, naming —
@@ -276,6 +276,43 @@ end
 -- excluded from matching entirely.
 vo.DEFAULT_SKIP_VALUES = { "TO RECORD" }
 
+-- A cell wrapped in quotation marks loses them.
+--
+-- Scripts arrive with whole lines quoted -- a habit of the document the CSV was
+-- exported from, not a fact about the line -- and the card then drew a quote
+-- around that, so a line that quoted someone came out as `"Master say "No one
+-- leaves.""`. Three levels of quoting for one sentence.
+--
+-- START AND END, both, or nothing happens: a line that merely quotes someone
+-- (`Master say "No one leaves."`) keeps every mark it has, and so does one with
+-- a stray quote at a single end. Only the outermost pair goes, so a wrapped
+-- line that also quotes someone still reads as quoting them.
+--
+-- Smart quotes count. The same document habit produces them, and they are the
+-- ones a person is least likely to notice and strip by hand.
+local function quote_head(s)
+  if s:sub(1, 3) == "\226\128\156" or s:sub(1, 3) == "\226\128\158" then return 3 end
+  if s:sub(1, 1) == '"' then return 1 end
+  return 0
+end
+
+local function quote_tail(s)
+  if s:sub(-3) == "\226\128\157" then return 3 end
+  if s:sub(-1) == '"' then return 1 end
+  return 0
+end
+
+function vo.StripWrappingQuotes(s)
+  if type(s) ~= "string" then return s end
+  local head, tail = quote_head(s), quote_tail(s)
+  -- `> head + tail`, not `>=`: a string that is nothing BUT its two quotes has
+  -- no content to keep, and a single `"` must not read as its own wrapper.
+  if head > 0 and tail > 0 and #s > head + tail then
+    return trim(s:sub(head + 1, #s - tail))
+  end
+  return s
+end
+
 -- Turn data rows (header already removed) into script line records.
 -- filters: { skip_values = {...}, speakers = { folded_key = true }, canonicalize }
 -- The character filter is inert when no character column is mapped.
@@ -293,7 +330,7 @@ function vo.BuildScriptLines(rows, cols, filters)
 
   local lines = {}
   for i, row in ipairs(rows or {}) do
-    local text    = trim(row[cols.text])
+    local text    = vo.StripWrappingQuotes(trim(row[cols.text]))
     local asset   = trim(row[cols.asset])
 
     local speaker_raw = cols.speaker and trim(row[cols.speaker]) or nil
@@ -486,12 +523,33 @@ end
 -- The delivered name a script line asks for, before any per-take override.
 -- No separator is inserted: a user who wants "line_042_ch2" types "_ch2". That
 -- is the whole point -- nothing here renames anything the user did not spell.
-function vo.ResolveNames(lines, appends)
+-- `names` is the filename OVERRIDE: what the user typed over the script's own
+-- filename. It replaces the delivered name outright rather than stacking with
+-- the Append, because it REPLACES the Append -- typing the whole name is the
+-- mechanism now, and a leftover Append record tacking onto a name the user
+-- typed in full would be the tool arguing with them.
+--
+-- Appends still apply where no override exists. They are no longer reachable
+-- from the card, but a project written before this feature has real names
+-- stored that way and must open with the names it was saved with.
+--
+-- `l.asset` is untouched -- it is the script's own filename, drawn in grey
+-- under the name and copied by "Copy original filename".
+function vo.ResolveNames(lines, appends, names)
   appends = appends or {}
+  names   = names or {}
   for _, l in ipairs(lines or {}) do
-    local extra = l.append_key and appends[l.append_key] or nil
-    extra = extra and trim(extra) or ""
-    l.deliver = (l.asset or "") .. extra
+    local override = l.append_key and names[l.append_key] or nil
+    override = override and trim(override) or ""
+    if override ~= "" then
+      l.deliver     = override
+      l.name_edited = true
+    else
+      local extra = l.append_key and appends[l.append_key] or nil
+      extra = extra and trim(extra) or ""
+      l.deliver     = (l.asset or "") .. extra
+      l.name_edited = nil
+    end
   end
   return lines
 end
@@ -603,6 +661,98 @@ function vo.OrphanAppends(appends, lines)
     end
   end
   return orphans
+end
+
+-- A LINE EDIT is what was actually said, where the script says something else.
+--
+-- The same record as an Append, keyed the same way, for the same reason: it is
+-- a judgement about ONE line of ONE script, made by hand, that the CSV does not
+-- know about. The script CSV is the author's and is never written to; this is
+-- the project's opinion of it.
+--
+-- Not the substitution table. That is global -- one entry per misheard word,
+-- correct only when the word is wrong everywhere. A line the director changed
+-- on the day is not a transcription problem, and `bolvd=adon` would rewrite
+-- every other line that says Bolvd.
+--
+-- Record: { script = <label>, asset = <filename>, nth = <integer>, text = <string> }
+--
+-- THREE things now wear this shape -- the Append, the line edit, and the
+-- filename override -- so the map/set/orphan helpers are written once and
+-- named for the shape rather than for any one of them. They differ only in
+-- which array they are handed and what the caller does with the answer.
+function vo.KeyedTextMap(rows)
+  local m = {}
+  for _, e in ipairs(rows or {}) do
+    m[vo.AppendKey(e.script, e.asset, e.nth)] = e.text or ""
+  end
+  return m
+end
+
+-- The one mutator for all three. Empty REMOVES the record: "not set" is the
+-- absence of one, the rule vo.SetAppend and SerializeProjectFile already share.
+-- That also makes "Revert" and "clear the field" the same operation, so they
+-- cannot disagree.
+--
+-- A value equal to the original is still stored. Deciding a line reads right as
+-- written is a judgement, and dropping it would make the grey original row
+-- flicker away and back as the user typed toward what the script says.
+function vo.SetKeyedText(edit_rows, script, asset, nth, text)
+  edit_rows = edit_rows or {}
+  local clean = trim(tostring(text or ""))
+
+  for i, e in ipairs(edit_rows) do
+    if e.script == script and e.asset == asset and e.nth == nth then
+      if clean == "" then table.remove(edit_rows, i) else e.text = clean end
+      return edit_rows
+    end
+  end
+  if clean ~= "" then
+    edit_rows[#edit_rows + 1] =
+      { script = script, asset = asset, nth = nth, text = clean }
+  end
+  return edit_rows
+end
+
+-- Edits no loaded line answers to -- a renamed or re-exported CSV is enough.
+-- Surfaced, not repaired, exactly as vo.OrphanAppends is: which line it should
+-- attach to is the user's call.
+function vo.OrphanKeyedText(edits, lines)
+  local live = {}
+  for _, l in ipairs(lines or {}) do
+    live[vo.AppendKey(l.script, l.asset, l.append_nth)] = true
+  end
+  local orphans = {}
+  for _, e in ipairs(edits or {}) do
+    if e.text and e.text ~= ""
+       and not live[vo.AppendKey(e.script, e.asset, e.nth)] then
+      orphans[#orphans + 1] = e
+    end
+  end
+  return orphans
+end
+
+-- Put the edited words where every reader of a line already looks.
+--
+-- ONE override point. The matcher reads `l.text` (text_for[l.asset]),
+-- ExtraWords colours against it, BuildOverview copies it into row.line_text,
+-- and search puts it in the haystack -- so overriding here reaches all of them
+-- and none of them needs to know this feature exists. A second code path is
+-- how the sheet and the matcher would come to disagree about what a line says.
+--
+-- Called on every script load, on the SAME line tables, so it must be
+-- idempotent: `text_original` is written once and `text` is always rebuilt
+-- FROM it. Without that, the second pass would record the edited words as the
+-- original and the script's own words would be gone for good.
+function vo.ApplyLineEdits(lines, edit_map)
+  edit_map = edit_map or {}
+  for _, l in ipairs(lines or {}) do
+    if l.text_original == nil then l.text_original = l.text end
+    local e = l.append_key and edit_map[l.append_key] or nil
+    l.text        = (e ~= nil and e ~= "") and e or l.text_original
+    l.text_edited = ((e ~= nil and e ~= "") and true) or nil
+  end
+  return lines
 end
 
 -- A voiced leftover butted right up against a take's first sample usually
@@ -1192,6 +1342,141 @@ function vo.Tokenize(s)
   return tokens
 end
 
+-- The words a take has that its line does not, as drawable runs.
+--
+-- The sheet used to colour a whole transcript amber when its match score fell
+-- in the "review" band -- the colour encoded a threshold, with no legend and no
+-- number, so from the outside it read as random. This says something the reader
+-- can act on instead: here are the words that are not in the line.
+--
+-- Aligns the two token streams by longest common subsequence, so a word only
+-- counts as extra when it cannot be paired with one in the line IN ORDER. A
+-- multiset would call the second half of a double-read extra and also let a word
+-- that moved across the line pass unmarked; the LCS gets both right. Comparison
+-- is on Normalize()d tokens.
+--
+-- A word that PAIRS is shown with the LINE's spelling, not the transcriber's:
+-- whisper's capitalisation and punctuation are a guess, the script's are the
+-- writer's, and two guesses side by side on one card read as a difference that
+-- means something when it does not. What the reader actually said still shows
+-- wherever it diverges -- an unpaired word keeps its own spelling and its amber.
+--
+-- Returns: array of { text = string, extra = boolean } in take order, adjacent
+-- runs of the same verdict merged. Marks nothing when there is no line to
+-- compare against -- an orphan is not a take full of extra words.
+function vo.ExtraWords(line_text, take_text, subs)
+  local raw = {}
+  for token in tostring(take_text or ""):gmatch("%S+") do raw[#raw + 1] = token end
+  if #raw == 0 then return {} end
+
+  -- The line's display words, and which comparison tokens each one yields --
+  -- the mirror of the take side below, because a paired take word has to be
+  -- able to name the line word whose spelling it is about to borrow.
+  local line_raw = {}
+  for token in tostring(line_text or ""):gmatch("%S+") do line_raw[#line_raw + 1] = token end
+  local line, line_owner = {}, {}
+  for i, token in ipairs(line_raw) do
+    for _, t in ipairs(vo.Tokenize(vo.Normalize(token, subs))) do
+      line[#line + 1] = t
+      line_owner[#line] = i
+    end
+  end
+  if #line == 0 then
+    return { { text = table.concat(raw, " "), extra = false } }
+  end
+
+  -- The comparison stream, with each token remembering which display word it
+  -- came from. One display word can yield several: Normalize breaks "well-worn"
+  -- in two, and the line it is being compared against says "well worn".
+  local take, owner = {}, {}
+  for i, token in ipairs(raw) do
+    for _, t in ipairs(vo.Tokenize(vo.Normalize(token, subs))) do
+      take[#take + 1] = t
+      owner[#take] = i
+    end
+  end
+  if #take == 0 then
+    return { { text = table.concat(raw, " "), extra = false } }
+  end
+
+  -- LCS lengths over (line, take); walk back for which take tokens paired.
+  local n, m = #line, #take
+  local L = {}
+  for i = 0, n do L[i] = {} for j = 0, m do L[i][j] = 0 end end
+  for i = 1, n do
+    for j = 1, m do
+      if line[i] ~= "" and line[i] == take[j] then L[i][j] = L[i - 1][j - 1] + 1
+      else L[i][j] = math.max(L[i - 1][j], L[i][j - 1]) end
+    end
+  end
+
+  -- Walking back from the end pairs the LATEST valid occurrence, which is the
+  -- right tie to take: where a reader stumbled and went again, both halves pair
+  -- equally well, and the half worth colouring is the false start, not the read
+  -- they settled on.
+  -- paired[take token] = the line token it went with, so the walk below can
+  -- reach the line's display word and not just the fact that there was one.
+  local paired = {}
+  local i, j = n, m
+  while i > 0 and j > 0 do
+    if line[i] ~= "" and line[i] == take[j] then
+      paired[j] = i
+      i, j = i - 1, j - 1
+    elseif L[i - 1][j] >= L[i][j - 1] then i = i - 1
+    else j = j - 1 end
+  end
+
+  -- Back to display words. Each take word owns the comparison tokens it made.
+  local toks_of = {}
+  for k = 1, m do
+    local list = toks_of[owner[k]]
+    if not list then list = {} toks_of[owner[k]] = list end
+    list[#list + 1] = k
+  end
+
+  local runs = {}
+  local function push(text, extra)
+    local last = runs[#runs]
+    if last and last.extra == extra then last.text = last.text .. " " .. text
+    else runs[#runs + 1] = { text = text, extra = extra } end
+  end
+
+  local spoken_for = {}
+  for k = 1, #raw do
+    local toks = toks_of[k]
+    if not toks then
+      -- Normalizes to nothing at all (punctuation standing on its own): never
+      -- extra, because there was nothing here to fail to match.
+      push(raw[k], false)
+    else
+      -- A word Normalize split is extra if ANY part of it went unpaired.
+      local whole, owners = true, {}
+      for _, t in ipairs(toks) do
+        local li = paired[t]
+        if not li then whole = false break end
+        local o = line_owner[li]
+        if owners[#owners] ~= o then owners[#owners + 1] = o end
+      end
+      if not whole then
+        push(raw[k], true)
+      else
+        local text = {}
+        for _, o in ipairs(owners) do
+          if not spoken_for[o] then
+            spoken_for[o] = true
+            text[#text + 1] = line_raw[o]
+          end
+        end
+        -- Nothing left to say: several take words paired into one line word
+        -- ("well worn" read against a scripted "well-worn"), and that one word
+        -- is already on screen.
+        if #text > 0 then push(table.concat(text, " "), false) end
+      end
+    end
+  end
+  return runs
+end
+
 --------------------------------
 -- Pure layer: whisper output
 --------------------------------
@@ -1212,6 +1497,110 @@ function vo.ParseWhisperCSV(text)
   return words
 end
 
+-- A minimal JSON reader, sized to whisper-cli's -ojf output and nothing more.
+--
+-- Hand-rolled on purpose: the repo vendors no dependencies, and every other
+-- format here (CSV, TKM chunks) is parsed the same way. Handles objects,
+-- arrays, strings with the JSON escapes whisper actually emits, numbers,
+-- true/false/null. Returns the decoded value and the next index, or nil on
+-- malformed input -- callers treat that as "not a transcript".
+local function json_decode(s, i)
+  i = s:find("[^ \t\r\n]", i or 1)
+  if not i then return nil end
+  local c = s:sub(i, i)
+  if c == "{" or c == "[" then
+    local out, want_key = {}, (c == "{")
+    i = i + 1
+    while true do
+      i = s:find("[^ \t\r\n]", i)
+      if not i then return nil end
+      local d = s:sub(i, i)
+      if d == (want_key and "}" or "]") then return out, i + 1 end
+      if d == "," then i = i + 1
+      elseif want_key then
+        local key; key, i = json_decode(s, i)
+        if type(key) ~= "string" then return nil end
+        i = s:find("[^ \t\r\n]", i)
+        if not i or s:sub(i, i) ~= ":" then return nil end
+        local val; val, i = json_decode(s, i + 1)
+        if i == nil then return nil end
+        out[key] = val
+      else
+        local val; val, i = json_decode(s, i)
+        if i == nil then return nil end
+        out[#out + 1] = val
+      end
+    end
+  elseif c == '"' then
+    local buf, j = {}, i + 1
+    while true do
+      local k = s:find('[\\"]', j)
+      if not k then return nil end
+      buf[#buf + 1] = s:sub(j, k - 1)
+      if s:sub(k, k) == '"' then
+        return table.concat(buf), k + 1
+      end
+      local e = s:sub(k + 1, k + 1)
+      if     e == "n" then buf[#buf + 1] = "\n"
+      elseif e == "t" then buf[#buf + 1] = "\t"
+      elseif e == "r" then buf[#buf + 1] = "\r"
+      elseif e == "u" then
+        -- Whisper text is UTF-8 in the string body; \u escapes only ever
+        -- carry ASCII here. Anything above is kept as a literal '?' rather
+        -- than growing a UTF-16 decoder for bytes no caller reads.
+        local hex = s:sub(k + 2, k + 5)
+        local cp = tonumber(hex, 16)
+        buf[#buf + 1] = (cp and cp < 128) and string.char(cp) or "?"
+        j = k + 6
+      else buf[#buf + 1] = e end
+      if e ~= "u" then j = k + 2 end
+    end
+  elseif s:find("^true", i)  then return true,  i + 4
+  elseif s:find("^false", i) then return false, i + 5
+  elseif s:find("^null", i)  then return nil,   i + 4
+  else
+    local num = s:match("^-?%d+%.?%d*[eE]?[+%-]?%d*", i)
+    if not num or num == "" then return nil end
+    return tonumber(num), i + #num
+  end
+end
+
+-- Parse the JSON written by `whisper-cli -ml 1 -sow -ojf`. With -ml 1 a
+-- SEGMENT is one word; its `tokens` are sub-word pieces ("Br"/"ant"/"ley").
+--
+-- The point of -ojf over -ocsv is the per-token `t_dtw`: a cross-attention
+-- anchor that sits ON the word, where `offsets` are a contiguous partition of
+-- the timeline that can miss the word entirely (SPEC-word-anchors.md §2). The
+-- word's anchor is the smallest qualifying token anchor; special tokens
+-- ("[_BEG_]" etc.) and unset anchors (t_dtw < 0, whisper's "never computed"
+-- sentinel) don't qualify. A word with no qualifying token gets anchor = nil
+-- and downstream falls back to t0.
+-- Returns: array of { t0, t1 = seconds, text = string, anchor = seconds|nil }
+function vo.ParseWhisperJSON(text)
+  local doc = type(text) == "string" and json_decode(text) or nil
+  local segs = doc and doc.transcription
+  if type(segs) ~= "table" then return {} end
+  local words = {}
+  for _, seg in ipairs(segs) do
+    local word = trim(seg.text or "")
+    local off = seg.offsets
+    if word ~= "" and type(off) == "table"
+       and tonumber(off.from) and tonumber(off.to) then
+      local anchor
+      for _, tok in ipairs(seg.tokens or {}) do
+        local dt = tonumber(tok.t_dtw)
+        if dt and dt >= 0 and not tostring(tok.text or ""):find("^%[_") then
+          local a = dt / 100.0
+          if not anchor or a < anchor then anchor = a end
+        end
+      end
+      words[#words + 1] = { t0 = off.from / 1000.0, t1 = off.to / 1000.0,
+                            text = word, anchor = anchor }
+    end
+  end
+  return words
+end
+
 -- Longest stretch of `words` that is one short phrase repeated back to back.
 --
 -- This is the signature of a whisper decoder that has fallen into a repetition
@@ -1224,10 +1613,28 @@ end
 --
 -- Thresholds are set so ordinary repetition in a read ("no, no, no") cannot
 -- trip it: a run needs at least 4 cycles AND 12 repeated words.
+--
+-- AND the cycles must be BACK TO BACK. This is what separates a decoder loop
+-- from an actor, and it was missing: on a real session the detector reported
+-- "Do not repeat that." four times as a loop and told the user to re-transcribe
+-- a 39-minute file. The script has that line. Four takes of a short line is
+-- normal -- it is what this whole tool is for.
+--
+-- A decoder emitting the same phrase over and over does not breathe: the
+-- repeats abut. A reader going again pauses first, however briefly (0.22s,
+-- 0.60s and 0.84s between the four reads above). So a pause of
+-- LOOP_MAX_PAUSE or more ends the run, and four re-reads count as at most two
+-- cycles -- under the threshold, silent.
+--
+-- False negative it accepts: a loop that happens to fall either side of a
+-- pause reads as two shorter runs. That is the right way to be wrong. Missing
+-- a loop costs a transcript the user can re-run; crying wolf costs a good
+-- transcript they were told to throw away.
 -- Returns: nil, or { from, to, phrase, cycles, words } (times in source seconds)
 vo.LOOP_MAX_PHRASE  = 12
 vo.LOOP_MIN_CYCLES  = 4
 vo.LOOP_MIN_WORDS   = 12
+vo.LOOP_MAX_PAUSE   = 0.35
 
 function vo.DetectRepetitionLoop(words)
   local n = #(words or {})
@@ -1247,6 +1654,17 @@ function vo.DetectRepetitionLoop(words)
           if words[a + j].text ~= words[b + j].text then same = false break end
         end
         if not same then break end
+        -- A breath ANYWHERE in the stretch being added means a person said it
+        -- again. Checking only the junction between blocks is not enough: with
+        -- a phrase offset by a word or two, the block boundary falls mid-read
+        -- and the pause hides inside the block.
+        local breathed = false
+        for j = b, b + k - 1 do
+          local prev, this = words[j - 1], words[j]
+          local gap = (prev.t1 and this.t0) and (this.t0 - prev.t1) or 0
+          if gap >= vo.LOOP_MAX_PAUSE then breathed = true break end
+        end
+        if breathed then break end
         cycles = cycles + 1
       end
       if cycles * k > best_cycles * (best_k or 1) then
@@ -1321,6 +1739,258 @@ function vo.EffectiveMarks(entry, track_name, cfg)
   if entry and entry.keep   ~= nil then keep = entry.keep
   else                                  keep = (from_track == "keep")   end
   return { select = sel, keep = keep }
+end
+
+-- What is in an item: one take, or several. Detected, not asked.
+--
+-- This used to be two buttons the user had to choose between -- "Find lines in
+-- items" for items holding several takes, "Assign items to lines" for items
+-- that are already one take each -- and choosing wrong did the wrong thing.
+-- But the tool can SEE which it is: count the match spans that fall inside the
+-- item. That was never a decision, only a fact nobody had asked for.
+--
+-- The two answers genuinely differ, which is why the split existed:
+--
+--   ONE span inside   the item IS that take. Its marker spans the whole item,
+--                     at the user's own edges (hand-trimmed edges are truth),
+--                     and the item takes the line's name -- the name IS the
+--                     assignment.
+--   MANY spans inside the item CONTAINS takes. One marker per span, at the
+--                     SPAN's bounds, and the item is NOT renamed: an item
+--                     holding four lines cannot be named after one of them.
+--
+-- A span counts as "inside" when `floor` of the SPAN's own length is within
+-- the item, not `floor` of the item -- so a clip holding one take plus the
+-- tail of the previous one still reads as one take, which is what it is.
+--
+-- Naming is decided independently of marking, so a session already marked by
+-- an earlier run still gets named: that is what "adopt an existing session"
+-- was a separate button for.
+--
+-- `items`: { { key, from, to, spans = { { start, stop, asset, deliver,
+--              marked } } } } -- from/to are SOURCE times.
+-- Returns: plans { { key, kind, markers = { { start, stop, asset } }, name } },
+--          counts { one, many, none }
+function vo.PlanItemIdentity(items, opts)
+  opts = opts or {}
+  local floor_ = opts.floor or 0.35
+
+  local plans = {}
+  local counts = { one = 0, many = 0, none = 0 }
+
+  for _, it in ipairs(items or {}) do
+    local from, to = it.from, it.to
+    local inside = {}
+    if from and to and to > from then
+      for _, s in ipairs(it.spans or {}) do
+        local len = (s.stop or 0) - (s.start or 0)
+        if len > 0 then
+          local overlap = math.min(s.stop, to) - math.max(s.start, from)
+          if overlap > 0 and (overlap / len) >= floor_ then
+            inside[#inside + 1] = s
+          end
+        end
+      end
+    end
+
+    local plan = { key = it.key, markers = {} }
+    if #inside == 0 then
+      plan.kind = "none"
+      counts.none = counts.none + 1
+    elseif #inside == 1 then
+      -- The item IS this take: marker at the item's own edges.
+      local s = inside[1]
+      plan.kind = "one"
+      plan.name = s.deliver or s.asset
+      plan.span = s
+      if not s.marked then
+        plan.markers[1] = { start = from, stop = to, asset = s.asset }
+      end
+      counts.one = counts.one + 1
+    else
+      -- The item CONTAINS takes: marker per span, at the span's own bounds.
+      plan.kind = "many"
+      table.sort(inside, function(a, b) return (a.start or 0) < (b.start or 0) end)
+      for _, s in ipairs(inside) do
+        -- `replace` re-derives the edges of takes that ALREADY have a marker.
+        -- Normally an existing marker is left alone -- re-running has to be
+        -- safe -- but that also meant a change to the boundary settings could
+        -- never reach a session that had been identified once: every re-run
+        -- skipped every span and the markers never moved, whatever the
+        -- settings said. The caller keeps the existing marker's id, so this
+        -- moves edges without breaking the row's identity.
+        if (not s.marked) or opts.replace then
+          plan.markers[#plan.markers + 1] =
+            { start = s.start, stop = s.stop, asset = s.asset, span = s,
+              redo = s.marked and true or nil }
+        end
+      end
+      counts.many = counts.many + 1
+    end
+    plans[#plans + 1] = plan
+  end
+
+  return plans, counts
+end
+
+-- Which item gets which step of an update pass -- the routing behind Update
+-- from Item and Update from Marker (VO/SPEC-authority-buttons.md).
+--
+-- Both buttons ask the same question of every item in scope: how many take
+-- markers does it hold? The answer decides the step, and the two directions
+-- differ in exactly one row of the table -- what a marker-less item means.
+--
+--   2+ markers   a RECORDING, not a take. Refused by both: there is no one
+--                marker to pair the item with, and snapping or trimming to
+--                one of several would be a guess. Cut is what splits these.
+--   1 marker     the pair to act on -- snap the marker to the item ("item"),
+--                or trim the item to the marker ("marker").
+--   0 markers    "item": the item is the authority, so a missing marker is a
+--                marker that was never written or was deleted -- identify it
+--                (`identify`) when the matcher recognises the audio, report it
+--                (`unmatched`) when it does not. A weak match is not a reason
+--                to refuse; nobody asked about the score.
+--                "marker": there is no authority to update from (`nomarker`).
+--
+-- `identify` is a FIRST pass, not a verdict: the caller marks those items and
+-- then re-reads them, at which point they hold one marker and take the `act`
+-- path. That is why this returns keys rather than deciding their fate here --
+-- the chunk after the write is the only honest source for the second question.
+--
+-- items: { { key, marker_count, span_count } } -- span_count is the match or
+-- review spans inside the item, and is only consulted for dir "item".
+function vo.PlanUpdatePass(items, dir)
+  local from_item = (dir or "item") == "item"
+  local out = { identify = {}, act = {}, several = {},
+                unmatched = {}, nomarker = {} }
+  for _, it in ipairs(items or {}) do
+    local n, spans = it.marker_count or 0, it.span_count or 0
+    local bucket
+    if n > 1 then                bucket = out.several
+    elseif n == 1 then           bucket = out.act
+    elseif not from_item then    bucket = out.nomarker
+    elseif spans > 0 then        bucket = out.identify
+    else                         bucket = out.unmatched end
+    bucket[#bucket + 1] = it.key
+  end
+  return out
+end
+
+-- Which of `ranges` is the same take as `span`, by overlap.
+--
+-- "Is this take already marked?" cannot be asked by comparing start times. A
+-- marker is written at the CUT's edges -- speech bounds, padded, snapped -- and
+-- the span is the matcher's raw whisper bounds, so the two never share a start
+-- and an equality test answers "not marked" for every take that has one. What
+-- that cost: Identify minted a fresh marker for every span on every press while
+-- carrying the old ones over, so each run doubled the markers in the item.
+--
+-- Overlap is the honest question. Measured against the SHORTER of the two, so a
+-- marker padded well outside its span still reads as that span's marker, and a
+-- long recording's marker cannot claim a short take inside it.
+--
+-- ranges, span: { start, stop } in the same time base.
+-- Returns: index into `ranges`, or nil when nothing overlaps enough.
+function vo.BestOverlap(ranges, span, min_fraction)
+  if not span or not span.start or not span.stop then return nil end
+  local need = min_fraction or 0.5
+  local best, best_share
+  for i, m in ipairs(ranges or {}) do
+    local lo = math.max(m.start or 0, span.start)
+    local hi = math.min(m.stop or 0, span.stop)
+    local over = hi - lo
+    if over > 0 then
+      local shorter = math.min((m.stop or 0) - (m.start or 0), span.stop - span.start)
+      local share = (shorter > 0) and (over / shorter) or 0
+      if share >= need and (not best_share or share > best_share) then
+        best, best_share = i, share
+      end
+    end
+  end
+  return best, best_share
+end
+
+-- What a batch action acts on: the selection, whichever way it was made.
+--
+-- There are two selections in this tool and they used to be different ideas --
+-- the sheet's row selection, and REAPER's item selection -- with a checkbox
+-- ("Selected rows only") deciding whether the first one counted at all. Two
+-- selections and a toggle is three things to hold in mind before pressing
+-- anything, which is the opposite of feeling in control.
+--
+-- They are one idea, because `row.item` is the bridge. A row IS a take; an
+-- item CONTAINS takes. After Cut that is one take per item and the two
+-- selections name the same set. Before Cut one recording item holds every take
+-- in the session, so selecting it selects them all -- which is exactly what
+-- "cut this recording" should mean. The same rule reads correctly at both
+-- stages, so the UI never has to distinguish them.
+--
+-- Never silently widens. A selection that matches nothing in view returns an
+-- EMPTY scope rather than falling back to everything -- acting on 169 lines
+-- because the one you picked was filtered out is the worst possible answer --
+-- and NO selection returns an empty scope too.
+--
+-- That second rule replaced "no selection means everything". The old default
+-- was defensible on paper (the filters are the scoping tool) and wrong in the
+-- hand: the difference between a run over three takes and a run over the whole
+-- session was whether a click had landed, and the two look identical until
+-- after the press. A verb with nothing to act on is a no-op you can see
+-- coming; a verb quietly acting on everything is not. The caller shows the
+-- empty scope and disables the button rather than letting a press be a
+-- surprise.
+--
+-- `rows` is the pool a selection picks FROM (what the filters are showing).
+-- Returns: rows in scope, picked (whether any selection exists at all).
+-- picked == false always means #rows == 0; the two together let the caller
+-- tell "nothing selected" from "selection is hidden by the filters".
+function vo.ResolveScope(rows, selected_uids, selected_items)
+  local picked = (selected_uids and next(selected_uids) ~= nil)
+              or (selected_items and next(selected_items) ~= nil)
+  if not picked then return {}, false end
+
+  local out = {}
+  for _, row in ipairs(rows or {}) do
+    if (row.uid ~= nil and selected_uids and selected_uids[row.uid])
+       or (row.item ~= nil and selected_items and selected_items[row.item]) then
+      out[#out + 1] = row
+    end
+  end
+  return out, true
+end
+
+-- One take of a line is the Select; the line key is what "one line" means.
+-- By SCRIPT ROW, never by filename: two CSV rows may share a filename (the
+-- Append column separates them), and keying by name would fuse them. This
+-- is the same rule the sheet's SetSelect exclusivity uses -- one function,
+-- so the two cannot drift.
+function vo.LineKey(row)
+  return row.script_row or ("asset:" .. tostring(row.asset))
+end
+
+-- Lines carrying more than one Sel. Not an error state to be prevented --
+-- track placement legitimately creates it (EffectiveMarks rule 2: two items
+-- of a line dragged onto Selects both read as Sel) -- but a decision the
+-- user still has to make, so Tidy counts them and the card badges them.
+-- Orphans are skipped: they are not lines, and their asset keys collide.
+function vo.SelectConflicts(rows)
+  local by_key, order = {}, {}
+  for _, row in ipairs(rows or {}) do
+    if row.user_select and row.status ~= "orphan" then
+      local key = vo.LineKey(row)
+      local got = by_key[key]
+      if not got then
+        got = { key = key, label = row.deliver or row.asset or "(unnamed)", count = 0 }
+        by_key[key] = got
+        order[#order + 1] = got
+      end
+      got.count = got.count + 1
+    end
+  end
+  local out = {}
+  for _, c in ipairs(order) do
+    if c.count >= 2 then out[#out + 1] = c end
+  end
+  return out
 end
 
 --------------------------------
@@ -1439,6 +2109,54 @@ end
 --
 -- `per_item` is an array of { coverage = {from,to}, markers = ParseTKMChunk
 -- result }; item_index in the output indexes back into it.
+-- How much two markers must share before they are one take rather than two.
+--
+-- A fraction of the SHORTER marker, so a long marker cannot swallow a short
+-- one by merely containing its start. ONE number, read by both places that ask
+-- the question -- vo.CountingMarkers' dedupe and vo.ClusterMarkerRanges --
+-- because they were answering it differently and that disagreement is what let
+-- a take vanish from the sheet while Remove Extra Take Markers saw nothing
+-- wrong.
+vo.marker_same_take = 0.80
+
+-- How much of a marker, or of an item, the two must share before the marker is
+-- one the item HOLDS rather than one it merely touches.
+vo.marker_in_item = 0.50
+
+-- Is this marker in this item, or is it just brushing it?
+--
+-- "Any overlap at all" was the rule, and it made a clip read as a recording
+-- because the previous take's marker ended a fifth of a second inside it --
+-- a marker you cannot even see on the clip, since almost none of it is there.
+-- Every verb needing "the one marker here" then refused the clip.
+--
+-- EITHER side satisfies it, and that is the whole design:
+--
+--   half of the MARKER is inside     the ordinary case. A take's own marker
+--                                    sits almost entirely within its clip.
+--   half of the ITEM is covered      the hard-trimmed case. Trim a clip to one
+--                                    second inside a five-second marker and
+--                                    only a fifth of the marker is inside --
+--                                    but the marker covers ALL of the clip, so
+--                                    it is unmistakably that clip's marker.
+--
+-- Requiring both would lose the second case, which is exactly the case Update
+-- from Item exists for. Requiring neither is where this started.
+--
+-- `mk` is { start, stop } in source time, `cov` is { from, to } -- the item's
+-- source window, as vo.SourceCoverageRanges returns it.
+function vo.MarkerInItem(mk, cov, fraction)
+  fraction = fraction or vo.marker_in_item
+  if not (mk and cov) then return false end
+  local m_from, m_to = mk.start or 0, mk.stop or 0
+  local i_from, i_to = cov.from or 0, cov.to or 0
+  local m_len, i_len = m_to - m_from, i_to - i_from
+  if m_len <= 0 or i_len <= 0 then return false end
+  local overlap = math.min(m_to, i_to) - math.max(m_from, i_from)
+  if overlap <= 0 then return false end
+  return overlap >= m_len * fraction or overlap >= i_len * fraction
+end
+
 function vo.CountingMarkers(per_item)
   local best = {}
   for idx, rec in ipairs(per_item or {}) do
@@ -1469,7 +2187,218 @@ function vo.CountingMarkers(per_item)
     if a.start ~= b.start then return a.start < b.start end
     return tostring(a.id) < tostring(b.id)
   end)
+
+  -- Two markers for one take: same line, overlapping audio, different ids.
+  --
+  -- Deduped on OVERLAP, never on the name alone -- two takes of one line share
+  -- an asset and are two different performances, which is the whole point of
+  -- this tool. But one line cannot be performed twice in the same instant, so
+  -- same asset AND overlapping in time is one take wearing two markers.
+  --
+  -- Overlap means MOST of the shorter marker -- `vo.marker_same_take` of it,
+  -- the same fraction PlanDuplicateMarkers clusters on, because it is the same
+  -- question asked in the same place: are these two markers on one take?
+  --
+  -- It was "more than a millisecond", and a millisecond is not a rule, it is a
+  -- float-noise guard that got asked to do a rule's job. Two things overlap by
+  -- more than a millisecond:
+  --
+  --   a genuine double  two ids minted for ONE take. They sit on the same
+  --                     audio, near enough all of it -- 80% is not a close
+  --                     call, it is the floor of a landslide.
+  --   bleeding edges    two ADJACENT takes of one line, where the earlier
+  --                     take's marker has been snapped to its own item and
+  --                     that item has generous tail room. Observed live:
+  --                     0.85s of overlap on markers 4.9s and 5.3s long -- 17%
+  --                     of the shorter, and unmistakably two performances.
+  --
+  -- The millisecond rule called the second one a double and dropped the later
+  -- id, so the take vanished from the sheet AND -- since PlanMarkerPrune keeps
+  -- only what survives this function -- Update from Item deleted the marker
+  -- off the clip the user had just trimmed. Generous boundaries guarantee
+  -- adjacent takes overlap; that is the design, so the rule has to survive it.
+  --
+  -- The float-noise case is still covered, and by more margin than before: two
+  -- takes cut back to back share an instant, which is 0% of either.
+  --
+  -- The earliest id wins so the answer is stable between runs, and stability
+  -- is what matters here: the marks are keyed `tkm|<id>`, so a survivor that
+  -- changed run to run would move the user's Sel and Keep around under them.
+  local kept = {}
+  for _, rec in ipairs(out) do
+    local dup = nil
+    for _, k in ipairs(kept) do
+      if k.asset == rec.asset then
+        local overlap = math.min(k.stop, rec.stop) - math.max(k.start, rec.start)
+        local shorter = math.min(k.stop - k.start, rec.stop - rec.start)
+        if shorter > 0 and overlap >= shorter * vo.marker_same_take then
+          dup = k
+          break
+        end
+      end
+    end
+    if not dup then
+      kept[#kept + 1] = rec
+    elseif tostring(rec.id) < tostring(dup.id) then
+      dup.id, dup.start, dup.stop, dup.item_index =
+        rec.id, rec.start, rec.stop, rec.item_index
+    end
+  end
+  return kept
+end
+
+-- What was said inside a marker's range, and how well it matched.
+--
+-- Markers are the truth about WHICH takes exist -- that is the whole point of
+-- them -- but they are only positions and a name, so a row built from a marker
+-- knew nothing about the words. After a Cut, which is when markers take over,
+-- the transcript column emptied across the whole sheet: the one column that
+-- tells you what a take actually says, gone at exactly the moment there are
+-- takes to read.
+--
+-- The match still knows. The TEXT is the words whose anchors fall inside the
+-- range (vo.WordsInRange); the SCORE comes from the single matched span that
+-- overlaps most, since a score is a fact about one placement and averaging
+-- two would mean nothing.
+--
+-- `flat` is the flattened { span, source_path } list BuildOverview already
+-- builds. `words` is this source's word list; a caller without one gets nil,
+-- and the row shows empty. There used to be a fallback that concatenated
+-- every overlapping span's WHOLE transcript -- which is how a marker holding
+-- part of a span read as all of it, the original §1 bug of
+-- SPEC-range-transcript.md. Empty is honest; a neighbour's words are not.
+-- Returns: text, score, in_sequence -- all nil when nothing overlaps.
+-- The words a range holds, by ANCHOR: `w.anchor or w.t0` inside [from, to).
+--
+-- The anchor is the word's DTW timestamp -- one point that sits ON the word
+-- (SPEC-word-anchors.md). It exists because no rule over t0/t1 can be right:
+-- with `-ml 1` whisper's segments are a contiguous PARTITION of the timeline,
+-- so t0 is really where the previous word stopped and t1 is where the next
+-- one starts, and a word after a long pause can sit past its own window's end
+-- entirely. A midpoint rule shipped and failed on "guards." (word at the
+-- window's start, 85.99-90.36 for a sub-second word); an onset rule shipped
+-- and failed on "you" (word at the window's end, stamped 428.16-428.92 for a
+-- word audible at 428.59). Opposite directions, same disease: the window is
+-- displaced, not imprecise.
+--
+-- t0 is the fallback for a word with no anchor -- a model without a DTW
+-- preset, or a token whisper never anchored -- and degrades to the old onset
+-- behaviour, never worse. Anchors are sharp: membership is exact, with no
+-- tolerance, because measured on 289 real cuts every widening of the range
+-- only stole neighbours' words.
+--
+-- Half-open on purpose. A word anchored exactly at `to` belongs to the next
+-- range, so two markers meeting at a boundary cannot both claim it.
+--
+-- Shared by the sheet's transcript and by the duplicate-marker planner, which
+-- must judge on exactly the words the sheet shows -- two rules here would mean
+-- a marker deleted on evidence the user was never shown.
+function vo.WordsInRange(words, from, to)
+  local out = {}
+  if not (from and to and to > from) then return out end
+  for _, w in ipairs(words or {}) do
+    if w.t0 and w.text and w.text ~= "" then
+      local at = w.anchor or w.t0
+      if at >= from and at < to then out[#out + 1] = w end
+    end
+  end
   return out
+end
+
+function vo.TranscriptForRange(flat, path, from, to, words)
+  if not (path and from and to and to > from) then return nil end
+  local hits, best, best_overlap = {}, nil, 0
+  for _, rec in ipairs(flat or {}) do
+    local s = rec.span
+    if rec.source_path == path and s and s.start and s.stop then
+      local overlap = math.min(s.stop, to) - math.max(s.start, from)
+      if overlap > 0 then
+        hits[#hits + 1] = s
+        if (s.kind == "match" or s.kind == "review") and overlap > best_overlap then
+          best, best_overlap = s, overlap
+        end
+      end
+    end
+  end
+  if #hits == 0 then return nil end
+
+  -- Which words is vo.WordsInRange's rule -- the ANCHOR; see the reasoning
+  -- there. A range the words say is empty reads as empty, not as its
+  -- neighbours': the retired span fallback showed whole overlapping spans and
+  -- was confidently wrong every time a marker held part of one.
+  local text = {}
+  for _, w in ipairs(vo.WordsInRange(words, from, to)) do text[#text + 1] = w.text end
+  if #text == 0 then return nil end
+  return table.concat(text, " "), best and best.score or nil,
+         best and best.in_sequence or nil
+end
+
+-- Every take-marker boundary that contradicts the words (SPEC-anchor-
+-- boundaries.md §4). Read-only: flags name the marker and the words so the
+-- user -- or a re-snap verb -- acts on them; nothing here moves anything.
+--
+-- The Chain/Even failure this exists for: a marker edge cut at whisper's old
+-- partition edge leaves the take's own last word ANCHORED on the far side.
+-- The sheet already shows that word amber in the NEIGHBOUR'S row; this walks
+-- every marker and reports both sides of the tear in one list -- the missing
+-- word from the row that lost it, the extra from the row that gained it.
+--
+-- Alignment is vo.ExtraWords in both directions, so a reader stumble flags
+-- only the doubled word, and substitutions apply the same way they do on the
+-- sheet. One rule everywhere, or a flag accuses a marker on evidence the
+-- sheet never showed.
+--
+-- markers: flat array of { id, asset, start, stop, source_path }.
+-- lines:   script lines; the first whose asset matches names the text, the
+--          same first-wins rule BuildOverview groups by.
+-- words_by_source: path -> word list. subs: normalized token -> replacement.
+-- Returns: array of { marker_id, asset, kind, words, start, stop,
+--          source_path } in marker order; kind is one of "extra", "missing",
+--          "empty", "no-line". A clean marker contributes nothing.
+function vo.CheckMarkerWords(markers, lines, words_by_source, subs)
+  local text_of = {}
+  for _, l in ipairs(lines or {}) do
+    if l.asset and text_of[l.asset] == nil then text_of[l.asset] = l.text end
+  end
+
+  local flags = {}
+  local function flag(m, kind, words)
+    flags[#flags + 1] = { marker_id = m.id, asset = m.asset, kind = kind,
+                          words = words, start = m.start, stop = m.stop,
+                          source_path = m.source_path }
+  end
+
+  local function extras_of(runs)
+    local out = {}
+    for _, run in ipairs(runs) do
+      if run.extra then out[#out + 1] = run.text end
+    end
+    return table.concat(out, " ")
+  end
+
+  for _, m in ipairs(markers or {}) do
+    local line_text = text_of[m.asset]
+    local words = words_by_source and words_by_source[m.source_path]
+    local got = {}
+    for _, w in ipairs(vo.WordsInRange(words, m.start, m.stop)) do
+      got[#got + 1] = w.text
+    end
+    local got_text = table.concat(got, " ")
+
+    if not line_text then
+      flag(m, "no-line", got_text)
+    elseif #got == 0 then
+      flag(m, "empty", "")
+    else
+      local extra = extras_of(vo.ExtraWords(line_text, got_text, subs))
+      if extra ~= "" then flag(m, "extra", extra) end
+      -- The mirror: the LINE read against the TAKE, so a line word the range
+      -- does not hold surfaces as that side's "extra".
+      local missing = extras_of(vo.ExtraWords(got_text, line_text, subs))
+      if missing ~= "" then flag(m, "missing", missing) end
+    end
+  end
+  return flags
 end
 
 -- The best-effort answer to "which line is this item?": the match span whose
@@ -1494,20 +2423,27 @@ function vo.BestSpanForItem(coverage, spans)
   return best, best_frac
 end
 
--- The take map travels with the AUDIO: every item of a source carries the
--- source's take markers that fall within `reach` seconds of its own window,
--- so widening an item reveals the neighbouring takes instead of unlabelled
--- waveform. The canonical set is what CountingMarkers already says -- the
--- copy the user can see and drag is the truth, and every other copy is a
--- mirror refreshed from it. reach = 0 keeps only each item's own takes,
--- which is exactly the old "clean stray markers".
+-- An item carries the take markers its own window covers, and nothing else.
+--
+-- This used to mirror the source's takes within `reach` seconds of each item's
+-- window, so widening an item revealed its neighbours as labelled ranges. The
+-- idea was sound and the cost was not: markers live in the item's state CHUNK,
+-- which the tool re-reads whenever the project changes, so every mirrored copy
+-- is paid for on every rescan forever. On a 451-clip session at the 30s default
+-- that was ~10,000 marker lines to read and discard; REAPER's split, which
+-- copies the whole set into both halves, had already pushed it to 184,459.
+--
+-- So: one take, one marker, in the clip that IS that take. Widening an item
+-- shows bare waveform again -- the neighbours are still in the sheet, which is
+-- where the session is read. A setting was removed rather than defaulted to 0,
+-- because a knob whose other positions are all slower is not a choice.
 --
 -- `group` is CollectTakeMarkers' per-path shape ({ coverage, markers, info }).
 -- Returns rewrites { { item_index, markers } } -- only the items whose tool
--- markers differ from the mirror -- and the canonical marker count. User
--- markers are untouched (vo.WriteTakeMarkers preserves them).
-function vo.PlanMarkerMirror(group, reach)
-  reach = reach or 0
+-- markers differ from what they should hold -- and the canonical marker count.
+-- User markers are untouched (vo.WriteTakeMarkers preserves them).
+function vo.PlanMarkerMirror(group)
+  local reach = 0
   local canonical = vo.CountingMarkers(group)
   local rewrites = {}
   for idx, rec in ipairs(group or {}) do
@@ -1550,6 +2486,244 @@ function vo.PlanMarkerMirror(group, reach)
     end
   end
   return rewrites, #canonical
+end
+
+-- The same idea as vo.PlanMarkerMirror, minus the mirroring: an item keeps the
+-- markers it OWNS and loses the rest. It can never gain one.
+--
+-- The difference matters, and cost a real session to learn. PlanMarkerMirror
+-- gives an item every canonical marker that INTERSECTS its window, which is
+-- not the same as every marker that belongs to it. A take marker written from
+-- the transcript before the clip was trimmed can start inside one item and run
+-- well into the next -- and the mirror pass then hands a copy to BOTH. The
+-- clip that had one marker now has two, so every verb needing "the one marker
+-- in this item" -- Trim, Snap -- refuses it as a recording. Pressing tidy made
+-- the session less tidy.
+--
+-- Ownership is vo.CountingMarkers' answer, which is already the rule the rest
+-- of the tool reads by: per marker id, the single item covering most of its
+-- range. Everything else on an item is a leftover, whether REAPER's split
+-- copied it there or an earlier mirror pass did.
+--
+-- Same shape as PlanMarkerMirror: `group` is CollectTakeMarkers' per-path
+-- form, and it returns rewrites { { item_index, markers } } for the items that
+-- differ, plus the canonical marker count. User markers are untouched.
+function vo.PlanMarkerPrune(group)
+  local canonical = vo.CountingMarkers(group)
+  local owner = {}
+  for _, c in ipairs(canonical) do owner[c.id] = c end
+
+  local rewrites = {}
+  for idx, rec in ipairs(group or {}) do
+    local want, have_n, seen = {}, 0, {}
+    for _, m in ipairs(rec.markers or {}) do
+      local _, id = vo.ParseMarkerName(m.name)
+      if id then
+        have_n = have_n + 1
+        local c = owner[id]
+        -- `seen` collapses an id duplicated INSIDE one item, which is split
+        -- residue by definition; have_n still counts both, so the mismatch
+        -- below forces the rewrite that drops the copy.
+        if c and c.item_index == idx and not seen[id] then
+          seen[id] = true
+          want[#want + 1] = { start = c.start, stop = c.stop,
+                              asset = c.asset, id = c.id }
+        end
+      end
+    end
+    if have_n ~= #want then
+      rewrites[#rewrites + 1] = { item_index = idx, markers = want }
+    end
+  end
+  return rewrites, #canonical
+end
+
+-- Add ONE marker to an item without losing the ones already there.
+--
+-- vo.WriteTakeMarkers replaces the tool's whole set, so every caller adding a
+-- single marker has to hand it the existing ones too. Forgetting that does not
+-- fail loudly: it silently wipes every other take in the item, which on an
+-- uncut recording is the entire session's identification.
+--
+-- `existing` is vo.ParseTKMChunk's shape ({ pos, name, length }); user markers
+-- (no ` ~id` suffix) are dropped from the result because WriteTakeMarkers
+-- preserves those itself, and returning them here would write them twice.
+--
+-- Returns the list to write, plus whether the marker was actually added. It is
+-- NOT added when this line is already marked over the same audio -- an overlap
+-- covering more than half the new range, the same rule vo.UnidentifiedSpans
+-- uses for "this span is claimed". Marking the same take twice is a duplicate
+-- row and a duplicate cut, and pressing a button twice must not cause either.
+function vo.PlanMarkerAdd(existing, add)
+  local list = {}
+  local claimed = false
+  local span = (add.stop or add.start) - add.start
+  for _, m in ipairs(existing or {}) do
+    local asset, id = vo.ParseMarkerName(m.name)
+    if id then
+      local start, stop = m.pos, m.pos + (m.length or 0)
+      list[#list + 1] = { start = start, stop = stop, asset = asset, id = id }
+      if asset == add.asset and span > 0 then
+        local over = math.min(stop, add.stop) - math.max(start, add.start)
+        if over > span / 2 then claimed = true end
+      end
+    end
+  end
+  if claimed then return list, false end
+  list[#list + 1] = { start = add.start, stop = add.stop,
+                      asset = add.asset, id = add.id }
+  return list, true
+end
+
+-- Markers that are arguing over the SAME stretch of audio, grouped.
+--
+-- The unit of work is the range, never the item. An uncut recording
+-- legitimately holds one counting marker per take, so a rule of the form
+-- "several markers on one item, keep the best" would destroy such a session on
+-- its first press. Two markers belong together only when they overlap by
+-- `fraction` of the SHORTER of the two -- fighting over the same audio, not
+-- merely adjacent.
+--
+-- Grouping is transitive within a source (A-B and B-C puts all three in one
+-- cluster: it is one argument about one stretch), and markers on different
+-- sources never cluster, whatever their timestamps say.
+--
+-- Returns an array of arrays. A cluster of one is every normal take, and is
+-- returned as such rather than dropped, so callers can count what they saw.
+function vo.ClusterMarkerRanges(markers, fraction)
+  fraction = fraction or vo.marker_same_take
+  local list = {}
+  for _, m in ipairs(markers or {}) do
+    if m.start and m.stop and m.stop > m.start then list[#list + 1] = m end
+  end
+
+  -- Union-find over the pairs that overlap enough, which is what makes the
+  -- grouping transitive without an ordering assumption.
+  local parent = {}
+  for i = 1, #list do parent[i] = i end
+  local function root(i)
+    while parent[i] ~= i do parent[i] = parent[parent[i]]; i = parent[i] end
+    return i
+  end
+
+  for i = 1, #list do
+    for j = i + 1, #list do
+      local a, b = list[i], list[j]
+      if a.source_path == b.source_path then
+        local overlap = math.min(a.stop, b.stop) - math.max(a.start, b.start)
+        local shorter = math.min(a.stop - a.start, b.stop - b.start)
+        if shorter > 0 and overlap / shorter >= fraction - 1e-9 then
+          local ra, rb = root(i), root(j)
+          if ra ~= rb then parent[rb] = ra end
+        end
+      end
+    end
+  end
+
+  local by_root, order = {}, {}
+  for i = 1, #list do
+    local rt = root(i)
+    if not by_root[rt] then by_root[rt] = {}; order[#order + 1] = rt end
+    table.insert(by_root[rt], list[i])
+  end
+  local out = {}
+  for _, rt in ipairs(order) do out[#out + 1] = by_root[rt] end
+  return out
+end
+
+-- Which of several markers competing for one stretch of audio is the real one.
+--
+-- The words decide. Each marker's own script line is scored against the words
+-- inside that marker's own range -- the same normalise/tokenise/Levenshtein
+-- measure vo.FindSpanLines uses -- and the best keeps its marker while the
+-- rest are planned for deletion.
+--
+-- It refuses far more readily than it acts, and every refusal is per cluster
+-- rather than per press: a session with four clear duplicates and one
+-- ambiguous cluster cleans the four and reports the fifth. A verb that
+-- silently deleted the wrong take marker on a bad transcript is one nobody
+-- would press twice.
+--
+-- input: { markers, lines, words = { [source_path] = word list }, cfg, opts }
+-- opts:  { fraction = 0.80, floor = 0.50, gap = 0.20 }
+-- Returns { deletes, kept, skipped } -- see VO/SPEC-duplicate-markers.md.
+function vo.PlanDuplicateMarkers(input)
+  input = input or {}
+  local opts     = input.opts or {}
+  local fraction = opts.fraction or 0.80
+  local floor_   = opts.floor    or 0.50
+  local gap      = opts.gap      or 0.20
+  local cfg      = input.cfg
+  local words    = input.words or {}
+
+  -- First line wins an asset, matching every other lookup in this file.
+  local text_for = {}
+  for _, l in ipairs(input.lines or {}) do
+    if l.asset and text_for[l.asset] == nil then text_for[l.asset] = l.text or "" end
+  end
+
+  local plan = { deletes = {}, kept = {}, skipped = {} }
+
+  for _, cluster in ipairs(vo.ClusterMarkerRanges(input.markers, fraction)) do
+    if #cluster > 1 then
+      local scored, any_words = {}, false
+      for _, m in ipairs(cluster) do
+        local heard = vo.WordsInRange(words[m.source_path], m.start, m.stop)
+        local text = {}
+        for _, w in ipairs(heard) do text[#text + 1] = w.text end
+        local window = vo.Tokenize(vo.Normalize(table.concat(text, " "), cfg and cfg.substitutions))
+        if #window > 0 then any_words = true end
+        -- An asset naming no script line scores 0: it cannot win, and it loses
+        -- to any real match. Two of them together therefore fail the floor and
+        -- are reported rather than guessed between.
+        local toks = vo.Tokenize(vo.Normalize(text_for[m.asset] or "", cfg and cfg.substitutions))
+        local score = 0
+        if #toks > 0 and #window > 0 then
+          score = 1 - vo.Levenshtein(toks, window) / math.max(#toks, #window)
+        end
+        scored[#scored + 1] = { marker = m, score = score }
+      end
+
+      table.sort(scored, function(a, b)
+        if a.score ~= b.score then return a.score > b.score end
+        return tostring(a.marker.id) < tostring(b.marker.id)
+      end)
+
+      local why
+      if not any_words then
+        why = "no words"
+      elseif scored[1].score < floor_ then
+        why = "no clear match"
+      elseif scored[1].score - scored[2].score < gap then
+        why = "too close to call"
+      end
+
+      if why then
+        local named = {}
+        for _, s in ipairs(scored) do
+          named[#named + 1] = { id = s.marker.id, asset = s.marker.asset,
+                                score = s.score }
+        end
+        plan.skipped[#plan.skipped + 1] = { why = why, markers = named }
+      else
+        local win = scored[1]
+        plan.kept[#plan.kept + 1] = {
+          id = win.marker.id, asset = win.marker.asset, score = win.score,
+          source_path = win.marker.source_path, item_index = win.marker.item_index,
+        }
+        for k = 2, #scored do
+          local s = scored[k]
+          plan.deletes[#plan.deletes + 1] = {
+            id = s.marker.id, asset = s.marker.asset, score = s.score,
+            source_path = s.marker.source_path, item_index = s.marker.item_index,
+            lost_to = win.marker.asset, lost_to_score = win.score,
+          }
+        end
+      end
+    end
+  end
+
+  return plan
 end
 
 -- What the sheet and the timeline disagree about, and what is simply broken.
@@ -1728,8 +2902,9 @@ vo.DEFAULTS = {
   order_weight         = 0.15,  -- score moved by reading in, or out of, order
   backbone_min_tokens  = 4,     -- shortest line trusted to establish the order
 
-  pre_pad          = 0.150, -- seconds of head room before the first aligned word
-  post_pad         = 0.250, -- seconds of tail after the last aligned word
+  -- Ceilings on the room below, and the FIXED pad when snapping is off.
+  pre_pad          = 0.300, -- seconds of head room before the first aligned word
+  post_pad         = 0.600, -- seconds of tail after the last aligned word
 
   -- Boundary snapping. With it on, pre_pad/post_pad above become the MAXIMUM
   -- reach of the search rather than a fixed amount; the search itself is also
@@ -1751,6 +2926,17 @@ vo.DEFAULTS = {
   -- every session, so it waits for a verification method that can tell a
   -- clipped syllable from a recogniser having a bad day.
   chained_boundary_reach = 0,
+  -- The gate, in the same terms REAPER's Dynamic Split uses: one dBFS number,
+  -- above which is speech and below which is silence.
+  --
+  -- Two ways to arrive at it. AUTO measures the room in this recording's own
+  -- pauses and puts the gate `snap_floor_offset` dB above it -- right by
+  -- default on any recording, since a fixed -60 is too low for a noisy room and
+  -- too high for a clean one. Turning Auto off types the number in directly,
+  -- which is what you want when you can see the waveform and know where the
+  -- room tone sits.
+  snap_gate_auto    = true,
+  snap_gate_db      = -60.0, -- dBFS gate used when Auto is off
   snap_floor_offset = 6.0,   -- dB above the measured noise floor
   snap_floor_window = 0.500, -- seconds of the quietest gap used to measure it
   -- Which gap sets the floor, as a fraction of the gaps sorted quietest-first.
@@ -1763,8 +2949,28 @@ vo.DEFAULTS = {
   -- neighbouring word and by pre/post_pad. Placing the edge wherever the
   -- probe first crossed the floor gave 0ms on clean silence and the full pad
   -- on uneven room tone: 0-1760ms of head room across one session.
-  snap_head_room = 0.060, -- seconds of room before the measured speech onset
-  snap_tail_room = 0.150, -- seconds of room after the measured speech end
+  -- Generous on purpose. Whisper does not transcribe a mumbled word, a trailing
+  -- inarticulate sound or a breath welded to the end of a read, so the measured
+  -- speech bounds land INSIDE the real take and a minimal room cuts the take's
+  -- own ending off. The two errors are not symmetric: a long clip is trimmed
+  -- with the waveform in front of you, while a clip missing its ending gives no
+  -- sign of what was lost or how much, so fixing it means going back to the
+  -- source. Err long. The neighbouring-word fence in vo.ApplyPadding is what
+  -- makes that safe -- no amount of room can reach another line's audio -- so
+  -- being generous costs room tone, and Auto-adjust is the deliberate second
+  -- pass that takes it back.
+  --
+  -- The tail gets more than the head because that is where the untranscribed
+  -- sound lives: reads trail off, they do not trail on.
+  snap_head_room = 0.120, -- seconds of room before the measured speech onset
+  snap_tail_room = 0.400, -- seconds of room after the measured speech end
+
+  -- The unheard-audio scan: sound the transcript never heard. A burst has to
+  -- be at least a read's worth of sound to count -- shorter is a click, a
+  -- chair, a breath -- and a dip shorter than the join is the inside of a
+  -- read (a stop consonant, a caught breath), not a boundary between two.
+  unheard_min_length = 0.30, -- seconds of sound before a burst counts as a read
+  unheard_join       = 0.25, -- dips shorter than this stay one burst
 
   -- Every cut clip gets a short protective fade: shorter in, longer out,
   -- both well inside the head/tail room so they live in silence.
@@ -1805,11 +3011,6 @@ vo.DEFAULTS = {
   gap_repair_min_speech = 0.75, -- seconds of above-floor audio to confirm it
   gap_repair_pad        = 0.35, -- seconds of margin around the found speech
 
-  -- How far beyond an item's own window the source's take markers are
-  -- mirrored into it (Sync take markers), so widening an item reveals the
-  -- neighbouring takes. 0 keeps only each item's own takes -- the old
-  -- "clean stray markers" behaviour.
-  marker_mirror_reach = 30.0,
 
   -- The floor under "which line is this item?" for Mark selected item(s):
   -- the best match span must have at least this fraction of itself inside
@@ -1893,7 +3094,7 @@ end
 -- carries the source word's timing so token indices stay mappable to time.
 -- Returns: array of { text, t0, t1, word = source word index }
 function vo.BuildWordTokens(words, cfg)
-  local subs = cfg and cfg.substitutions
+  local subs = cfg and cfg.substitutionstitutions
   local out = {}
   for i, w in ipairs(words or {}) do
     for token in vo.Normalize(w.text, subs):gmatch("%S+") do
@@ -1909,7 +3110,7 @@ end
 -- Returns: { n, tokens = {[line] = {token…}}, idf, postings, anchors }
 function vo.BuildIndex(lines, cfg)
   local anchor_count = vo.Opt(cfg, "anchor_count")
-  local subs = cfg and cfg.substitutions
+  local subs = cfg and cfg.substitutionstitutions
   local n = #lines
 
   local index = { n = n, tokens = {}, idf = {}, postings = {}, anchors = {} }
@@ -2103,6 +3304,25 @@ function vo.FindCandidates(word_tokens, lines, index, cfg)
   return candidates
 end
 
+-- How much of a candidate is agreement, measured in tokens rather than as a
+-- fraction.
+--
+-- Score is a RATE, and greedy selection needs a QUANTITY. A four-token line
+-- matched perfectly scores 1.0; a nine-token line with one word fused by the
+-- recognizer scores 0.89. Ranked on score the short line goes first and takes
+-- the words out of the middle of the long one -- but 1.0 of four tokens is four
+-- tokens of agreement and 0.89 of nine is eight, and eight tokens landing in a
+-- row is the thing that cannot be an accident. Length was only ever consulted to
+-- break an exact tie, which almost never happens between windows of different
+-- widths.
+--
+-- Uses `effective` where it exists, so a candidate that contradicts the read
+-- carries its order penalty into the comparison instead of around it.
+function vo.Agreement(c)
+  if not (c and c.i0 and c.i1) then return 0 end
+  return (c.effective or c.score or 0) * (c.i1 - c.i0 + 1)
+end
+
 -- The spine of the read: the matches that cannot be coincidences, in the order
 -- they were spoken.
 --
@@ -2133,10 +3353,13 @@ function vo.BuildBackbone(candidates, cfg)
       pool[#pool + 1] = c
     end
   end
+  -- Ranked by tokens of agreement, not by score: the pool has already been gated
+  -- on score and margin, so what is left to decide between two overlapping
+  -- windows is which one is more evidence, and that is a count (vo.Agreement).
   table.sort(pool, function(a, b)
+    local aa, ab = vo.Agreement(a), vo.Agreement(b)
+    if aa ~= ab then return aa > ab end
     if a.score ~= b.score then return a.score > b.score end
-    local la, lb = a.i1 - a.i0, b.i1 - b.i0
-    if la ~= lb then return la > lb end
     return a.i0 < b.i0
   end)
 
@@ -2265,13 +3488,14 @@ function vo.SelectSpans(candidates, cfg, backbone, pinned)
 
   table.sort(ordered, function(a, b)
     if a.tier ~= b.tier then return a.tier < b.tier end
+    -- Within a tier, by tokens of agreement: a twelve-word match and a one-word
+    -- match are not equal evidence, and waiting for their scores to tie exactly
+    -- before saying so leaves the short one winning almost every time.
+    local aa, ab = vo.Agreement(a), vo.Agreement(b)
+    if aa ~= ab then return aa > ab end
     if a.effective ~= b.effective then return a.effective > b.effective end
     local ma, mb = a.margin or 1.0, b.margin or 1.0
     if ma ~= mb then return ma > mb end
-    -- A twelve-word match and a one-word match scoring the same are not equal
-    -- evidence: only one of them could be an accident.
-    local la, lb = a.i1 - a.i0, b.i1 - b.i0
-    if la ~= lb then return la > lb end
     return a.i0 < b.i0
   end)
 
@@ -2443,6 +3667,54 @@ function vo.PinnedSpans(word_tokens, pins, lines)
 
   table.sort(spans, function(a, b) return a.i0 < b.i0 end)
   return spans, unresolved
+end
+
+-- The matcher, backwards: which script lines could THESE words be, best first.
+--
+-- vo.FindLineCandidates answers "where did this line go?"; this answers "what is
+-- this?", which is the question a span nothing claimed actually poses. The list
+-- of orphans reads as a pile of unknown audio precisely because the tool could
+-- only ever ask the first question, one line at a time, and a person looking at
+-- an orphan does not yet know which line to ask about.
+--
+-- No index and no anchors: the window is fixed, so every line is simply scored
+-- against it. That is the same Levenshtein the matcher uses, and at a few hundred
+-- lines against ten tokens it costs nothing -- the index exists to find WINDOWS,
+-- and here the window is already known.
+--
+-- Deliberately looser than the batch pass by default. A person looking at one
+-- span can accept weaker evidence than a sweep over sixteen hundred words should:
+-- the risk that makes the global threshold conservative is a wrong name written
+-- silently across the session, and it does not apply to one deliberate act.
+--
+-- Decides nothing and stores nothing.
+-- Returns: { { line_idx, score, asset, deliver, text, speaker }, ... }
+function vo.FindSpanLines(lines, text, cfg, opts)
+  opts = opts or {}
+  local floor_ = opts.floor or 0.25
+  local limit  = opts.limit or 12
+  local window = vo.Tokenize(vo.Normalize(text or "", cfg and cfg.substitutions))
+  if #window == 0 or not lines then return {} end
+
+  local out = {}
+  for idx, line in ipairs(lines) do
+    local toks = vo.Tokenize(vo.Normalize(line.text or "", cfg and cfg.substitutions))
+    if #toks > 0 then
+      local score = 1 - vo.Levenshtein(toks, window) / math.max(#toks, #window)
+      if score >= floor_ then
+        out[#out + 1] = { line_idx = idx, score = score, asset = line.asset,
+                          deliver = line.deliver or line.asset,
+                          text = line.text, speaker = line.speaker }
+      end
+    end
+  end
+
+  table.sort(out, function(a, b)
+    if a.score ~= b.score then return a.score > b.score end
+    return a.line_idx < b.line_idx
+  end)
+  while #out > limit do table.remove(out) end
+  return out
 end
 
 -- Every distinct place one script line could sit in one transcript, best first.
@@ -2710,6 +3982,25 @@ function vo.MeasureNoiseFloor(gaps, probe, cfg)
   return levels[math.min(at, #levels)] + vo.Opt(cfg, "snap_floor_offset")
 end
 
+-- The gate this run will use, in dBFS: one number, whichever way it was reached.
+--
+-- Everything downstream -- speech bounds, the walk through a welded breath, the
+-- quiet test on a finished edge -- asks the same question, "is this above the
+-- gate", so there is exactly one number to understand. It is either typed in or
+-- measured from the room; `snap_gate_auto` decides which.
+--
+-- Returns nil only when Auto is on and nothing could be measured, which the
+-- caller must read as "snapping is unavailable" rather than as a gate of zero
+-- dBFS -- that would call every sample silent and snap every edge to its limit.
+function vo.ResolveGate(gaps, probe, cfg)
+  if not vo.Opt(cfg, "snap_gate_auto") then
+    return vo.Opt(cfg, "snap_gate_db"), "fixed"
+  end
+  local measured = vo.MeasureNoiseFloor(gaps, probe, cfg)
+  if not measured then return nil end
+  return measured, "measured"
+end
+
 -- The first and last moment inside [from, to] that is louder than the floor.
 --
 -- Whisper's word timestamps are contiguous by construction: a word's END is
@@ -2747,6 +4038,89 @@ function vo.FindSpeechBounds(from, to, floor_db, probe, cfg)
     n = n + 1
   end
   return first, last
+end
+
+-- Sound the transcript never heard: audible bursts in audio that nothing
+-- covers -- no counting marker, no transcribed word.
+--
+-- Every other queue starts from the transcript. UnidentifiedSpans lists reads
+-- the matcher scored that no marker claims; orphans list reads that matched no
+-- line; both need whisper to have HEARD the read. A read whisper skipped
+-- entirely -- it happens, and it leaves an audible burst sitting in a marker
+-- gap -- has no span and no word, so no transcript-side check can ever
+-- surface it. Only the amplitude knows it is there. This is the last net.
+--
+-- `covered` is the union of everything already spoken for, in any order:
+-- counting-marker ranges and transcribed-word ranges. Only the UNCOVERED
+-- remainder is scanned, so a marker's generous tail lapping a burst's head
+-- hides that lapped part and nothing else -- hiding the whole burst because
+-- its first tenth was covered would lose the take.
+--
+-- A burst must hold at least `unheard_min_length` of sound (shorter is a
+-- click or a chair, not a read), and dips shorter than `unheard_join` stay
+-- inside one burst (a stop consonant is not a boundary). Same windowing as
+-- vo.FindSpeechBounds, same injected probe, same gate.
+--
+--   from, to  -- the range to scan, in the same time base as `probe`
+--   covered   -- array of { from, to }, unsorted, overlaps welcome
+--   floor_db  -- from vo.ResolveGate; nil means the scan is unavailable
+--
+-- Returns: array of { from, to }, in order. Empty when nothing qualifies --
+-- including when there is no probe or no floor, which the caller must read
+-- as "could not look" rather than "looked and found nothing".
+function vo.UnheardBursts(from, to, covered, floor_db, probe, cfg)
+  local step    = vo.Opt(cfg, "snap_min_silence")
+  local min_len = vo.Opt(cfg, "unheard_min_length")
+  local join    = vo.Opt(cfg, "unheard_join")
+  if not probe or not floor_db or step <= 0 then return {} end
+  if (to or 0) - (from or 0) <= step then return {} end
+
+  local cov = {}
+  for _, c in ipairs(covered or {}) do
+    if (c.to or 0) > (c.from or 0) then cov[#cov + 1] = { from = c.from, to = c.to } end
+  end
+  table.sort(cov, function(a, b) return a.from < b.from end)
+  local merged = {}
+  for _, c in ipairs(cov) do
+    local last = merged[#merged]
+    if last and c.from <= last.to + 1e-9 then
+      if c.to > last.to then last.to = c.to end
+    else
+      merged[#merged + 1] = c
+    end
+  end
+
+  local gaps, at = {}, from
+  for _, c in ipairs(merged) do
+    if c.from > at + 1e-9 then gaps[#gaps + 1] = { from = at, to = math.min(c.from, to) } end
+    at = math.max(at, c.to)
+    if at >= to then break end
+  end
+  if at < to - 1e-9 then gaps[#gaps + 1] = { from = at, to = to } end
+
+  local out = {}
+  for _, g in ipairs(gaps) do
+    -- Stepped by index, not accumulation, for the same reason as
+    -- vo.FindSpeechBounds: drift over a long gap moves every edge.
+    local runs, n = {}, 0
+    while g.from + (n + 1) * step <= g.to + 1e-9 do
+      local a  = g.from + n * step
+      local db = probe(a, a + step)
+      if db and db > floor_db then
+        local last = runs[#runs]
+        if last and a - last.to <= join + 1e-9 then
+          last.to = a + step
+        else
+          runs[#runs + 1] = { from = a, to = a + step }
+        end
+      end
+      n = n + 1
+    end
+    for _, rn in ipairs(runs) do
+      if rn.to - rn.from >= min_len - 1e-9 then out[#out + 1] = rn end
+    end
+  end
+  return out
 end
 
 -- Where to divide two words whose timestamps TOUCH.
@@ -2863,14 +4237,107 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
 
   for _, s in ipairs(spans) do s.raw_start, s.raw_stop = s.start, s.stop end
 
+  -- A word whisper CHAINED onto a span's edge that NO span claims is that
+  -- take's own edge word, misheard. The matcher scores a substituted edge word
+  -- and a dropped one identically -- "Adon no speak to us, so master is
+  -- Archivist" heard as "both no speak to us so master is alchemist" loses one
+  -- point either way -- so it tightens to the window without them, and the
+  -- word fence below then guarantees the cut excludes the take's own first and
+  -- last words. Every take of that line, every run, and nothing on the
+  -- timeline says what was lost.
+  --
+  -- Chaining is the evidence: whisper ends a word exactly where the next
+  -- begins only when it decoded them as one utterance. A word a real time gap
+  -- separates from the span stays fenced out exactly as before -- that is the
+  -- false start / aside case, and it belongs to nobody. Claimed words are
+  -- untouchable regardless: they are another take.
+  --
+  -- ONE word per edge, not a walk. The failure this repairs is a misheard
+  -- WORD, singular; run with a deeper reach, a take's start absorbed its own
+  -- first word and then kept going through the PREVIOUS take's unmatched last
+  -- word -- three takes of "Adon no speak to us" chained end to end, and take
+  -- three stole take two's "Archivist". A run of several unheard words is the
+  -- substitution list's job, not absorption's.
+  --
+  -- Starts run before stops so that when one unclaimed word is chained
+  -- between two takes, the LATER take's head wins -- an onset belongs to the
+  -- word that follows it, same rule as the overlap clamp below. The earlier
+  -- take's stop pass then finds the word claimed and leaves it alone.
+  if snap and words then
+    local function unclaimed(w)
+      local mid = ((w.t0 or 0) + (w.t1 or 0)) / 2
+      for _, o in ipairs(spans) do
+        if mid >= o.raw_start - 1e-6 and mid <= o.raw_stop + 1e-6 then
+          return false
+        end
+      end
+      return true
+    end
+    for _, s in ipairs(spans) do
+      local best
+      for _, w in ipairs(words) do
+        if w.t0 and w.t1 and math.abs(w.t1 - s.raw_start) <= 1e-3
+           and w.t0 < s.raw_start - 1e-6 and unclaimed(w) then
+          if not best or w.t0 < best then best = w.t0 end
+        end
+      end
+      if best then s.raw_start = best end
+    end
+    for _, s in ipairs(spans) do
+      local best
+      for _, w in ipairs(words) do
+        if w.t0 and w.t1 and math.abs(w.t0 - s.raw_stop) <= 1e-3
+           and w.t1 > s.raw_stop + 1e-6 and unclaimed(w) then
+          if not best or w.t1 > best then best = w.t1 end
+        end
+      end
+      if best then s.raw_stop = best end
+    end
+  end
+
   for i, s in ipairs(spans) do
     if snap then
+      -- The span's own words' ANCHORS, and the nearest neighbouring words'
+      -- (SPEC-anchor-boundaries.md §5). Raw extents are partition edges, and
+      -- a word's anchor can sit on the far side of its own window's edge --
+      -- "chain." stamped to 586.210 with the word anchored at 586.52 -- so a
+      -- span's own last word can live PAST raw_stop. Ownership is judged by
+      -- window containment (the partition tiles exactly); the fence anchors
+      -- are the nearest words outside. A neighbour anchor that would sit at
+      -- or inside the span's own is a degenerate transcript, not a fence.
+      local own_a0, own_a1, prev_a, next_a
+      if words then
+        for _, w in ipairs(words) do
+          local a = w.anchor
+          if a and w.t0 and w.t1 then
+            if w.t0 >= s.raw_start - 1e-6 and w.t1 <= s.raw_stop + 1e-6 then
+              if not own_a0 or a < own_a0 then own_a0 = a end
+              if not own_a1 or a > own_a1 then own_a1 = a end
+            elseif w.t1 <= s.raw_start + 1e-6 then
+              if not prev_a or a > prev_a then prev_a = a end
+            elseif w.t0 >= s.raw_stop - 1e-6 then
+              if not next_a or a < next_a then next_a = a end
+            end
+          end
+        end
+        if prev_a and own_a0 and prev_a >= own_a0 then prev_a = nil end
+        if next_a and own_a1 and next_a <= own_a1 then next_a = nil end
+      end
+      -- For the overlap pass below: the dip between two takes is searched
+      -- between THESE, not between raw edges that may share an instant.
+      s._own_a0, s._own_a1 = own_a0, own_a1
+
       -- Where the speech in this span actually is. Whisper's word times put the
       -- surrounding pause INSIDE the span (see vo.FindSpeechBounds), so an edge
       -- has to be trimmed in to the sound before it is padded back out; without
       -- this every take runs to the next take and the clips tile the recording.
       -- Nothing found means the floor is untrustworthy here, so keep the edges.
-      local sp0, sp1 = vo.FindSpeechBounds(s.raw_start, s.raw_stop, floor_db, probe, cfg)
+      -- The window reaches to the span's own anchors: a raw extent cut at a
+      -- partition edge excludes part of the span's own last word, and speech
+      -- measured only inside it would never see what the extent already lost.
+      local sp0, sp1 = vo.FindSpeechBounds(
+        math.min(s.raw_start, own_a0 or s.raw_start),
+        math.max(s.raw_stop,  own_a1 or s.raw_stop), floor_db, probe, cfg)
       local at_start = sp0 or s.raw_start
       local at_stop  = sp1 or s.raw_stop
 
@@ -2919,31 +4386,54 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
       -- boundary. Chained word times make two takes share an instant exactly,
       -- and clamping to that collapses the reach to nothing -- the same trap as
       -- the word bound below. Overlap is prevented after the loop regardless.
-      local start_hard = at_start - pre
+      --
+      -- With a neighbour ANCHOR in hand the fence is that anchor and nothing
+      -- else: a point inside the neighbouring word, never chained, with the
+      -- whole inter-take window before it. The pad then stops limiting how far
+      -- an edge may TRAVEL -- it only ever limited travel because a t0/t1
+      -- fence could not be trusted -- and goes back to being what it always
+      -- claimed: room kept beyond the sound (`head`/`tail` below). Without an
+      -- anchor the old fence-and-settle path runs unchanged, which is what
+      -- keeps anchor-less transcripts exactly as they were.
+      local start_hard, start_fenced
+      if prev_a then
+        start_hard, start_fenced = prev_a, true
+      else
+        start_hard = at_start - pre
+      end
       local prev_edge = spans[i - 1] and spans[i - 1].raw_stop
       if prev_edge and math.abs(prev_edge - s.raw_start) > 1e-3 then
         start_hard = math.max(start_hard, prev_edge)
       end
       local start_limit = start_hard
-      local wb = word_end_before(words, s.raw_start)
-      if wb then
-        start_limit = math.max(start_limit, wb)
-        if collapsed(wb, s.raw_start) then
-          start_limit = settle(start_limit, start_hard, -1)
+      if not start_fenced then
+        local wb = word_end_before(words, s.raw_start)
+        if wb then
+          start_limit = math.max(start_limit, wb)
+          if collapsed(wb, s.raw_start) then
+            start_limit = settle(start_limit, start_hard, -1)
+          end
         end
       end
 
-      local stop_hard = at_stop + post
+      local stop_hard, stop_fenced
+      if next_a then
+        stop_hard, stop_fenced = next_a, true
+      else
+        stop_hard = at_stop + post
+      end
       local next_edge = spans[i + 1] and spans[i + 1].raw_start
       if next_edge and math.abs(next_edge - s.raw_stop) > 1e-3 then
         stop_hard = math.min(stop_hard, next_edge)
       end
       local stop_limit = stop_hard
-      local wa = word_start_after(words, s.raw_stop)
-      if wa then
-        stop_limit = math.min(stop_limit, wa)
-        if collapsed(wa, s.raw_stop) then
-          stop_limit = settle(stop_limit, stop_hard, 1)
+      if not stop_fenced then
+        local wa = word_start_after(words, s.raw_stop)
+        if wa then
+          stop_limit = math.min(stop_limit, wa)
+          if collapsed(wa, s.raw_stop) then
+            stop_limit = settle(stop_limit, stop_hard, 1)
+          end
         end
       end
 
@@ -2996,20 +4486,40 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
   for i = 2, #spans do
     local prev, cur = spans[i - 1], spans[i]
     if cur.start < prev.stop then
-      -- Colliding neighbours meet at the midpoint of their ORIGINAL gap, which
-      -- keeps the result independent of the order spans were selected in.
-      local mid = (prev.raw_stop + cur.raw_start) / 2
-      -- Unless there was no gap. Whisper chains word times, so two takes can
-      -- share an edge exactly -- and then "the midpoint" is that one instant,
-      -- which hands back every millimetre of head room the take just won and
-      -- leaves it cut on its own first syllable. A zero-width boundary is not
-      -- evidence of anything; an onset belongs to the word that FOLLOWS it, so
-      -- the later take's head wins and the earlier take's tail yields to it.
-      if math.abs(cur.raw_start - prev.raw_stop) <= 1e-3 then
-        prev.stop, prev.clamped = cur.start, true
+      -- When both sides carry anchors, the shared edge is the QUIETEST window
+      -- between the earlier take's last word and the later take's first
+      -- (SPEC-anchor-boundaries.md §5.4): sound never broke between them --
+      -- breath or lip noise bridged the takes -- and the dip is the one
+      -- instant that belongs to neither. Symmetric by construction, so the
+      -- result cannot depend on which span is visited first.
+      local shared
+      if probe and prev._own_a1 and cur._own_a0
+         and cur._own_a0 > prev._own_a1 + 0.02 then
+        local mid = (prev._own_a1 + cur._own_a0) / 2
+        shared = vo.QuietestBoundary(mid, (cur._own_a0 - prev._own_a1) / 2,
+                                     0.010, probe)
+      end
+      if shared then
+        if prev.stop > shared then prev.stop, prev.clamped = shared, true end
+        if cur.start < shared then cur.start, cur.clamped = shared, true end
       else
-        if prev.stop > mid then prev.stop, prev.clamped = mid, true end
-        if cur.start < mid then cur.start, cur.clamped = mid, true end
+        -- Colliding neighbours meet at the midpoint of their ORIGINAL gap,
+        -- which keeps the result independent of the order spans were
+        -- selected in.
+        local mid = (prev.raw_stop + cur.raw_start) / 2
+        -- Unless there was no gap. Whisper chains word times, so two takes
+        -- can share an edge exactly -- and then "the midpoint" is that one
+        -- instant, which hands back every millimetre of head room the take
+        -- just won and leaves it cut on its own first syllable. A zero-width
+        -- boundary is not evidence of anything; an onset belongs to the word
+        -- that FOLLOWS it, so the later take's head wins and the earlier
+        -- take's tail yields to it.
+        if math.abs(cur.raw_start - prev.raw_stop) <= 1e-3 then
+          prev.stop, prev.clamped = cur.start, true
+        else
+          if prev.stop > mid then prev.stop, prev.clamped = mid, true end
+          if cur.start < mid then cur.start, cur.clamped = mid, true end
+        end
       end
     end
   end
@@ -3229,8 +4739,10 @@ function vo.DTWPresetForModel(model_path)
 end
 
 -- Build the whisper-cli command line.
--- `-ml 1 -sow -ocsv` is the load-bearing combination: it forces one word per
--- segment and writes start,end,text as CSV, so no JSON library is needed.
+-- `-ml 1 -sow -ojf` is the load-bearing combination: one word per segment,
+-- written as JSON-full — the only output that carries per-token `t_dtw`, the
+-- anchor vo.ParseWhisperJSON turns into word.anchor. CSV was used before it
+-- was known that `offsets` can miss the word entirely (SPEC-word-anchors.md).
 -- whisper.cpp resamples and downmixes internally, so the take's source file is
 -- passed straight through — no render step and no ffmpeg.
 -- `span`, when given, is { from, to } in source seconds and becomes -ot/-d in
@@ -3251,7 +4763,7 @@ function vo.BuildWhisperArgv(cfg, audio, out_prefix, span)
   end
   add("-f", audio)
   add("-of", out_prefix)
-  add("-ocsv")
+  add("-ojf")
   add("-ml", "1")  -- one word per segment; also enables token timestamps
   add("-sow")      -- split on word rather than mid-token
   add("-np")       -- no progress prints: we read the CSV, not stdout
@@ -3281,8 +4793,13 @@ function vo.BuildWhisperArgv(cfg, audio, out_prefix, span)
     add("-l", cfg.whisper_language)
   end
 
+  -- -nfa is paired with -dtw, never emitted alone: flash attention (default
+  -- on in v1.9.1) computes attention without ever materialising the matrix
+  -- DTW aligns against, so with -fa every t_dtw is silently -1 -- verified
+  -- byte-identical output with and without -dtw. A model with no preset gains
+  -- no anchors, so it keeps flash attention's speed.
   local preset = vo.DTWPresetForModel(cfg.whisper_model)
-  if preset then add("-dtw", preset) end
+  if preset then add("-dtw", preset) add("-nfa") end
 
   return argv
 end
@@ -3314,6 +4831,68 @@ vo.BINARY_CATALOG = {
   { key = "cuda-12.4", asset = "whisper-cublas-12.4.0-bin-x64.zip", label = "CUDA 12.4 (recommended, ~678 MB)", expected_bytes = 677887125 },
   { key = "cuda-11.8", asset = "whisper-cublas-11.8.0-bin-x64.zip", label = "CUDA 11.8 (older drivers, ~279 MB)", expected_bytes = 278557654 },
 }
+
+-- Which catalog entry the configured model IS, by filename. The settings combo
+-- used to open on entry 1 whatever was configured, so it named a model the run
+-- was not using -- and "Get" beside it offered to download the wrong one.
+-- Returns: 1-based index into vo.MODEL_CATALOG, or nil for a model off-catalog.
+function vo.ModelCatalogIndex(model_path)
+  if not model_path or model_path == "" then return nil end
+  local file = (model_path:match("([^/\\]+)$") or model_path):lower()
+  for i, m in ipairs(vo.MODEL_CATALOG) do
+    if file == m.filename:lower() then return i end
+  end
+  return nil
+end
+
+-- Which binary build the configured whisper-cli belongs to. Each build extracts
+-- into a folder named for its key (see the settings downloader), so the key
+-- appears as a path component; nothing else in the path can look like one.
+-- Returns: 1-based index into vo.BINARY_CATALOG, or nil (a hand-picked exe).
+function vo.BinaryCatalogIndex(bin_path)
+  if not bin_path or bin_path == "" then return nil end
+  local p = bin_path:gsub("\\", "/"):lower()
+  for i, b in ipairs(vo.BINARY_CATALOG) do
+    if p:find("/" .. b.key:lower() .. "/", 1, true) then return i end
+  end
+  return nil
+end
+
+-- How many decode threads to give whisper-cli, from a LOGICAL core count.
+--
+-- whisper.cpp scales with PHYSICAL cores and loses to itself past them --
+-- hyperthread siblings contend for the same vector units, so asking for every
+-- logical core is measurably slower than asking for half of them. Assume the
+-- usual two threads per core, keep two logical threads' worth of the machine
+-- for REAPER's audio thread and the UI, and never go below 1.
+--
+-- Capped at 16: beyond that whisper's own scaling has flattened and the extra
+-- threads only add contention.
+function vo.SuggestThreads(logical)
+  logical = tonumber(logical) or 0
+  if logical < 1 then return nil end
+  local physical = math.floor(logical / 2)
+  if physical < 1 then physical = 1 end
+  local n = (physical > 2) and (physical - 1) or physical
+  if n > 16 then n = 16 end
+  return n
+end
+
+-- The machine's logical core count, or nil when it cannot be read. Environment
+-- first (free, and set on Windows), then one cheap shell call elsewhere.
+function vo.CPUCoreCount()
+  local n = tonumber(os.getenv("NUMBER_OF_PROCESSORS") or "")
+  if n and n >= 1 then return math.floor(n) end
+  local ok, pipe = pcall(io.popen, vo.IsWindows() and "echo %NUMBER_OF_PROCESSORS%"
+                                                   or "getconf _NPROCESSORS_ONLN")
+  if ok and pipe then
+    local out = pipe:read("*a") or ""
+    pipe:close()
+    n = tonumber(out:match("%d+") or "")
+    if n and n >= 1 then return math.floor(n) end
+  end
+  return nil
+end
 
 function vo.ModelDownloadURL(name)
   return "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-" .. name .. ".bin"
@@ -3560,6 +5139,28 @@ end
 
 
 --------------------------------
+-- Pure layer: subprocess exit code
+--------------------------------
+
+-- Read an exit code out of the launcher's done-file contents.
+--
+-- Returns a NUMBER when the launcher has written one, and nil for "not
+-- finished yet" -- including an empty file, which is the state `> done.txt`
+-- leaves behind between creating the file and writing into it. The poll loop
+-- opens that file at frame rate, so it WILL sometimes catch it empty.
+--
+-- The distinction is the whole point. Reading an empty file as -1 told the
+-- user "whisper-cli exited with code -1" about a run that had not started
+-- failing, and on a real session that message cost the first 30 seconds of a
+-- read: the gap repair that would have recovered it was recorded as a failure
+-- while the process it launched went on to succeed unheard.
+function vo.ParseExitFile(text)
+  if type(text) ~= "string" then return nil end
+  local line = text:match("^[^\r\n]*") or ""
+  return tonumber((line:gsub("^%s+", ""):gsub("%s+$", "")))
+end
+
+--------------------------------
 -- Pure layer: shell quoting
 --------------------------------
 
@@ -3671,6 +5272,30 @@ function vo.SourceCoverageRanges(items)
   return out
 end
 
+-- Where an item has to sit to show exactly one stretch of its source.
+--
+-- The other direction from vo.SourceCoverageRanges: given the SOURCE range you
+-- want visible, work out the item's position, length and start offset. This is
+-- what "trim the item to its take marker" is -- the marker says which audio the
+-- take is, and the item is moved and resized to show that and nothing else.
+--
+-- The audio stays where it is in the project: the same source sample sits at
+-- the same project time before and after, because the position moves by exactly
+-- the amount the start offset does (scaled by playrate). Trimming the head is
+-- not a nudge left, it is a nudge right by the amount removed.
+--
+-- Returns nil for a range with no length, which is a marker worth reporting
+-- rather than acting on.
+function vo.PlanTrimToRange(item, from, to)
+  if not (item and from and to) or to <= from then return nil end
+  local rate = safe_playrate(item)
+  return {
+    pos        = (item.pos or 0) + (from - (item.start_offs or 0)) / rate,
+    length     = (to - from) / rate,
+    start_offs = from,
+  }
+end
+
 --------------------------------
 -- Pure layer: the transcript sidecar
 --------------------------------
@@ -3682,16 +5307,21 @@ end
 -- word anyway, so there is no grouping left to store.
 
 vo.TRANSCRIPT_MARKER  = "ajsfx VO Transcript"
-vo.TRANSCRIPT_VERSION = 1
-vo.TRANSCRIPT_HEADER  = { "Start", "End", "Text" }
+-- Version 2 added the Anchor column (SPEC-word-anchors.md). Matching is
+-- exact, so v1 sidecars read as unsupported and the Sources window offers the
+-- re-transcribe -- deliberate: an anchor-less transcript reproduces exactly
+-- the "wrong words under a take" bug that anchors exist to kill.
+vo.TRANSCRIPT_VERSION = 2
+vo.TRANSCRIPT_HEADER  = { "Start", "End", "Text", "Anchor" }
 
 function vo.TranscriptPath(source_path)
   if not source_path or source_path == "" then return nil end
   return strip_ext(source_path) .. "_vo_transcript.csv"
 end
 
--- `words` are in SOURCE time, as vo.ParseWhisperCSV produces them. This
+-- `words` are in SOURCE time, as vo.ParseWhisperJSON produces them. This
 -- function converts nothing, so it cannot silently write project times.
+-- Anchor is empty, not 0.000, when a word has none: zero is a real time.
 function vo.SerializeTranscript(words, meta)
   meta = meta or {}
   local out = {
@@ -3710,6 +5340,7 @@ function vo.SerializeTranscript(words, meta)
       string.format("%.3f", w.t0 or 0),
       string.format("%.3f", w.t1 or 0),
       w.text or "",
+      w.anchor and string.format("%.3f", w.anchor) or "",
     })
   end
   return table.concat(out, "\n") .. "\n"
@@ -3756,7 +5387,8 @@ function vo.ParseTranscript(text)
     local row = rows[j]
     local t0, t1 = tonumber(row[1] or ""), tonumber(row[2] or "")
     if t0 and t1 then
-      parsed.words[#parsed.words + 1] = { t0 = t0, t1 = t1, text = row[3] or "" }
+      parsed.words[#parsed.words + 1] = { t0 = t0, t1 = t1, text = row[3] or "",
+                                          anchor = tonumber(row[4] or "") }
     end
   end
 
@@ -3769,16 +5401,42 @@ end
 -- destroyed whisper's own sentence grouping, and the SCRIPT is what says where
 -- lines divide anyway. This is purely a reading aid for the detail panel.
 --
--- Words are grouped so a new paragraph starts after any word whose text ends
--- in `.`, `?` or `!` (optionally followed by a closing quote).
+-- Words are grouped where the reader PAUSED: a break after any word followed
+-- by `min_pause` seconds of nothing (default vo.PARAGRAPH_PAUSE).
+--
+-- It used to break on sentence punctuation, and that was actively misleading.
+-- The panel showed `Do not tell master, not do tell master, do not tell
+-- master.` as one line and `on an island like this, on an island like this,
+-- on an island like this one...` as another, which reads like the transcript
+-- found long sentences. It did not: those are a reader going again, and again,
+-- and the punctuation whisper hung on them is a guess. Presenting a guess as
+-- structure invites the user to blame the transcript for damage that is not
+-- there.
+--
+-- A pause is the one boundary in this data that came from the performance
+-- rather than from the recognizer. It is still DISPLAY ONLY -- nothing is
+-- stored, and matching never sees it; the SCRIPT is what says where lines
+-- divide.
+--
+-- Caveat worth knowing: whisper stretches each word's end to the next word's
+-- start, so most gaps read as exactly zero and only real pauses survive. That
+-- is precisely why this works, and also why the breaks are sparser than the
+-- pauses a listener hears.
+--
 -- Returns: array of paragraphs, each an array of the original word tables (so
 -- a caller needing per-word timing -- the detail panel's word interaction --
 -- can index into the same objects vo.Paragraphs summarizes).
-function vo.ParagraphWords(words)
+vo.PARAGRAPH_PAUSE = 0.35
+
+function vo.ParagraphWords(words, min_pause)
+  min_pause = min_pause or vo.PARAGRAPH_PAUSE
   local paras, current = {}, {}
-  for _, w in ipairs(words or {}) do
+  local list = words or {}
+  for i, w in ipairs(list) do
     current[#current + 1] = w
-    if w.text:match("[%.%?%!]['\"]?$") then
+    local nxt = list[i + 1]
+    local gap = (nxt and w.t1 and nxt.t0) and (nxt.t0 - w.t1) or nil
+    if gap and gap >= min_pause then
       paras[#paras + 1] = current
       current = {}
     end
@@ -3789,9 +5447,9 @@ end
 
 -- vo.ParagraphWords, joined to display prose. Returns: array of paragraph
 -- strings.
-function vo.Paragraphs(words)
+function vo.Paragraphs(words, min_pause)
   local out = {}
-  for _, para in ipairs(vo.ParagraphWords(words)) do
+  for _, para in ipairs(vo.ParagraphWords(words, min_pause)) do
     local texts = {}
     for _, w in ipairs(para) do texts[#texts + 1] = w.text end
     out[#out + 1] = table.concat(texts, " ")
@@ -3920,6 +5578,41 @@ function vo.SerializeProjectFile(entries, meta)
     end
   end
 
+  -- Line edits sit beside the Appends and for the same reason: both are keyed
+  -- by the script LINE, not by a stretch of audio, so neither can live in the
+  -- entry table. An edit whose script is no longer in the list is still
+  -- written -- removing a script and adding it back must not throw the user's
+  -- words away.
+  for _, e in ipairs(meta.line_edits or {}) do
+    if e.text and e.text ~= "" then
+      out[#out + 1] = vo.FormatCSVRow({
+        "Line", e.script or "", e.asset or "",
+        tostring(e.nth or 1), e.text,
+      })
+    end
+  end
+
+  -- The filename the user typed over the script's own. Same key, same rules;
+  -- it supersedes Append, which is no longer reachable from the card but is
+  -- still written above so a project saved by an older version keeps its names.
+  for _, n in ipairs(meta.names or {}) do
+    if n.text and n.text ~= "" then
+      out[#out + 1] = vo.FormatCSVRow({
+        "Name", n.script or "", n.asset or "",
+        tostring(n.nth or 1), n.text,
+      })
+    end
+  end
+
+  -- The words this reader's transcriber mishears. A property of the session,
+  -- not of the machine, so it travels with the project rather than sitting in
+  -- global ExtState where it would follow you into unrelated work.
+  for _, s in ipairs(meta.subs or {}) do
+    if s.from and s.from ~= "" then
+      out[#out + 1] = vo.FormatCSVRow({ "Sub", s.from, s.to or "" })
+    end
+  end
+
   -- Pins live in the preamble rather than the entry table because they are keyed
   -- by the SCRIPT LINE, while every entry row is keyed by a stretch of audio.
   -- Keeping them out of that table is also what lets them be added without
@@ -4022,6 +5715,7 @@ function vo.ParseProjectFile(text)
   end
 
   local parsed = { version = version, scripts = {}, appends = {},
+                   line_edits = {}, names = {}, subs = {},
                    entries = {}, pins = {}, view = { col_filters = {}, expanded = {} } }
   -- The pre-multi-script format, folded in below only if no Script row appears.
   local legacy_path, legacy_mapping = nil, nil
@@ -4048,6 +5742,28 @@ function vo.ParseProjectFile(text)
       local nth, text = tonumber(rows[i][4] or ""), rows[i][5] or ""
       if asset ~= "" and nth and text ~= "" then
         parsed.appends[#parsed.appends + 1] =
+          { script = script, asset = asset, nth = math.floor(nth), text = text }
+      end
+    elseif key == "Line" then
+      -- Read even when no loaded line answers to it: disabling a script, or
+      -- re-exporting the CSV under a new name, must not destroy the user's
+      -- words. vo.OrphanKeyedText is what surfaces those.
+      local script, asset = rows[i][2] or "", rows[i][3] or ""
+      local nth, text = tonumber(rows[i][4] or ""), rows[i][5] or ""
+      if asset ~= "" and nth and text ~= "" then
+        parsed.line_edits[#parsed.line_edits + 1] =
+          { script = script, asset = asset, nth = math.floor(nth), text = text }
+      end
+    elseif key == "Sub" then
+      local from, to = rows[i][2] or "", rows[i][3] or ""
+      if from ~= "" then
+        parsed.subs[#parsed.subs + 1] = { from = from, to = to }
+      end
+    elseif key == "Name" then
+      local script, asset = rows[i][2] or "", rows[i][3] or ""
+      local nth, text = tonumber(rows[i][4] or ""), rows[i][5] or ""
+      if asset ~= "" and nth and text ~= "" then
+        parsed.names[#parsed.names + 1] =
           { script = script, asset = asset, nth = math.floor(nth), text = text }
       end
     elseif key == "View" then
@@ -4242,6 +5958,15 @@ function vo.BuildOverview(input)
   -- the generator.
   local takes_by_asset = input.takes_by_asset or {}
 
+  -- The per-source word lists, when the caller has them. A marker row's text
+  -- is the words INSIDE its range, and only the caller -- which already read
+  -- the transcripts to build the match -- can supply them. A caller that does
+  -- not falls back to span text inside vo.TranscriptForRange.
+  local words_by_source = {}
+  for _, t in ipairs(input.transcripts or {}) do
+    if t.path then words_by_source[t.path] = t.words or {} end
+  end
+
   -- Plain key lookup for marker-keyed marks. NOT via index_tracker: tkm keys
   -- have no source bucket, and letting them into by_asset would shadow the
   -- line-level "|<asset>" entry -- the same hazard planned keys hit.
@@ -4256,6 +5981,14 @@ function vo.BuildOverview(input)
     if sc and sc.path then by_source[#by_source + 1] = sc end
   end
   table.sort(by_source, function(a, b) return a.path < b.path end)
+
+  -- The canonical source order, for anything that has to number across files.
+  -- Marker takes sort by SOURCE first and time second: two sessions each start
+  -- their own file at zero, so ordering on time alone interleaves two unrelated
+  -- timebases and hands a line's takes their letters in an order that means
+  -- nothing. A source carrying no matches is not in this list and sorts last.
+  local source_rank = {}
+  for i, sc in ipairs(by_source) do source_rank[sc.path] = i end
 
   local index = index_tracker(entries)
 
@@ -4328,6 +6061,8 @@ function vo.BuildOverview(input)
       line_key      = line and line.append_key or nil,
       character     = line and line.speaker or nil,
       line_text     = line and line.text or nil,
+      line_original = line and (line.text_original or line.text) or nil,
+      line_edited   = line and line.text_edited or nil,
       take_index    = take_index,
       take_count    = take_count,
       script_row    = line and (line.index or line.row) or nil,
@@ -4373,6 +6108,8 @@ function vo.BuildOverview(input)
       line_key      = line and line.append_key or nil,
       character     = s.character or (line and line.speaker) or nil,
       line_text     = line and line.text or nil,
+      line_original = line and (line.text_original or line.text) or nil,
+      line_edited   = line and line.text_edited or nil,
       transcript    = s.transcript,
       score         = s.score,
       -- false when this match contradicts the order the rest of the read was in;
@@ -4407,10 +6144,17 @@ function vo.BuildOverview(input)
   -- whole point.
   local function marker_row(mk, line, take_index, take_count)
     local t = by_key["tkm|" .. mk.id]
+    -- The marker says WHICH take; the match still knows what was said there.
+    local said, score, in_seq =
+      vo.TranscriptForRange(spans, mk.source_path, mk.start, mk.stop,
+                            words_by_source[mk.source_path])
     return {
       key           = "tkm|" .. mk.id,
       marker_id     = mk.id,
       status        = "recorded",
+      transcript    = said,
+      score         = score,
+      in_sequence   = in_seq,
       asset         = line.asset,
       deliver       = line.deliver or line.asset,
       script        = line.script,
@@ -4419,6 +6163,8 @@ function vo.BuildOverview(input)
       line_key      = line.append_key,
       character     = line.speaker,
       line_text     = line.text,
+      line_original = line.text_original or line.text,
+      line_edited   = line.text_edited,
       source_start  = mk.start,
       source_stop   = mk.stop,
       take_index    = take_index,
@@ -4448,6 +6194,13 @@ function vo.BuildOverview(input)
       local ordered = {}
       for _, mk in ipairs(mks) do ordered[#ordered + 1] = mk end
       table.sort(ordered, function(a, b)
+        local ra = source_rank[a.source_path] or math.huge
+        local rb = source_rank[b.source_path] or math.huge
+        if ra ~= rb then return ra < rb end
+        -- Two sources both outside the match list still need a stable answer.
+        if ra == math.huge and a.source_path ~= b.source_path then
+          return tostring(a.source_path) < tostring(b.source_path)
+        end
         if a.start ~= b.start then return (a.start or 0) < (b.start or 0) end
         return tostring(a.id) < tostring(b.id)
       end)
@@ -4469,36 +6222,6 @@ function vo.BuildOverview(input)
           rows[#rows + 1] = planned_row(e, line, #ordered + i, #ordered + #p)
         end
       end
-    elseif g and #g > 0 then
-      table.sort(g, function(a, b)
-        if a.source_order ~= b.source_order then return a.source_order < b.source_order end
-        return (a.span.start or 0) < (b.span.start or 0)
-      end)
-
-      local built = {}
-      for i, rec in ipairs(g) do
-        built[#built + 1] = make_row(rec, line, i, #g)
-      end
-
-      -- The user's explicit Select IS the primary. There is no first/last
-      -- fallback: guessing which take was meant is exactly what the Select
-      -- column exists to stop, and a group with no select simply has no
-      -- primary -- which Cut reports as needing a decision.
-      local chosen
-      for _, row in ipairs(built) do
-        if row.user_select then chosen = row; break end
-      end
-      for _, row in ipairs(built) do
-        row.is_primary = (row == chosen)
-        rows[#rows + 1] = row
-      end
-
-      local p = planned_by_row[line_row]
-      if p then
-        for i, e in ipairs(p) do
-          rows[#rows + 1] = planned_row(e, line, #g + i, #g + #p)
-        end
-      end
     else
       local key = vo.OverviewKey(nil, nil, line.asset)
       local t = index.by_asset[line.asset]
@@ -4513,7 +6236,14 @@ function vo.BuildOverview(input)
         line_key      = line.append_key,
         character     = line.speaker,
         line_text     = line.text,
+        line_original = line.text_original or line.text,
+        line_edited   = line.text_edited,
         take_count    = 0,
+        -- How many match or review spans this line has in the session, none of
+        -- them marked. Zero means nothing was recorded; four means the audio is
+        -- sitting there and Identify has not been run on it. "Missing" must
+        -- never read as "we looked and there is nothing" when there is.
+        heard         = g and #g or 0,
         script_row    = line.index or line.row,
         user_status   = t and t.status or nil,
         name_override = t and t.name_override or nil,
@@ -4549,6 +6279,90 @@ function vo.BuildOverview(input)
   end
 
   return rows
+end
+
+-- Audio the matcher recognised that no marker has claimed.
+--
+-- Once a marker is the only thing that makes a take, the reads Identify scored
+-- too low would simply vanish from the sheet -- exactly the takes most in need
+-- of a person. This is where they go: the Check panel's "Not yet identified".
+--
+-- Covered means a marker on the SAME SOURCE overlaps at least HALF the span.
+-- Half, not any: a marker trimmed short still owns its take, and a marker that
+-- merely brushes a neighbouring span does not claim it.
+--
+-- Orphans -- spans matching no script line -- are deliberately absent. "Which
+-- line is this?" and "this line's audio is not tracked yet" are two different
+-- questions, and they have two different queues.
+--
+-- Pure. Same `input` shape as vo.BuildOverview.
+function vo.UnidentifiedSpans(input)
+  input = input or {}
+  local lines = input.lines or {}
+
+  -- Every counting marker, bucketed by the source it sits in.
+  local marks_by_source = {}
+  for _, mks in pairs(input.takes_by_asset or {}) do
+    for _, mk in ipairs(mks) do
+      local p = mk.source_path
+      if p and mk.start and mk.stop then
+        marks_by_source[p] = marks_by_source[p] or {}
+        table.insert(marks_by_source[p], mk)
+      end
+    end
+  end
+
+  -- A span claims a line the way BuildOverview groups it: its own line index
+  -- when that line agrees on the asset, else the first line using the name.
+  local first_row_using = {}
+  for i, l in ipairs(lines) do
+    if l.asset and first_row_using[l.asset] == nil then first_row_using[l.asset] = i end
+  end
+
+  local out = {}
+  for _, sc in ipairs(input.matches or {}) do
+    for _, s in ipairs((sc and sc.spans) or {}) do
+      local line
+      if s.asset then
+        local li = s.line_idx
+        if li and lines[li] and lines[li].asset == s.asset then
+          line = lines[li]
+        else
+          line = lines[first_row_using[s.asset] or 0]
+        end
+      end
+      if (s.kind == "match" or s.kind == "review") and line
+         and s.start and s.stop and s.stop > s.start then
+        local need = (s.stop - s.start) * 0.5
+        local covered = false
+        for _, mk in ipairs(marks_by_source[sc.path] or {}) do
+          if math.min(mk.stop, s.stop) - math.max(mk.start, s.start) >= need then
+            covered = true
+            break
+          end
+        end
+        if not covered then
+          out[#out + 1] = {
+            source_path = sc.path,
+            start       = s.start,
+            stop        = s.stop,
+            asset       = s.asset,
+            deliver     = line.deliver or s.deliver or s.asset,
+            score       = s.score,
+            transcript  = s.transcript,
+          }
+        end
+      end
+    end
+  end
+
+  table.sort(out, function(a, b)
+    if a.source_path ~= b.source_path then
+      return tostring(a.source_path) < tostring(b.source_path)
+    end
+    return (a.start or 0) < (b.start or 0)
+  end)
+  return out
 end
 
 -- Fold the overview back into project-file entries for writing. Rows carrying
@@ -4684,12 +6498,21 @@ end
 -- Counts for the header summary line.
 function vo.SummarizeOverview(rows)
   local n = { total = 0, recorded = 0, review = 0, missing = 0, orphan = 0,
-              verified = 0, flagged = 0, lines = 0 }
+              verified = 0, flagged = 0, junk = 0, lines = 0 }
   local seen_asset = {}
   for _, row in ipairs(rows or {}) do
     n.total = n.total + 1
-    if n[row.status] then n[row.status] = n[row.status] + 1 end
-    if row.user_status and n[row.user_status] then
+    -- Dismissed audio leaves the orphan count rather than adding to it. That is
+    -- the whole point of being able to dismiss: with it, "not on the script: 0"
+    -- means every span has been looked at and decided, and the session really
+    -- is finished. Without it the number can only ever be ignored, which is
+    -- what made the list feel like a wall instead of a queue.
+    if row.status == "orphan" and row.user_status == "junk" then
+      n.junk = n.junk + 1
+    elseif n[row.status] then
+      n[row.status] = n[row.status] + 1
+    end
+    if row.user_status and row.user_status ~= "junk" and n[row.user_status] then
       n[row.user_status] = n[row.user_status] + 1
     end
     -- Script coverage counts LINES, not takes: five takes of one line is one
@@ -5032,6 +6855,40 @@ function vo.ParseSubstitutionText(text)
   return subs
 end
 
+-- Substitutions belong to the PROJECT, not to the machine.
+--
+-- They were global ExtState, which meant `bolvd = adon` followed you into every
+-- other project you opened -- and the words a transcriber mishears are facts
+-- about one reader on one day, not about the tool. Worse, they were invisible
+-- from the sheet: the place you notice a mishearing is the card, and the fix
+-- was two windows away.
+--
+-- Stored as records, like every other per-line judgement in the project file:
+-- `{ from = <folded token>, to = <replacement> }`. The `from = to` text box is
+-- still how they are EDITED -- it is a good editor for a short table -- so
+-- these two convert between the box and the records.
+function vo.SubRows(text)
+  local map = vo.ParseSubstitutionText(text)
+  local keys = {}
+  for from in pairs(map) do keys[#keys + 1] = from end
+  -- Sorted, so the box does not reshuffle under the cursor between edits and
+  -- so the project file's diff is stable.
+  table.sort(keys)
+  local rows = {}
+  for _, from in ipairs(keys) do
+    rows[#rows + 1] = { from = from, to = map[from] }
+  end
+  return rows
+end
+
+function vo.SubMap(rows)
+  local m = {}
+  for _, s in ipairs(rows or {}) do
+    if s.from and s.from ~= "" then m[s.from] = s.to or "" end
+  end
+  return m
+end
+
 -- Render the substitution table back to editable text, sorted so the panel
 -- shows a stable order rather than reshuffling on every open.
 function vo.FormatSubstitutionText(subs)
@@ -5079,8 +6936,20 @@ vo.CONFIG_SCHEMA = {
     default = vo.DEFAULTS.chained_boundary_reach },
   { key = "snap_floor_offset",  kind = "number", default = vo.DEFAULTS.snap_floor_offset },
   { key = "snap_floor_window",  kind = "number", default = vo.DEFAULTS.snap_floor_window },
+  { key = "snap_gate_auto",     kind = "bool",   default = vo.DEFAULTS.snap_gate_auto },
+  { key = "snap_gate_db",       kind = "number", default = vo.DEFAULTS.snap_gate_db },
   { key = "snap_floor_percentile", kind = "number",
     default = vo.DEFAULTS.snap_floor_percentile },
+  -- The room a cut, a take marker and Tighten all put around the speech.
+  -- These were DEFAULTS-only for a long time, which meant vo.Opt could never
+  -- see a user's value -- and since ApplyPadding clamps the exposed pads to
+  -- them (min(pre_pad, snap_head_room)), dragging the pads did nothing at all.
+  { key = "snap_head_room",     kind = "number", default = vo.DEFAULTS.snap_head_room },
+  { key = "snap_tail_room",     kind = "number", default = vo.DEFAULTS.snap_tail_room },
+  { key = "unheard_min_length", kind = "number", default = vo.DEFAULTS.unheard_min_length },
+  { key = "unheard_join",       kind = "number", default = vo.DEFAULTS.unheard_join },
+  { key = "trim_head_slack",    kind = "number", default = vo.DEFAULTS.trim_head_slack },
+  { key = "trim_tail_slack",    kind = "number", default = vo.DEFAULTS.trim_tail_slack },
 
   { key = "track_selects",      kind = "string", default = "Selects" },
   { key = "track_alts",         kind = "string", default = "Alts" },
@@ -5096,6 +6965,23 @@ vo.CONFIG_SCHEMA = {
 }
 
 -- Load settings from ExtState, falling back to documented defaults.
+-- The PROJECT's substitutions, when a project has them.
+--
+-- Set once by the Overview after it reads the project file, and read by
+-- LoadConfig below -- so every existing `vo.LoadConfig()` call site picks up
+-- this session's table without knowing the feature moved. There are dozens of
+-- them across two scripts; threading an argument through all of them to say
+-- the same thing every time would be worse than one slot with one writer.
+--
+-- nil means "no project loaded yet", which is not the same as an empty table:
+-- a project that has deliberately no substitutions must not fall back to the
+-- global ones left over from the last one.
+local project_subs = nil
+
+function vo.SetProjectSubstitutions(map)
+  project_subs = map
+end
+
 function vo.LoadConfig()
   local function get(key)
     if r.HasExtState(vo.EXT_SECTION, key) then
@@ -5144,6 +7030,11 @@ function vo.LoadConfig()
       if from and from ~= "" then cfg.substitutions[from] = to end
     end
   end
+  -- The project wins outright once one is loaded -- not merged with the global
+  -- table. Merging would make a substitution impossible to REMOVE: deleting it
+  -- from the project would silently restore whatever the machine had, and the
+  -- user would be arguing with a table they cannot see from here.
+  if project_subs then cfg.substitutions = project_subs end
 
   return cfg
 end
@@ -5451,12 +7342,15 @@ function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error
     return text or ""
   end
 
+  -- nil means NOT FINISHED. See vo.ParseExitFile: the launcher creates this
+  -- file with `>` and writes the code into it a moment later, so an empty read
+  -- is a race, not an exit code.
   local function finished()
     local f = io.open(done_file, "r")
     if not f then return nil end
-    local code = tonumber(f:read("l")) or -1
+    local text = f:read("a")
     f:close()
-    return code
+    return vo.ParseExitFile(text)
   end
 
   local ok_im, im = pcall(function()
@@ -5581,12 +7475,15 @@ function vo.RunDownloadAsync(cfg, url, dest_path, expected_bytes, on_done, on_ca
   end
   if not launched then on_error("Failed to launch curl") return end
 
+  -- nil means NOT FINISHED. See vo.ParseExitFile: the launcher creates this
+  -- file with `>` and writes the code into it a moment later, so an empty read
+  -- is a race, not an exit code.
   local function finished()
     local f = io.open(done_file, "r")
     if not f then return nil end
-    local code = tonumber(f:read("l")) or -1
+    local text = f:read("a")
     f:close()
-    return code
+    return vo.ParseExitFile(text)
   end
 
   local function read_log()
@@ -5868,7 +7765,7 @@ function vo.RepairTranscriptGaps(cfg, source_path, scratch, prefix, words, on_do
     return
   end
 
-  local floor_db = vo.MeasureNoiseFloor(vo.InterWordGaps(words), probe, cfg)
+  local floor_db = vo.ResolveGate(vo.InterWordGaps(words), probe, cfg)
   local plans    = vo.PlanGapRepairs(words, duration, floor_db, probe, cfg)
   destroy()
 
@@ -5903,11 +7800,14 @@ function vo.RepairTranscriptGaps(cfg, source_path, scratch, prefix, words, on_do
         if code ~= 0 then
           note_failure(string.format("whisper-cli exited with code %d", code))
         else
-          local f = io.open(out .. ".csv", "r")
+          local f = io.open(out .. ".json", "r")
           if not f then
-            note_failure("whisper-cli wrote no CSV")
+            note_failure("whisper-cli wrote no JSON")
           else
-            repairs[#repairs + 1] = { span = plan, words = vo.ParseWhisperCSV(f:read("a")) }
+            -- t_dtw from an -ot offset run is absolute source time (verified
+            -- against a 415s-offset decode), so anchors merge without any
+            -- conversion, same as t0/t1.
+            repairs[#repairs + 1] = { span = plan, words = vo.ParseWhisperJSON(f:read("a")) }
             f:close()
           end
         end
@@ -5992,6 +7892,22 @@ function vo.WriteTakeMarkers(item, markers)
   return true
 end
 
+-- Write ONE marker onto an item, keeping every marker already in it.
+--
+-- The safe form of "mark this take": vo.PlanMarkerAdd decides what the item
+-- should hold, this writes it. Returns ok, added, why -- `added` false with ok
+-- true means this line was already marked over that audio and nothing changed,
+-- which is a no-op to report, not an error.
+-- UNVERIFIED outside REAPER — see SPEC.md §10.
+function vo.AddMarkerToItem(item, add)
+  local ok, chunk = r.GetItemStateChunk(item, "", false)
+  if not ok then return false, false, "cannot read item chunk" end
+  local list, added = vo.PlanMarkerAdd(vo.ParseTKMChunk(chunk), add)
+  if not added then return true, false end
+  local wrote, why = vo.WriteTakeMarkers(item, list)
+  return wrote and true or false, wrote and true or false, why
+end
+
 -- Transcribe a list of unique source files in sequence, reusing cached
 -- transcripts.
 --
@@ -6050,14 +7966,15 @@ function vo.TranscribeSources(cfg, sources, cb)
       return
     end
 
-    local source   = sources[index]
-    local key      = vo.CacheKey(source.path, source.size, cfg)
-    local prefix   = scratch .. "/" .. key
-    local csv_path = prefix .. ".csv"
+    local source    = sources[index]
+    local key       = vo.CacheKey(source.path, source.size, cfg)
+    local prefix    = scratch .. "/" .. key
+    local json_path = prefix .. ".json"
 
-    -- The raw whisper CSV is what is cached; repair happens on the way out on
+    -- The raw whisper JSON is what is cached; repair happens on the way out on
     -- both paths, so a cache hit gets the same mended transcript a fresh run
-    -- would.
+    -- would. An old .csv beside the wav is NOT a cache hit: it has no anchors,
+    -- and serving it would quietly reintroduce the bug the anchors fix.
     local function repair_then_finish(words)
       vo.RepairTranscriptGaps(cfg, source.path, scratch, prefix, words,
         function(merged, report)
@@ -6067,9 +7984,9 @@ function vo.TranscribeSources(cfg, sources, cb)
         cb.on_cancel)
     end
 
-    if not cfg.force_retranscribe and vo.FileExists(csv_path) then
-      local f = io.open(csv_path, "r")
-      local words = vo.ParseWhisperCSV(f:read("a"))
+    if not cfg.force_retranscribe and vo.FileExists(json_path) then
+      local f = io.open(json_path, "r")
+      local words = vo.ParseWhisperJSON(f:read("a"))
       f:close()
       repair_then_finish(words)
       return
@@ -6084,13 +8001,13 @@ function vo.TranscribeSources(cfg, sources, cb)
           step()
           return
         end
-        local f = io.open(csv_path, "r")
+        local f = io.open(json_path, "r")
         if not f then
-          fail(source, "whisper-cli reported success but wrote no CSV:\n" .. csv_path)
+          fail(source, "whisper-cli reported success but wrote no JSON:\n" .. json_path)
           step()
           return
         end
-        local words = vo.ParseWhisperCSV(f:read("a"))
+        local words = vo.ParseWhisperJSON(f:read("a"))
         f:close()
         repair_then_finish(words)
       end,

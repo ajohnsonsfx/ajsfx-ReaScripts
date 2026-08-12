@@ -436,18 +436,21 @@ local function DrawTableBody(visible)
       -- time the deferred action runs the key could already be up.
       local captured = ReadModifiers()
       local at = i
-      pending_action = function() ClickRow(row, at, captured, visible) end
-    end
-    -- Double-click toggles the per-file detail panel: a second double-click on
-    -- the same row that opened it closes it again.
-    if im.IsItemHovered(ctx) and im.IsMouseDoubleClicked(ctx, im.MouseButton_Left) then
       local target = row.path
       pending_action = function()
-        if state.detail == target then
-          state.detail = nil
-        else
+        ClickRow(row, at, captured, visible)
+        -- A SINGLE click shows the file's detail. It used to take a
+        -- double-click, which meant the log -- the only place a run says what
+        -- went wrong -- was behind a gesture nothing on screen suggested.
+        -- Clicking a row is asking about that row.
+        --
+        -- Not a toggle: with one click doing it, clicking the open row again
+        -- would close the panel the click was asking to read. Extending a
+        -- multi-select leaves the panel where it is; the detail follows the
+        -- row you actually pressed.
+        if not (captured.shortcut or captured.shift) then
+          if state.detail ~= target then state.detail_paragraph = 1 end
           state.detail = target
-          state.detail_paragraph = 1
         end
       end
     end
@@ -598,6 +601,74 @@ local function GoToWord(source_path, t)
   return false
 end
 
+-- A timecode drawn as a link: underlined, blue, and it moves the edit cursor to
+-- the moment it names. The thing you want to go to is the thing you click,
+-- which is why this is not a button beside the message.
+local LINK_COLOUR = 0x6FA8DCFF
+local function TimecodeLink(source_path, t, label)
+  local text = label or vo.FormatTime(t)
+  local x, y = im.GetCursorScreenPos(ctx)
+  local w, h = im.CalcTextSize(ctx, text)
+  im.TextColored(ctx, LINK_COLOUR, text)
+  im.DrawList_AddLine(im.GetWindowDrawList(ctx), x, y + h, x + w, y + h, LINK_COLOUR)
+  if im.IsItemHovered(ctx) then
+    im.SetMouseCursor(ctx, im.MouseCursor_Hand)
+    im.SetTooltip(ctx, "Move the edit cursor here and listen.")
+  end
+  if im.IsItemClicked(ctx, im.MouseButton_Left) then
+    local captured_t = t
+    pending_action = function()
+      if not GoToWord(source_path, captured_t) then
+        state.message = { text = "No item in this project plays that source, so "
+          .. "there is nowhere to go.", tone = "warn" }
+      end
+    end
+  end
+end
+
+-- Everything the panel says about a row, as plain text.
+--
+-- A run reports its problems on screen and there was no way to get them off it
+-- but a screenshot. Whatever is worth printing is worth pasting into a bug
+-- report, so the same facts are assembled here for the clipboard.
+local function DetailReport(row)
+  local t = row.transcript
+  local out = { row.name, "Path: " .. (row.path or ""), "Status: " .. (row.status or "") }
+  if row.reason then out[#out + 1] = "Reason: " .. row.reason end
+  if row.loop then
+    out[#out + 1] = string.format(
+      "Suspected transcriber loop %s to %s: %q repeated %d times.",
+      vo.FormatTime(row.loop.from), vo.FormatTime(row.loop.to),
+      row.loop.phrase, row.loop.cycles)
+  end
+  if t then
+    if not t._paragraphs then t._paragraphs = vo.Paragraphs(t.words or {}) end
+    out[#out + 1] = "Source: " .. (t.source or "")
+    out[#out + 1] = "Source bytes: " .. tostring(t.source_bytes or 0)
+    out[#out + 1] = "Source hash: " .. (t.source_hash or "")
+    out[#out + 1] = "Backend: " .. (t.backend or "")
+    out[#out + 1] = "Model: " .. (t.model or "")
+    out[#out + 1] = "Language: " .. (t.language or "")
+    out[#out + 1] = "Words: " .. tostring(#(t.words or {}))
+    out[#out + 1] = ""
+    for _, para in ipairs(t._paragraphs) do out[#out + 1] = para end
+  end
+  return table.concat(out, "\n")
+end
+
+local function CopyReport(row)
+  local text = DetailReport(row)
+  local set = rawget(im, 'SetClipboardText')
+  if set then set(ctx, text)
+  elseif r.CF_SetClipboard then r.CF_SetClipboard(text)
+  else
+    state.message = { text = "No clipboard is available. Install SWS or a newer "
+      .. "ReaImGui.", tone = "error" }
+    return
+  end
+  state.message = { text = "Copied this file's report to the clipboard.", tone = "info" }
+end
+
 local function DetailRow()
   if not state.detail then return nil end
   for _, row in ipairs(state.rows) do
@@ -631,15 +702,88 @@ local function DrawFocusedWords(row, paragraph_words, index)
     end
 
     im.PushID(ctx, wi)
+    -- The anchor sits ON the word; t0 is the start of the pause before it.
+    -- Jumping to the anchor lands the cursor on the sound, not the silence.
     if im.SmallButton(ctx, w.text) then
-      GoToWord(row.path, w.t0)
+      GoToWord(row.path, w.anchor or w.t0)
     end
     if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, string.format("%.3f \226\128\147 %.3f s", w.t0, w.t1))
+      if w.anchor then
+        im.SetTooltip(ctx, string.format("%.3f s (window %.3f \226\128\147 %.3f)",
+                                         w.anchor, w.t0, w.t1))
+      else
+        im.SetTooltip(ctx, string.format("%.3f \226\128\147 %.3f s", w.t0, w.t1))
+      end
     end
     im.PopID(ctx)
 
     line_used = line_used + item_w
+  end
+end
+
+local function DrawCopyReport(row)
+  if im.Button(ctx, "Copy report") then
+    local captured = row
+    pending_action = function() CopyReport(captured) end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Everything on this panel as text, on the clipboard:\n" ..
+                       "identity, backend, any problems, and the transcript.")
+  end
+end
+
+-- Delete this file's transcript sidecar.
+--
+-- Transcribing the wrong file is an ordinary mistake, and the only cure used to
+-- be opening the project folder and working out which *_vo_transcript.csv it
+-- was. The tool wrote the file; the tool can remove it. Being opaque about it
+-- did not make it safer, it moved the work somewhere the tool could not check.
+--
+-- Little is at risk, and for a principled reason: what the user DECIDED lives in
+-- the project file, take identity lives in ranged take markers inside the items,
+-- and the delivered name lives on the take. None of that is in the transcript,
+-- which is the one file here that can be rebuilt by running whisper again. What
+-- goes is the transcript COLUMN and the ability to re-derive matches until it is
+-- re-run.
+local function DrawDeleteTranscript(row)
+  local popup = "delete_transcript"
+  if im.Button(ctx, "Delete transcript\226\128\166") then im.OpenPopup(ctx, popup) end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Remove this file's transcript sidecar from disk.")
+  end
+  -- A plain popup, not a modal: this one is drawn inside the detail CHILD
+  -- window, and the reset confirm in Overview already proves this shape works
+  -- here. Clicking away cancels, which is the right default for a delete.
+  if im.BeginPopup(ctx, popup) then
+    im.Text(ctx, "Delete the transcript for:")
+    im.TextDisabled(ctx, row.name)
+    im.Spacing(ctx)
+    im.TextColored(ctx, STATUS_STYLE.error.colour, "Goes:")
+    im.SameLine(ctx)
+    im.Text(ctx, vo.TranscriptPath(row.path) or "")
+    im.TextDisabled(ctx, "Stays: every mark, every delivered name, and every take\n" ..
+                         "marker. Those live in the project and in the items, not\n" ..
+                         "here. Until you transcribe again this file has no words,\n" ..
+                         "so nothing new can be matched against it.")
+    im.Spacing(ctx)
+    if im.Button(ctx, "Delete it") then
+      local path = vo.TranscriptPath(row.path)
+      im.CloseCurrentPopup(ctx)
+      pending_action = function()
+        if path and os.remove(path) then
+          state.message = { text = "Deleted the transcript for " .. row.name .. ".",
+                            tone = "info" }
+        else
+          state.message = { text = "Could not delete " .. tostring(path) ..
+                            " -- it may be open elsewhere.", tone = "error" }
+        end
+        state.detail = nil
+        state.scanned_at = -1
+      end
+    end
+    im.SameLine(ctx)
+    if im.Button(ctx, "Cancel") then im.CloseCurrentPopup(ctx) end
+    im.EndPopup(ctx)
   end
 end
 
@@ -656,9 +800,15 @@ local function DrawTranscriptDetail(row)
       "Stale \226\128\148 the source audio has changed since this transcript was made.")
   end
   if row.loop then
-    im.TextColored(ctx, STATUS_STYLE.error.colour, string.format(
-      "The transcriber looped between %s and %s.",
-      vo.FormatTime(row.loop.from), vo.FormatTime(row.loop.to)))
+    im.TextColored(ctx, STATUS_STYLE.error.colour, "The transcriber looped between")
+    im.SameLine(ctx)
+    TimecodeLink(row.path, row.loop.from)
+    im.SameLine(ctx)
+    im.TextColored(ctx, STATUS_STYLE.error.colour, "and")
+    im.SameLine(ctx)
+    TimecodeLink(row.path, row.loop.to)
+    im.SameLine(ctx, 0, 0)
+    im.TextColored(ctx, STATUS_STYLE.error.colour, ".")
     im.TextWrapped(ctx, string.format(
       "It repeated \"%s\" %d times instead of transcribing. Whatever was said "
       .. "in those %s is not in this transcript, so no line from that stretch "
@@ -677,8 +827,20 @@ local function DrawTranscriptDetail(row)
   im.Text(ctx, "Words: " .. tostring(#t.words))
   im.Spacing(ctx)
 
-  local paragraph_words = vo.ParagraphWords(t.words)
-  local paragraphs      = vo.Paragraphs(t.words)
+  -- Grouped ONCE per transcript, not once per frame.
+  --
+  -- These two walked all 1600 words on every frame the panel was open -- twice,
+  -- since Paragraphs calls ParagraphWords again -- building five hundred
+  -- sub-tables and five hundred concatenated strings each time. Sixty times a
+  -- second, that is garbage the collector spends the rest of the frame chasing,
+  -- and this panel stays open for a whole first pass. Neither depends on
+  -- anything but the word list, and a new word list means a new row.
+  if not t._paragraph_words then
+    t._paragraph_words = vo.ParagraphWords(t.words)
+    t._paragraphs      = vo.Paragraphs(t.words)
+  end
+  local paragraph_words = t._paragraph_words
+  local paragraphs      = t._paragraphs
 
   if #paragraphs == 0 then
     im.TextDisabled(ctx, "No words in this transcript.")
@@ -713,6 +875,10 @@ local function DrawTranscriptDetail(row)
     TooltipEvenWhenDisabled(state.backend and state.backend.reason
       or "The speech backend is not ready.")
   end
+  im.SameLine(ctx)
+  DrawCopyReport(row)
+  im.SameLine(ctx)
+  DrawDeleteTranscript(row)
 end
 
 -- A "no" row has nothing to show but its name and a way to transcribe it.
@@ -741,6 +907,12 @@ local function DrawErrorDetail(row)
   im.TextColored(ctx, STATUS_STYLE.error.colour,
     row.reason or "Could not parse the transcript.")
   im.TextDisabled(ctx, vo.TranscriptPath(row.path) or row.path)
+  im.Spacing(ctx)
+  -- The row most likely to want deleting: an unreadable sidecar is exactly the
+  -- thing the user would otherwise go to the folder to remove by hand.
+  DrawCopyReport(row)
+  im.SameLine(ctx)
+  DrawDeleteTranscript(row)
 end
 
 local function DrawDetailPanel()
