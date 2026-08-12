@@ -243,6 +243,91 @@ test("two takes of one line are two takes, not a duplicate", function()
   assert(#out == 2, "merged two genuine takes of one line: " .. #out)
 end)
 
+test("two takes cut back to back are two takes, whatever float noise says", function()
+  -- Chained cuts make neighbouring takes of one line SHARE an instant by
+  -- design -- the earlier take's stop IS the later take's start. Stored as
+  -- pos + length, the shared edge comes back a few ulp wide of the parsed
+  -- start, the strict overlap test read that as "one take wearing two
+  -- markers", and the later take vanished from the sheet -- at which point
+  -- its span read as unmarked and Identify minted it a fresh duplicate
+  -- marker on every press. 19 takes in one real session.
+  local out = vo.CountingMarkers({ pi(0, 20, {
+    { pos = 2, name = vo.FormatMarkerName("A", "k1"), color = 0,
+      length = 3 + 2e-15 },                                -- stop 5 + noise
+    mk(5, "A", "k2", 3),
+  }) })
+  assert(#out == 2, "a float-thin overlap merged two back-to-back takes: " .. #out)
+end)
+
+test("adjacent takes of one line whose edges have grown into each other", function()
+  -- The live case, from Grumbar 2026-08-11 (source times kept):
+  --
+  --   mjp  59.460 .. 64.386   take A, its marker snapped to ITS OWN item's
+  --                           edges -- and that item has generous tail room,
+  --                           so it reaches 0.85s past where take B starts
+  --   mjw  63.540 .. 68.880   take B
+  --
+  -- Same asset, overlapping by more than a millisecond, so the old rule called
+  -- them one take wearing two markers and dropped the later id. The take then
+  -- vanished from the sheet, and -- because the prune only keeps markers that
+  -- survive this function -- pressing Update from Item DELETED the marker off
+  -- the user's clip.
+  --
+  -- 0.85s of overlap on markers 4.9s and 5.3s long is 17% of the shorter. Two
+  -- markers on ONE take sit on the same audio, near enough all of it. Bleeding
+  -- edges are not a double.
+  local out = vo.CountingMarkers({ pi(59.46, 69.36, {
+    mk(59.46, "A", "mjp", 4.926143), mk(63.54, "A", "mjw", 5.34) }) })
+  assert(#out == 2,
+    "merged two adjacent takes whose edges overlap: " .. #out)
+end)
+
+test("a real double still merges, at edges a hand-trim moved", function()
+  -- The other side of the same threshold: two ids on ONE take, one of them
+  -- trimmed slightly. 2.7 of 3.0 is 90% of the shorter -- still one take.
+  local out = vo.CountingMarkers({ pi(0, 10, {
+    mk(2, "A", "k9", 3), mk(2.3, "A", "k1", 2.7) }) })
+  assert(#out == 1, "let a genuine double through: " .. #out)
+end)
+
+print("\nMarkerInItem:")
+
+test("a take's own marker is in its item", function()
+  -- The live shape: marker 63.54..68.88, clip showing 64.4586..69.3604.
+  assert(vo.MarkerInItem({ start = 63.54, stop = 68.88 },
+                         { from = 64.4586, to = 69.3604 }))
+end)
+
+test("a marker whose tail merely pokes in is NOT in the item", function()
+  -- The previous take's marker ending a fifth of a second inside this clip.
+  -- You cannot see it on the clip; it must not make the clip a recording.
+  assert(not vo.MarkerInItem({ start = 59.46, stop = 64.66 },
+                             { from = 64.46, to = 69.36 }))
+end)
+
+test("a hard-trimmed clip still holds the marker that covers it", function()
+  -- Only a fifth of the marker is inside -- but the marker covers ALL of the
+  -- clip, which is the case Update from Item exists for.
+  assert(vo.MarkerInItem({ start = 0, stop = 5 }, { from = 2, to = 3 }))
+end)
+
+test("no overlap is never in the item", function()
+  assert(not vo.MarkerInItem({ start = 0, stop = 5 }, { from = 5, to = 9 }))
+  assert(not vo.MarkerInItem({ start = 6, stop = 9 }, { from = 0, to = 5 }))
+end)
+
+test("exactly half of the marker counts, a hair under does not", function()
+  assert(vo.MarkerInItem({ start = 0, stop = 4 }, { from = 2, to = 100 }))
+  assert(not vo.MarkerInItem({ start = 0, stop = 4 }, { from = 2.001, to = 100 }))
+end)
+
+test("a zero-length marker or item is never in anything", function()
+  assert(not vo.MarkerInItem({ start = 3, stop = 3 }, { from = 0, to = 10 }))
+  assert(not vo.MarkerInItem({ start = 0, stop = 5 }, { from = 3, to = 3 }))
+  assert(not vo.MarkerInItem(nil, { from = 0, to = 10 }))
+end)
+
+print("")
 test("two different lines overlapping stay separate", function()
   local out = vo.CountingMarkers({ pi(0, 10, {
     mk(2, "A", "k1", 3), mk(2, "B", "k2", 3) }) })

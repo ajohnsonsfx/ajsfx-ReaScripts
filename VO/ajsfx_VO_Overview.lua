@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.15beta6
--- @changelog PRE-RELEASE: the toolbar is three tabs -- Setup, Edit and Settings -- and a tab never does anything: it only decides which buttons you are looking at, while every button under it acts. Edit leads with "Run the whole pass" (match, cut, pick, pull, in one undo step) above one row per step of the same name -- Match, Cut, Pick, Pull -- plus Check, the phase the batch button cannot run for you. EVERY verb now acts on the selection -- rows picked in the sheet, items picked in REAPER, or both -- and a line under the hero says what the next press will act on. Selecting an uncut recording selects every take inside it, so one rule reads correctly before and after the cut. The per-panel "Selected rows only" checkboxes are gone. "Find lines in items", "Assign items to lines" and "Adopt this whole session" are ONE button, "Identify the lines in these items": they differed only in what shape the audio was in, which the tool now counts for itself -- an item holding one take is marked at your own edges and named for its line, an item holding several gets a marker per take and no name. A take marker is now what the cut WILL be: Identify writes markers through the same speech-bounds and padding pass Cut uses, and Cut cuts TO the marker instead of skipping any span a marker overlapped -- which would have made Identify followed by Cut cut nothing at all. A marker you drag is honoured the same way; "Re-cut from the transcript" throws marker edges away and derives them from the words again. New: "Trim items to their markers" sets each item's edges to the take marker inside it -- the manual half of "the marker is what the cut will be" -- with a per-row form in the take menu beside "Snap marker to item". Also new: "Build the destination tracks" makes Selects/Alts/Review under each recording without moving anything, so they exist before the first pull. "Cut recording into takes" cuts on the press; its panel is now the report the run opens by itself. "Auto-pick selects" and "Auto-name the alts" join "Auto-adjust head and tail" as the Auto- family: each is the batch form of a per-row sheet gesture. Auto-adjust now moves the take marker with the edges it trims. Buttons wrap rather than running off a narrow window, and the ribbon holds one height so the sheet no longer jumps when you click between tabs. "Start over..." in Setup deletes this project's VO data, behind a confirm that names what goes and what stays. The blank sheet now asks for the two things it needs -- a script and a transcript -- with a button for each.
+-- @version 0.15beta7
+-- @changelog PRE-RELEASE: the toolbar is three tabs -- Setup, Edit and Settings -- and a tab never does anything: it only decides which buttons you are looking at, while every button under it acts. Edit leads with "Run the whole pass" (match, cut, pick, pull, in one undo step) above one row per step of the same name -- Match, Cut, Pick, Pull -- plus Check, the phase the batch button cannot run for you. EVERY verb now acts on the selection -- rows picked in the sheet, items picked in REAPER, or both -- and a line under the hero says what the next press will act on. Selecting an uncut recording selects every take inside it, so one rule reads correctly before and after the cut. The per-panel "Selected rows only" checkboxes are gone. "Find lines in items", "Assign items to lines" and "Adopt this whole session" are ONE button, "Identify the lines in these items": they differed only in what shape the audio was in, which the tool now counts for itself -- an item holding one take is marked at your own edges and named for its line, an item holding several gets a marker per take and no name. A take marker is now what the cut WILL be: Identify writes markers through the same speech-bounds and padding pass Cut uses, and Cut cuts TO the marker instead of skipping any span a marker overlapped -- which would have made Identify followed by Cut cut nothing at all. A marker you drag is honoured the same way; "Re-cut from the transcript" throws marker edges away and derives them from the words again. New: "Trim items to their markers" sets each item's edges to the take marker inside it -- the manual half of "the marker is what the cut will be" -- with a per-row form in the take menu beside "Snap marker to item". Also new: "Build the destination tracks" makes Selects/Alts/Review under each recording without moving anything, so they exist before the first pull. "Cut recording into takes" cuts on the press; its panel is now the report the run opens by itself. "Auto-pick selects" and "Auto-name the alts" join "Auto-adjust head and tail" as the Auto- family: each is the batch form of a per-row sheet gesture. Auto-adjust now moves the take marker with the edges it trims. Buttons wrap rather than running off a narrow window, and the ribbon holds one height so the sheet no longer jumps when you click between tabs. "Start over..." in Setup deletes this project's VO data, behind a confirm that names what goes and what stays. The blank sheet now asks for the two things it needs -- a script and a transcript -- with a button for each. Boundaries settings now REACH the edges they describe: the head room and tail a cut, a take marker and Auto-adjust actually use were built-in constants no setting could load, and because the exposed pads were clamped to them ("maximum head room" capped at 60ms), dragging any of it changed nothing. Both are now controls of their own, with the Auto-adjust slack beside them, and a pad set below its room is raised rather than silently capping it. Double-click any boundary number to reset that one; "Reset boundaries to defaults" resets the section without touching your backend paths or substitutions. "Identify the lines in these items" is now "Identify lines in audio and update markers", because that is what pressing it again does: a take that already has a marker KEEPS that marker -- the same id, so its Sel, Keep, notes and name override stay filed exactly where they are -- and only its edges are re-measured at the current settings. Press it after changing head room or tail and the timeline follows; the report says how many moved and how many were already right. Settings also opens the GPU binary and Model pickers on the ones actually in use rather than on the first entry, and Threads has a Detect button that reads the machine. FIXED, and it is the important one: Identify decided whether a take was already marked by comparing start times, but a marker sits at the cut's padded edges and a span at the matcher's raw ones, so they never matched -- every press minted a second marker for every take and kept the first, doubling the markers in the item each run. Takes and markers are now paired by overlap, so re-running updates the marker a take already has instead of stacking another one beside it. Detection is also deliberately more generous now: head room 60ms to 120ms and tail 150ms to 400ms. Whisper does not transcribe a mumbled word, a trailing sound or a breath welded to a read, so the measured bounds sit inside the real take and a tight tail cut the take's own ending off -- and a clip missing its ending gives you nothing to work from, while a long one is trimmed with the waveform in front of you. The neighbouring-word fence means no amount of room can reach another line, so the cost is room tone, and Auto-adjust is the pass that takes it back. The Boundaries panel is now three sections, because there are three things to decide: 1. Silence detection, 2. Head, 3. Tail. The gate is stated in dBFS like Dynamic Split's Threshold -- leave Auto on and it is measured from this recording's own room tone, turn Auto off and you type the number in. Everything that merely QUALIFIES a number (the travel ceiling, the Auto-adjust slack) now sits in a Limits twirl-down under the number it qualifies, instead of being a third control in a third section: head room, maximum head room and head slack were three places for one edge. New: a gate strip under Silence detection draws the selected item with the gate across it and everything below it dimmed -- what is dim is what the tool calls silence. REAPER's own "display gate threshold in media items" is core code painting into the arrange item and cannot be reached from a script, so the waveform comes to the setting instead. The strip follows the TIME SELECTION as well as the item and redraws once the range settles, so you spot-check a gate by dragging a range over a line or two rather than staring at a 28-minute recording averaged into 480 columns; it says how many milliseconds each column covers and warns when that is coarser than the minimum silence, which is the point at which the picture stops meaning anything. Detection no longer cuts off a take's own first or last word when whisper misheard it: the matcher scores a substituted edge word and a dropped one identically, so "Adon no speak to us, so master is Archivist" heard as "both no speak ... is alchemist" lost its "Adon" and its "Archivist" at BOTH edges of every take, and the word fence then guaranteed the marker excluded them. A word chained onto a span's edge that no span claims is now absorbed into that take -- one word per edge, the later take's head winning a shared word -- before the edges are measured. And a float-noise fix that matters more than it sounds: takes cut back to back share an instant by design, the stored edge comes back a few ulp wide of its neighbour, and the duplicate-marker test read that as one take wearing two markers -- so the later take vanished from the sheet and Identify minted it a fresh duplicate marker on every press, 19 takes in one real session. Overlap now means more than a millisecond. New Check panel, "Unheard audio": every other queue starts from the transcript, so a read whisper skipped entirely -- no words, no span, no marker, just an audible burst in a marker gap -- was invisible to all of them. This one starts from the waveform: on request it scans the session's audio against the silence gate for sound covered by neither a take marker nor a transcribed word, lists each burst with a clickable timecode, and ignores clicks shorter than a read and dips shorter than a breath (both loadable settings). It found the skipped read that motivated it plus a 2-second one nobody had noticed, and it runs when you press Scan, never behind your back.
 --   "Not on the script" is a queue instead of a dead end: right-click any orphan to hand it to a script line (best guesses first, scored against what was actually said) or dismiss it as junk, which is remembered and leaves the count -- so "0 orphans" now means every span has been looked at. Each orphan says why it is one. Matching ranks candidates by tokens of agreement rather than by score, so a short line matched perfectly no longer takes the words out of the middle of a long one. A transcript is drawn in one colour with the EXTRA words -- what the reader said that the line does not contain -- in amber; the colour used to encode a match threshold nobody could see. Notes are gone from the cards. A reader going again is no longer reported as a transcriber loop. In Sources: single-click opens a file's detail, "Copy report" puts everything on the clipboard, reported timecodes are clickable links that move the edit cursor, and a transcript can be deleted from the panel. "Find lines in items" honours the REAPER selection. Fixed: a race that reported "whisper-cli exited with code -1" on runs that had barely started.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
@@ -201,9 +201,16 @@ end
 -- every guess at the boundary put a tab switch in the middle of it. One full
 -- row you can read beats three tidy ones you have to page through. Split it
 -- again when the domains are known, not before.
+--
+-- The second tab is labelled MAIN, not Edit. It holds every verb the tool has
+-- except the once-per-project errands, so it needs a name meaning "the work" --
+-- and Edit is now one of the GROUPS inside it. A tab is a container; naming it
+-- after one of the things it contains is the collision this avoids. The `edit`
+-- key is left alone: it is stored in ExtState, and renaming it would throw away
+-- every user's remembered tab to change a string nobody sees.
 local TOOLBAR_TABS = {
   { key = "setup", label = "Setup" },
-  { key = "edit",  label = "Edit" },
+  { key = "edit",  label = "Main" },
 }
 
 local LAYOUT_ORDERS = {
@@ -1189,7 +1196,13 @@ end
 -- whole script from parsing.
 local Trim = {}
 
--- This item's own tool markers that its window actually shows.
+-- This item's own tool markers -- the ones it HOLDS, not the ones it touches.
+--
+-- vo.MarkerInItem is the rule, and it is not "any overlap": the previous
+-- take's marker ending a fifth of a second inside this clip is not a marker on
+-- this clip -- you cannot even see it there -- but any-overlap counted it, so
+-- the clip read as a recording holding two takes and every verb that needs
+-- "the one marker here" refused it.
 function Trim.markers_in(info)
   local out = {}
   local cov = info and info.item and vo.SourceCoverageRanges({ info })[1]
@@ -1202,7 +1215,7 @@ function Trim.markers_in(info)
   for _, m in ipairs(vo.ParseTKMChunk(chunk)) do
     local asset, id = vo.ParseMarkerName(m.name)
     local from, to = m.pos, m.pos + (m.length or 0)
-    if id and to > from and from < cov.to and to > cov.from then
+    if id and to > from and vo.MarkerInItem({ start = from, stop = to }, cov) then
       out[#out + 1] = { start = from, stop = to, asset = asset, id = id }
     end
   end
@@ -1347,7 +1360,7 @@ function Trim.dupe_plan(scope)
   end
 
   -- Counting markers only: the coverage rule has already thrown out the copies
-  -- a split scattered onto neighbouring items, which are Tidy's business and
+  -- a split scattered onto neighbouring items, which are the leftovers pass's
   -- would otherwise cluster with everything they were copied from.
   local markers, owner = {}, {}
   for path, group in pairs(state.take_markers or {}) do
@@ -1672,6 +1685,12 @@ function Trim.scope()
   return (next(picked) ~= nil) and picked or nil
 end
 
+-- core.Transaction's signature, minus the transaction. A step borrowed by a
+-- macro must not open an undo block of its own: REAPER reference-counts them
+-- so a nested one would probably collapse, but "probably" is not a thing to
+-- build one-press-one-undo on. The macro owns the block; the step just runs.
+function Trim.bare(_, fn) fn() end
+
 function Trim.remove_extras()
   Reload()
   local picked = Trim.scope()
@@ -1693,80 +1712,6 @@ function Trim.remove_extras()
   end
   state.message, state.message_kind = table.concat(parts, " "),
     (#plan.skipped > 0 and removed == 0) and "warn" or "ok"
-end
-
--- The button for "I have just trimmed this clip by hand, make it right again".
---
--- Remove the extras, then bring what is left up to date with the audio the
--- item now shows: the surviving marker follows the item's edges, and an edge
--- left raw by the trim gets the standard fade back.
---
--- Fades are filled per SIDE, never overwritten. A trim leaves the edge it cut
--- at zero and the other edge's fade intact, so filling only the zeros restores
--- exactly what the trim removed -- and a fade drawn by hand, on either side,
--- survives a press of this. That also keeps the hand-trimmed sentinel that
--- TightenItems reads (custom fades mean "leave this alone") meaningful.
-function Trim.tidy_take()
-  Reload()
-  local cfg = vo.LoadConfig()
-  local fade_in  = vo.Opt(cfg, "cut_fade_in")
-  local fade_out = vo.Opt(cfg, "cut_fade_out")
-  local picked = Trim.scope()
-
-  local removed, dropped, plan = 0, 0, nil
-  local snapped, faded, several = 0, 0, 0
-
-  core.Transaction("VO Overview: tidy up take", function()
-    removed, dropped, plan = Trim.extras(picked)
-
-    for _, info in ipairs(state.items or {}) do
-      local item = info.item
-      if item and not info.skip and ((not picked) or picked[item]) then
-        -- Re-read per item: markers_in goes back to the chunk, so it sees the
-        -- deletes this transaction has already made rather than the collection
-        -- from before them.
-        local mks = Trim.markers_in(info)
-        if #mks == 1 then
-          if Trim.snap_apply(info, mks[1]) then snapped = snapped + 1 end
-        elseif #mks > 1 then
-          -- Still contested, because the words refused to choose. Snapping one
-          -- of several markers to the whole item would be a guess.
-          several = several + 1
-        end
-
-        local was_in  = r.GetMediaItemInfo_Value(item, "D_FADEINLEN")
-        local was_out = r.GetMediaItemInfo_Value(item, "D_FADEOUTLEN")
-        local hit = false
-        if was_in <= 0 and fade_in and fade_in > 0 then
-          r.SetMediaItemInfo_Value(item, "D_FADEINLEN", fade_in)
-          hit = true
-        end
-        if was_out <= 0 and fade_out and fade_out > 0 then
-          r.SetMediaItemInfo_Value(item, "D_FADEOUTLEN", fade_out)
-          hit = true
-        end
-        if hit then faded = faded + 1 end
-      end
-    end
-  end)
-  state.dirty = true
-  r.UpdateArrange()
-  Reload()
-
-  local parts = Trim.dupe_report(plan, removed)
-  if dropped > 0 then
-    parts[#parts + 1] = string.format(
-      "Dropped the leftover markers from %d clip(s).", dropped)
-  end
-  parts[#parts + 1] = string.format(
-    "Snapped %d marker(s) to their item; filled the missing fades on %d.",
-    snapped, faded)
-  if several > 0 then
-    parts[#parts + 1] = string.format(
-      "%d clip(s) still hold several markers and were not snapped.", several)
-  end
-  state.message, state.message_kind = table.concat(parts, " "),
-    (several > 0) and "warn" or "ok"
 end
 
 -- The edges a cut WOULD produce, for spans in one item.
@@ -1818,7 +1763,7 @@ local function SnapSpansToCut(info, spans, cfg, words)
     end
     table.sort(proj, function(a, b) return a.start < b.start end)
 
-    local floor_ = vo.MeasureNoiseFloor(vo.InterWordGaps(proj_words), probe, cfg)
+    local floor_ = vo.ResolveGate(vo.InterWordGaps(proj_words), probe, cfg)
     vo.ApplyPadding(proj, cfg,
       { start = info.pos, stop = info.pos + info.length }, probe, floor_, proj_words)
 
@@ -1855,15 +1800,39 @@ end
 --
 -- Scope is the selection, like everything else: the items picked in REAPER, or
 -- every item when nothing is picked.
-local function IdentifyItems()
-  Reload()
+-- Re-running UPDATES rather than re-marks. A take that already has a marker
+-- keeps it -- the same id, so every Sel, Keep, note and override stays filed
+-- where it was -- and only its edges are re-derived at the current settings.
+--
+-- Without that an identified session is frozen: every span reads as marked,
+-- every plan comes back empty, and a change to the boundary settings can never
+-- show up on the timeline. This was briefly a second button; it is not a
+-- separate intention, it is what pressing the same button again should mean.
+--
+-- `opts` is how Update from Item borrows this verb for its first step
+-- (VO/SPEC-authority-buttons.md). With no opts the behaviour is exactly what
+-- the Identify button has always done, so the button is unaffected by the
+-- macro existing:
+--
+--   picked         an item set to use instead of the REAPER selection
+--   only_unmarked  skip items that already hold a take marker -- the macro is
+--                  filling in a MISSING marker, and re-deriving the edges of a
+--                  marker the user has deliberately dragged would undo the
+--                  very edit they pressed the button to keep
+--   quiet          return { wrote, named, many, none, unusable } instead of
+--                  writing state.message, so the caller reports the whole
+--                  macro in one sentence rather than flashing this step's own
+--   no_reload      the caller has already reloaded and is mid-transaction
+local function IdentifyItems(opts)
+  opts = opts or {}
+  if not opts.no_reload then Reload() end
   local cfg   = vo.LoadConfig()
   local floor = vo.Opt(cfg, "mark_item_min_span")
   local taken = TakenMarkerIds()
   local index = vo.BuildNameIndex(state.lines)
 
   -- Scope: the items picked in REAPER, else every item in the project.
-  local picked = SelectedItemSet()
+  local picked = opts.picked or SelectedItemSet()
   local scoped = next(picked) ~= nil
 
   local spans_by_path = {}
@@ -1893,17 +1862,31 @@ local function IdentifyItems()
   -- Which spans already have a marker. Per SPAN, not per item: an item can
   -- hold four hundred takes with all but one of them already marked, and that
   -- must not read as a single-take item.
-  local marked_span = {}
+  --
+  -- By OVERLAP, not by start time. A marker row's source_start is the MARKER's
+  -- edge -- the cut's padded, snapped edge -- and the span's is the matcher's
+  -- raw whisper bound, so the two have not shared a start since Identify began
+  -- writing markers at the edges the cut will use. Comparing them answered "not
+  -- marked" for every take that had a marker, so every press minted a second
+  -- marker for the same take and kept the first: the item's markers doubled on
+  -- each run, and Remove Extra Take Markers was the only way back.
+  local marked_ranges = {}
   for _, row in ipairs(state.overview) do
-    if row.marker_id and row.source_path and row.source_start ~= nil then
-      marked_span[start_key(row.source_path, row.source_start)] = true
+    if row.marker_id and row.source_path
+       and row.source_start ~= nil and row.source_stop ~= nil then
+      local list = marked_ranges[row.source_path]
+      if not list then list = {}; marked_ranges[row.source_path] = list end
+      list[#list + 1] = { start = row.source_start, stop = row.source_stop }
     end
   end
 
   local items, by_key, unusable = {}, {}, 0
   for _, info in ipairs(state.items or {}) do
     local item = info.item
-    if item and not info.skip and ((not scoped) or picked[item]) then
+    -- `only_unmarked` reads the CHUNK, not state.overview: the macro calls this
+    -- mid-transaction, where the chunk is the only thing already up to date.
+    if item and not info.skip and ((not scoped) or picked[item])
+       and not (opts.only_unmarked and #Trim.markers_in(info) > 0) then
       local cov = vo.SourceCoverageRanges({ info })[1]
       if cov then
         local spans = {}
@@ -1912,7 +1895,7 @@ local function IdentifyItems()
             spans[#spans + 1] = {
               start = sp.start, stop = sp.stop,
               asset = sp.asset, deliver = sp.deliver or sp.asset,
-              marked = marked_span[start_key(info.path, sp.start)] or nil,
+              marked = vo.BestOverlap(marked_ranges[info.path], sp) and true or nil,
               path = info.path,
             }
           end
@@ -1930,20 +1913,28 @@ local function IdentifyItems()
   end
 
   if #items == 0 then
+    if opts.quiet then
+      return { wrote = 0, named = 0, many = 0, none = 0, unusable = unusable }
+    end
     state.message, state.message_kind = scoped
       and "Nothing usable in the selection: those item(s) have no audio this tool can read."
       or  "No audio in this project to identify.", "warn"
     return
   end
 
-  local plans, counts = vo.PlanItemIdentity(items, { floor = floor })
+  local plans, counts =
+    vo.PlanItemIdentity(items, { floor = floor, replace = true })
 
-  local wrote, named, rekey = 0, 0, {}
+  local wrote, named, updated, unchanged, rekey = 0, 0, 0, 0, {}
   local anything = false
   for _, plan in ipairs(plans) do
     if #plan.markers > 0 or plan.name then anything = true break end
   end
   if not anything then
+    if opts.quiet then
+      return { wrote = 0, named = 0, many = counts.many, none = counts.none,
+               unusable = unusable }
+    end
     state.message, state.message_kind = string.format(
       "Everything in scope is already identified: %d take(s), %d recording(s), " ..
       "%d item(s) matching no line.", counts.one, counts.many, counts.none), "info"
@@ -1951,7 +1942,8 @@ local function IdentifyItems()
   end
 
   state.name_baseline = nil
-  core.Transaction("VO Overview: identify takes", function()
+  ;(opts.no_transaction and Trim.bare or core.Transaction)(
+      "VO Overview: identify takes", function()
     for _, plan in ipairs(plans) do
       local rec = by_key[plan.key]
       local item = rec and rec.item
@@ -1970,28 +1962,76 @@ local function IdentifyItems()
 
         -- Existing tool markers ride along: WriteTakeMarkers replaces the
         -- tool's whole set, and dropping them would orphan every take in this
-        -- item that was already identified.
-        local list = {}
+        -- item that was already identified. Read FIRST, because a re-placed
+        -- span has to find its own existing marker and keep that marker's id:
+        -- the id is the row's identity, and minting a new one would orphan
+        -- every mark the user has put on the take.
+        local existing = {}
+        local ok0, chunk0 = r.GetItemStateChunk(item, "", false)
+        if ok0 then
+          for _, m in ipairs(vo.ParseTKMChunk(chunk0)) do
+            local a0, i0 = vo.ParseMarkerName(m.name)
+            if i0 then
+              existing[#existing + 1] = { start = m.pos,
+                                          stop = m.pos + (m.length or 0),
+                                          asset = a0, id = i0 }
+            end
+          end
+        end
+
+        -- The marker a re-derived span owns: the one that overlaps it most. A
+        -- marker sits at the cut's padded edges and the span at the matcher's
+        -- raw ones, so only overlap can pair them. Claimed at most once, so
+        -- two takes a hair apart cannot both take the same marker.
+        --
+        -- Finding it is the whole point. Re-running must UPDATE the marker this
+        -- take already has, never swap it for a new one: the id is the row's
+        -- identity, and every Sel, Keep, note and name override is filed under
+        -- it. A fresh id would leave all of that behind on a marker that no
+        -- longer exists.
+        local claimed, free = {}, {}
+        for k, m in ipairs(existing) do free[k] = m end
+        local function claim(span)
+          local k = vo.BestOverlap(free, span)
+          if not k or claimed[k] then return nil end
+          claimed[k] = true
+          free[k] = { start = 0, stop = 0 }  -- taken: cannot win another span
+          return existing[k]
+        end
+
+        local list, moved, kept = {}, 0, 0
         for i, mk in ipairs(plan.markers) do
-          local id = vo.MintMarkerId(taken)
-          local e = edges[i] or mk
+          local was = mk.redo and claim(mk.span) or nil
+          local id  = was and was.id or vo.MintMarkerId(taken)
+          local e   = edges[i] or mk
+          if was then
+            -- Only what MOVED counts as an update. Sub-millisecond drift is
+            -- the same edge measured twice, not a decision, and reporting it
+            -- would tell the user their settings did something when they did
+            -- not. The marker is rewritten either way -- it has to be, since
+            -- WriteTakeMarkers writes the whole set -- so this is the report
+            -- talking, not the timeline.
+            if math.abs(was.start - e.start) > 0.001
+               or math.abs(was.stop - e.stop) > 0.001 then
+              moved = moved + 1
+            else
+              kept = kept + 1
+            end
+          end
           list[#list + 1] = { start = e.start, stop = e.stop,
                               asset = mk.asset, id = id }
           local at = (plan.kind == "one") and plan.span or mk.span
           local row = at and rows_by_start[start_key(rec.info.path, at.start)]
           if row and row.key then rekey[row.key] = "tkm|" .. id end
         end
-        local ok0, chunk0 = r.GetItemStateChunk(item, "", false)
-        if ok0 then
-          for _, m in ipairs(vo.ParseTKMChunk(chunk0)) do
-            local a0, i0 = vo.ParseMarkerName(m.name)
-            if i0 then
-              list[#list + 1] = { start = m.pos, stop = m.pos + (m.length or 0),
-                                  asset = a0, id = i0 }
-            end
-          end
+        for k, m in ipairs(existing) do
+          if not claimed[k] then list[#list + 1] = m end
         end
-        if vo.WriteTakeMarkers(item, list) then wrote = wrote + #plan.markers end
+        if vo.WriteTakeMarkers(item, list) then
+          wrote     = wrote + #plan.markers - moved - kept
+          updated   = updated + moved
+          unchanged = unchanged + kept
+        end
       end
 
       -- Naming is independent of marking, so a session identified by an
@@ -2019,10 +2059,25 @@ local function IdentifyItems()
     if e.key and rekey[e.key] then e.key = rekey[e.key] end
   end
   state.dirty = true
+  if opts.quiet then
+    -- The rekey above has already run: the marks ride onto the new markers
+    -- whoever pressed the button. The caller reloads once, at the end of the
+    -- whole macro.
+    return { wrote = wrote, named = named, many = counts.many,
+             none = counts.none, unusable = unusable }
+  end
   Reload()
 
   local parts = { string.format("Identified %d item(s)%s: marked %d take(s), named %d.",
     #items, scoped and " in the selection" or "", wrote, named) }
+  if updated > 0 or unchanged > 0 then
+    parts[#parts + 1] = string.format(
+      "%d marker(s) already there kept their id: %d moved to the current " ..
+      "boundary settings (%dms head / %dms tail room), %d were already right.",
+      updated + unchanged, updated,
+      math.floor(vo.Opt(cfg, "snap_head_room") * 1000 + 0.5),
+      math.floor(vo.Opt(cfg, "snap_tail_room") * 1000 + 0.5), unchanged)
+  end
   if counts.many > 0 then
     parts[#parts + 1] = string.format(
       "%d held several takes and were left unnamed -- Cut splits them.", counts.many)
@@ -2035,6 +2090,180 @@ local function IdentifyItems()
   end
   state.message, state.message_kind = table.concat(parts, " "), "ok"
 end
+
+-- Update from Item / Update from Marker -- VO/SPEC-authority-buttons.md.
+--
+-- One question, asked twice: WHICH THING IS RIGHT? Something has been made
+-- correct by hand and everything else is now stale against it, so the button
+-- names the authority and the rest catches up.
+--
+--   dir "item"    the item's edges are the truth (you trimmed the clip)
+--   dir "marker"  the marker's bounds are the truth (you dragged the marker)
+--
+-- ONE function, because the scope, the routing, the fades and the report are
+-- the whole verb and are identical either way -- the same reason Trim.run is
+-- one function. Only the middle step differs, and two copies of this is
+-- exactly how the per-row pair used to drift away from the batch one.
+--
+-- This replaces Tidy Up Take, which was the "item" direction under a name that
+-- did not say so. It lives down here rather than beside the rest of Trim
+-- because it calls IdentifyItems, and a Lua closure written above that local
+-- would capture a nil global instead.
+--
+-- Fades are filled per SIDE, never overwritten. A trim leaves the edge it cut
+-- at zero and the other edge's fade intact, so filling only the zeros restores
+-- exactly what the trim removed -- and a fade drawn by hand, on either side,
+-- survives a press. That also keeps the hand-trimmed sentinel TightenItems
+-- reads (custom fades mean "leave this alone") meaningful.
+function Trim.update(dir)
+  local from_item = (dir or "item") == "item"
+  Reload()
+  local cfg = vo.LoadConfig()
+  local fade_in  = vo.Opt(cfg, "cut_fade_in")
+  local fade_out = vo.Opt(cfg, "cut_fade_out")
+  local index    = vo.BuildNameIndex(state.lines)
+  local picked   = Trim.scope()
+
+  local removed, dropped, plan = 0, 0, nil
+  local acted, faded, named, marked = 0, 0, 0, nil
+  local several, nomarker = 0, 0
+
+  core.Transaction(from_item and "VO Overview: update from item"
+                             or  "VO Overview: update from marker", function()
+    -- 1. The missing markers, "item" only. A take with no marker is usually a
+    --    marker that was never written or was deleted -- not a bad match --
+    --    so this identifies it rather than refusing on a score nobody asked
+    --    about. Items that already hold one are skipped: re-deriving the edges
+    --    of a marker the user dragged would undo the edit being kept.
+    if from_item then
+      marked = IdentifyItems({ picked = picked, only_unmarked = true,
+                               quiet = true, no_reload = true,
+                               no_transaction = true })
+      -- CollectTakeMarkers is what the duplicate pass below reads, and the
+      -- writes above have just made it stale for every item they touched.
+      if marked and marked.wrote > 0 then
+        state.take_markers = vo.CollectTakeMarkers(state.items)
+      end
+    end
+
+    -- 2. The extras: duplicates decided by the words, then the leftovers a
+    --    split scattered onto neighbouring clips. FIRST for "marker", and not
+    --    optionally: with two contested markers there is no single range to
+    --    trim onto, and trimming onto the wrong one moves audio a second press
+    --    cannot walk back.
+    removed, dropped, plan = Trim.extras(picked)
+
+    -- 3. and 4. Per item: act on the pair, then fill the fades.
+    for _, info in ipairs(state.items or {}) do
+      local item = info.item
+      if item and not info.skip and ((not picked) or picked[item]) then
+        -- Re-read per item: markers_in goes back to the chunk, so it sees both
+        -- the marks written in step 1 and the deletes made in step 2 rather
+        -- than the collection from before them.
+        --
+        -- span_count is 0 because the identify pass is already BEHIND us: an
+        -- item still holding no marker here is one step 1 could not place, and
+        -- step 1 has already counted it (marked.none). The routing is the
+        -- same table either way -- this is the second time it is asked, with
+        -- the first question answered.
+        local mks = Trim.markers_in(info)
+        local shape = vo.PlanUpdatePass(
+          { { key = item, marker_count = #mks, span_count = 0 } }, dir)
+
+        if #shape.act == 1 then
+          local mk = mks[1]
+          if from_item then
+            if Trim.snap_apply(info, mk) then acted = acted + 1 end
+          else
+            if Trim.apply(info, mk) then acted = acted + 1 end
+            -- The marker says which line this is, and the name IS the
+            -- assignment. PlanAdopt never overwrites a name that already
+            -- resolves to a line, so this fills blanks and leaves a real name
+            -- -- right or wrong -- alone: correcting one is a reassignment,
+            -- which is Identify's job, not a trim's.
+            local take = r.GetActiveTake(item)
+            if take and mk.asset then
+              local _, cur = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+              local renames = vo.PlanAdopt(
+                { { item = item, name = cur or "", deliver = mk.asset } },
+                index, { alt_pattern = cfg.alt_append_pattern })
+              if #renames == 1 then
+                r.GetSetMediaItemTakeInfo_String(take, "P_NAME", renames[1].name, true)
+                named = named + 1
+              end
+            end
+          end
+        elseif #shape.several == 1 then
+          several = several + 1
+        elseif #shape.nomarker == 1 then
+          nomarker = nomarker + 1
+        end
+
+        local was_in  = r.GetMediaItemInfo_Value(item, "D_FADEINLEN")
+        local was_out = r.GetMediaItemInfo_Value(item, "D_FADEOUTLEN")
+        local hit = false
+        if was_in <= 0 and fade_in and fade_in > 0 then
+          r.SetMediaItemInfo_Value(item, "D_FADEINLEN", fade_in)
+          hit = true
+        end
+        if was_out <= 0 and fade_out and fade_out > 0 then
+          r.SetMediaItemInfo_Value(item, "D_FADEOUTLEN", fade_out)
+          hit = true
+        end
+        if hit then faded = faded + 1 end
+      end
+    end
+  end)
+
+  state.dirty = true
+  r.UpdateArrange()
+  Reload()
+
+  -- One report for both directions, in the order the steps ran. A step with
+  -- nothing to do contributes no sentence.
+  local parts = {}
+  if marked and marked.wrote > 0 then
+    parts[#parts + 1] = string.format(
+      "Marked %d item(s) that had no take marker%s.", marked.wrote,
+      marked.named > 0 and string.format(" and named %d", marked.named) or "")
+  end
+  for _, s in ipairs(Trim.dupe_report(plan, removed)) do parts[#parts + 1] = s end
+  if dropped > 0 then
+    parts[#parts + 1] = string.format(
+      "Dropped the leftover markers from %d clip(s).", dropped)
+  end
+  parts[#parts + 1] = from_item
+    and string.format(
+      "Snapped %d marker(s) to their item; filled the missing fades on %d.",
+      acted, faded)
+    or string.format(
+      "Trimmed %d item(s) to their marker; named %d; filled the missing " ..
+      "fades on %d.", acted, named, faded)
+  if several > 0 then
+    parts[#parts + 1] = string.format(
+      "%d clip(s) hold several markers and were left alone -- Cut splits those.",
+      several)
+  end
+  if nomarker > 0 then
+    parts[#parts + 1] = string.format(
+      "%d item(s) have no take marker to update from -- Update from Item " ..
+      "marks those.", nomarker)
+  end
+  if marked and marked.none > 0 then
+    parts[#parts + 1] = string.format(
+      "%d item(s) match no script line.", marked.none)
+  end
+
+  -- A duplicate cluster the words refused to decide is a refusal too: it is
+  -- the reason a clip can come out of this still holding several markers.
+  local refused = several + nomarker + (marked and marked.none or 0)
+                  + (plan and #plan.skipped or 0)
+  state.message, state.message_kind = table.concat(parts, " "),
+    (refused > 0) and "warn" or "ok"
+end
+
+function Trim.update_from_item()   Trim.update("item")   end
+function Trim.update_from_marker() Trim.update("marker") end
 
 local function SetStatus(row, status)
   Mutate(row, function(e) e.status = status end)
@@ -2054,7 +2283,7 @@ end
 
 -- Which takes of a line are the same line's takes, for the Sel exclusivity
 -- below. The key rule itself lives in the lib (vo.LineKey) so the sheet,
--- Tidy's conflict count and the card badge cannot drift apart.
+-- the summary's conflict count and the card badge cannot drift apart.
 local function LineKeyOf(row)
   return vo.LineKey(row)
 end
@@ -4378,7 +4607,7 @@ local function DoCut()
         if not s.from_marker then open[#open + 1] = s end
       end
       if #open > 0 then
-        local floor = vo.MeasureNoiseFloor(vo.InterWordGaps(proj_words), probe, cfg)
+        local floor = vo.ResolveGate(vo.InterWordGaps(proj_words), probe, cfg)
         vo.ApplyPadding(open, cfg,
           { start = g.info.pos, stop = g.info.pos + g.info.length },
           probe, floor, proj_words)
@@ -5482,6 +5711,149 @@ function Repair.Unidentified()
     "These reads scored against a script line, but nothing has marked them as\n" ..
     "takes -- so no verb will act on them and they are not in the sheet. Run\n" ..
     "Identify, or mark them by hand.")
+  im.Separator(ctx)
+end
+
+-- Sound the transcript never heard: the amplitude-only sweep behind the
+-- "Unheard audio" Check panel. Every other queue starts from the transcript
+-- -- Unidentified and the orphans both need whisper to have HEARD the read --
+-- so a read whisper skipped entirely is invisible to all of them. It leaves
+-- an audible burst sitting in a marker gap, and only the audio knows.
+--
+-- Runs on the press, never in Reload: it reads the whole session's audio
+-- against the silence gate, which is seconds of AudioAccessor work, not a
+-- per-frame rebuild. The result is held until the next press.
+-- On the Repair table rather than a file-level local: the main chunk sits at
+-- Lua's 200-local ceiling, and one more `local function` here tips it over.
+function Repair.ScanUnheard()
+  Reload()
+  local cfg = vo.LoadConfig()
+
+  local words_cache = {}
+  local function words_for(path)
+    if words_cache[path] == nil then
+      local parsed = vo.ReadTranscript(path)
+      words_cache[path] = parsed and parsed.words or {}
+    end
+    return words_cache[path]
+  end
+
+  local counting = {}
+  for path, group in pairs(state.take_markers or {}) do
+    counting[path] = vo.CountingMarkers(group)
+  end
+
+  local found, scanned, no_floor = {}, 0, 0
+  for _, info in ipairs(state.items or {}) do
+    if info.item and not info.skip then
+      local take = r.GetActiveTake(info.item)
+      local probe, destroy = vo.MakeTakeProbe(take)
+      local ok = probe and pcall(function()
+        local cov = vo.SourceCoverageRanges({ info })[1]
+        if not cov then error("no source coverage") end
+
+        -- Everything already spoken for, in PROJECT time: counting markers
+        -- (the sheet's takes) and transcribed words (the other queues' turf).
+        local covered = {}
+        for _, mk in ipairs(counting[info.path] or {}) do
+          covered[#covered + 1] = {
+            from = vo.SourceTimeToProject(mk.start, info),
+            to   = vo.SourceTimeToProject(mk.stop,  info),
+          }
+        end
+        -- Gate words are limited to what this item covers, same as
+        -- SnapSpansToCut: probing outside the take answers silence, which
+        -- drags the measured floor down.
+        local proj_words = {}
+        for _, w in ipairs(words_for(info.path)) do
+          if w.t1 >= cov.from and w.t0 <= cov.to then
+            local a = vo.SourceTimeToProject(w.t0, info)
+            local b = vo.SourceTimeToProject(w.t1, info)
+            proj_words[#proj_words + 1] = { t0 = a, t1 = b }
+            covered[#covered + 1] = { from = a, to = b }
+          end
+        end
+
+        local gate = vo.ResolveGate(vo.InterWordGaps(proj_words), probe, cfg)
+        if not gate then error("no measurable floor") end
+
+        for _, b in ipairs(vo.UnheardBursts(info.pos, info.pos + info.length,
+                                            covered, gate, probe, cfg)) do
+          found[#found + 1] = {
+            source_path = info.path,
+            start = vo.ProjectTimeToSource(b.from, info),
+            stop  = vo.ProjectTimeToSource(b.to,   info),
+            proj  = b.from,
+          }
+        end
+        scanned = scanned + 1
+      end)
+      if destroy then destroy() end
+      if not ok then no_floor = no_floor + 1 end
+    end
+  end
+
+  table.sort(found, function(a, b)
+    if a.source_path ~= b.source_path then
+      return tostring(a.source_path) < tostring(b.source_path)
+    end
+    return a.start < b.start
+  end)
+  state.unheard = found
+  state.unheard_note = string.format("Scanned %d item(s)%s.", scanned,
+    no_floor > 0
+      and string.format(", %d could not be scanned (no audio, or no measurable floor)",
+                        no_floor)
+      or "")
+end
+
+-- Audible sound that nothing covers -- no take marker, no transcribed word.
+-- The last net: a read whisper skipped can only be found this way.
+function Repair.Unheard()
+  local list = state.unheard
+  if list == nil then
+    im.TextDisabled(ctx,
+      "Not scanned yet. This reads the whole session's audio against the\n" ..
+      "silence gate looking for sound the transcript never heard, so it\n" ..
+      "runs when you ask rather than on every change.")
+    if im.Button(ctx, "Scan the audio") then pending_action = Repair.ScanUnheard end
+    im.Separator(ctx)
+    return
+  end
+
+  if #list == 0 then
+    im.TextColored(ctx, 0x66BB66FF,
+      "Every audible burst is covered by a take marker or a transcribed word.")
+  else
+    im.TextColored(ctx, 0xDDAA33FF, string.format(
+      "%d burst(s) of sound the transcript never heard, unmarked:", #list))
+    for i, s in ipairs(list) do
+      if i > REPAIR_LIST_CAP then
+        im.TextDisabled(ctx, string.format("   ...and %d more", #list - REPAIR_LIST_CAP))
+        break
+      end
+      im.Bullet(ctx)
+      im.SameLine(ctx)
+      im.TextDisabled(ctx, vo.Basename(s.source_path or ""))
+      im.SameLine(ctx)
+      if im.SmallButton(ctx, string.format("%s##unh%d", vo.FormatTime(s.start or 0), i)) then
+        local at = s.proj or 0
+        pending_action = function() reaper.SetEditCurPos(at, true, false) end
+      end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Move the edit cursor to this sound.")
+      end
+      im.SameLine(ctx)
+      im.TextDisabled(ctx, string.format("%.1fs", (s.stop or 0) - (s.start or 0)))
+    end
+    im.TextDisabled(ctx,
+      "Listen to each: a read whisper skipped can be marked by hand (select\n" ..
+      "the range and use the take menu's add-marker), a cough can be ignored.\n" ..
+      "Re-transcribing the file usually hears a skipped read the second time.")
+  end
+  im.TextDisabled(ctx, state.unheard_note or "")
+  im.SameLine(ctx)
+  if im.SmallButton(ctx, "Rescan") then pending_action = Repair.ScanUnheard end
   im.Separator(ctx)
 end
 
@@ -7115,7 +7487,7 @@ local REMOTE_HELP =
   "status | rematch | cut | identify | " ..
   "sync_markers | build_tracks | pull | name_alts | sort script|record | " ..
   "dupes | append script|asset|nth|text | " ..
-  "rows [needle] | spans <needle> | missing | boundaries | verify | " ..
+  "rows [needle] | spans <needle> | missing | boundaries | verify | unheard | " ..
   "make_select <takename> | place | tighten | trim_to_markers"
 
 local function RemoteStatus()
@@ -7162,6 +7534,19 @@ local function RunRemoteCommand(command)
     -- harness scripts were written against them.
     IdentifyItems()
     return state.message or "identify ran with no result string"
+  elseif verb == "unheard" then
+    -- The Check panel's amplitude sweep, headless: scan, then read the list
+    -- back -- source basename, source-time range, length -- so a harness can
+    -- assert what the panel would show without a single click.
+    Repair.ScanUnheard()
+    local lines = { string.format("%d unheard burst(s) | %s",
+      #(state.unheard or {}), state.unheard_note or "") }
+    for _, s in ipairs(state.unheard or {}) do
+      lines[#lines + 1] = string.format("%s %.3f..%.3f len=%.2f",
+        vo.Basename(s.source_path or ""), s.start or 0, s.stop or 0,
+        (s.stop or 0) - (s.start or 0))
+    end
+    return table.concat(lines, "\n")
   elseif verb == "sync_markers" then
     SyncTakeMarkers()
     return state.message or "sync_markers ran with no result string"
@@ -7259,6 +7644,12 @@ local function RunRemoteCommand(command)
   elseif verb == "trim_to_markers" then
     Trim.run()
     return state.message or "trim_to_markers ran with no result string"
+  elseif verb == "update_from_item" then
+    Trim.update("item")
+    return state.message or "update_from_item ran with no result string"
+  elseif verb == "update_from_marker" then
+    Trim.update("marker")
+    return state.message or "update_from_marker ran with no result string"
   elseif verb == "tighten" then
     TightenItems()
     return state.message or "tighten ran"
@@ -7766,8 +8157,8 @@ local function loop()
       -- an "Identify line from item ▾" menu, which hid three distinct
       -- situations behind one generic name and an extra click; each button
       -- now names its situation itself.
-      Flow("Identify the lines in these items")
-      if im.Button(ctx, "Identify the lines in these items") then
+      Flow("Identify lines in audio and update markers")
+      if im.Button(ctx, "Identify lines in audio and update markers") then
         pending_action = IdentifyItems
       end
       Tip("Work out which script lines are in the audio, and write it down.\n\n" ..
@@ -7777,26 +8168,79 @@ local function loop()
           "because it has no one line to be named after; Cut splits those.\n\n" ..
           "This was three buttons -- Find lines in items, Assign items to\n" ..
           "lines, Adopt this whole session -- which differed only in the shape\n" ..
-          "of the audio, and choosing wrong did the wrong thing. Safe to\n" ..
-          "re-run: a name that already means a line is never overwritten.")
+          "of the audio, and choosing wrong did the wrong thing.\n\n" ..
+          "Re-running UPDATES rather than re-marks. A take that already has a\n" ..
+          "marker keeps that marker -- the same id, so its Sel, Keep, notes\n" ..
+          "and name override stay exactly where they are -- and only its edges\n" ..
+          "are re-measured at the current Boundaries settings. Press it again\n" ..
+          "after changing head room or tail to see the change on the timeline.\n\n" ..
+          "A name that already means a line is never overwritten.\n\n" ..
+          "Only takes inside a RECORDING are re-measured. An item holding one\n" ..
+          "take is marked at your own edges, and those are not the tool's to\n" ..
+          "change. An edge you dragged by hand inside a recording IS, so the\n" ..
+          "run reports how many moved.")
 
-      Group("Cut:")
-      -- First in the row, before the single-step verbs it is built out of:
-      -- this position is the row's MACRO slot -- the one press that does the
-      -- whole job, with the steps behind it for when it guesses wrong.
-      if im.Button(ctx, "Tidy Up Take") then pending_action = Trim.tidy_take end
-      Tip("The button for \"I just trimmed this clip by hand -- make it right\n" ..
-          "again\". In one undo step:\n\n" ..
-          "1. Remove Extra Take Markers (below), then\n" ..
-          "2. snap the surviving marker to the item's new edges, then\n" ..
-          "3. put the standard fade on any edge left at zero.\n\n" ..
-          "Fades are FILLED, never overwritten: a trim leaves the edge it cut\n" ..
-          "raw and the other edge's fade intact, so only the raw one is\n" ..
-          "restored and a fade you drew by hand survives.\n\n" ..
-          "A clip still holding several markers -- because the words refused\n" ..
-          "to choose between them -- is not snapped, and is reported.\n\n" ..
-          "Acts on the selection, or everything when nothing is selected.")
+      -- Untrack lives in Match because it is Identify's undo: it removes the
+      -- assignment -- markers, decisions, names -- and nothing else. Under Cut
+      -- it read as an edit to the audio, which is the one thing it never does.
+      Flow("Untrack these items…")
+      im.PushStyleColor(ctx, im.Col_Button,        0x8C3A3AFF)
+      im.PushStyleColor(ctx, im.Col_ButtonHovered, 0xA84A4AFF)
+      if im.Button(ctx, "Untrack these items…") then
+        im.OpenPopup(ctx, "##untrack_confirm")
+      end
+      im.PopStyleColor(ctx, 2)
+      Tip("Put the items selected in REAPER back the way they were before\n" ..
+          "Identify ran: their take markers go, the Lock / Keep / Sel,\n" ..
+          "status and notes stored against those markers go, and their take\n" ..
+          "names are cleared so nothing claims them.\n\n" ..
+          "Clearing the markers alone is not enough -- the stored decisions\n" ..
+          "outlive the marker, and the NAME is what assigns an item to a\n" ..
+          "line. That is why an item cleared with a native action kept\n" ..
+          "coming back.\n\n" ..
+          "It does not empty the sheet: the transcript still matches the\n" ..
+          "script, so those lines still show takes -- unmarked ones, ready\n" ..
+          "to identify again.\n\n" ..
+          "Audio is never touched. Requires a REAPER selection.")
 
+      if im.BeginPopup(ctx, "##untrack_confirm") then
+        local c = Trim.untrack_count()
+        if not c then
+          im.Text(ctx, "Select the items to untrack in REAPER first.")
+        else
+          im.Text(ctx, string.format("Untrack %d item(s)?", c.items))
+          im.Spacing(ctx)
+          im.TextDisabled(ctx, "Goes:")
+          im.TextWrapped(ctx, string.format(
+            "  %d take marker(s), %d stored decision(s) (Lock / Keep / Sel, " ..
+            "status, notes, per-take names), %d item name(s) cleared.",
+            c.markers, c.entries, c.names))
+          im.TextDisabled(ctx, "Stays:")
+          im.TextWrapped(ctx,
+            "  The audio, the item edges, the transcripts and the script. " ..
+            "Those lines keep showing takes -- unmarked, as they stood " ..
+            "before Identify.")
+        end
+        im.Spacing(ctx)
+        if c then
+          im.PushStyleColor(ctx, im.Col_Button, 0x8C3A3AFF)
+          if im.Button(ctx, "Untrack") then
+            pending_action = Trim.untrack
+            im.CloseCurrentPopup(ctx)
+          end
+          im.PopStyleColor(ctx)
+          im.SameLine(ctx)
+        end
+        if im.Button(ctx, "Cancel") then im.CloseCurrentPopup(ctx) end
+        im.EndPopup(ctx)
+      end
+
+      -- Cut closes MATCH, not the row below. Match / mark / split is one
+      -- errand -- work out what this audio is and make it exist as takes --
+      -- run in order, once, on a fresh session. It used to lead the repair
+      -- row, so a first pass had to jump a group and come back, and the repair
+      -- row's macro sat directly above the one button a fresh session presses
+      -- before it.
       Flow("Cut recording into takes")
       if im.Button(ctx, "Cut recording into takes") then
         pending_action = RunCut
@@ -7806,6 +8250,58 @@ local function loop()
           "where a take's fate is settled.\n\n" ..
           "Select a recording to cut all of it, or rows to cut just those.\n" ..
           "The line above the rows says which.")
+
+      -- EDIT, not Fix. Every verb here acts on takes that already exist, and
+      -- every one of them starts with a human having changed something by
+      -- hand: this is the tool's normal working state, not a repair bay. Match
+      -- is the initial work; Edit is where the user lives afterwards.
+      Group("Edit:")
+      -- First in the row, before the single-step verbs they are built out of:
+      -- this position is the row's MACRO slot -- the one press that does the
+      -- whole job, with the steps behind it for when it guesses wrong.
+      --
+      -- TWO macros, because there are two authorities. Which element did you
+      -- just make correct? Everything else catches up to it. The names are
+      -- deliberately one word apart, so each tooltip states its authority in
+      -- its first line.
+      if im.Button(ctx, "Update from Item") then
+        pending_action = Trim.update_from_item
+      end
+      Tip("The ITEM's edges are right -- you just trimmed the clip -- and\n" ..
+          "everything else catches up. In one undo step:\n\n" ..
+          "1. any item with NO take marker gets one, identified from the\n" ..
+          "   script (a missing marker is usually one never written or\n" ..
+          "   deleted, so this does not refuse on a weak score), then\n" ..
+          "2. Remove Extra Take Markers (below), then\n" ..
+          "3. snap the surviving marker to the item's new edges, then\n" ..
+          "4. put the standard fade on any edge left at zero.\n\n" ..
+          "The transcript needs no step: a take's words are read from inside\n" ..
+          "its marker, so they narrow with it by themselves.\n\n" ..
+          "Fades are FILLED, never overwritten: a trim leaves the edge it cut\n" ..
+          "raw and the other edge's fade intact, so only the raw one is\n" ..
+          "restored and a fade you drew by hand survives.\n\n" ..
+          "A clip still holding several markers -- because the words refused\n" ..
+          "to choose between them -- is not snapped, and is reported.\n\n" ..
+          "Acts on the selection, or everything when nothing is selected.")
+
+      Flow("Update from Marker")
+      if im.Button(ctx, "Update from Marker") then
+        pending_action = Trim.update_from_marker
+      end
+      Tip("The MARKER's bounds are right -- you just dragged it to where the\n" ..
+          "clip should start and end -- and the item catches up. In one undo\n" ..
+          "step:\n\n" ..
+          "1. Remove Extra Take Markers (below) -- first, because with two\n" ..
+          "   markers fighting there is no single range to trim onto, then\n" ..
+          "2. trim the item's edges to the marker, then\n" ..
+          "3. name the item for the marker's line if it has no name that\n" ..
+          "   means one already, then\n" ..
+          "4. put the standard fade on any edge left at zero.\n\n" ..
+          "The audio does not move: the same sample stays at the same project\n" ..
+          "time. An item with no marker is left alone and reported -- there is\n" ..
+          "nothing to update FROM. Update from Item is the button that marks\n" ..
+          "those.\n\n" ..
+          "Acts on the selection, or everything when nothing is selected.")
 
       Flow("Trim items to their markers")
       if im.Button(ctx, "Trim items to their markers") then
@@ -7860,58 +8356,6 @@ local function loop()
           "marker set into both halves.\n\n" ..
           "Acts on the selection, or everything when nothing is selected.")
 
-      Flow("Untrack these items…")
-      im.PushStyleColor(ctx, im.Col_Button,        0x8C3A3AFF)
-      im.PushStyleColor(ctx, im.Col_ButtonHovered, 0xA84A4AFF)
-      if im.Button(ctx, "Untrack these items…") then
-        im.OpenPopup(ctx, "##untrack_confirm")
-      end
-      im.PopStyleColor(ctx, 2)
-      Tip("Put the items selected in REAPER back the way they were before\n" ..
-          "Identify ran: their take markers go, the Lock / Keep / Sel,\n" ..
-          "status and notes stored against those markers go, and their take\n" ..
-          "names are cleared so nothing claims them.\n\n" ..
-          "Clearing the markers alone is not enough -- the stored decisions\n" ..
-          "outlive the marker, and the NAME is what assigns an item to a\n" ..
-          "line. That is why an item cleared with a native action kept\n" ..
-          "coming back.\n\n" ..
-          "It does not empty the sheet: the transcript still matches the\n" ..
-          "script, so those lines still show takes -- unmarked ones, ready\n" ..
-          "to identify again.\n\n" ..
-          "Audio is never touched. Requires a REAPER selection.")
-
-      if im.BeginPopup(ctx, "##untrack_confirm") then
-        local c = Trim.untrack_count()
-        if not c then
-          im.Text(ctx, "Select the items to untrack in REAPER first.")
-        else
-          im.Text(ctx, string.format("Untrack %d item(s)?", c.items))
-          im.Spacing(ctx)
-          im.TextDisabled(ctx, "Goes:")
-          im.TextWrapped(ctx, string.format(
-            "  %d take marker(s), %d stored decision(s) (Lock / Keep / Sel, " ..
-            "status, notes, per-take names), %d item name(s) cleared.",
-            c.markers, c.entries, c.names))
-          im.TextDisabled(ctx, "Stays:")
-          im.TextWrapped(ctx,
-            "  The audio, the item edges, the transcripts and the script. " ..
-            "Those lines keep showing takes -- unmarked, as they stood " ..
-            "before Identify.")
-        end
-        im.Spacing(ctx)
-        if c then
-          im.PushStyleColor(ctx, im.Col_Button, 0x8C3A3AFF)
-          if im.Button(ctx, "Untrack") then
-            pending_action = Trim.untrack
-            im.CloseCurrentPopup(ctx)
-          end
-          im.PopStyleColor(ctx)
-          im.SameLine(ctx)
-        end
-        if im.Button(ctx, "Cancel") then im.CloseCurrentPopup(ctx) end
-        im.EndPopup(ctx)
-      end
-
       Flow("Apply the cut fades")
       if im.Button(ctx, "Apply the cut fades") then pending_action = Trim.fades end
       Tip("Put the standard short fades (Settings) back on the selected\n" ..
@@ -7952,7 +8396,7 @@ local function loop()
           "name is left alone.")
 
       Group("Pull:")
-      -- The row's MACRO slot, same as Tidy Up Take leads Cut: one press for
+      -- The row's MACRO slot, same as Update from Item leads Edit: one press for
       -- the whole job, with the steps still behind it.
       if im.Button(ctx, "Deliver") then pending_action = Dest.deliver end
       Tip("The whole of Pull in one press, one undo step:\n\n" ..
@@ -8018,6 +8462,17 @@ local function loop()
         "exists in this sheet only where a marker says it does, so these\n" ..
         "reads are heard but not tracked. (0) means every read is marked.")
 
+      -- And the net under THAT one: audio nothing ever heard. The two
+      -- panels above both start from the transcript; this one starts from
+      -- the waveform, because a read whisper skipped has no words at all.
+      local n_uh = state.unheard and tostring(#state.unheard) or "?"
+      Flow(string.format("Unheard audio (%s)", n_uh))
+      PanelButton("unheard", string.format("Unheard audio (%s)", n_uh),
+        "Audible sound covered by no take marker and no transcribed word --\n" ..
+        "a read whisper skipped leaves exactly this and is invisible to\n" ..
+        "every transcript-side check. Scans the audio on request; (?) means\n" ..
+        "it has not been scanned yet.")
+
     end
 
     im.EndGroup(ctx)
@@ -8028,6 +8483,7 @@ local function loop()
     if     state.panel == "disagree" then DrawDisagreePanel()
     elseif state.panel == "noaudio"  then Repair.NoAudio()
     elseif state.panel == "unidentified" then Repair.Unidentified()
+    elseif state.panel == "unheard" then Repair.Unheard()
     elseif state.panel == "script" then DrawScriptPanel()
     elseif state.panel == "cut"    then DrawCutPanel()
     elseif state.panel == "pull"   then DrawPullPanel()

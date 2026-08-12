@@ -2465,6 +2465,87 @@ test("the result never crosses the limit, in either direction", function()
 end)
 
 --------------------------------
+print("\nUnheardBursts:")
+
+-- A probe describing loud regions; everything else reads as room tone.
+local function loud_in(regions)
+  return function(t0, t1)
+    for _, rg in ipairs(regions) do
+      if t1 > rg[1] and t0 < rg[2] then return -10.0 end
+    end
+    return -80.0
+  end
+end
+
+test("a burst in uncovered audio is found with its extent", function()
+  -- The real shape: an audible read whisper never transcribed, sitting in a
+  -- marker gap. No span, no word, no marker -- only the amplitude knows.
+  local bursts = vo.UnheardBursts(0.0, 10.0, {}, -60.0, loud_in({ { 4.0, 5.0 } }),
+                                  { snap_min_silence = 0.05 })
+  assert(#bursts == 1, "bursts: " .. #bursts)
+  assert(math.abs(bursts[1].from - 4.0) < 0.06, "from: " .. bursts[1].from)
+  assert(math.abs(bursts[1].to   - 5.0) < 0.06, "to: "   .. bursts[1].to)
+end)
+
+test("sound under a covered range is not reported", function()
+  -- Covered means a counting marker or a transcribed word: that audio is
+  -- already accounted for -- by the sheet, or by the other Check queues.
+  local bursts = vo.UnheardBursts(0.0, 10.0, { { from = 3.9, to = 5.1 } }, -60.0,
+                                  loud_in({ { 4.0, 5.0 } }),
+                                  { snap_min_silence = 0.05 })
+  assert(#bursts == 0, "reported covered audio: " .. #bursts)
+end)
+
+test("the uncovered remainder of a half-covered burst is still reported", function()
+  -- A marker's generous tail can lap the head of an unheard read that follows
+  -- it. The lapped part is spoken for; the rest is not, and hiding the whole
+  -- burst because its first tenth was covered would lose the take.
+  local bursts = vo.UnheardBursts(0.0, 10.0, { { from = 2.0, to = 4.2 } }, -60.0,
+                                  loud_in({ { 4.0, 5.0 } }),
+                                  { snap_min_silence = 0.05 })
+  assert(#bursts == 1, "bursts: " .. #bursts)
+  assert(bursts[1].from >= 4.2 - 1e-9, "reached into the covered range: " .. bursts[1].from)
+  assert(math.abs(bursts[1].to - 5.0) < 0.06, "to: " .. bursts[1].to)
+end)
+
+test("a blip shorter than the minimum is not a read", function()
+  local bursts = vo.UnheardBursts(0.0, 10.0, {}, -60.0, loud_in({ { 4.0, 4.15 } }),
+                                  { snap_min_silence = 0.05 })
+  assert(#bursts == 0, "a click was reported as a read: " .. #bursts)
+end)
+
+test("a short dip does not split one read into two", function()
+  -- Speech has stops and breaths in it; a dip shorter than the join is the
+  -- inside of a read, not a boundary between two.
+  local bursts = vo.UnheardBursts(0.0, 10.0, {}, -60.0,
+                                  loud_in({ { 4.0, 4.5 }, { 4.65, 5.2 } }),
+                                  { snap_min_silence = 0.05 })
+  assert(#bursts == 1, "a breath split the read: " .. #bursts)
+  assert(math.abs(bursts[1].to - 5.2) < 0.06, "to: " .. bursts[1].to)
+end)
+
+test("a real pause does split them", function()
+  local bursts = vo.UnheardBursts(0.0, 10.0, {}, -60.0,
+                                  loud_in({ { 2.0, 2.6 }, { 6.0, 6.6 } }),
+                                  { snap_min_silence = 0.05 })
+  assert(#bursts == 2, "two reads merged across a pause: " .. #bursts)
+end)
+
+test("no probe, no floor, or no room each answer nothing", function()
+  assert(#vo.UnheardBursts(0, 10, {}, -60, nil, {}) == 0, "no probe")
+  assert(#vo.UnheardBursts(0, 10, {}, nil, function() return -10 end, {}) == 0, "no floor")
+  assert(#vo.UnheardBursts(5, 5, {}, -60, function() return -10 end, {}) == 0, "no room")
+end)
+
+test("the scan knobs are loadable settings with defaults", function()
+  assert(vo.DEFAULTS.unheard_min_length and vo.DEFAULTS.unheard_join,
+    "defaults missing")
+  local keys = {}
+  for _, f in ipairs(vo.CONFIG_SCHEMA) do keys[f.key] = true end
+  assert(keys.unheard_min_length and keys.unheard_join, "not in the schema")
+end)
+
+--------------------------------
 print("\nApplyPadding:")
 
 test("spans are padded by pre_pad and post_pad", function()
@@ -2582,12 +2663,57 @@ test("with a probe the edges sit a FIXED room from the speech", function()
   local probe = function(t0, t1) if t1 > 2.0 and t0 < 3.0 then return -10 end return -80 end
   vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.05 },
                   nil, probe, -60)
-  assert(near(spans[1].start, 2.0 - 0.060), "start: " .. spans[1].start)
-  assert(near(spans[1].stop,  3.0 + 0.150), "stop: " .. spans[1].stop)
+  assert(near(spans[1].start, 2.0 - vo.DEFAULTS.snap_head_room), "start: " .. spans[1].start)
+  assert(near(spans[1].stop,  3.0 + vo.DEFAULTS.snap_tail_room), "stop: " .. spans[1].stop)
   assert(spans[1].snapped == "silence", "snapped: " .. tostring(spans[1].snapped))
 end)
 
 --------------------------------
+print("\nResolveGate:")
+
+test("Auto off is the number you typed, whatever the room is doing", function()
+  -- The panel now speaks in dBFS like Dynamic Split's Threshold, so the gate
+  -- has to BE that number -- not a starting point the measurement adjusts.
+  local loud = function() return -20.0 end
+  local gate, how = vo.ResolveGate({ { from = 0, to = 5 } }, loud,
+    { snap_gate_auto = false, snap_gate_db = -48.0 })
+  assert(gate == -48.0, "typed gate was overridden: " .. tostring(gate))
+  assert(how == "fixed", "how: " .. tostring(how))
+end)
+
+test("Auto measures the room and sits the headroom above it", function()
+  local probe = function() return -70.0 end
+  local gate, how = vo.ResolveGate({ { from = 0, to = 5 } }, probe,
+    { snap_gate_auto = true, snap_floor_offset = 6.0,
+      snap_min_silence = 0.06, snap_floor_window = 0.5 })
+  assert(near(gate, -64.0), "gate: " .. tostring(gate))
+  assert(how == "measured", "how: " .. tostring(how))
+end)
+
+test("Auto with nothing measurable is nil, never a gate of zero", function()
+  -- A gate of 0 dBFS calls every sample silent and snaps every edge to its
+  -- limit; the caller must read nil as "snapping is unavailable" instead.
+  assert(vo.ResolveGate({}, function() return -70.0 end,
+    { snap_gate_auto = true }) == nil, "invented a gate from no gaps")
+  assert(vo.ResolveGate({ { from = 0, to = 5 } }, nil,
+    { snap_gate_auto = true }) == nil, "invented a gate with no probe")
+end)
+
+test("a typed gate needs no probe and no gaps at all", function()
+  -- The fixed path is what makes the panel usable on a recording whose pauses
+  -- are all too short to measure.
+  local gate = vo.ResolveGate(nil, nil, { snap_gate_auto = false, snap_gate_db = -55.0 })
+  assert(gate == -55.0, "tostring: " .. tostring(gate))
+end)
+
+test("the gate defaults to Auto, so no session changes under anyone", function()
+  assert(vo.DEFAULTS.snap_gate_auto == true, "Auto is not the default")
+  assert(vo.DEFAULTS.snap_gate_db == -60.0, tostring(vo.DEFAULTS.snap_gate_db))
+  local keys = {}
+  for _, f in ipairs(vo.CONFIG_SCHEMA) do keys[f.key] = true end
+  assert(keys.snap_gate_auto and keys.snap_gate_db, "the gate is not loadable")
+end)
+
 print("\nFindSpeechBounds:")
 
 test("the sound inside a span is found, and the pause around it is not", function()
@@ -2726,8 +2852,8 @@ test("a take whose words are already tight gets the same fixed room", function()
   local probe = function(t0, t1) if t1 > 2.0 and t0 < 3.0 then return -10 end return -80 end
   vo.ApplyPadding(spans, { pre_pad = 0.5, post_pad = 0.5, snap_min_silence = 0.05 },
                   nil, probe, -60)
-  assert(near(spans[1].start, 2.0 - 0.060), "start: " .. spans[1].start)
-  assert(near(spans[1].stop,  3.0 + 0.150), "stop: " .. spans[1].stop)
+  assert(near(spans[1].start, 2.0 - vo.DEFAULTS.snap_head_room), "start: " .. spans[1].start)
+  assert(near(spans[1].stop,  3.0 + vo.DEFAULTS.snap_tail_room), "stop: " .. spans[1].stop)
 end)
 
 test("a boundary never crosses into the neighbouring take's audio", function()
@@ -2784,7 +2910,7 @@ test("without words the fixed room still applies from the raw span", function()
   local spans = { pad_span(2.0, 3.0) }
   vo.ApplyPadding(spans, { pre_pad = 0.4, post_pad = 0.4, snap_min_silence = 0.02 },
                   nil, function() return -80 end, -60)
-  assert(near(spans[1].start, 2.0 - 0.060), "start: " .. spans[1].start)
+  assert(near(spans[1].start, 2.0 - vo.DEFAULTS.snap_head_room), "start: " .. spans[1].start)
   assert(spans[1].snapped == "pad", "unmeasured bounds must not claim silence")
 end)
 
@@ -2813,6 +2939,92 @@ test("the walk through sound never crosses the neighbour limit", function()
                   nil, probe, -60, words)
   assert(spans[1].start >= 1.5 - 1e-9,
     "the extension crossed the previous word: " .. spans[1].start)
+end)
+
+test("a misheard last word chained to the take is not cut off", function()
+  -- The real shape, from a session: the line ends "...master is Archivist",
+  -- whisper heard "alchemist", the matcher could not consume it, and the word
+  -- fence then cut every take of that line at the START of its own last word.
+  -- The word's t0 IS the span's raw stop (whisper chained them: one utterance)
+  -- and no span claims it, so it is this take's own edge word, misheard.
+  local spans = { pad_span(2.0, 3.0) }
+  local words = {
+    { t0 = 2.0, t1 = 3.0, text = "chosen" },
+    { t0 = 3.0, t1 = 3.5, text = "misheard" },  -- chained, claimed by nobody
+  }
+  local probe = function(t0, t1) if t1 > 2.0 and t0 < 3.55 then return -10 end return -80 end
+  vo.ApplyPadding(spans, { pre_pad = 0.3, post_pad = 0.6, snap_min_silence = 0.05 },
+                  nil, probe, -60, words)
+  assert(spans[1].stop > 3.5,
+    "the take's own last word was cut off at " .. spans[1].stop)
+end)
+
+test("a misheard first word chained to the take is not cut off", function()
+  -- Mirror of the above: "Adon no speak..." heard as "both no speak...".
+  -- The unmatched "both" ends exactly where the span begins, welded there by
+  -- whisper's chained times, and used to be fenced out of its own take.
+  local spans = { pad_span(2.0, 3.0) }
+  local words = {
+    { t0 = 1.5, t1 = 2.0, text = "misheard" },
+    { t0 = 2.0, t1 = 3.0, text = "chosen" },
+  }
+  local probe = function(t0, t1) if t1 > 1.5 and t0 < 3.0 then return -10 end return -80 end
+  vo.ApplyPadding(spans, { pre_pad = 0.3, post_pad = 0.6, snap_min_silence = 0.05 },
+                  nil, probe, -60, words)
+  assert(spans[1].start < 1.5,
+    "the take's own first word was cut off at " .. spans[1].start)
+end)
+
+test("a chained word another span claims is never absorbed", function()
+  -- Two takes sharing an instant: the next take's first word is chained to
+  -- this take's stop, but a span CLAIMS it, so the earlier take must not
+  -- swallow it however the audio reads.
+  local spans = { pad_span(7.0, 10.0), pad_span(10.0, 12.0) }
+  local words = { { t0 = 7.0, t1 = 10.0 }, { t0 = 10.0, t1 = 12.0 } }
+  local probe = function() return -10 end
+  vo.ApplyPadding(spans, { pre_pad = 0.15, post_pad = 0.25, snap_min_silence = 0.06 },
+                  nil, probe, -60, words)
+  assert(spans[1].stop <= 10.0 + 1e-9,
+    "the earlier take absorbed the next take's first word: " .. spans[1].stop)
+end)
+
+test("an edge absorbs ONE word, never a chain of them", function()
+  -- Five unclaimed words chained end to end after the span. The failure
+  -- absorption repairs is a misheard word, singular; run deeper, a take's
+  -- start walked through its own first word and on through the PREVIOUS
+  -- take's unmatched last word and stole it. A run of unheard words is the
+  -- substitution list's job.
+  local spans = { pad_span(2.0, 3.0) }
+  local words = { { t0 = 2.0, t1 = 3.0, text = "chosen" } }
+  for k = 1, 5 do
+    words[#words + 1] = { t0 = 3.0 + (k - 1) * 0.5, t1 = 3.0 + k * 0.5, text = "x" }
+  end
+  local probe = function() return -10 end
+  vo.ApplyPadding(spans, { pre_pad = 0.3, post_pad = 0.6, snap_min_silence = 0.05 },
+                  nil, probe, -60, words)
+  assert(spans[1].stop <= 3.5 + 1e-9,
+    "the stop walked a chain of words: " .. spans[1].stop)
+end)
+
+test("a trailing word goes to the take before it when the next take absorbed its own", function()
+  -- The three-takes shape from a session: ...is(9-10) TRAIL(10-11) HEAD(11-12)
+  -- no(12-14)... -- take 1's unmatched last word and take 2's unmatched first
+  -- word chained between the spans. HEAD belongs to take 2, TRAIL to take 1,
+  -- and one-word absorption with starts running first files them exactly so.
+  local spans = { pad_span(7.0, 10.0), pad_span(12.0, 14.0) }
+  local words = {
+    { t0 = 7.0,  t1 = 10.0, text = "line-one" },
+    { t0 = 10.0, t1 = 11.0, text = "trail" },
+    { t0 = 11.0, t1 = 12.0, text = "head" },
+    { t0 = 12.0, t1 = 14.0, text = "line-two" },
+  }
+  local probe = function() return -10 end
+  vo.ApplyPadding(spans, { pre_pad = 0.3, post_pad = 0.6, snap_min_silence = 0.05 },
+                  nil, probe, -60, words)
+  assert(spans[1].stop > 11.0 - 1e-9 and spans[1].stop <= 11.0 + 1e-9,
+    "take 1 did not keep its trailing word: " .. spans[1].stop)
+  assert(spans[2].start >= 11.0 - 1e-9 and spans[2].start < 12.0,
+    "take 2 did not keep its own first word: " .. spans[2].start)
 end)
 
 test("loud room at the placed edge is reported as pad, not silence", function()
@@ -4047,6 +4259,66 @@ test("binary catalog carries the exact verified asset sizes", function()
   for _, b in ipairs(vo.BINARY_CATALOG) do by_key[b.key] = b end
   assert(by_key["cuda-12.4"].expected_bytes == 677887125, "12.4 size drift")
   assert(by_key["cuda-11.8"].expected_bytes == 278557654, "11.8 size drift")
+end)
+
+test("the catalogs can say which entry is the one in use", function()
+  -- Both settings combos used to open on entry 1 whatever was configured, so
+  -- they named a build and a model the run was not using.
+  assert(vo.ModelCatalogIndex("C:/x/models/ggml-large-v3.bin") == 5,
+    tostring(vo.ModelCatalogIndex("C:/x/models/ggml-large-v3.bin")))
+  assert(vo.ModelCatalogIndex("/opt/GGML-Base.bin") == 1, "not case-insensitive")
+  assert(vo.ModelCatalogIndex("/opt/ggml-tiny.bin") == nil, "claimed an off-catalog model")
+  assert(vo.ModelCatalogIndex("") == nil and vo.ModelCatalogIndex(nil) == nil,
+    "an unset model matched something")
+
+  assert(vo.BinaryCatalogIndex("C:\\bin\\cuda-11.8\\Release\\whisper-cli.exe") == 2,
+    tostring(vo.BinaryCatalogIndex("C:\\bin\\cuda-11.8\\Release\\whisper-cli.exe")))
+  assert(vo.BinaryCatalogIndex("C:/bin/cuda-12.4/whisper-cli.exe") == 1, "forward slashes")
+  assert(vo.BinaryCatalogIndex("C:/tools/whisper-cli.exe") == nil,
+    "claimed a hand-picked exe as a catalog build")
+end)
+
+test("SuggestThreads leaves the machine room to run REAPER", function()
+  -- whisper.cpp scales with PHYSICAL cores and loses to itself past them.
+  assert(vo.SuggestThreads(16) == 7, tostring(vo.SuggestThreads(16)))
+  assert(vo.SuggestThreads(8)  == 3, tostring(vo.SuggestThreads(8)))
+  assert(vo.SuggestThreads(4)  == 2, tostring(vo.SuggestThreads(4)))
+  assert(vo.SuggestThreads(2)  == 1, tostring(vo.SuggestThreads(2)))
+  assert(vo.SuggestThreads(1)  == 1, tostring(vo.SuggestThreads(1)))
+  assert(vo.SuggestThreads(128) == 16, "never asks for more than whisper scales to")
+  assert(vo.SuggestThreads(0) == nil and vo.SuggestThreads(nil) == nil,
+    "invented a count from nothing")
+end)
+
+test("the room settings are loadable, not defaults-only", function()
+  -- vo.ApplyPadding clamps the exposed pads to snap_head_room/snap_tail_room,
+  -- so while these were missing from the schema no setting could change an
+  -- edge: vo.Opt could only ever see the built-in default.
+  local keys = {}
+  for _, f in ipairs(vo.CONFIG_SCHEMA) do keys[f.key] = f.default end
+  for _, k in ipairs({ "snap_head_room", "snap_tail_room",
+                       "trim_head_slack", "trim_tail_slack" }) do
+    assert(keys[k] ~= nil, k .. " is not in CONFIG_SCHEMA")
+    assert(keys[k] == vo.DEFAULTS[k], k .. " default drifted from DEFAULTS")
+  end
+end)
+
+test("a saved head room actually moves the edge", function()
+  -- The bug this pair guards: dragging "maximum head room" to 2.0 did nothing,
+  -- because min(pre_pad, snap_head_room) kept the hidden 0.060.
+  local quiet = function() return -80.0 end
+  local words = { { t0 = 5.0, t1 = 5.5 } }
+  local function edge(head)
+    local spans = { { start = 5.0, stop = 5.5 } }
+    vo.ApplyPadding(spans, { snap_boundaries = true, pre_pad = 1.0, post_pad = 1.0,
+                             snap_head_room = head, snap_tail_room = 0.150,
+                             snap_min_silence = 0.05 },
+                    { start = 0.0, stop = 10.0 }, quiet, -60.0, words)
+    return spans[1].start
+  end
+  local tight, loose = edge(0.060), edge(0.400)
+  assert(math.abs((tight - loose) - 0.340) < 1e-6,
+    string.format("head room did not reach the edge: %.3f vs %.3f", tight, loose))
 end)
 
 test("FormatBytes scales into human units", function()

@@ -27,7 +27,7 @@ screen.** See §2.1.
 ## 2. Layout
 
 ```
-[ Setup ]  [ Edit ]                                                [ Settings ]
+[ Setup ]  [ Main ]                                                [ Settings ]
 ──────────────────────────────────────────────────────────────────────────────
  <the selected tab's buttons>
  <a detail panel, if a button opened one>
@@ -36,7 +36,7 @@ screen.** See §2.1.
 `Settings` is a tab-shaped button on the trailing edge, not a tab: it opens a
 window rather than showing buttons.
 
-**Two tabs, deliberately, and Edit is crowded.** This started as five (Setup /
+**Two tabs, deliberately, and Main is crowded.** This started as five (Setup /
 Sheet / Items / Fix a line / Settings) and the extra boundaries cost more than
 they bought: matching, cutting and fixing happen in one breath, so every
 boundary put a tab switch in the middle of the work. Dim group labels
@@ -50,13 +50,22 @@ where a tab boundary cannot. Split again when the domains are known.
 Once-per-project errands. A script that fails to load switches here and opens
 the panel by itself.
 
-### Edit
+### Main
+
+**Named Main, not Edit** (2026-08-11). It holds every verb the tool has except
+the once-per-project errands, so it needs a name that means *the work*, not one
+that names a phase — and `Edit` is now a group INSIDE it. A tab is a container;
+naming it after one of the things it contains is the collision that renaming it
+avoids.
+
 ```
 [ Run the whole pass ]   match → cut → pick → pull
 Acting on 12 selected row(s).
 
 Match:  [ Match transcript to script ]  [ Identify the lines in these items ]
-Cut:    [ Cut recording into takes ]  [ Trim items to their markers ]
+        [ Cut recording into takes ]
+Edit:   [ Update from Item ]  [ Update from Marker ]
+        [ Trim items to their markers ]  [ Snap markers to items ]
         [ Auto-adjust head and tail ]
 Pick:   [ Auto-pick selects: last take ]  [ …first take ]  [ Auto-name the alts ]
 Pull:   [ Pull items to their tracks ]  [ Build the destination tracks ]
@@ -70,6 +79,17 @@ order, plus **Check** — the phase the batch button cannot run, because its
 verbs need a person deciding. The hero is the map of the toolbar: the batch
 path and the manual path are the same mental model, and finding a button costs
 one question — *which part of the job am I doing?*
+
+**Amended 2026-08-11** by `SPEC-authority-buttons.md`: *Cut recording into
+takes* moved up into **Match** — matching, marking and splitting are one
+first-pass errand — and the row it left is renamed **Edit**, holding only verbs
+that act on takes which already exist. The two rows are the two states the user
+is in: Match is the initial work, Edit is where they live afterwards. The
+labels now read Match / Edit / Pick / Pull, so the hero-word mapping is 3-of-4;
+Edit, like Check, is a phase the batch cannot run because a person has already
+decided something. Read that spec for the current Edit row. The tab that holds
+these groups is renamed **Main** in the same pass, so `Edit` names exactly one
+thing.
 
 This replaced grouping by what a button touches (Match = sheet, Items = audio).
 Phases are how the user thinks while working; the object-touched split was how

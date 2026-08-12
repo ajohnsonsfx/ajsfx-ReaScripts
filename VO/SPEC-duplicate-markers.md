@@ -151,6 +151,11 @@ behaviour is the leftovers half. `SyncTakeMarkers` survives as the seam's
 
 ### 6.2 Tidy Up Take
 
+**Superseded by `VO/SPEC-authority-buttons.md` (2026-08-11).** This button is
+renamed **Update from Item** and gains a missing-marker step; its mirror,
+**Update from Marker**, is the same macro with the snap reversed. The three
+steps below are still what it does — read that spec for the current shape.
+
 The button for *"I just trimmed this clip by hand — make it right again"*, in
 one undo step:
 

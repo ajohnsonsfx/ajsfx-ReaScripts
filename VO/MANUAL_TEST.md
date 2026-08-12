@@ -843,3 +843,62 @@ straddler — so swapping it back fails loudly.
     items** and the markers come back.
 13. With nothing selected in REAPER, the button's popup must say to select
     items first and offer no Untrack button.
+
+## Update from Item / Update from Marker (unreleased)
+
+`Tidy Up Take` is now **Update from Item**, and it has a mirror. Nothing here
+has been executed in REAPER — the routing (`vo.PlanUpdatePass`) is unit-tested,
+every write is not. The tab is also renamed `Main`, and `Cut recording into
+takes` has moved up into the `Match:` group.
+
+### Layout
+
+1. The second tab reads **Main**, not Edit. Its groups read **Match: / Edit: /
+   Pick: / Pull: / Check:** and `Cut recording into takes` is the LAST button
+   in Match, after `Untrack these items…`.
+2. The ribbon must not jump when switching Setup ↔ Main. The reserved height is
+   measured per width, and this change moved a button between rows.
+
+### Update from Item
+
+3. **The missing-marker step.** Delete a take's marker (or Untrack one item),
+   leaving audio the matcher recognises. Press **Update from Item**. Expect: a
+   marker back at the ITEM's own edges — not the transcript's — the item named
+   for its line, and the report saying `Marked 1 item(s) that had no take
+   marker and named 1`.
+4. Same again on an item whose audio matches no script line. Expect nothing
+   written and `1 item(s) match no script line`. It must NOT invent a marker.
+5. **An already-marked item is not re-derived.** Drag a marker's edge inward by
+   hand, then press. The marker must move OUT to the item's edges (that is the
+   snap), never to the transcript's boundary settings — proving `only_unmarked`
+   kept the identify pass off it.
+6. **The fade half.** Trim a clip's head so its fade-in is zero while the
+   fade-out is intact. One press fills ONLY the fade-in. (Carried over from
+   Tidy Up Take, still unexecuted.)
+7. Press twice. The second press reports zero snapped, zero faded, and writes
+   nothing.
+8. An uncut recording in the selection is reported as `hold several markers and
+   were left alone`, and comes out untouched — no marker moved, no fade added
+   to the recording itself.
+
+### Update from Marker
+
+9. Drag a take marker to where the clip should start and end, then press
+   **Update from Marker**. Expect: the item's edges land on the marker, and the
+   same source sample stays at the same project time (spot-check by ear, or
+   read `D_STARTOFFS` before and after with the MCP harness).
+10. The item's name: an item with a blank or meaningless name takes the
+    marker's line name. An item already named for a real line is left alone
+    even if that line is the WRONG one — reassignment is Identify's job.
+11. An item with NO take marker is left alone and reported as
+    `have no take marker to update from`. Nothing is trimmed to zero length.
+12. Two contested markers the words cannot decide: nothing is trimmed, nothing
+    is renamed, and the refusal is named in the report.
+
+### One undo
+
+13. **The one that matters.** Both buttons must be ONE undo step. Update from
+    Item runs the identify pass inside the macro's own transaction
+    (`Trim.bare`, so the step opens no block of its own) — press it on a
+    selection that needs marking, snapping AND fading, then press Ctrl+Z once
+    and confirm the markers, the edges and the fades all revert together.

@@ -221,6 +221,80 @@ test("marked spans do not change one-vs-many", function()
   assert(#p.markers == 1, "re-marked takes that already had markers: " .. #p.markers)
 end)
 
+print("\nBestOverlap:")
+
+test("a marker pairs with its span even though neither edge matches", function()
+  -- The bug this exists for: a marker is written at the CUT's edges -- speech
+  -- bounds, padded, snapped -- and the span is the matcher's raw whisper
+  -- bounds, so they never share a start. Identify compared starts, decided no
+  -- take was marked, and minted a second marker for every take on every press
+  -- while keeping the first. The item's markers doubled per run.
+  local markers = { { start = 0.94, stop = 5.40 }, { start = 9.88, stop = 14.6 } }
+  assert(vo.BestOverlap(markers, { start = 1.00, stop = 5.00 }) == 1,
+    "a padded marker did not pair with its own span")
+  assert(vo.BestOverlap(markers, { start = 10.0, stop = 14.0 }) == 2, "wrong marker")
+end)
+
+test("a take with no marker of its own claims nobody else's", function()
+  local markers = { { start = 0.94, stop = 5.40 } }
+  assert(vo.BestOverlap(markers, { start = 20.0, stop = 24.0 }) == nil,
+    "claimed a marker nowhere near it")
+  -- Touching is not overlapping: a take starting where the last marker ends
+  -- is the NEXT take.
+  assert(vo.BestOverlap(markers, { start = 5.40, stop = 9.0 }) == nil,
+    "claimed the marker it merely abuts")
+  -- A sliver of overlap is a neighbour bleeding, not the same take.
+  assert(vo.BestOverlap(markers, { start = 5.20, stop = 9.0 }) == nil,
+    "a 200ms clip of overlap counted as the same take")
+end)
+
+test("a recording's own marker cannot swallow a take inside it", function()
+  -- Measured against the SHORTER of the two: the long marker covers the short
+  -- span completely, but the short span covers almost none of the marker.
+  -- Sharing "most of the shorter one" is the honest test, and here it holds --
+  -- what must NOT happen is the reverse pairing being ambiguous.
+  local long_marker = { { start = 0.0, stop = 100.0 } }
+  assert(vo.BestOverlap(long_marker, { start = 10.0, stop = 14.0 }) == 1,
+    "a take wholly inside a marker did not pair with it")
+  assert(vo.BestOverlap({ { start = 10.0, stop = 14.0 } },
+                        { start = 0.0, stop = 100.0 }) == 1,
+    "the pairing is not symmetric")
+end)
+
+test("a degenerate range never wins a span", function()
+  -- Overview zeroes a claimed marker's range so it cannot be claimed twice.
+  assert(vo.BestOverlap({ { start = 0, stop = 0 } }, { start = 0.0, stop = 5.0 }) == nil,
+    "a zero-width range claimed a take")
+  assert(vo.BestOverlap(nil, { start = 0, stop = 1 }) == nil, "nil ranges errored")
+  assert(vo.BestOverlap({ { start = 0, stop = 1 } }, nil) == nil, "nil span errored")
+end)
+
+print("\nPlanItemIdentity (replace):")
+
+test("replace re-marks the takes an ordinary run skips", function()
+  -- Without this a session identified once is frozen: every span reads as
+  -- marked, every plan comes back empty, and a boundary setting can never
+  -- reach the timeline however far it is dragged.
+  local spans = { span(1, 5, "a", true), span(10, 14, "b", true),
+                  span(20, 24, "c") }
+  local item = { { key = "rec", from = 0, to = 100, spans = spans } }
+  assert(#plan_of(item).markers == 1, "an ordinary run re-marked marked takes")
+  local p = plan_of(item, { replace = true })
+  assert(#p.markers == 3, "replace skipped marked takes: " .. #p.markers)
+  assert(p.markers[1].redo == true and p.markers[3].redo == nil,
+    "redo does not distinguish an existing marker from a new one")
+end)
+
+test("replace leaves a single-take item on the user's own edges", function()
+  -- The item IS the take there, and its edges are the user's trim, not the
+  -- tool's padding pass -- so there is nothing for a boundary setting to move.
+  local p = plan_of({ { key = "i1", from = 10, to = 20,
+                        spans = { span(11, 19, "line_a", true) } } },
+                    { replace = true })
+  assert(p.kind == "one" and #p.markers == 0,
+    "re-placed a marker at edges the tool does not own")
+end)
+
 test("a zero-length item matches nothing", function()
   local p = plan_of({ { key = "i1", from = 5, to = 5,
                         spans = { span(1, 9, "a") } } })
@@ -237,6 +311,80 @@ test("counts total the items, and no items is not an error", function()
     string.format("one=%d many=%d none=%d", counts.one, counts.many, counts.none))
   local plans, empty = vo.PlanItemIdentity(nil)
   assert(#plans == 0 and empty.one == 0, "nil items errored")
+end)
+
+print("\nPlanUpdatePass:")
+
+-- The routing behind Update from Item / Update from Marker. `n` markers, `s`
+-- spans inside the item.
+local function items(list)
+  local out = {}
+  for _, it in ipairs(list) do
+    out[#out + 1] = { key = it[1], marker_count = it[2], span_count = it[3] }
+  end
+  return out
+end
+
+test("one marker is the pair to act on, either direction", function()
+  local one = items({ { "i1", 1, 0 } })
+  for _, dir in ipairs({ "item", "marker" }) do
+    local p = vo.PlanUpdatePass(one, dir)
+    assert(#p.act == 1 and p.act[1] == "i1", dir .. ": act=" .. #p.act)
+    assert(#p.several == 0 and #p.identify == 0, dir .. ": routed elsewhere too")
+  end
+end)
+
+test("several markers is a recording, refused by both directions", function()
+  -- The test that matters most: an uncut recording holds one marker per take,
+  -- and neither button may touch it.
+  local rec = items({ { "i1", 5, 5 } })
+  for _, dir in ipairs({ "item", "marker" }) do
+    local p = vo.PlanUpdatePass(rec, dir)
+    assert(#p.several == 1 and p.several[1] == "i1", dir .. ": not refused")
+    assert(#p.act == 0 and #p.identify == 0, dir .. ": acted on a recording")
+  end
+end)
+
+test("no marker but audio the matcher knows is identified, not refused", function()
+  -- The marker was never written, or was deleted. That is not a bad match and
+  -- the score is not consulted.
+  local p = vo.PlanUpdatePass(items({ { "i1", 0, 1 } }), "item")
+  assert(#p.identify == 1 and p.identify[1] == "i1", "identify=" .. #p.identify)
+  assert(#p.unmatched == 0, "reported as unmatched")
+end)
+
+test("no marker and no span reports rather than guessing", function()
+  local p = vo.PlanUpdatePass(items({ { "i1", 0, 0 } }), "item")
+  assert(#p.unmatched == 1 and p.unmatched[1] == "i1", "unmatched=" .. #p.unmatched)
+  assert(#p.identify == 0, "identified audio matching no line")
+end)
+
+test("from Marker, a marker-less item has no authority to update from", function()
+  -- The one row where the two directions differ: Update from Item would mark
+  -- it, Update from Marker has nothing to read.
+  local p = vo.PlanUpdatePass(items({ { "i1", 0, 3 } }), "marker")
+  assert(#p.nomarker == 1 and p.nomarker[1] == "i1", "nomarker=" .. #p.nomarker)
+  assert(#p.identify == 0, "Update from Marker identified an item")
+end)
+
+test("a mixed scope routes every item exactly once", function()
+  local p = vo.PlanUpdatePass(items({
+    { "take",   1, 1 },
+    { "rec",    4, 4 },
+    { "bare",   0, 1 },
+    { "silent", 0, 0 },
+  }), "item")
+  assert(#p.act == 1 and #p.several == 1 and #p.identify == 1
+         and #p.unmatched == 1 and #p.nomarker == 0,
+    string.format("act=%d several=%d identify=%d unmatched=%d nomarker=%d",
+      #p.act, #p.several, #p.identify, #p.unmatched, #p.nomarker))
+end)
+
+test("nil items is not an error, and dir defaults to item", function()
+  local p = vo.PlanUpdatePass(nil)
+  assert(#p.act == 0 and #p.identify == 0 and #p.nomarker == 0, "nil errored")
+  local d = vo.PlanUpdatePass(items({ { "i1", 0, 1 } }))
+  assert(#d.identify == 1, "default dir was not \"item\"")
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))
