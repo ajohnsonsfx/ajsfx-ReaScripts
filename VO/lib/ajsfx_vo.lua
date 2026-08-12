@@ -5022,7 +5022,12 @@ function vo.BuildWhisperArgv(cfg, audio, out_prefix, span)
   add("-ojf")
   add("-ml", "1")  -- one word per segment; also enables token timestamps
   add("-sow")      -- split on word rather than mid-token
-  add("-np")       -- no progress prints: we read the CSV, not stdout
+  -- Progress prints stay ON (no -np) even though the words are read from the
+  -- JSON (-ojf), not stdout: the per-segment "[hh:mm:ss --> hh:mm:ss]  word" lines and
+  -- the -pp percentages are the only view into a run that otherwise sits
+  -- silent for minutes. The log is captured to a file either way
+  -- (vo.RunWhisperAsync), which tails it for vo.LatestWhisperProgress.
+  add("-pp")       -- print-progress: "progress = NN%" lines alongside segments
   -- No prior-text conditioning. whisper.cpp feeds each window the text it just
   -- decoded, and on a long read that feedback can lock the decoder into
   -- repeating one phrase for the rest of the file -- confidently, with
@@ -5247,6 +5252,82 @@ function vo.ParseBackendFromLog(text)
     return { device = "CUDA", name = name:match("^%s*(.-)%s*$") }
   end
   return { device = "CPU" }
+end
+
+-- One line of whisper-cli output, read for how far the decode has got.
+-- Two shapes carry progress, and only these two:
+--   "[00:07:55.960 --> 00:07:56.360]  some"     one per decoded segment
+--   "whisper_print_progress_callback: progress =  35%"   with -pp
+-- Returns { seconds = <segment end, in source time> } or { percent = n }, and
+-- nil for every other line -- which is most of them (system info, model load).
+-- The segment END is taken, not the start: it is the furthest point known to
+-- be decoded, and it is what a "decoding 7:56 of 38:44" readout means.
+function vo.ParseWhisperProgressLine(line)
+  line = tostring(line or "")
+
+  local h, m, s = line:match("%-%->%s*(%d+):(%d+):(%d+%.?%d*)%s*%]")
+  if h then
+    return { seconds = tonumber(h) * 3600 + tonumber(m) * 60 + tonumber(s) }
+  end
+
+  local pct = line:match("progress%s*=%s*(%d+)%s*%%")
+  if pct then return { percent = tonumber(pct) } end
+
+  return nil
+end
+
+-- Furthest progress in a chunk of whisper-cli log. Last match wins, and the
+-- two kinds are tracked separately because they arrive on different lines --
+-- a tail that ends mid-way through a run of segment prints still carries the
+-- percent from further back.
+-- Returns nil when the chunk holds no progress at all.
+function vo.LatestWhisperProgress(text)
+  local out = nil
+  for line in tostring(text or ""):gmatch("[^\r\n]+") do
+    local p = vo.ParseWhisperProgressLine(line)
+    if p then
+      out = out or {}
+      if p.seconds then out.seconds = p.seconds end
+      if p.percent then out.percent = p.percent end
+    end
+  end
+  return out
+end
+
+-- "7:56 of 38:44 (20%)" for a progress reading. Percent is computed from the
+-- timestamp when the duration is known, because that is the honest number:
+-- whisper's own -pp percent counts decode windows, which is close but not the
+-- same thing. Falls back to whichever half is available; nil when neither is.
+function vo.FormatWhisperProgress(info, duration)
+  if not info then return nil end
+
+  local pct = info.percent
+  if info.seconds and duration and duration > 0 then
+    pct = math.floor(math.min(1, info.seconds / duration) * 100 + 0.5)
+  end
+
+  if info.seconds then
+    local at = vo.FormatTime(info.seconds)
+    if duration and duration > 0 then
+      return string.format("%s of %s (%d%%)", at, vo.FormatTime(duration), pct)
+    end
+    return at
+  end
+
+  if pct then return string.format("%d%%", pct) end
+  return nil
+end
+
+-- The tail of a log, for an error message. Progress lines are dropped first:
+-- with prints on, a failing run ends in thousands of segment lines, and a
+-- plain tail would show those instead of the error that stopped it.
+function vo.LogTailForError(text, max_chars)
+  local kept = {}
+  for line in tostring(text or ""):gmatch("[^\r\n]+") do
+    if not vo.ParseWhisperProgressLine(line) then kept[#kept + 1] = line end
+  end
+  local out = table.concat(kept, "\n")
+  return out:sub(-(max_chars or 1500))
 end
 
 --------------------------------
@@ -7707,13 +7788,24 @@ end
 -- Deliberately duplicated from pvx.RunPVXAsync (SPEC.md §11): extracting a
 -- shared runner while neither tool has been exercised in REAPER would risk
 -- breaking the one that currently works.
+--
+-- `opts` is optional: { on_progress = f(info), duration = <source seconds> }.
+-- on_progress fires at most twice a second with the latest decode position,
+-- { seconds, percent, duration }, so a caller can say how far into the file
+-- whisper has got instead of just "running".
 -- UNVERIFIED outside REAPER — see SPEC.md §10.
-function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error)
+function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error, opts)
+  opts = opts or {}
   local timeout_s = (cfg and cfg.timeout_s) or 1800
 
   local log_file  = scratch_dir .. "/whisper_log.txt"
   local done_file = scratch_dir .. "/whisper_done.txt"
   os.remove(done_file)
+  -- The log too: the batch reuses one scratch dir, and the new process only
+  -- truncates the log once it is actually running -- asynchronously. The first
+  -- poll for file N+1 fires immediately, and without this it reads file N's
+  -- leftover tail and reports the WRONG FILE's position as progress.
+  os.remove(log_file)
 
   local is_win = vo.IsWindows()
 
@@ -7783,6 +7875,42 @@ function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error
     return vo.ParseExitFile(text)
   end
 
+  -- Mid-run progress: the log the completion path reads at the end is already
+  -- being written line by line, so it can be tailed while whisper is still in
+  -- it. Only the last few KB are read, and only when the file has grown --
+  -- polling a log that reaches megabytes on a long read must not itself cost
+  -- anything noticeable per frame.
+  local PROGRESS_INTERVAL = 0.5
+  local PROGRESS_TAIL     = 8192
+  local progress_at, progress_size = 0, -1
+  local progress          = nil
+
+  local function poll_progress(now)
+    if now - progress_at < PROGRESS_INTERVAL then return end
+    progress_at = now
+
+    local lf = io.open(log_file, "rb")
+    if not lf then return end
+    local size = lf:seek("end") or 0
+    if size == progress_size then lf:close() return end
+    progress_size = size
+
+    local seeked = size > PROGRESS_TAIL
+    lf:seek("set", math.max(0, size - PROGRESS_TAIL))
+    local tail = lf:read("a") or ""
+    lf:close()
+
+    -- A tail read starts mid-line; that fragment is dropped rather than
+    -- parsed, so a half-written timestamp can't be read as a real position.
+    if seeked then tail = tail:gsub("^[^\r\n]*[\r\n]+", "", 1) end
+
+    local info = vo.LatestWhisperProgress(tail)
+    if not info then return end
+    info.duration = opts.duration
+    progress = info
+    if opts.on_progress then opts.on_progress(info) end
+  end
+
   local ok_im, im = pcall(function()
     package.path = r.ImGui_GetBuiltinPath() .. '/?.lua;' .. package.path
     return require('imgui')('0.9.3')
@@ -7794,7 +7922,9 @@ function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error
     while true do
       local code = finished()
       if code then on_done(code, read_log()) return end
-      if r.time_precise() > deadline then on_cancel() return end
+      local now = r.time_precise()
+      poll_progress(now)
+      if now > deadline then on_cancel() return end
     end
   end
 
@@ -7824,12 +7954,14 @@ function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error
     local code = finished()
     if code then on_done(code, read_log()) return end
 
+    poll_progress(r.time_precise())
+
     spin = (spin % #spinner) + 1
     if not (ctx and im.ValidatePtr(ctx, 'ImGui_Context*')) then
       ctx = im.CreateContext('VO Transcribe')
     end
 
-    im.SetNextWindowSize(ctx, 460, 150, im.Cond_FirstUseEver)
+    im.SetNextWindowSize(ctx, 460, 172, im.Cond_FirstUseEver)
     local visible, open = im.Begin(ctx, 'ajsfx VO — Transcribing', true,
       im.WindowFlags_NoCollapse)
 
@@ -7837,6 +7969,8 @@ function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error
     if visible then
       im.Text(ctx, spinner[spin] .. "  Transcribing session audio…")
       im.Spacing(ctx)
+      local where = vo.FormatWhisperProgress(progress, opts.duration)
+      im.TextDisabled(ctx, where and ("decoding " .. where) or "starting up…")
       im.TextDisabled(ctx, string.format("%.0fs elapsed (timeout %ds)", elapsed, timeout_s))
       im.Spacing(ctx)
       im.TextDisabled(ctx, "Nothing in the project is changed until this finishes.")
@@ -8080,6 +8214,21 @@ end
 -- so gap finding can see a swallowed tail.
 -- Returns: probe or nil, destroy (ALWAYS call it), duration or nil.
 -- UNVERIFIED outside REAPER — see SPEC.md §10.
+-- Length of a media file in seconds, without touching the project. A bare
+-- PCM source, not vo.MakeSourceProbe: progress only needs the denominator, and
+-- that path inserts a temporary track and item to get sample access.
+-- Returns nil when the file cannot be opened.
+-- UNVERIFIED outside REAPER — see SPEC.md §10.
+function vo.SourceDuration(path)
+  if not (r.PCM_Source_CreateFromFile and r.GetMediaSourceLength) then return nil end
+  local src = r.PCM_Source_CreateFromFile(path)
+  if not src then return nil end
+  local len = r.GetMediaSourceLength(src)
+  if r.PCM_Source_Destroy then r.PCM_Source_Destroy(src) end
+  if not len or len <= 0 then return nil end
+  return len
+end
+
 function vo.MakeSourceProbe(path)
   -- An item that shows the WHOLE file probes in place ...
   for _, info in ipairs(vo.CollectProjectSpans()) do
@@ -8364,7 +8513,11 @@ end
 -- probe pass; a repair that fails reports itself in the per-source report and
 -- keeps the unrepaired words.
 --
--- cb = { on_source, on_done, on_cancel, on_error }. on_error is called only for
+-- cb = { on_source, on_progress, on_done, on_cancel, on_error }.
+-- on_progress(path, index, total, info) fires while a file is still decoding,
+-- at most twice a second, with { seconds, percent, duration } -- the within-
+-- file half of the count on_source reports between files.
+-- on_error is called only for
 -- a failure that stopped the whole run (there are none left today); per-source
 -- failures arrive through on_done. on_source receives the gap-repair report
 -- (or nil) as its fifth argument; on_done receives all reports, keyed by path,
@@ -8422,12 +8575,17 @@ function vo.TranscribeSources(cfg, sources, cb)
       return
     end
 
+    -- The denominator for "decoding 7:56 of 38:44". Probed once per file, and
+    -- only for display: a source whose length can't be read still transcribes,
+    -- it just reports a bare position instead of a fraction.
+    local duration = source.duration or vo.SourceDuration(source.path)
+
     local argv = vo.BuildWhisperArgv(cfg, source.path, prefix)
     vo.RunWhisperAsync(cfg, argv, scratch,
       function(code, log)
         if code ~= 0 then
           fail(source, string.format("whisper-cli exited with code %d\n\n%s",
-                                     code, log:sub(-1500)))
+                                     code, vo.LogTailForError(log, 1500)))
           step()
           return
         end
@@ -8442,7 +8600,11 @@ function vo.TranscribeSources(cfg, sources, cb)
         repair_then_finish(words)
       end,
       cb.on_cancel,
-      function(err) fail(source, err); step() end)
+      function(err) fail(source, err); step() end,
+      { duration = duration,
+        on_progress = cb.on_progress and function(info)
+          cb.on_progress(source.path, index, #sources, info)
+        end or nil })
   end
 
   step()

@@ -271,6 +271,18 @@ local function RunTranscribe(rows, force)
   state.write_fails  = {}
 
   vo.TranscribeSources(cfg, sources, {
+    -- Within the current file, a few times a second. A 39-minute read decodes
+    -- for over a minute; "i of N files" alone doesn't move in all that time,
+    -- and a run that is working looks the same as one that has hung.
+    on_progress = function(path, i, total, info)
+      state.progress = {
+        done    = math.max(0, (i or 1) - 1),
+        total   = total,
+        current = path,
+        detail  = vo.FormatWhisperProgress(info, info and info.duration),
+      }
+    end,
+
     -- Written per file, as each finishes. A cancel at file 40 of 47 must not
     -- discard 39 completed whisper runs.
     on_source = function(path, words, i, total)
@@ -568,7 +580,9 @@ local function DrawProgress()
   local elapsed = state.run_started and (r.time_precise() - state.run_started) or 0
   local name = p.current and (p.current:match("([^\\/]+)$") or p.current) or ""
   im.TextColored(ctx, 0x66AADDFF, string.format(
-    "Transcribing %d of %d — %s (%.0fs elapsed)", p.done, p.total, name, elapsed))
+    "Transcribing %d of %d — %s%s (%.0fs elapsed)",
+    p.done, p.total, name,
+    p.detail and (" — decoding " .. p.detail) or "", elapsed))
 end
 
 local MESSAGE_COLOUR = { info = 0x66BB66FF, warn = 0xDDAA33FF, error = 0xDD6666FF }

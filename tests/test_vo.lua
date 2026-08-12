@@ -3951,6 +3951,12 @@ test("word-level timestamps are forced with -ml 1 and -sow", function()
   assert(argv_index(argv, "-sow"), "-sow missing")
 end)
 
+test("progress prints are left on so a run can be followed", function()
+  local argv = vo.BuildWhisperArgv(WHISPER_CFG, "in.wav", "out")
+  assert(argv_index(argv, "-pp"), "-pp missing")
+  assert(not argv_index(argv, "-np"), "-np would silence the progress log")
+end)
+
 test("JSON-full output is requested, never CSV", function()
   -- -ojf is the only output that carries t_dtw, the per-token anchor
   -- vo.ParseWhisperJSON turns into word.anchor (SPEC-word-anchors.md §5.1).
@@ -7907,6 +7913,98 @@ test("an existing child is reused, and nothing is created twice", function()
   local second = vo.EnsureChildTrack(mock.tracks[1], "Alts")
   assert(first == second, "the same call returned two different tracks")
   assert(#mock.tracks == before, "an existing child was duplicated")
+end)
+
+--------------------------------
+-- Whisper progress parsing
+--------------------------------
+print("\nWhisper progress:")
+
+test("a segment line yields its END timestamp in seconds", function()
+  local p = vo.ParseWhisperProgressLine("[00:07:55.960 --> 00:07:56.360]  some")
+  assert(p, "segment line not recognised")
+  assert(math.abs(p.seconds - 476.36) < 0.001, "seconds: " .. tostring(p.seconds))
+  assert(p.percent == nil, "a segment line has no percent")
+end)
+
+test("an hours-long timestamp is not truncated", function()
+  local p = vo.ParseWhisperProgressLine("[01:02:03.500 --> 01:02:04.000]  word")
+  assert(math.abs(p.seconds - 3724.0) < 0.001, "seconds: " .. tostring(p.seconds))
+end)
+
+test("a -pp progress line yields a percent", function()
+  local p = vo.ParseWhisperProgressLine(
+    "whisper_print_progress_callback: progress =  35%")
+  assert(p and p.percent == 35, "percent: " .. tostring(p and p.percent))
+  assert(p.seconds == nil, "a percent line has no timestamp")
+end)
+
+test("ordinary log lines are not progress", function()
+  for _, line in ipairs({
+    "whisper_init_from_file_with_params_no_state: loading model",
+    "system_info: n_threads = 8 | AVX = 1 |",
+    "",
+    "main: processing 'in.wav' (37440000 samples, 2340.0 sec)",
+  }) do
+    assert(vo.ParseWhisperProgressLine(line) == nil,
+      "false positive: " .. line)
+  end
+end)
+
+test("a truncated timestamp is not read as a position", function()
+  assert(vo.ParseWhisperProgressLine("55.960 --> 00:07:") == nil,
+    "half a timestamp was accepted")
+end)
+
+test("the latest of each kind wins across a chunk", function()
+  local log = table.concat({
+    "whisper_print_progress_callback: progress =  10%",
+    "[00:00:01.000 --> 00:00:01.400]  one",
+    "whisper_print_progress_callback: progress =  20%",
+    "[00:00:02.000 --> 00:00:02.400]  two",
+    "[00:00:03.000 --> 00:00:03.400]  three",
+  }, "\n")
+  local info = vo.LatestWhisperProgress(log)
+  assert(math.abs(info.seconds - 3.4) < 0.001, "seconds: " .. tostring(info.seconds))
+  -- The percent is older than the last segment line and must survive it.
+  assert(info.percent == 20, "percent: " .. tostring(info.percent))
+end)
+
+test("a chunk with no progress at all reads as nil", function()
+  assert(vo.LatestWhisperProgress("loading model\nsystem_info: ...") == nil)
+  assert(vo.LatestWhisperProgress(nil) == nil)
+end)
+
+test("progress formats as position, total and a computed percent", function()
+  local s = vo.FormatWhisperProgress({ seconds = 476.36 }, 2324)
+  assert(s == "7:56 of 38:44 (20%)", "formatted: " .. tostring(s))
+end)
+
+test("with no duration the position stands alone", function()
+  assert(vo.FormatWhisperProgress({ seconds = 476.36 }, nil) == "7:56",
+    tostring(vo.FormatWhisperProgress({ seconds = 476.36 }, nil)))
+end)
+
+test("whisper's own percent is used when no timestamp has arrived", function()
+  assert(vo.FormatWhisperProgress({ percent = 35 }, 2324) == "35%",
+    tostring(vo.FormatWhisperProgress({ percent = 35 }, 2324)))
+end)
+
+test("nothing to report formats as nil rather than an empty string", function()
+  assert(vo.FormatWhisperProgress(nil, 2324) == nil)
+  assert(vo.FormatWhisperProgress({}, 2324) == nil)
+end)
+
+test("an error tail skips the segment flood and shows the error", function()
+  local lines = { "whisper_init: loading model", "error: failed to allocate" }
+  for i = 1, 400 do
+    lines[#lines + 1] = string.format("[00:00:%02d.000 --> 00:00:%02d.400]  w%d",
+      i % 60, i % 60, i)
+  end
+  local tail = vo.LogTailForError(table.concat(lines, "\n"), 1500)
+  assert(tail:find("error: failed to allocate", 1, true),
+    "the error was pushed out of the tail by segment lines")
+  assert(not tail:find("-->", 1, true), "segment lines survived")
 end)
 
 --------------------------------
