@@ -902,3 +902,33 @@ takes` has moved up into the `Match:` group.
     (`Trim.bare`, so the step opens no block of its own) — press it on a
     selection that needs marking, snapping AND fading, then press Ctrl+Z once
     and confirm the markers, the edges and the fades all revert together.
+
+## Editing a line (unreleased)
+
+Nothing here is executed. The pure layer is unit-tested (9 tests); the card is
+not — the suite cannot load the Overview script.
+
+1. Right-click a line's words. The menu reads Copy / Copy original line /
+   ─── / Edit line… / Revert to script line, with **Revert greyed** on an
+   unedited line and both Copy items always present.
+2. Both Copy items on an unedited line put the same text on the clipboard.
+3. **Edit line…** → type different words → the card shows them, and the
+   script's own words appear in grey directly BELOW, never above.
+4. Fold that card. The grey row stays, because the line is edited.
+5. Fold an UNEDITED card. One row only — unchanged from today.
+6. Unfold an unedited card. The grey row is there, identical to the line.
+7. Press **Match transcript to script**. The edited line now scores against
+   the edited words — a take that was missing should find its line. This is
+   the whole point of the feature; if only this one works, it was worth it.
+8. **Revert to script line**, from the menu and from the popup button. Both
+   clear the edit, and the grey row goes on a folded card.
+9. Save and reopen the project. The edit survives, as a `Line,` row in the
+   project file beside the `Append,` rows.
+10. Disable the script in Setup, then re-enable it. The edit is still there —
+    a disabled script must not destroy the user's words.
+11. Right-click `Script:` → **Copy full path** gives the whole path, not the
+    stripped basename shown on the card.
+12. A long edited line still wraps before the filename column, and the grey
+    row wraps with it.
+13. Edit a line that appears TWICE in one script. Only the occurrence you
+    edited changes — the records are keyed by occurrence, not by filename.

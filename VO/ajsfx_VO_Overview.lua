@@ -6830,6 +6830,7 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     im.PopClipRect(ctx)
     if im.IsItemHovered(ctx) then im.SetTooltip(ctx, rep.character) end
   end
+  local open_line_edit = false
   if rep.line_text and rep.line_text ~= "" then
     im.SetCursorScreenPos(ctx, said_x, ry)
     -- Wraps before the filename column, which shares this row.
@@ -6838,10 +6839,63 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     im.Text(ctx, '"' .. rep.line_text .. '"')
     im.PopTextWrapPos(ctx)
     wrap_depth = wrap_depth - 1
+    -- The words stay TEXT, not an input field. They are the biggest click
+    -- target on the card and clicking them unfolds it; editing is rare enough
+    -- to be worth a right-click. A live field here would also have to be
+    -- InputTextMultiline -- ImGui's single-line input cannot wrap, and this
+    -- line already wraps before the filename column -- which is a bordered box
+    -- in the middle of the card, 169 of them, every frame.
+    --
+    -- Both Copy items are ALWAYS here and never move. Sending someone a line
+    -- has nothing to do with whether it was edited, and an item that appears
+    -- and disappears makes the user open the menu to find out what is in it.
+    -- With no edit the two copy the same text, which is the right answer to
+    -- both questions.
+    if im.BeginPopupContextItem(ctx, "##band_line_menu") then
+      if im.MenuItem(ctx, "Copy") then Copy(rep.line_text) end
+      if im.MenuItem(ctx, "Copy original line") then
+        Copy(rep.line_original or rep.line_text)
+      end
+      im.Separator(ctx)
+      if im.MenuItem(ctx, "Edit line\226\128\166", nil, nil,
+                     rep.line_key ~= nil) then
+        open_line_edit = true
+      end
+      -- Greyed rather than hidden, so it holds its slot instead of pulling
+      -- "Edit line..." up under the cursor between one press and the next.
+      if im.MenuItem(ctx, "Revert to script line", nil, nil,
+                     rep.line_edited == true) then
+        local captured = rep
+        pending_action = function() Line.SetEdit(captured, "") end
+      end
+      im.EndPopup(ctx)
+    end
   end
   -- Where the header row actually ended: the line text wraps, so row 2 starts
   -- below whichever is lower, the wrapped words or the fixed row height.
   local y2 = math.max(select(2, im.GetCursorScreenPos(ctx)), ry + line_h) + 2
+
+  -- The script's own words, under the line as it will be matched. Never above:
+  -- what the matcher uses reads first, the reference sits beneath it.
+  --
+  -- Unfolded, always -- an open card has a shape you can rely on, and reading
+  -- the same words twice costs less than checking whether a row is missing.
+  -- Folded, only when edited, because a folded card is one horizontal row and
+  -- nothing else; there the grey row MEANS the line was changed.
+  local orig = rep.line_original
+  if orig and orig ~= "" and (open or rep.line_edited) then
+    im.SetCursorScreenPos(ctx, said_x, y2)
+    im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + (rx + z.name - 8 - said_x))
+    wrap_depth = wrap_depth + 1
+    im.TextDisabled(ctx, '"' .. orig .. '"')
+    im.PopTextWrapPos(ctx)
+    wrap_depth = wrap_depth - 1
+    if im.BeginPopupContextItem(ctx, "##band_orig_menu") then
+      if im.MenuItem(ctx, "Copy original line") then Copy(orig) end
+      im.EndPopup(ctx)
+    end
+    y2 = math.max(select(2, im.GetCursorScreenPos(ctx)), y2 + line_h) + 2
+  end
 
   -- The one badge still worth the right edge: nothing is ticked for delivery.
   im.SetCursorScreenPos(ctx, rx + inner_w - 20, ry)
@@ -6897,6 +6951,34 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     im.EndPopup(ctx)
   end
 
+  if open_line_edit then im.OpenPopup(ctx, "##line_edit") end
+  if im.BeginPopup(ctx, "##line_edit") then
+    im.Text(ctx, "What was actually said:")
+    -- Multiline, because the line wraps on the card and a single-line field
+    -- would scroll a long one sideways behind its own frame. Enter is a
+    -- newline in a multiline input, so it cannot be the commit key -- the
+    -- write goes through on every change, as the Append field's does.
+    local lchanged, ltext = im.InputTextMultiline(
+      ctx, "##line", rep.line_text or "", 420, 60)
+    if lchanged then
+      local captured, text = rep, ltext
+      pending_action = function() Line.SetEdit(captured, text) end
+    end
+    im.Spacing(ctx)
+    if im.Button(ctx, "Revert to script line") then
+      local captured = rep
+      pending_action = function() Line.SetEdit(captured, "") end
+      im.CloseCurrentPopup(ctx)
+    end
+    im.SameLine(ctx)
+    -- The one thing an edit does NOT do by itself. Said here rather than as a
+    -- badge on the card: editing the CSV on disk has the same consequence and
+    -- carries no badge either, so flagging only this path would teach that the
+    -- other one is safe.
+    im.TextDisabled(ctx, "Press Match transcript to script to re-score.")
+    im.EndPopup(ctx)
+  end
+
   -- ROW 2 IS UNFOLD-ONLY. A folded card is one horizontal row and nothing
   -- else; open one and the second row appears with the provenance and with
   -- what still stands between this line and done.
@@ -6907,6 +6989,15 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
     im.TextDisabled(ctx, "Script: " .. script_name)
     if rep.script and rep.script ~= "" and im.IsItemHovered(ctx) then
       im.SetTooltip(ctx, rep.script)
+    end
+    -- The card shows a basename with its extension stripped, so what is on
+    -- screen is not what anyone needs to paste. The tooltip carries the full
+    -- path and a tooltip cannot be copied out of.
+    if rep.script and rep.script ~= ""
+       and im.BeginPopupContextItem(ctx, "##band_script_menu") then
+      if im.MenuItem(ctx, "Copy full path") then Copy(rep.script) end
+      if im.MenuItem(ctx, "Copy script name") then Copy(script_name) end
+      im.EndPopup(ctx)
     end
 
     -- Two Sels on one line is a decision still pending, not an error -- track
