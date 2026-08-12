@@ -1002,7 +1002,7 @@ timeline and can miss the word entirely, which is what all of this fixes.
    no anchors and everything falls back to the old onset rule — worse, but
    never different from what it always did.
 
-## The selection is the scope (2026-08-12)
+## The selection is the scope (2026-08-12) — VERIFIED 2026-08-12
 
 1. With **nothing** selected in REAPER and no rows selected in the sheet, the
    Edit tab's scope line is amber and says so, and every verb that touches
