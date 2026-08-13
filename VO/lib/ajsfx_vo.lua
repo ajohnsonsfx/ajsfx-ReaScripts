@@ -5617,6 +5617,12 @@ end
 function vo.WordsHash(words, from, to)
   local h = 5381
   for _, w in ipairs(words or {}) do
+    -- Sidecar word lists are sorted by t0 (SerializeTranscript writes them in
+    -- order; MergeRepairWords re-sorts), so once a word starts past the span
+    -- nothing later can have its midpoint inside it. Without this break the
+    -- rebuild's stamp recompute rescans a long recording's ENTIRE transcript
+    -- once per stamped row, on every project state change.
+    if (w.t0 or 0) > to + 1e-6 then break end
     local mid = ((w.t0 or 0) + (w.t1 or 0)) / 2
     if mid >= from - 1e-6 and mid <= to + 1e-6 then
       local s = string.format("%s@%.2f", w.text or "", w.t0 or 0)
@@ -5760,9 +5766,12 @@ function vo.ScanSuspects(rows, transcripts, lines, cfg, thresh)
       local span = row.source_stop - row.source_start
       local covered = 0
       for _, w in ipairs(words) do covered = covered + ((w.t1 or 0) - (w.t0 or 0)) end
+      -- Independent, not elseif: a row can be thin AND misnamed, and the
+      -- panel promises to show every trigger that fired.
       if span > 0 and covered / span < T.thin_cover then
         trig.thin = true
-      elseif #words > 0 then
+      end
+      if #words > 0 then
         local v = vo.JudgeLine(words, lines, row.asset, cfg, T)
         if v.verdict ~= "match" then trig.name_mismatch = true end
       end

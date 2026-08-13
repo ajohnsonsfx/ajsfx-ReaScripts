@@ -7310,8 +7310,8 @@ local Repair = {}
 
 -- Verify: the machine listens so you don't have to (SPEC-verify.md). Queue,
 -- verdicts, stamp, report -- one table, same 200-local reasoning as Repair.
-local Verify = { queue = {}, active = nil, report = {}, moves = nil,
-                 warned_model = false }
+local Verify = { queue = {}, queued = {}, active = nil, report = {},
+                 moves = nil, suggest = {}, warned_model = false }
 
 -- Feed rows into the queue, de-duplicated against what is already waiting or
 -- decoding. A click is a request: enqueueing twice must not decode twice.
@@ -7327,9 +7327,44 @@ function Verify.Enqueue(rows)
   for _, e in ipairs(vo.PlanVerify(rows)) do
     if not seen[e.uid] then
       seen[e.uid] = true
+      -- Snapshot the geometry being sent to the decoder NOW. The stamp is
+      -- written from this snapshot, never from post-decode reads: an edit
+      -- that lands and settles while whisper runs would otherwise be
+      -- certified as heard when the decode covered the OLD audio. Stamping
+      -- the enqueue-time state means any such edit reads as a fingerprint
+      -- mismatch on the next rebuild -- unchecked, which is the truth.
+      if e.item and r.ValidatePtr(e.item, "MediaItem*") then
+        local take = r.GetActiveTake(e.item)
+        if take then
+          local _, name = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+          e.fp = {
+            source_path = e.source_path,
+            start_offs  = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS"),
+            length      = r.GetMediaItemInfo_Value(e.item, "D_LENGTH"),
+            playrate    = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE"),
+            take_name   = name or "",
+            mk_pos      = e.mk_pos, mk_len = e.mk_len,
+          }
+        end
+      end
       Verify.queue[#Verify.queue + 1] = e
+      Verify.queued[e.uid] = true
     end
   end
+  if not Verify.active and #Verify.queue == 0 then
+    state.message = "Verify: nothing in the selection can be verified -- " ..
+                    "orphans and rows without audio in the project are skipped."
+    state.message_kind = "warn"
+  end
+end
+
+-- The item's CURRENT lock, not the one captured at enqueue: a user who locks
+-- a row while its decode runs means it, and Lock outranks the machine.
+function Verify.LockedNow(item)
+  for _, row in ipairs(state.overview or {}) do
+    if row.item == item then return row.user_status == "verified" end
+  end
+  return false
 end
 
 -- One decode at a time. RunWhisperAsync drives itself (own defer loop,
@@ -7337,6 +7372,7 @@ end
 function Verify.Tick()
   if Verify.active or #Verify.queue == 0 then return end
   local entry = table.remove(Verify.queue, 1)
+  Verify.queued[entry.uid] = nil
   local cfg = vo.LoadConfig()
   if not Verify.warned_model
      and not tostring(cfg.whisper_model or ""):lower():find("large%-v3", 1, true) then
@@ -7346,9 +7382,19 @@ function Verify.Tick()
     state.message = "Verify: the model is not large-v3 -- verdicts may be weaker."
     state.message_kind = "warn"
   end
-  local scratch = vo.ResolveScratchDir(cfg)
+  -- A subdirectory of the shared scratch, because RunWhisperAsync hardcodes
+  -- whisper_log.txt / whisper_done.txt inside whatever dir it is given: run
+  -- a Sources transcription and a Verify decode at once and, in one shared
+  -- dir, each would delete the other's in-flight files and whichever process
+  -- exited first would satisfy BOTH pollers' "finished" check.
+  local root = vo.ResolveScratchDir(cfg)
+  vo.EnsureDir(root)
+  local scratch = root .. "/verify"
   vo.EnsureDir(scratch)
   local out = scratch .. "/vo_verify"
+  -- And no leftovers: a decode that dies without writing JSON must read as
+  -- "decode failed", never as the PREVIOUS item's words judged as this one's.
+  os.remove(out .. ".json")
   local argv = vo.BuildWhisperArgv(cfg, entry.source_path, out, entry.span)
   Verify.active = entry
   vo.RunWhisperAsync(cfg, argv, scratch,
@@ -7371,7 +7417,7 @@ function Verify.Tick()
       Verify.report[#Verify.report + 1] =
         { asset = entry.asset, verdict = "cancelled", note = "queue stopped here" }
       Verify.active = nil
-      Verify.queue = {}
+      Verify.queue, Verify.queued = {}, {}
       Verify.Finish()
     end,
     function(msg)
@@ -7392,8 +7438,19 @@ function Verify.Judge(entry, fresh)
   end
   local T = vo.VERIFY_THRESH
   local cfg = vo.LoadConfig()
-  local parsed = vo.ReadTranscript(entry.source_path)
-  local stored_all = parsed and parsed.words or {}
+  local parsed, read_err = vo.ReadTranscript(entry.source_path)
+  if not parsed then
+    -- No readable sidecar means no staleness comparison and, crucially, no
+    -- merge target: "merging" into an empty list would WRITE a sidecar
+    -- holding only this span's words, wiping every other line's transcript
+    -- in the file. A v1 or corrupt sidecar is ordinary in the wild, so this
+    -- is an error verdict, not a write.
+    Verify.report[#Verify.report + 1] = { asset = entry.asset, verdict = "error",
+      note = "transcript unreadable (" .. tostring(read_err or "?") ..
+             ") -- re-transcribe this file in Sources first" }
+    return
+  end
+  local stored_all = parsed.words or {}
   local stored = {}
   for _, w in ipairs(stored_all) do
     local mid = ((w.t0 or 0) + (w.t1 or 0)) / 2
@@ -7418,8 +7475,10 @@ function Verify.Judge(entry, fresh)
       verdict = cmp.same and "clear" or "refreshed",
       note = cmp.same and ""
         or string.format("transcript updated (%.0f%% drift)", cmp.ratio * 100) }
-  elseif entry.locked then
-    -- Lock outranks the machine: flag, never move.
+  elseif entry.locked or Verify.LockedNow(entry.item) then
+    -- Lock outranks the machine: flag, never move. Checked again LIVE, not
+    -- only from the enqueue snapshot -- locking a row while its decode runs
+    -- must protect it.
     Verify.report[#Verify.report + 1] = { asset = entry.asset, verdict = "flagged",
       note = line.verdict == "wrong"
         and ("locked; audio says " .. (line.best and line.best.asset or "?"))
@@ -7427,6 +7486,19 @@ function Verify.Judge(entry, fresh)
   else
     Verify.moves = Verify.moves or {}
     Verify.moves[#Verify.moves + 1] = { entry = entry }
+    if line.verdict == "wrong" and line.best
+       and entry.item and r.ValidatePtr(entry.item, "MediaItem*") then
+      -- The suggestion has to survive the rebuild that follows the move, and
+      -- rows are rebuilt from scratch -- so it is keyed by the item's GUID
+      -- and surfaced in the take-row menu as an accept-on-click entry.
+      -- Session-only, deliberately: a persisted suggestion is a cached
+      -- judgment, which is the thing this design forbids.
+      local gok, guid = r.GetSetMediaItemInfo_String(entry.item, "GUID", "", false)
+      if gok and guid ~= "" then
+        Verify.suggest[guid] = { asset = line.best.asset,
+                                 deliver = line.best.deliver }
+      end
+    end
     Verify.report[#Verify.report + 1] = { asset = entry.asset,
       verdict = line.verdict == "wrong" and "wrong line" or "unsure",
       note = line.best and ("audio says " .. line.best.asset)
@@ -7434,22 +7506,23 @@ function Verify.Judge(entry, fresh)
   end
 end
 
--- Stamp against geometry read NOW: if the user edited during the decode, the
--- stamp mismatches its item on the next rebuild and self-invalidates, which
--- is the correct outcome, not a race to paper over.
+-- Stamp against the ENQUEUE-time snapshot (entry.fp), never a fresh read:
+-- the snapshot is the geometry the decoder was actually sent. An edit that
+-- lands and settles while whisper runs would read back as the new geometry
+-- here, and stamping that would certify audio the machine never heard. From
+-- the snapshot, that same edit is a fingerprint mismatch on the next
+-- rebuild -- unchecked, which is the truth.
 function Verify.Stamp(entry, words)
-  local item = entry.item
+  local item, fp = entry.item, entry.fp
+  if not fp then return end
   if not (item and r.ValidatePtr(item, "MediaItem*")) then return end
-  local take = r.GetActiveTake(item)
-  if not take then return end
-  local _, name = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
   vo.WriteVetted(item, vo.VettedFingerprint{
-    source_path = entry.source_path,
-    start_offs  = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS"),
-    length      = r.GetMediaItemInfo_Value(item, "D_LENGTH"),
-    playrate    = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE"),
-    take_name   = name or "",
-    mk_pos      = entry.mk_pos, mk_len = entry.mk_len,
+    source_path = fp.source_path,
+    start_offs  = fp.start_offs,
+    length      = fp.length,
+    playrate    = fp.playrate,
+    take_name   = fp.take_name,
+    mk_pos      = fp.mk_pos, mk_len = fp.mk_len,
     words       = words,
   })
 end
@@ -7480,7 +7553,10 @@ function Verify.Finish()
     core.Transaction("VO Overview: verify", function()
       for _, m in ipairs(moves) do
         local item = m.entry.item
-        if item and r.ValidatePtr(item, "MediaItem*") then
+        -- Lock re-checked at the last moment before the move, not only at
+        -- judge time: the queue can hold verdicts for minutes.
+        if item and r.ValidatePtr(item, "MediaItem*")
+           and not Verify.LockedNow(item) then
           local parent = Verify.RecordingParent(r.GetMediaItem_Track(item))
           local review = parent and vo.EnsureChildTrack(parent, base.review)
           if review then r.MoveMediaItemToTrack(item, review) end
@@ -7502,6 +7578,20 @@ function Verify.Finish()
                                  or "nothing to verify.")
   state.message_kind = (counts["wrong line"] or counts["unsure"]
                         or counts["error"]) and "warn" or "ok"
+end
+
+-- The window is closing. Without this, a multi-item run dies silently: the
+-- Overview's defer loop is what calls Tick, so the rest of the queue would
+-- never decode -- and finished verdicts' moves, gated on the queue draining,
+-- would never apply. Drop the waiting entries and apply what is already
+-- judged. A decode in flight keeps running on RunWhisperAsync's own defer
+-- chain; its on_done then sees an empty queue and runs Finish itself, so its
+-- verdict and any accumulated moves land even after this window is gone.
+function Verify.Abort()
+  Verify.queue, Verify.queued = {}, {}
+  if not Verify.active and Verify.moves and #Verify.moves > 0 then
+    Verify.Finish()
+  end
 end
 
 -- The Suspects panel body. Report-only below the header button, same contract
@@ -8146,6 +8236,52 @@ local function DrawTakeRowMenu(row)
                        "Stale transcript: fixed. Wrong line: moved to Review.")
   end
 
+  -- A wrong-line verdict's suggestion, actionable. The moved item still
+  -- wears its old name and marker, so it rebuilds as a take of the WRONG
+  -- line -- this entry is the route to accept what the audio said. It
+  -- rewrites the marker asset (keeping its id, so Keep/Sel survive -- same
+  -- rule as "Fix wrong names from transcript") and names the item; the
+  -- machine still never renames without this click.
+  if row.item then
+    local gok, guid = r.GetSetMediaItemInfo_String(row.item, "GUID", "", false)
+    local sug = gok and guid ~= "" and Verify.suggest[guid] or nil
+    if sug then
+      local sug_name = sug.deliver or sug.asset
+      if im.MenuItem(ctx, string.format("Audio says %s -- make it that line",
+                                        sug.asset)) then
+        local captured_row, captured_sug, captured_guid = row, sug, guid
+        pending_action = function()
+          local take = captured_row.item and r.GetActiveTake(captured_row.item)
+          if not take then
+            state.message, state.message_kind =
+              "That item has no take to name.", "error"
+            return
+          end
+          state.name_baseline = nil
+          core.Transaction("VO Overview: accept verify suggestion", function()
+            if captured_row.marker_id then
+              RewriteMarker(captured_row,
+                function(mk) mk.asset = captured_sug.asset end)
+            end
+            r.GetSetMediaItemTakeInfo_String(take, "P_NAME",
+              vo.SanitizeName(sug_name), true)
+          end)
+          Verify.suggest[captured_guid] = nil
+          r.UpdateArrange()
+          state.message = "Reassigned to " .. captured_sug.asset ..
+                          " as the audio reads. Still on Review."
+          state.message_kind = "ok"
+        end
+      end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Verify heard this take as \"" .. sug.asset .. "\".\n" ..
+                           "Accepting renames the item and repoints its take\n" ..
+                           "marker (same id, so Keep and Sel survive). The item\n" ..
+                           "stays on Review until you decide about it.")
+      end
+    end
+  end
+
   im.Separator(ctx)
 
   local n_sel = r.CountSelectedMediaItems(0)
@@ -8622,6 +8758,14 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
         im.Checkbox(ctx, "##vetted", false)
         im.EndDisabled(ctx)
         if im.IsItemHovered(ctx) then im.SetTooltip(ctx, "Verifying...") end
+      elseif Verify.queued[row.uid] then
+        im.BeginDisabled(ctx, true)
+        im.Checkbox(ctx, "##vetted", false)
+        im.EndDisabled(ctx)
+        if im.IsItemHovered(ctx) then
+          im.SetTooltip(ctx, string.format(
+            "Queued for verify (%d waiting).", #Verify.queue))
+        end
       else
         local vet = row.vetted_state == "ok"
         local vhit = im.Checkbox(ctx, "##vetted", vet)
@@ -11604,6 +11748,7 @@ local function loop()
   if open then
     r.defer(loop)
   else
+    Verify.Abort()
     FlushProjectFile(true)
   end
 end
