@@ -862,6 +862,37 @@ local function Rebuild()
     end
   end
 
+  -- Vetted stamps (SPEC-verify.md): checked means the stored fingerprint still
+  -- equals a fresh recompute -- the display is computed, never trusted, so an
+  -- edge trim, marker move, rename or word change unchecks with no cleanup
+  -- pass. Only rows carrying a stamp pay for the recompute. A marker row's
+  -- source span IS its marker range, which is where mk_pos/mk_len come from.
+  local words_by_path = {}
+  for _, t in ipairs(state.transcripts or {}) do words_by_path[t.path] = t.words end
+  for _, row in ipairs(state.overview) do
+    row.vetted_state = nil
+    if row.marker_id and row.source_start and row.source_stop then
+      row.marker_pos, row.marker_len =
+        row.source_start, row.source_stop - row.source_start
+    else
+      row.marker_pos, row.marker_len = nil, nil
+    end
+    local stamp = row.item and vo.ReadVetted(row.item)
+    if stamp then
+      local take = r.GetActiveTake(row.item)
+      local now = take and vo.VettedFingerprint{
+        source_path = row.source_path,
+        start_offs  = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS"),
+        length      = r.GetMediaItemInfo_Value(row.item, "D_LENGTH"),
+        playrate    = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE"),
+        take_name   = row.take_name or "",
+        mk_pos      = row.marker_pos, mk_len = row.marker_len,
+        words       = words_by_path[row.source_path],
+      }
+      row.vetted_state = (stamp == now) and "ok" or "mismatch"
+    end
+  end
+
   -- Coverage: which script lines actually have an item named for them, read
   -- from the project's item names and nothing else. Recomputed here, so it can
   -- never be out of step with the project -- there is no stored copy to drift.
@@ -7274,6 +7305,25 @@ end
 -- has no business spending two slots.
 local Repair = {}
 
+-- Verify: the machine listens so you don't have to (SPEC-verify.md). Queue,
+-- verdicts, stamp, report -- one table, same 200-local reasoning as Repair.
+local Verify = { queue = {}, active = nil, report = {}, moves = nil,
+                 warned_model = false }
+
+-- Feed rows into the queue, de-duplicated against what is already waiting or
+-- decoding. A click is a request: enqueueing twice must not decode twice.
+function Verify.Enqueue(rows)
+  local seen = {}
+  for _, e in ipairs(Verify.queue) do seen[e.uid] = true end
+  if Verify.active then seen[Verify.active.uid] = true end
+  for _, e in ipairs(vo.PlanVerify(rows)) do
+    if not seen[e.uid] then
+      seen[e.uid] = true
+      Verify.queue[#Verify.queue + 1] = e
+    end
+  end
+end
+
 function Repair.NoAudio()
   local plan = state.reconcile
                or vo.PlanReconcile(state.overview, vo.LoadConfig())
@@ -8332,6 +8382,38 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
           state.conflict_keys[vo.LineKey(row)])
         or "Sel: the take you are delivering. One per line.\n" ..
            "On a highlighted row, every highlighted row follows.")
+    end
+
+    -- The vetted box: machine-owned, fourth on the marks row. The user cannot
+    -- set or clear it -- a click, ticked or not, is a request for the machine
+    -- to re-listen (SPEC-verify.md). Its result is deliberately not written
+    -- back. Only rows with a live item can be verified, which also keeps it
+    -- clear of the "heard Nx" note missing rows put at this offset.
+    if row.item then
+      im.SameLine(ctx)
+      im.SetCursorScreenPos(ctx, rx + z.marks + 102, ry)
+      if Verify.active and Verify.active.uid == row.uid then
+        im.BeginDisabled(ctx, true)
+        im.Checkbox(ctx, "##vetted", false)
+        im.EndDisabled(ctx)
+        if im.IsItemHovered(ctx) then im.SetTooltip(ctx, "Verifying...") end
+      else
+        local vet = row.vetted_state == "ok"
+        local vhit = im.Checkbox(ctx, "##vetted", vet)
+        if im.IsItemHovered(ctx) then
+          im.SetTooltip(ctx, vet
+            and ("Vetted: audio, transcript and line name agreed when the\n" ..
+                 "machine last listened. Any edit to the item, marker, name\n" ..
+                 "or words clears this. Click to re-verify.")
+            or  ("Not vetted. Click: the machine re-listens to this take and\n" ..
+                 "checks the transcript and the line name against the audio.\n" ..
+                 "On a highlighted row, every highlighted row follows."))
+        end
+        if vhit then
+          local targets = MarkTargets()
+          pending_action = function() Verify.Enqueue(targets) end
+        end
+      end
     end
 
     -- Heard, but not tracked. A missing line the matcher DID recognise says so,
