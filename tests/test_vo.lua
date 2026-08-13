@@ -8077,6 +8077,24 @@ test("VettedFingerprint: every judged field moves the string", function()
   assert(vo.VettedFingerprint(c):find("|-|-|", 1, true), "no marker prints -|-")
 end)
 
+test("CompareWords: jitter passes, real edits fail", function()
+  local T = vo.VERIFY_THRESH
+  local a = {
+    { text = "Chain" }, { text = "is" }, { text = "chain." },
+    { text = "Even" }, { text = "if" }, { text = "you" }, { text = "smile." },
+  }
+  local same = vo.CompareWords(a, a, T)
+  assert(same.same and same.ratio == 0, "identical is same")
+  local jitter = { { text = "chain" }, { text = "is" }, { text = "chain" },
+    { text = "even" }, { text = "if" }, { text = "you" }, { text = "smile" } }
+  assert(vo.CompareWords(a, jitter, T).same, "case/punctuation jitter is not staleness")
+  local edited = { { text = "Chain" }, { text = "is" }, { text = "chain." } }
+  local res = vo.CompareWords(a, edited, T)
+  assert(not res.same, "audio halved = stale")
+  assert(vo.CompareWords({}, {}, T).same, "both empty: nothing to disagree about")
+  assert(not vo.CompareWords(a, {}, T).same, "stored empty, fresh speech = stale")
+end)
+
 test("ReadVetted/WriteVetted round-trip on the mock item", function()
   local item = { info = {} }
   assert(vo.ReadVetted(item) == nil, "empty item reads nil")

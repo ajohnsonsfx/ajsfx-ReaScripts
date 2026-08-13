@@ -5644,6 +5644,47 @@ function vo.VettedFingerprint(fp)
   }, "|")
 end
 
+-- Every Verify tunable in one place, so tuning is one edit.
+vo.VERIFY_THRESH = {
+  stale_ratio = 0.20, -- CompareWords: edit-distance ratio above this = stale
+  match       = 0.72, -- JudgeLine: named-line score at/above this = match
+  reject      = 0.45, -- JudgeLine: named-line score below this may lose to a rival
+  margin      = 0.15, -- JudgeLine: rival must beat the named line by this much
+  pad         = 0.25, -- PlanVerify: seconds of span padding for edge words
+  thin_cover  = 0.40, -- ScanSuspects: word coverage below this fraction = thin
+}
+
+function vo.NormalizeTokens(words)
+  local out = {}
+  for _, w in ipairs(words or {}) do
+    local t = (w.text or ""):lower():gsub("[^%w']", "")
+    if t ~= "" then out[#out + 1] = t end
+  end
+  return out
+end
+
+-- Fresh decode vs stored transcript: is the sidecar still describing this
+-- audio? Whisper's run-to-run jitter (case, punctuation, the odd token) must
+-- not read as staleness -- only a real divergence may trigger a merge.
+function vo.CompareWords(fresh, stored, thresh)
+  local a, b = vo.NormalizeTokens(fresh), vo.NormalizeTokens(stored)
+  if #a == 0 and #b == 0 then return { same = true, ratio = 0 } end
+  if #a == 0 or #b == 0 then return { same = false, ratio = 1 } end
+  -- Token-level Levenshtein, same shape as the char-level one FindSpanLines uses.
+  local prev = {}
+  for j = 0, #b do prev[j] = j end
+  for i = 1, #a do
+    local cur = { [0] = i }
+    for j = 1, #b do
+      local cost = (a[i] == b[j]) and 0 or 1
+      cur[j] = math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+    end
+    prev = cur
+  end
+  local ratio = prev[#b] / math.max(#a, #b)
+  return { same = ratio <= (thresh or vo.VERIFY_THRESH).stale_ratio, ratio = ratio }
+end
+
 vo.VETTED_EXT = "P_EXT:ajsfx_vo_vetted"
 
 function vo.ReadVetted(item)
