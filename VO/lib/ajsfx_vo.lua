@@ -5685,6 +5685,31 @@ function vo.CompareWords(fresh, stored, thresh)
   return { same = ratio <= (thresh or vo.VERIFY_THRESH).stale_ratio, ratio = ratio }
 end
 
+-- Which line do these words actually say? Verify's second comparison.
+-- "wrong" needs a clear rival: a low named score alone is only "unsure",
+-- because moving an item on a hunch is worse than leaving a flag.
+function vo.JudgeLine(fresh_words, lines, named_asset, cfg, thresh)
+  local T = thresh or vo.VERIFY_THRESH
+  local toks = vo.NormalizeTokens(fresh_words)
+  local text = table.concat(toks, " ")
+  local hits = vo.FindSpanLines(lines or {}, text, cfg or {}, { floor = 0, limit = 8 })
+  local named_score, best_other = 0, nil
+  for _, h in ipairs(hits) do
+    if h.asset == named_asset then
+      if h.score > named_score then named_score = h.score end
+    elseif not best_other or h.score > best_other.score then
+      best_other = h
+    end
+  end
+  if named_score >= T.match then return { verdict = "match", named_score = named_score } end
+  if best_other and best_other.score >= T.match
+     and named_score < T.reject
+     and best_other.score - named_score >= T.margin then
+    return { verdict = "wrong", named_score = named_score, best = best_other }
+  end
+  return { verdict = "unsure", named_score = named_score }
+end
+
 vo.VETTED_EXT = "P_EXT:ajsfx_vo_vetted"
 
 function vo.ReadVetted(item)

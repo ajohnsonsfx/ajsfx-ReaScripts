@@ -8095,6 +8095,29 @@ test("CompareWords: jitter passes, real edits fail", function()
   assert(not vo.CompareWords(a, {}, T).same, "stored empty, fresh speech = stale")
 end)
 
+test("JudgeLine: match / wrong / unsure bands", function()
+  local lines = {
+    { asset = "ChainIsChain",   text = "Chain is chain." },
+    { asset = "EvenIfYouSmile", text = "Even if you smile." },
+  }
+  local cfg, T = {}, vo.VERIFY_THRESH
+  local said_chain = { { text = "chain" }, { text = "is" }, { text = "chain" } }
+  local v = vo.JudgeLine(said_chain, lines, "ChainIsChain", cfg, T)
+  assert(v.verdict == "match", "right words, right name: " .. v.verdict)
+
+  local v2 = vo.JudgeLine(said_chain, lines, "EvenIfYouSmile", cfg, T)
+  assert(v2.verdict == "wrong", "clearly says the other line: " .. v2.verdict)
+  assert(v2.best and v2.best.asset == "ChainIsChain", "suggestion is the winner")
+
+  local mumble = { { text = "chai" }, { text = "if" }, { text = "smi" } }
+  local v3 = vo.JudgeLine(mumble, lines, "ChainIsChain", cfg, T)
+  assert(v3.verdict == "unsure", "nothing convincing: " .. v3.verdict)
+
+  local v4 = vo.JudgeLine(said_chain, lines, "NoSuchLine", cfg, T)
+  assert(v4.verdict == "wrong" and v4.best.asset == "ChainIsChain",
+         "unknown name loses to a clear winner")
+end)
+
 test("ReadVetted/WriteVetted round-trip on the mock item", function()
   local item = { info = {} }
   assert(vo.ReadVetted(item) == nil, "empty item reads nil")
