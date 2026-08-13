@@ -7415,14 +7415,14 @@ function Verify.Tick()
     function()
       -- Cancel keeps what already finished: verdicts stand, moves apply.
       Verify.report[#Verify.report + 1] =
-        { asset = entry.asset, verdict = "cancelled", note = "queue stopped here" }
+        { asset = entry.take_name or entry.asset, verdict = "cancelled", note = "queue stopped here" }
       Verify.active = nil
       Verify.queue, Verify.queued = {}, {}
       Verify.Finish()
     end,
     function(msg)
       Verify.report[#Verify.report + 1] =
-        { asset = entry.asset, verdict = "error", note = msg }
+        { asset = entry.take_name or entry.asset, verdict = "error", note = msg }
       Verify.active = nil
       if #Verify.queue == 0 then Verify.Finish() end
     end,
@@ -7433,7 +7433,7 @@ end
 function Verify.Judge(entry, fresh)
   if not fresh then
     Verify.report[#Verify.report + 1] =
-      { asset = entry.asset, verdict = "error", note = "decode failed" }
+      { asset = entry.take_name or entry.asset, verdict = "error", note = "decode failed" }
     return
   end
   local T = vo.VERIFY_THRESH
@@ -7445,7 +7445,7 @@ function Verify.Judge(entry, fresh)
     -- holding only this span's words, wiping every other line's transcript
     -- in the file. A v1 or corrupt sidecar is ordinary in the wild, so this
     -- is an error verdict, not a write.
-    Verify.report[#Verify.report + 1] = { asset = entry.asset, verdict = "error",
+    Verify.report[#Verify.report + 1] = { asset = entry.take_name or entry.asset, verdict = "error",
       note = "transcript unreadable (" .. tostring(read_err or "?") ..
              ") -- re-transcribe this file in Sources first" }
     return
@@ -7457,7 +7457,19 @@ function Verify.Judge(entry, fresh)
     if mid >= entry.span.from and mid <= entry.span.to then stored[#stored + 1] = w end
   end
   local cmp = vo.CompareWords(fresh, stored, T)
-  local line = vo.JudgeLine(fresh, state.lines or {}, entry.asset, cfg, T)
+  -- The line to judge against is the one the take NAME claims -- the name is
+  -- the assignment. entry.asset is the MARKER's line, and judging against it
+  -- passed a misnamed take as "clear" in the live fixture test: swap two
+  -- items' names and each still matched its marker's (correct) audio. Only a
+  -- take with no name at all falls back to the marker's line, its one claim.
+  local named_asset = entry.asset
+  if entry.take_name and entry.take_name ~= "" then
+    local base = vo.StripAltSuffix(entry.take_name, cfg.alt_append_pattern)
+                 or entry.take_name
+    local at = vo.ResolveItemName(vo.BuildNameIndex(state.lines or {}), base)
+    named_asset = at and (state.lines[at] or {}).asset or base
+  end
+  local line = vo.JudgeLine(fresh, state.lines or {}, named_asset, cfg, T)
 
   if line.verdict == "match" then
     local words_now = stored_all
@@ -7476,14 +7488,23 @@ function Verify.Judge(entry, fresh)
       note = cmp.same and ""
         or string.format("transcript updated (%.0f%% drift)", cmp.ratio * 100) }
   elseif entry.locked or Verify.LockedNow(entry.item) then
+    -- Any completed judgment that is NOT clear strips an existing stamp: a
+    -- take that just failed verification must not keep a tick an earlier
+    -- (or misinformed) pass earned it.
+    if entry.item and r.ValidatePtr(entry.item, "MediaItem*") then
+      vo.WriteVetted(entry.item, "")
+    end
     -- Lock outranks the machine: flag, never move. Checked again LIVE, not
     -- only from the enqueue snapshot -- locking a row while its decode runs
     -- must protect it.
-    Verify.report[#Verify.report + 1] = { asset = entry.asset, verdict = "flagged",
+    Verify.report[#Verify.report + 1] = { asset = entry.take_name or entry.asset, verdict = "flagged",
       note = line.verdict == "wrong"
         and ("locked; audio says " .. (line.best and line.best.asset or "?"))
         or  "locked; could not confirm the line" }
   else
+    if entry.item and r.ValidatePtr(entry.item, "MediaItem*") then
+      vo.WriteVetted(entry.item, "")   -- failed verification strips the stamp
+    end
     Verify.moves = Verify.moves or {}
     Verify.moves[#Verify.moves + 1] = { entry = entry }
     if line.verdict == "wrong" and line.best
