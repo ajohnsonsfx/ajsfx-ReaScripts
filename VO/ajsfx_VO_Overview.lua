@@ -7313,6 +7313,11 @@ local Verify = { queue = {}, active = nil, report = {}, moves = nil,
 -- Feed rows into the queue, de-duplicated against what is already waiting or
 -- decoding. A click is a request: enqueueing twice must not decode twice.
 function Verify.Enqueue(rows)
+  -- A fresh run (nothing decoding, nothing waiting before this click) starts
+  -- its own report; enqueueing more mid-run extends the current one.
+  if not Verify.active and #Verify.queue == 0 then
+    Verify.report, Verify.done, Verify.warned_model = {}, 0, false
+  end
   local seen = {}
   for _, e in ipairs(Verify.queue) do seen[e.uid] = true end
   if Verify.active then seen[Verify.active.uid] = true end
@@ -7322,6 +7327,178 @@ function Verify.Enqueue(rows)
       Verify.queue[#Verify.queue + 1] = e
     end
   end
+end
+
+-- One decode at a time. RunWhisperAsync drives itself (own defer loop,
+-- progress window, working Cancel), so this only launches and judges.
+function Verify.Tick()
+  if Verify.active or #Verify.queue == 0 then return end
+  local entry = table.remove(Verify.queue, 1)
+  local cfg = vo.LoadConfig()
+  if not Verify.warned_model
+     and not tostring(cfg.whisper_model or ""):lower():find("large%-v3", 1, true) then
+    -- Verdicts from a lesser model are allowed; the warning exists because
+    -- transcript quality dominates matching quality.
+    Verify.warned_model = true
+    state.message = "Verify: the model is not large-v3 -- verdicts may be weaker."
+    state.message_kind = "warn"
+  end
+  local scratch = vo.ResolveScratchDir(cfg)
+  vo.EnsureDir(scratch)
+  local out = scratch .. "/vo_verify"
+  local argv = vo.BuildWhisperArgv(cfg, entry.source_path, out, entry.span)
+  Verify.active = entry
+  vo.RunWhisperAsync(cfg, argv, scratch,
+    function(code, _)
+      local fresh = nil
+      if code == 0 then
+        local f = io.open(out .. ".json", "r")
+        if f then
+          fresh = vo.ParseWhisperJSON(f:read("a"))
+          f:close()
+        end
+      end
+      Verify.Judge(entry, fresh)
+      Verify.done = (Verify.done or 0) + 1
+      Verify.active = nil
+      if #Verify.queue == 0 then Verify.Finish() end
+    end,
+    function()
+      -- Cancel keeps what already finished: verdicts stand, moves apply.
+      Verify.report[#Verify.report + 1] =
+        { asset = entry.asset, verdict = "cancelled", note = "queue stopped here" }
+      Verify.active = nil
+      Verify.queue = {}
+      Verify.Finish()
+    end,
+    function(msg)
+      Verify.report[#Verify.report + 1] =
+        { asset = entry.asset, verdict = "error", note = msg }
+      Verify.active = nil
+      if #Verify.queue == 0 then Verify.Finish() end
+    end,
+    { duration = entry.span.to - entry.span.from })
+end
+
+-- The two comparisons and the verdict table (SPEC-verify.md §2).
+function Verify.Judge(entry, fresh)
+  if not fresh then
+    Verify.report[#Verify.report + 1] =
+      { asset = entry.asset, verdict = "error", note = "decode failed" }
+    return
+  end
+  local T = vo.VERIFY_THRESH
+  local cfg = vo.LoadConfig()
+  local parsed = vo.ReadTranscript(entry.source_path)
+  local stored_all = parsed and parsed.words or {}
+  local stored = {}
+  for _, w in ipairs(stored_all) do
+    local mid = ((w.t0 or 0) + (w.t1 or 0)) / 2
+    if mid >= entry.span.from and mid <= entry.span.to then stored[#stored + 1] = w end
+  end
+  local cmp = vo.CompareWords(fresh, stored, T)
+  local line = vo.JudgeLine(fresh, state.lines or {}, entry.asset, cfg, T)
+
+  if line.verdict == "match" then
+    local words_now = stored_all
+    if not cmp.same then
+      -- Stale but right line: bring the sidecar up to date and stamp against
+      -- the MERGED words. The item does not move -- the delivery was right,
+      -- only the metadata was behind. A file write, not undoable, same as
+      -- gap repair.
+      words_now = vo.MergeRepairWords(stored_all,
+        { { span = entry.span, words = fresh } })
+      vo.WriteTranscript(entry.source_path, words_now, parsed)
+    end
+    Verify.Stamp(entry, words_now)
+    Verify.report[#Verify.report + 1] = { asset = entry.asset,
+      verdict = cmp.same and "clear" or "refreshed",
+      note = cmp.same and ""
+        or string.format("transcript updated (%.0f%% drift)", cmp.ratio * 100) }
+  elseif entry.locked then
+    -- Lock outranks the machine: flag, never move.
+    Verify.report[#Verify.report + 1] = { asset = entry.asset, verdict = "flagged",
+      note = line.verdict == "wrong"
+        and ("locked; audio says " .. (line.best and line.best.asset or "?"))
+        or  "locked; could not confirm the line" }
+  else
+    Verify.moves = Verify.moves or {}
+    Verify.moves[#Verify.moves + 1] = { entry = entry }
+    Verify.report[#Verify.report + 1] = { asset = entry.asset,
+      verdict = line.verdict == "wrong" and "wrong line" or "unsure",
+      note = line.best and ("audio says " .. line.best.asset)
+                       or "no convincing line" }
+  end
+end
+
+-- Stamp against geometry read NOW: if the user edited during the decode, the
+-- stamp mismatches its item on the next rebuild and self-invalidates, which
+-- is the correct outcome, not a race to paper over.
+function Verify.Stamp(entry, words)
+  local item = entry.item
+  if not (item and r.ValidatePtr(item, "MediaItem*")) then return end
+  local take = r.GetActiveTake(item)
+  if not take then return end
+  local _, name = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+  vo.WriteVetted(item, vo.VettedFingerprint{
+    source_path = entry.source_path,
+    start_offs  = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS"),
+    length      = r.GetMediaItemInfo_Value(item, "D_LENGTH"),
+    playrate    = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE"),
+    take_name   = name or "",
+    mk_pos      = entry.mk_pos, mk_len = entry.mk_len,
+    words       = words,
+  })
+end
+
+-- The recording a take belongs to: its track, or that track's parent when it
+-- sits on a Selects/Alts/Review child. Same walk restore_missing does.
+function Verify.RecordingParent(track)
+  if not track then return nil end
+  local base = Dest.names()
+  local bases = { base.selects, base.alts, base.review }
+  local tn
+  local _
+  _, tn = r.GetSetMediaTrackInfo_String(track, "P_NAME", "", false)
+  if vo.IsDestTrackName(tn or "", bases) then
+    return r.GetParentTrack(track) or track
+  end
+  return track
+end
+
+-- Queue drained (or cancelled): apply every deferred move as ONE undo point,
+-- then say what the whole run did. Moves wait until here so a 40-line batch
+-- is one Ctrl+Z, not forty.
+function Verify.Finish()
+  local moves = Verify.moves or {}
+  Verify.moves = nil
+  if #moves > 0 then
+    local base = Dest.names()
+    core.Transaction("VO Overview: verify", function()
+      for _, m in ipairs(moves) do
+        local item = m.entry.item
+        if item and r.ValidatePtr(item, "MediaItem*") then
+          local parent = Verify.RecordingParent(r.GetMediaItem_Track(item))
+          local review = parent and vo.EnsureChildTrack(parent, base.review)
+          if review then r.MoveMediaItemToTrack(item, review) end
+        end
+      end
+    end)
+  end
+  local counts = {}
+  for _, e in ipairs(Verify.report) do
+    counts[e.verdict] = (counts[e.verdict] or 0) + 1
+  end
+  local order = { "clear", "refreshed", "wrong line", "unsure", "flagged",
+                  "cancelled", "error" }
+  local parts = {}
+  for _, k in ipairs(order) do
+    if counts[k] then parts[#parts + 1] = string.format("%d %s", counts[k], k) end
+  end
+  state.message = "Verify: " .. (#parts > 0 and table.concat(parts, ", ")
+                                 or "nothing to verify.")
+  state.message_kind = (counts["wrong line"] or counts["unsure"]
+                        or counts["error"]) and "warn" or "ok"
 end
 
 function Repair.NoAudio()
@@ -11199,6 +11376,29 @@ local function loop()
                      state.message)
     end
 
+    -- Verify, while running and after: the queue position while decoding, and
+    -- the per-take verdicts once a run has finished. The one-line summary goes
+    -- through state.message (so the Log keeps it); this block is the detail.
+    if Verify.active or #Verify.queue > 0 then
+      local total = (Verify.done or 0) + #Verify.queue + 1
+      im.TextColored(ctx, 0x99BBDDFF, string.format(
+        "Verifying %s -- %d of %d (cancel in the decode window)",
+        Verify.active and Verify.active.asset or "?",
+        (Verify.done or 0) + 1, total))
+    elseif #Verify.report > 0 then
+      if im.TreeNode(ctx, string.format("Verify report (%d)###verify_report",
+                                        #Verify.report)) then
+        for _, e in ipairs(Verify.report) do
+          im.Text(ctx, string.format("%-11s %s%s", e.verdict, e.asset or "?",
+            (e.note and e.note ~= "") and ("  -- " .. e.note) or ""))
+        end
+        if im.Button(ctx, "Clear report") then
+          pending_action = function() Verify.report = {} end
+        end
+        im.TreePop(ctx)
+      end
+    end
+
     -- THE LOG. Every report this session, in one place, in order.
     --
     -- The reports used to be scattered by accident of which code wrote them:
@@ -11297,6 +11497,11 @@ local function loop()
         end
       end
     end
+
+    -- The Verify queue: launches the next decode when nothing is running.
+    -- RunWhisperAsync owns its own defer loop and Cancel window, so this is
+    -- only a dispatcher and costs nothing while the queue is empty.
+    Verify.Tick()
 
     -- Run after End so ImGui's frame is closed before anything mutates state
     -- or the project. One action per frame is enough: they are all user clicks.
