@@ -1016,3 +1016,30 @@ timeline and can miss the word entirely, which is what all of this fixes.
    come back. Press Cut — only that take is cut.
 5. Select a row the filters are hiding: the line must say the selection is
    hidden by the filters, NOT "nothing selected". Two different zero states.
+
+---
+
+## Verify and the vetted stamp (2026-08-13) — NOT YET RUN
+
+Fixture: a cut, identified session with at least three named takes and a
+transcript. All six steps in order; each assumes the one before.
+
+1. **Vet a clean row.** Click the fourth (vetted) checkbox on a take whose
+   name and transcript you trust. The decode window opens and closes; the
+   report says `clear`; the box is now ticked.
+2. **Edits uncheck it.** Trim that item's edge slightly. On the next rebuild
+   the box unticks by itself. Open Check → Suspects: the row is listed under
+   "was vetted, changed since".
+3. **Wrong line moves to Review.** Rename two takes to each other's lines,
+   select both rows, right-click → Verify 2 lines against audio. Both land on
+   their recording's Review track; the report line for each reads
+   `wrong line … audio says <the other line>`.
+4. **Cancel keeps what finished.** Queue four rows, press Cancel in the decode
+   window during the second. The first row's verdict stands (stamp or move
+   applied); the report ends with `cancelled`; no whisper-cli process is left
+   in Task Manager.
+5. **Lock outranks the machine.** Lock a misnamed take, Verify it: report
+   says `flagged … locked; audio says <line>`, and the item has not moved.
+6. **One undo.** After a run that moved items, one Ctrl+Z puts every moved
+   item back at once (stamps and sidecar merges are not undone — files and
+   P_EXT written outside the move transaction survive, by design).
