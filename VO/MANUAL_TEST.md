@@ -1019,7 +1019,7 @@ timeline and can miss the word entirely, which is what all of this fixes.
 
 ---
 
-## Verify and the vetted stamp (2026-08-13) — NOT YET RUN
+## Verify and the vetted stamp (2026-08-13) — VERIFIED 2026-08-13 (steps 1-3, 5, 6, via the MCP harness on a TTS speech fixture; step 4's Cancel click and step 3's accept-suggestion menu click are UI-only and still need a human hand — both code paths were confirmed by two independent reviews)
 
 Fixture: a cut, identified session with at least three named takes and a
 transcript. All six steps in order; each assumes the one before.
