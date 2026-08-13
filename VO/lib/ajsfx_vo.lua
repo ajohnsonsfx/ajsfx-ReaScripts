@@ -5611,6 +5611,51 @@ function vo.SourceCoverageRanges(items)
   return out
 end
 
+-- djb2 over the words whose midpoint falls inside [from, to]. The hash keys
+-- the vetted fingerprint to the transcript content under one item, so a
+-- gap-repair merge elsewhere in the file cannot invalidate this item.
+function vo.WordsHash(words, from, to)
+  local h = 5381
+  for _, w in ipairs(words or {}) do
+    local mid = ((w.t0 or 0) + (w.t1 or 0)) / 2
+    if mid >= from - 1e-6 and mid <= to + 1e-6 then
+      local s = string.format("%s@%.2f", w.text or "", w.t0 or 0)
+      for i = 1, #s do h = (h * 33 + s:byte(i)) % 4294967296 end
+    end
+  end
+  return string.format("%08x", h)
+end
+
+-- The vetted stamp's value: everything the machine judged, quantised so float
+-- formatting cannot fake a mismatch. Compared whole, never parsed. Checked =
+-- stored stamp equals a fresh recompute; any edit to the item, marker, name
+-- or words falsifies the equality, which is the whole invalidation story.
+function vo.VettedFingerprint(fp)
+  local rate = fp.playrate or 1.0
+  if rate <= 0 then rate = 1.0 end
+  local from = fp.start_offs or 0
+  local to = from + (fp.length or 0) * rate
+  local q = function(x) return x and string.format("%.4f", x) or "-" end
+  local path = (fp.source_path or ""):lower():gsub("\\", "/")
+  return table.concat({
+    "v1", path, q(from), q(fp.length), q(rate),
+    fp.take_name or "", q(fp.mk_pos), q(fp.mk_len),
+    vo.WordsHash(fp.words, from, to),
+  }, "|")
+end
+
+vo.VETTED_EXT = "P_EXT:ajsfx_vo_vetted"
+
+function vo.ReadVetted(item)
+  local ok, v = r.GetSetMediaItemInfo_String(item, vo.VETTED_EXT, "", false)
+  if ok and v ~= "" then return v end
+  return nil
+end
+
+function vo.WriteVetted(item, fp_string)
+  r.GetSetMediaItemInfo_String(item, vo.VETTED_EXT, fp_string or "", true)
+end
+
 -- Merge overlapping/touching source ranges into the fewest that cover the same
 -- audio, in time order. Input may be in any order and may overlap; the ranges
 -- come from items scattered across the project, so neither is a safe assumption.

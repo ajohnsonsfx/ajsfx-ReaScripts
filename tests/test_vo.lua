@@ -8032,5 +8032,58 @@ test("an error tail skips the segment flood and shows the error", function()
 end)
 
 --------------------------------
+-- Verify: the vetted stamp (SPEC-verify.md)
+
+test("WordsHash: stable, span-scoped, order of outside words irrelevant", function()
+  local words = {
+    { t0 = 1.0, t1 = 1.4, text = "chain" },
+    { t0 = 1.5, t1 = 1.9, text = "is" },
+    { t0 = 9.0, t1 = 9.5, text = "elsewhere" },
+  }
+  local h1 = vo.WordsHash(words, 0.5, 2.0)
+  assert(type(h1) == "string" and #h1 > 0, "hash is a non-empty string")
+  assert(h1 == vo.WordsHash(words, 0.5, 2.0), "deterministic")
+  local without = { words[1], words[2] }
+  assert(h1 == vo.WordsHash(without, 0.5, 2.0), "words outside the span do not matter")
+  local edited = { { t0 = 1.0, t1 = 1.4, text = "brain" }, words[2] }
+  assert(h1 ~= vo.WordsHash(edited, 0.5, 2.0), "text change changes the hash")
+end)
+
+test("VettedFingerprint: every judged field moves the string", function()
+  local base = {
+    source_path = "D:\\Audio\\Take01.wav", start_offs = 12.34567, length = 3.2,
+    playrate = 1.0, take_name = "ChainIsChain",
+    mk_pos = 12.5, mk_len = 2.9,
+    words = { { t0 = 12.6, t1 = 13.0, text = "chain" } },
+  }
+  local fp = vo.VettedFingerprint(base)
+  assert(fp:sub(1, 3) == "v1|", "versioned")
+  assert(fp:find("12.3457", 1, true), "start_offs quantised %.4f")
+  assert(fp:find("d:/audio/take01.wav", 1, true), "path folded + slash-normalised")
+  local function differs(mut)
+    local c = {}
+    for k, v in pairs(base) do c[k] = v end
+    for k, v in pairs(mut) do c[k] = v end
+    assert(vo.VettedFingerprint(c) ~= fp, "expected change for " .. next(mut))
+  end
+  differs{ start_offs = 12.4 }              -- trimmed edge
+  differs{ length = 3.5 }                   -- resized
+  differs{ take_name = "EvenIfYouSmile" }   -- reassigned
+  differs{ mk_pos = 12.6 }                  -- marker moved
+  differs{ words = { { t0 = 12.6, t1 = 13.0, text = "brain" } } } -- words changed
+  local c = {}
+  for k, v in pairs(base) do c[k] = v end
+  c.mk_pos, c.mk_len = nil, nil
+  assert(vo.VettedFingerprint(c):find("|-|-|", 1, true), "no marker prints -|-")
+end)
+
+test("ReadVetted/WriteVetted round-trip on the mock item", function()
+  local item = { info = {} }
+  assert(vo.ReadVetted(item) == nil, "empty item reads nil")
+  vo.WriteVetted(item, "v1|abc")
+  assert(vo.ReadVetted(item) == "v1|abc", "round trip")
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
