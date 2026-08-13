@@ -7483,7 +7483,7 @@ function Verify.Judge(entry, fresh)
       vo.WriteTranscript(entry.source_path, words_now, parsed)
     end
     Verify.Stamp(entry, words_now)
-    Verify.report[#Verify.report + 1] = { asset = entry.asset,
+    Verify.report[#Verify.report + 1] = { asset = entry.take_name or entry.asset,
       verdict = cmp.same and "clear" or "refreshed",
       note = cmp.same and ""
         or string.format("transcript updated (%.0f%% drift)", cmp.ratio * 100) }
@@ -7520,7 +7520,7 @@ function Verify.Judge(entry, fresh)
                                  deliver = line.best.deliver }
       end
     end
-    Verify.report[#Verify.report + 1] = { asset = entry.asset,
+    Verify.report[#Verify.report + 1] = { asset = entry.take_name or entry.asset,
       verdict = line.verdict == "wrong" and "wrong line" or "unsure",
       note = line.best and ("audio says " .. line.best.asset)
                        or "no convincing line" }
