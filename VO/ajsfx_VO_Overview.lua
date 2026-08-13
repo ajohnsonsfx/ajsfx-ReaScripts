@@ -789,6 +789,9 @@ local function Rebuild()
   -- audio has no marker on it. Rebuilt here so it can never go stale against
   -- the sheet beside it.
   state.unidentified = vo.UnidentifiedSpans(overview_input)
+  -- The Suspects scan is on-request (its panel re-runs it when opened), but a
+  -- held result must not outlive the rebuild that changed what it describes.
+  state.suspects = nil
 
   -- Marker rows resolve straight to the item holding their counting marker:
   -- no occupancy guessing, which is the point. Before the adoption pass so an
@@ -7501,6 +7504,39 @@ function Verify.Finish()
                         or counts["error"]) and "warn" or "ok"
 end
 
+-- The Suspects panel body. Report-only below the header button, same contract
+-- as the other Check panels; the one action lives in the header and only
+-- fills the Verify queue.
+function Repair.Suspects()
+  if not state.suspects then
+    state.suspects = vo.ScanSuspects(state.overview or {}, state.transcripts or {},
+                                     state.lines or {}, vo.LoadConfig(),
+                                     vo.VERIFY_THRESH)
+  end
+  local list = state.suspects
+  if #list == 0 then
+    im.TextDisabled(ctx, "No suspects. The sheet and the audio agree.")
+    return
+  end
+  if im.Button(ctx, string.format("Verify %d suspects", #list)) then
+    local rows = {}
+    for _, s in ipairs(list) do rows[#rows + 1] = s.row end
+    pending_action = function() Verify.Enqueue(rows) end
+  end
+  im.SameLine(ctx)
+  im.TextDisabled(ctx, "each decode is roughly real time; cancel any time")
+  im.Spacing(ctx)
+  local NAMES = { name_mismatch = "name vs words", thin = "thin coverage",
+                  unmarked = "no marker", stamp = "was vetted, changed since" }
+  for _, s in ipairs(list) do
+    local why = {}
+    for k in pairs(s.triggers) do why[#why + 1] = NAMES[k] or k end
+    table.sort(why)
+    im.Text(ctx, string.format("%-34s %s",
+      s.row.deliver or s.row.asset or "?", table.concat(why, ", ")))
+  end
+end
+
 function Repair.NoAudio()
   local plan = state.reconcile
                or vo.PlanReconcile(state.overview, vo.LoadConfig())
@@ -8096,6 +8132,18 @@ local function DrawTakeRowMenu(row)
   if im.IsItemHovered(ctx) then
     im.SetTooltip(ctx, "Every place in the transcripts this line could sit,\n" ..
                        "with what is around it. Looks only -- changes nothing.")
+  end
+
+  local vlabel = (#targets > 1)
+    and string.format("Verify %d lines against audio", #targets)
+    or  "Verify against audio"
+  if im.MenuItem(ctx, vlabel) then
+    pending_action = function() Verify.Enqueue(targets) end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "The machine re-listens: a fresh decode of exactly this\n" ..
+                       "audio, checked against the transcript and the line name.\n" ..
+                       "Stale transcript: fixed. Wrong line: moved to Review.")
   end
 
   im.Separator(ctx)
@@ -11142,6 +11190,17 @@ local function loop()
         "every transcript-side check. Scans the audio on request; (?) means\n" ..
         "it has not been scanned yet.")
 
+      -- The free hunt (SPEC-verify.md §3): everything worth verifying, found
+      -- from stored data alone. Scans on open, like Unheard -- it Levenshteins
+      -- every delivered row, which is a press, not a frame.
+      local n_sus = state.suspects and tostring(#state.suspects) or "?"
+      Flow(string.format("Suspects (%s)", n_sus))
+      PanelButton("suspects", string.format("Suspects (%s)", n_sus),
+        "Everything worth verifying, found for free from stored data:\n" ..
+        "names that disagree with the words under them, windows whisper\n" ..
+        "barely covered, takes no marker claims, and vetted stamps that\n" ..
+        "no longer match. One button feeds them all to Verify.")
+
       -- Check ends HERE, with four panels that only report. Nothing on this row
       -- changes the project any more: what it finds, you act on in Fix. The
       -- trailing SameLine that used to sit here belonged to a checkbox that
@@ -11194,6 +11253,7 @@ local function loop()
     elseif state.panel == "noaudio"  then Repair.NoAudio()
     elseif state.panel == "unidentified" then Repair.Unidentified()
     elseif state.panel == "unheard" then Repair.Unheard()
+    elseif state.panel == "suspects" then Repair.Suspects()
     elseif state.panel == "script" then DrawScriptPanel()
     elseif state.panel == "pull"   then DrawPullPanel()
     elseif state.panel == "sort"   then DrawLayoutBar()
