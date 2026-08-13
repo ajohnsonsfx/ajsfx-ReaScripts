@@ -124,6 +124,19 @@ function mock.reset()
             end
             return false, ""
         end,
+
+        -- Item-level string info. Only P_EXT keys are emulated (the vetted
+        -- stamp lives there); everything else reads as absent.
+        GetSetMediaItemInfo_String = function(item, param, value, set)
+            if item and type(param) == "string" and param:sub(1, 6) == "P_EXT:" then
+                item.ext = item.ext or {}
+                local key = param:sub(7)
+                if set then item.ext[key] = value; return true, value end
+                local got = item.ext[key]
+                return got ~= nil and got ~= "", got or ""
+            end
+            return false, ""
+        end,
         GetMediaItem_Track = function(item) return item and item.track or nil end,
 
         -- Split/move, modelled on REAPER's real behaviour so ApplyPlan can be

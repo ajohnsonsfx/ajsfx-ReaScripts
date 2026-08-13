@@ -1,6 +1,6 @@
 # ajsfx VO — Verify: the machine listens so you don't have to
 
-**Status:** Approved design, not implemented · **Date:** 2026-08-13
+**Status:** Implemented (0.15beta12); manual pass pending · **Date:** 2026-08-13
 
 The most tedious part of VO editing is re-listening. The sheet shows a
 transcript and a name, but neither is proof: the transcript may be stale

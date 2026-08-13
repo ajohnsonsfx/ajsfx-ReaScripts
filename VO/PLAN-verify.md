@@ -900,7 +900,7 @@ git commit -m "VO: Suspects panel -- the free hunt, one button to the queue"
 
 - [ ] **Step 1: Bump the header**
 
-`@version 0.15beta11` (letters = pre-release, opt-in users only). `@changelog`:
+`@version 0.15beta12` (letters = pre-release, opt-in users only; beta11 was taken by the review-fixes commit that preceded this branch). `@changelog`:
 
 ```
 Verify: right-click lines (or click the new fourth checkbox) and the
@@ -933,7 +933,7 @@ Then run the MANUAL_TEST Verify section live. All six must pass before merge.
 
 ```bash
 git add -A
-git commit -m "VO 0.15beta11: Verify -- the machine listens so you don't have to"
+git commit -m "VO 0.15beta12: Verify -- the machine listens so you don't have to"
 ```
 
 Merge is the release (feature/vo-verify → main, CI rebuilds index). Per house rules: after pushing main, `gh run list --limit 1` must show green, and skim the build log for reapack-index warnings. Run the adversarial-loop review skill before merging (standing user preference for releases).

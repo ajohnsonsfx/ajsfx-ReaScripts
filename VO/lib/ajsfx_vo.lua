@@ -5611,6 +5611,190 @@ function vo.SourceCoverageRanges(items)
   return out
 end
 
+-- djb2 over the words whose midpoint falls inside [from, to]. The hash keys
+-- the vetted fingerprint to the transcript content under one item, so a
+-- gap-repair merge elsewhere in the file cannot invalidate this item.
+function vo.WordsHash(words, from, to)
+  local h = 5381
+  for _, w in ipairs(words or {}) do
+    -- Sidecar word lists are sorted by t0 (SerializeTranscript writes them in
+    -- order; MergeRepairWords re-sorts), so once a word starts past the span
+    -- nothing later can have its midpoint inside it. Without this break the
+    -- rebuild's stamp recompute rescans a long recording's ENTIRE transcript
+    -- once per stamped row, on every project state change.
+    if (w.t0 or 0) > to + 1e-6 then break end
+    local mid = ((w.t0 or 0) + (w.t1 or 0)) / 2
+    if mid >= from - 1e-6 and mid <= to + 1e-6 then
+      local s = string.format("%s@%.2f", w.text or "", w.t0 or 0)
+      for i = 1, #s do h = (h * 33 + s:byte(i)) % 4294967296 end
+    end
+  end
+  return string.format("%08x", h)
+end
+
+-- The vetted stamp's value: everything the machine judged, quantised so float
+-- formatting cannot fake a mismatch. Compared whole, never parsed. Checked =
+-- stored stamp equals a fresh recompute; any edit to the item, marker, name
+-- or words falsifies the equality, which is the whole invalidation story.
+function vo.VettedFingerprint(fp)
+  local rate = fp.playrate or 1.0
+  if rate <= 0 then rate = 1.0 end
+  local from = fp.start_offs or 0
+  local to = from + (fp.length or 0) * rate
+  local q = function(x) return x and string.format("%.4f", x) or "-" end
+  local path = (fp.source_path or ""):lower():gsub("\\", "/")
+  return table.concat({
+    "v1", path, q(from), q(fp.length), q(rate),
+    fp.take_name or "", q(fp.mk_pos), q(fp.mk_len),
+    vo.WordsHash(fp.words, from, to),
+  }, "|")
+end
+
+-- Every Verify tunable in one place, so tuning is one edit.
+vo.VERIFY_THRESH = {
+  stale_ratio = 0.20, -- CompareWords: edit-distance ratio above this = stale
+  match       = 0.72, -- JudgeLine: named-line score at/above this = match
+  reject      = 0.45, -- JudgeLine: named-line score below this may lose to a rival
+  margin      = 0.15, -- JudgeLine: rival must beat the named line by this much
+  pad         = 0.25, -- PlanVerify: seconds of span padding for edge words
+  thin_cover  = 0.40, -- ScanSuspects: word coverage below this fraction = thin
+}
+
+function vo.NormalizeTokens(words)
+  local out = {}
+  for _, w in ipairs(words or {}) do
+    local t = (w.text or ""):lower():gsub("[^%w']", "")
+    if t ~= "" then out[#out + 1] = t end
+  end
+  return out
+end
+
+-- Fresh decode vs stored transcript: is the sidecar still describing this
+-- audio? Whisper's run-to-run jitter (case, punctuation, the odd token) must
+-- not read as staleness -- only a real divergence may trigger a merge.
+function vo.CompareWords(fresh, stored, thresh)
+  local a, b = vo.NormalizeTokens(fresh), vo.NormalizeTokens(stored)
+  if #a == 0 and #b == 0 then return { same = true, ratio = 0 } end
+  if #a == 0 or #b == 0 then return { same = false, ratio = 1 } end
+  -- Token-level Levenshtein, same shape as the char-level one FindSpanLines uses.
+  local prev = {}
+  for j = 0, #b do prev[j] = j end
+  for i = 1, #a do
+    local cur = { [0] = i }
+    for j = 1, #b do
+      local cost = (a[i] == b[j]) and 0 or 1
+      cur[j] = math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+    end
+    prev = cur
+  end
+  local ratio = prev[#b] / math.max(#a, #b)
+  return { same = ratio <= (thresh or vo.VERIFY_THRESH).stale_ratio, ratio = ratio }
+end
+
+-- Which line do these words actually say? Verify's second comparison.
+-- "wrong" needs a clear rival: a low named score alone is only "unsure",
+-- because moving an item on a hunch is worse than leaving a flag.
+function vo.JudgeLine(fresh_words, lines, named_asset, cfg, thresh)
+  local T = thresh or vo.VERIFY_THRESH
+  local toks = vo.NormalizeTokens(fresh_words)
+  local text = table.concat(toks, " ")
+  local hits = vo.FindSpanLines(lines or {}, text, cfg or {}, { floor = 0, limit = 8 })
+  local named_score, best_other = 0, nil
+  for _, h in ipairs(hits) do
+    if h.asset == named_asset then
+      if h.score > named_score then named_score = h.score end
+    elseif not best_other or h.score > best_other.score then
+      best_other = h
+    end
+  end
+  if named_score >= T.match then return { verdict = "match", named_score = named_score } end
+  if best_other and best_other.score >= T.match
+     and named_score < T.reject
+     and best_other.score - named_score >= T.margin then
+    return { verdict = "wrong", named_score = named_score, best = best_other }
+  end
+  return { verdict = "unsure", named_score = named_score }
+end
+
+-- What the Verify queue will decode: one entry per deliverable row, span
+-- padded so edge words are not clipped, grouped per source file.
+function vo.PlanVerify(rows, thresh)
+  local T = thresh or vo.VERIFY_THRESH
+  local out = {}
+  for _, row in ipairs(rows or {}) do
+    if row.status ~= "orphan" and row.item and row.source_path
+       and row.source_start and row.source_stop then
+      out[#out + 1] = {
+        uid = row.uid, asset = row.asset, item = row.item,
+        take_name = row.take_name, source_path = row.source_path,
+        span = { from = math.max(0, row.source_start - T.pad),
+                 to = row.source_stop + T.pad },
+        mk_pos = row.marker_pos, mk_len = row.marker_len,
+        locked = row.user_status == "verified",  -- Lock; the machine may not move it
+      }
+    end
+  end
+  table.sort(out, function(a, b)
+    if a.source_path ~= b.source_path then return a.source_path < b.source_path end
+    return a.span.from < b.span.from
+  end)
+  return out
+end
+
+local function words_within(words, from, to)
+  local out = {}
+  for _, w in ipairs(words or {}) do
+    local mid = ((w.t0 or 0) + (w.t1 or 0)) / 2
+    if mid >= from - 1e-6 and mid <= to + 1e-6 then out[#out + 1] = w end
+  end
+  return out
+end
+
+-- The free hunt: no whisper, stored data only. Report-only by contract --
+-- the caller decides what to do with the list.
+function vo.ScanSuspects(rows, transcripts, lines, cfg, thresh)
+  local T = thresh or vo.VERIFY_THRESH
+  local by_path = {}
+  for _, t in ipairs(transcripts or {}) do by_path[t.path] = t.words end
+  local out = {}
+  for _, row in ipairs(rows or {}) do
+    if row.status ~= "orphan" and row.item and row.source_path
+       and row.source_start and row.source_stop then
+      local trig = {}
+      local words = words_within(by_path[row.source_path],
+                                 row.source_start, row.source_stop)
+      local span = row.source_stop - row.source_start
+      local covered = 0
+      for _, w in ipairs(words) do covered = covered + ((w.t1 or 0) - (w.t0 or 0)) end
+      -- Independent, not elseif: a row can be thin AND misnamed, and the
+      -- panel promises to show every trigger that fired.
+      if span > 0 and covered / span < T.thin_cover then
+        trig.thin = true
+      end
+      if #words > 0 then
+        local v = vo.JudgeLine(words, lines, row.asset, cfg, T)
+        if v.verdict ~= "match" then trig.name_mismatch = true end
+      end
+      if not row.marker_id then trig.unmarked = true end
+      if row.vetted_state == "mismatch" then trig.stamp = true end
+      if next(trig) then out[#out + 1] = { row = row, triggers = trig } end
+    end
+  end
+  return out
+end
+
+vo.VETTED_EXT = "P_EXT:ajsfx_vo_vetted"
+
+function vo.ReadVetted(item)
+  local ok, v = r.GetSetMediaItemInfo_String(item, vo.VETTED_EXT, "", false)
+  if ok and v ~= "" then return v end
+  return nil
+end
+
+function vo.WriteVetted(item, fp_string)
+  r.GetSetMediaItemInfo_String(item, vo.VETTED_EXT, fp_string or "", true)
+end
+
 -- Merge overlapping/touching source ranges into the fewest that cover the same
 -- audio, in time order. Input may be in any order and may overlap; the ranges
 -- come from items scattered across the project, so neither is a safe assumption.
