@@ -9069,9 +9069,17 @@ end
 -- The children of `parent`, in track order: everything below it until the
 -- folder closes. Depth accumulates -- a child that opens its own folder adds 1,
 -- one that closes subtracts -- and the parent's own run ends when the running
--- total returns to zero.
+-- total goes negative.
+--
+-- Only a folder HEADER has children. A plain track (depth 0) must return
+-- nothing here: its running total starts at zero, so a complete folder sitting
+-- below it -- some OTHER recording's +1 ... -1 -- nets back to zero without
+-- ever going negative, and the scan would swallow that whole folder as if it
+-- were this track's own. That is the wrong-Alts bug all over again, just with
+-- the unbuilt recording sitting above the built one.
 function vo.FolderChildren(parent)
   local out = {}
+  if r.GetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH") < 1 then return out end
   local first = math.floor(r.GetMediaTrackInfo_Value(parent, "IP_TRACKNUMBER"))
   local depth = 0
   for i = first, r.CountTracks(0) - 1 do

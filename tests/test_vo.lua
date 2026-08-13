@@ -7884,6 +7884,22 @@ test("a second recording gets its OWN Alts rather than the first one's", functio
   assert(child.name == "Alts", "created track is named " .. tostring(child.name))
 end)
 
+test("a plain track above a built folder is not handed its children", function()
+  -- RecB is not yet built (depth 0) and sits ABOVE RecC, whose folder is
+  -- already complete. RecC's balanced run (+1 ... -1) brings the running
+  -- depth back to zero without ever going negative, so a scan that only
+  -- breaks on a negative total swallows RecC's folder whole and FindChildTrack
+  -- hands RecB the other recording's Alts.
+  make_tracks({ { "RecB", 0 }, { "RecC", 1 }, { "Review", 0 }, { "Alts", -1 } })
+  local kids = vo.FolderChildren(mock.tracks[1])
+  assert(#kids == 0, "a plain track has no children, got " .. #kids)
+  local before = #mock.tracks
+  local child = vo.EnsureChildTrack(mock.tracks[1], "Alts")
+  assert(child ~= mock.tracks[4], "RecB was handed RecC's Alts")
+  assert(#mock.tracks == before + 1, "no track was created for RecB")
+  assert(child.name == "Alts", "created track is named " .. tostring(child.name))
+end)
+
 test("an existing child is reused, and nothing is created twice", function()
   make_tracks({ { "RecA", 1 }, { "Alts", -1 } })
   local before = #mock.tracks
