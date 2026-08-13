@@ -9826,6 +9826,7 @@ local REMOTE_HELP =
   "dupes | append script|asset|nth|text | " ..
   "rows [needle] | spans <needle> | missing | boundaries | marker_words | " ..
   "verify | unheard | " ..
+  "vet [needle] | vet_status | suspects | lock <needle> 0|1 | " ..
   "make_select <takename> | place | tighten | trim_to_markers"
 
 local function RemoteStatus()
@@ -10046,6 +10047,71 @@ local function RunRemoteCommand(command)
         (s.stop or 0) - (s.start or 0))
     end
     return table.concat(lines, "\n")
+  elseif verb == "vet" then
+    -- The Verify queue (SPEC-verify.md), headless: enqueue every row whose
+    -- asset or take name contains the needle (all deliverable rows on "").
+    -- Same Enqueue the checkbox and menu call, guards included.
+    local needle = (rest or ""):lower()
+    local rows = {}
+    for _, row in ipairs(state.overview or {}) do
+      local hay = ((row.asset or "") .. " " .. (row.take_name or "")):lower()
+      if needle == "" or hay:find(needle, 1, true) then rows[#rows + 1] = row end
+    end
+    local before = #Verify.queue
+    Verify.Enqueue(rows)
+    return string.format("vet: queue=%d (+%d) active=%s",
+      #Verify.queue, #Verify.queue - before,
+      Verify.active and Verify.active.asset or "none")
+  elseif verb == "vet_status" then
+    -- Queue, report, per-row vetted states and pending suggestions, so a
+    -- harness can assert the whole Verify surface without a click.
+    local lines = { string.format("queue=%d active=%s done=%d report=%d",
+      #Verify.queue, Verify.active and Verify.active.asset or "none",
+      Verify.done or 0, #Verify.report) }
+    for _, e in ipairs(Verify.report) do
+      lines[#lines + 1] = string.format("report: %s | %s | %s",
+        e.verdict, e.asset or "?", e.note or "")
+    end
+    for _, row in ipairs(state.overview or {}) do
+      if row.vetted_state then
+        lines[#lines + 1] = string.format("vetted:%s %s (%s)",
+          row.vetted_state, row.asset or "?", row.take_name or "")
+      end
+    end
+    for _, sug in pairs(Verify.suggest) do
+      lines[#lines + 1] = "suggest: " .. (sug.asset or "?")
+    end
+    return table.concat(lines, "\n")
+  elseif verb == "suspects" then
+    -- The free hunt, headless: same scan the Check panel runs on open.
+    local sus = vo.ScanSuspects(state.overview or {}, state.transcripts or {},
+                                state.lines or {}, vo.LoadConfig(),
+                                vo.VERIFY_THRESH)
+    local lines = { string.format("%d suspect(s)", #sus) }
+    for _, s in ipairs(sus) do
+      local why = {}
+      for k in pairs(s.triggers) do why[#why + 1] = k end
+      table.sort(why)
+      lines[#lines + 1] = string.format("%s: %s",
+        s.row.asset or "?", table.concat(why, ","))
+    end
+    return table.concat(lines, "\n")
+  elseif verb == "lock" then
+    -- SetLock on the first row matching the needle -- the Lock checkbox,
+    -- headless, for exercising "Lock outranks the machine".
+    local needle, flag = rest:match("^(.-)%s+([01])$")
+    if not needle then return "lock: usage lock <needle> 0|1" end
+    needle = needle:lower()
+    for _, row in ipairs(state.overview or {}) do
+      if row.status ~= "orphan" then
+        local hay = ((row.asset or "") .. " " .. (row.take_name or "")):lower()
+        if hay:find(needle, 1, true) then
+          SetLock(row, flag == "1")
+          return string.format("lock: %s -> %s", row.asset or "?", flag)
+        end
+      end
+    end
+    return "lock: no row matches " .. needle
   elseif verb == "sync_markers" then
     SyncTakeMarkers()
     return state.message or "sync_markers ran with no result string"
