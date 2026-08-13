@@ -8118,6 +8118,63 @@ test("JudgeLine: match / wrong / unsure bands", function()
          "unknown name loses to a clear winner")
 end)
 
+test("PlanVerify: pads, clamps, orders, skips", function()
+  local rows = {
+    { uid = "b#1", asset = "B", item = {}, take_name = "B", source_path = "z.wav",
+      source_start = 5.0, source_stop = 7.0, status = "ok",
+      marker_pos = 5.1, marker_len = 1.8 },
+    { uid = "a#1", asset = "A", item = {}, take_name = "A", source_path = "a.wav",
+      source_start = 0.1, source_stop = 1.0, status = "ok", user_status = "verified" },
+    { uid = "orphan#1", asset = "", status = "orphan" },
+    { uid = "nosrc#1", asset = "C", item = {}, status = "ok" },
+  }
+  local plan = vo.PlanVerify(rows, vo.VERIFY_THRESH)
+  assert(#plan == 2, "orphan and sourceless skipped, got " .. #plan)
+  assert(plan[1].source_path == "a.wav" and plan[2].source_path == "z.wav", "ordered by source")
+  assert(plan[1].span.from == 0, "pad clamped at zero")
+  assert(math.abs(plan[1].span.to - 1.25) < 1e-9, "padded stop")
+  assert(plan[1].locked == true and not plan[2].locked, "lock travels with the entry")
+  assert(plan[2].mk_pos == 5.1 and plan[2].mk_len == 1.8, "marker pos/len pass through")
+end)
+
+test("ScanSuspects: each trigger fires alone", function()
+  local lines = {
+    { asset = "ChainIsChain",   text = "Chain is chain." },
+    { asset = "EvenIfYouSmile", text = "Even if you smile." },
+  }
+  local words = {
+    { t0 = 0.1, t1 = 0.5, text = "chain" }, { t0 = 0.5, t1 = 0.7, text = "is" },
+    { t0 = 0.7, t1 = 1.2, text = "chain" },
+  }
+  local transcripts = { { path = "a.wav", words = words } }
+  local function mkrow(o)
+    o.item = o.item or {}
+    o.source_path = o.source_path or "a.wav"
+    o.status = o.status or "ok"
+    return o
+  end
+  local rows = {
+    mkrow{ uid = "good", asset = "ChainIsChain", take_name = "ChainIsChain",
+           source_start = 0.0, source_stop = 1.3, marker_id = 7 },
+    mkrow{ uid = "misnamed", asset = "EvenIfYouSmile", take_name = "EvenIfYouSmile",
+           source_start = 0.0, source_stop = 1.3, marker_id = 8 },
+    mkrow{ uid = "thin", asset = "ChainIsChain", take_name = "ChainIsChain",
+           source_start = 0.0, source_stop = 10.0, marker_id = 9 },
+    mkrow{ uid = "unmarked", asset = "ChainIsChain", take_name = "ChainIsChain",
+           source_start = 0.0, source_stop = 1.3 },
+    mkrow{ uid = "moved", asset = "ChainIsChain", take_name = "ChainIsChain",
+           source_start = 0.0, source_stop = 1.3, marker_id = 10, vetted_state = "mismatch" },
+  }
+  local sus = vo.ScanSuspects(rows, transcripts, lines, {}, vo.VERIFY_THRESH)
+  local by = {}
+  for _, s in ipairs(sus) do by[s.row.uid] = s.triggers end
+  assert(by.good == nil, "clean row is not a suspect")
+  assert(by.misnamed and by.misnamed.name_mismatch, "stored words disagree with the name")
+  assert(by.thin and by.thin.thin, "words cover a sliver of a 10s window")
+  assert(by.unmarked and by.unmarked.unmarked, "no take marker claims it")
+  assert(by.moved and by.moved.stamp, "vetted fingerprint no longer matches")
+end)
+
 test("ReadVetted/WriteVetted round-trip on the mock item", function()
   local item = { info = {} }
   assert(vo.ReadVetted(item) == nil, "empty item reads nil")

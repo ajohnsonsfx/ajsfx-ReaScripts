@@ -5710,6 +5710,70 @@ function vo.JudgeLine(fresh_words, lines, named_asset, cfg, thresh)
   return { verdict = "unsure", named_score = named_score }
 end
 
+-- What the Verify queue will decode: one entry per deliverable row, span
+-- padded so edge words are not clipped, grouped per source file.
+function vo.PlanVerify(rows, thresh)
+  local T = thresh or vo.VERIFY_THRESH
+  local out = {}
+  for _, row in ipairs(rows or {}) do
+    if row.status ~= "orphan" and row.item and row.source_path
+       and row.source_start and row.source_stop then
+      out[#out + 1] = {
+        uid = row.uid, asset = row.asset, item = row.item,
+        take_name = row.take_name, source_path = row.source_path,
+        span = { from = math.max(0, row.source_start - T.pad),
+                 to = row.source_stop + T.pad },
+        mk_pos = row.marker_pos, mk_len = row.marker_len,
+        locked = row.user_status == "verified",  -- Lock; the machine may not move it
+      }
+    end
+  end
+  table.sort(out, function(a, b)
+    if a.source_path ~= b.source_path then return a.source_path < b.source_path end
+    return a.span.from < b.span.from
+  end)
+  return out
+end
+
+local function words_within(words, from, to)
+  local out = {}
+  for _, w in ipairs(words or {}) do
+    local mid = ((w.t0 or 0) + (w.t1 or 0)) / 2
+    if mid >= from - 1e-6 and mid <= to + 1e-6 then out[#out + 1] = w end
+  end
+  return out
+end
+
+-- The free hunt: no whisper, stored data only. Report-only by contract --
+-- the caller decides what to do with the list.
+function vo.ScanSuspects(rows, transcripts, lines, cfg, thresh)
+  local T = thresh or vo.VERIFY_THRESH
+  local by_path = {}
+  for _, t in ipairs(transcripts or {}) do by_path[t.path] = t.words end
+  local out = {}
+  for _, row in ipairs(rows or {}) do
+    if row.status ~= "orphan" and row.item and row.source_path
+       and row.source_start and row.source_stop then
+      local trig = {}
+      local words = words_within(by_path[row.source_path],
+                                 row.source_start, row.source_stop)
+      local span = row.source_stop - row.source_start
+      local covered = 0
+      for _, w in ipairs(words) do covered = covered + ((w.t1 or 0) - (w.t0 or 0)) end
+      if span > 0 and covered / span < T.thin_cover then
+        trig.thin = true
+      elseif #words > 0 then
+        local v = vo.JudgeLine(words, lines, row.asset, cfg, T)
+        if v.verdict ~= "match" then trig.name_mismatch = true end
+      end
+      if not row.marker_id then trig.unmarked = true end
+      if row.vetted_state == "mismatch" then trig.stamp = true end
+      if next(trig) then out[#out + 1] = { row = row, triggers = trig } end
+    end
+  end
+  return out
+end
+
 vo.VETTED_EXT = "P_EXT:ajsfx_vo_vetted"
 
 function vo.ReadVetted(item)
