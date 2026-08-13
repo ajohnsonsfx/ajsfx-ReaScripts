@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.15beta10
--- @changelog PRE-RELEASE: NOTHING IN THIS TOOL DELETES AUDIO ANY MORE. Pull's leftover cleanup, which removed unnamed floor-noise chunks from the recording track, now MUTES them instead. The reasoning generalises past that one verb: every stage here -- the matcher, the cutter, all four Check panels -- scopes by what an item covers, so deleting a leftover does not merely tidy a track, it destroys the only evidence that the reads inside it ever existed, and nothing left behind will report them missing. A misjudged mute costs one click; a misjudged delete costs a read nobody can find again. The floor-noise test is a good test, but it is a guess about audio, and a guess about audio must never be the thing that destroys it. A session measured during this work had 8.19 seconds of source -- two complete reads -- covered by no item anywhere in the project, presenting only as a line reading "take 0/0 missing" with no button that would fix it. NEW: "Restore missing lines" puts that audio back. It asks the RECORDING what the timeline lost, which nothing else could: everything the tool knows about a take lives on its item, so an item that is gone takes its own evidence with it, and the transcript is the only record that outlives the timeline. Candidates are the matcher's own spans, already scored against the script -- so a slate, a direction, or the actor talking to the room stays gone, and only reads that answer to a script line come back. Each lands on its recording's Review track, named, with its take marker already written, so it arrives as a take rather than as audio to identify. The item is padded a quarter-second either side and the marker is not, so the take's own edges stay exact. Coverage is counted from every item wherever it now sits, so a take already pulled to Selects is never restored twice. NEW: "Fix wrong names from transcript" repairs the bad split. REAPER hands BOTH halves of a split the whole take-marker set and the original take name, so one wrong split leaves two items each claiming the line with nothing on screen to separate them. This asks the transcript which line is actually read under each marker and rewrites the marker and the item name to agree. The marker keeps its id, so a rename never costs a take its Keep and Sel -- the sheet's marks are keyed to the id, not the name. Markers of your own, without the tool's ~id suffix, are never touched. "Tracking follows item edit" now runs it as a last step, after the edges are snapped, so the range it asks about is the one the item now plays. NEW OPTION: "Alt names follow track placement" -- drag a take onto Alts or Selects and the alt naming runs by itself. It runs AFTER the marks settle, never before, since an alt name is decided by whether the take is a select and the marks are what say so. Off by default: it renames items on its own, and a rename nobody asked for is worse than a stale name. FIXED: "Update from Item" now clears the duplicate markers a split leaves behind. The existing dedupe merges markers overlapping by 80% of the shorter, so two markers for one line sitting SIDE BY SIDE -- 0.385s then 1.875s, touching, sharing nothing -- read as two different takes and both survived; the item was then left alone with a note saying there was no single range to trim onto, which described the problem rather than fixing it. Overlap is the wrong question once both markers are inside one item: two takes of a line cannot share a clip, because cutting is what gives each take its own. So within an item the same asset twice is one take seen twice, and the copy covering more of the item wins. Two markers naming DIFFERENT lines are an uncut recording holding two takes -- the normal state before a cut -- and are never touched. THE TOOLBAR: the Edit row is now the Fix row, and every repair verb lives in it. Check reports; Fix acts. That line is the whole rule, and repair verbs had drifted to the wrong side of it -- the two Check buttons that changed the project moved down, as did the three follower checkboxes, each of which is the standing form of a button now sitting beside it. The row's greyed-when-nothing-selected block now closes before those checkboxes, which are settings and must stay clickable when nothing is selected. FIXED: note markers were truncated at 80 characters, mid-word, with nothing to say it had happened -- so a reason explaining why a take was skipped often stopped before it explained anything. The cap is 220 now, and a cut reason ends in an ellipsis. Nothing else in the chain truncates: names go into the item chunk quoted, so spaces survive the round trip, and what REAPER shows on a narrow item is clipped by the item's width, which is a zoom level rather than lost text. NEW: "Fix names from the sheet" is the other authority, and it sits beside its opposite. "Fix wrong names from transcript" asks the audio which line is read under each marker, for when you do not trust the name; this one assumes every line is already in the right place in the sheet and rewrites the timeline to agree -- the take with Sel gets the plain delivered name, and every take that is Keep without Sel gets the alt name, numbered from the top. Only you know which of the two you mean, so neither could be a flag on the other. Unlike "Auto-name the alts", which fills blanks and never overwrites, this one imposes the convention -- which is the point, because the numbering it produces is the numbering the sheet describes rather than whatever the takes accumulated on their way here. That distinction needed one more: a name "Auto-name the alts" generated is stored the same way a name you typed is, so obeying every stored name would have frozen the numbering after a single press and left a first alt reading "_alt2" with nothing able to renumber it. A stored name that is only the convention applied to the line -- "line_042_alt1" -- is not a decision about anything and is renumbered; a name with a reason behind it -- "line_042_pickup", "line_042_alt1_room" -- is kept verbatim. It writes the ITEM NAME and nothing else. Writing the take marker as well was built and reverted the same day: the marker's asset is what the sheet reads to decide which LINE a take belongs to, so putting the alt convention into it re-pointed every take of a line at the same row -- all of them reading as selects, all of them jumping to the same line when clicked. The marker names the line; the item name names the delivery; they are different facts and only the second is this button's business. Which means this cannot move a take's Keep or Sel, and should not: a take on the wrong line is a reassignment, and reassignment is Identify's job. An uncut recording holds many takes in one item and an item has one name, so the first take claims it and the rest are reported rather than overwriting each other -- what those takes need is a cut, not a rename. FIXED: the Word Substitutions panel had been unreachable, raising "expected a valid ImGui_Context*, got 0x0" on open. Its draw function was defined about 1,800 lines above the context it uses, so the name resolved to a nil global; the context is now declared once, above everything that draws. FIXED: a recording that had not been built yet could be handed the NEXT recording's Selects/Alts/Review folder as its own -- the child scan only stopped when the folder depth went negative, and a complete folder sitting below a plain track brings the depth back to zero without ever crossing it. A plain track has no children now, so Pull builds it its own folder instead of borrowing the neighbour's. FIXED: "Match takes to script" on a fully identified session returned "already identified" before painting the disagreements -- the steady state, which is exactly where a hand-edited marker or a half-covered take lives, never got checked. The mismatch paint and PARTIAL notes now run even when there is nothing to write. NEW (Sources): transcription progress WITHIN the current file. A 39-minute read decodes for over a minute, and "file 2 of 5" alone does not move in all that time -- a run that is working looked the same as one that had hung. The status line now reads the decoder's own log a few times a second and shows the position it has reached -- "7:56 of 38:44 (20%)" -- falling back to whisper's percent before the first timestamp lands. On a failure, the error tail skips the per-word segment flood so the actual error is what you see.
+-- @version 0.15beta11
+-- @changelog PRE-RELEASE: ten review fixes, no new verbs. FIXED: "Restore missing lines" could hand a restored take a Selects or Alts folder as its home track. The guard that walks up past a destination track never fired -- a Lua `and` truncates a multi-value call to one value, so the track's name always read as nil and no track ever counted as a destination. On a session already Pulled once, whichever item happened to be scanned last decided the home track, and a Review track could end up nested inside Selects. FIXED: "Tighten edges" keyed its edits by take name, and two items in the pool can share one -- an old take beside its re-record. Both trims landed on the last item seen, back to back, pulling its edges in by two different items' measurements -- into speech, on a pass whose whole promise is loss-free -- while the other item went untouched and the report counted both as done. Edits are keyed per item now. FIXED: with both followers on, a track drag and an edge trim landing in the same settle window ran only the drag's follow-up; the trim's was then erased with the re-baseline, so its marker went stale with nothing on screen saying so -- and the change was folded into the new baseline, unfindable afterwards. A pending follow-up now survives the other one's turn and fires after the next settle. FIXED: an extra take adopted by name attached to the LAST row sharing that delivered name, so when two lines collide on one name -- the un-Appended case the dupe warning exists for -- the audio picked its line arbitrarily. Both adoption passes now agree on the first row, and the collision stays the dupe banner's to resolve. FIXED: "Update from Item" renamed a blank take to the marker's line even when the trim itself had failed -- a delivery name stamped on audio whose edges never moved to back it. The rename now waits for the trim to land. NEW: the skip list saved in VO Settings is finally read. It was persisted and then ignored -- Settings said "Saved." and every load used the default TO RECORD -- and the Settings panel had also lost its editor for it; both are back, and a custom list replaces the default rather than adding to it. FIXED: add / snap / delete take marker ran outside any undo block, unlike every sibling marker verb, so Ctrl+Z after "Delete take marker" could skip the marker or drag unrelated work with it. Each is its own undo step now. RESTORED: jumping from a take to its recording in Sources. The old table's Source cell wrote the handoff on double-click; the cards rewrite removed the cell and the write went with it, leaving Sources listening for a message nothing sent. The take row's context menu now carries "Show source in Sources". FIXED: Identify's report never said "in the selection" -- the flag it read was never set anywhere. The scope IS the selection, so the report now just says so. FIXED: in the take-row menu, "Snap marker to item" had no tooltip and "Trim item to marker" had two, one of them describing Snap; each tooltip now sits with its own item. NOTHING IN THIS TOOL DELETES AUDIO ANY MORE. Pull's leftover cleanup, which removed unnamed floor-noise chunks from the recording track, now MUTES them instead. The reasoning generalises past that one verb: every stage here -- the matcher, the cutter, all four Check panels -- scopes by what an item covers, so deleting a leftover does not merely tidy a track, it destroys the only evidence that the reads inside it ever existed, and nothing left behind will report them missing. A misjudged mute costs one click; a misjudged delete costs a read nobody can find again. The floor-noise test is a good test, but it is a guess about audio, and a guess about audio must never be the thing that destroys it. A session measured during this work had 8.19 seconds of source -- two complete reads -- covered by no item anywhere in the project, presenting only as a line reading "take 0/0 missing" with no button that would fix it. NEW: "Restore missing lines" puts that audio back. It asks the RECORDING what the timeline lost, which nothing else could: everything the tool knows about a take lives on its item, so an item that is gone takes its own evidence with it, and the transcript is the only record that outlives the timeline. Candidates are the matcher's own spans, already scored against the script -- so a slate, a direction, or the actor talking to the room stays gone, and only reads that answer to a script line come back. Each lands on its recording's Review track, named, with its take marker already written, so it arrives as a take rather than as audio to identify. The item is padded a quarter-second either side and the marker is not, so the take's own edges stay exact. Coverage is counted from every item wherever it now sits, so a take already pulled to Selects is never restored twice. NEW: "Fix wrong names from transcript" repairs the bad split. REAPER hands BOTH halves of a split the whole take-marker set and the original take name, so one wrong split leaves two items each claiming the line with nothing on screen to separate them. This asks the transcript which line is actually read under each marker and rewrites the marker and the item name to agree. The marker keeps its id, so a rename never costs a take its Keep and Sel -- the sheet's marks are keyed to the id, not the name. Markers of your own, without the tool's ~id suffix, are never touched. "Tracking follows item edit" now runs it as a last step, after the edges are snapped, so the range it asks about is the one the item now plays. NEW OPTION: "Alt names follow track placement" -- drag a take onto Alts or Selects and the alt naming runs by itself. It runs AFTER the marks settle, never before, since an alt name is decided by whether the take is a select and the marks are what say so. Off by default: it renames items on its own, and a rename nobody asked for is worse than a stale name. FIXED: "Update from Item" now clears the duplicate markers a split leaves behind. The existing dedupe merges markers overlapping by 80% of the shorter, so two markers for one line sitting SIDE BY SIDE -- 0.385s then 1.875s, touching, sharing nothing -- read as two different takes and both survived; the item was then left alone with a note saying there was no single range to trim onto, which described the problem rather than fixing it. Overlap is the wrong question once both markers are inside one item: two takes of a line cannot share a clip, because cutting is what gives each take its own. So within an item the same asset twice is one take seen twice, and the copy covering more of the item wins. Two markers naming DIFFERENT lines are an uncut recording holding two takes -- the normal state before a cut -- and are never touched. THE TOOLBAR: the Edit row is now the Fix row, and every repair verb lives in it. Check reports; Fix acts. That line is the whole rule, and repair verbs had drifted to the wrong side of it -- the two Check buttons that changed the project moved down, as did the three follower checkboxes, each of which is the standing form of a button now sitting beside it. The row's greyed-when-nothing-selected block now closes before those checkboxes, which are settings and must stay clickable when nothing is selected. FIXED: note markers were truncated at 80 characters, mid-word, with nothing to say it had happened -- so a reason explaining why a take was skipped often stopped before it explained anything. The cap is 220 now, and a cut reason ends in an ellipsis. Nothing else in the chain truncates: names go into the item chunk quoted, so spaces survive the round trip, and what REAPER shows on a narrow item is clipped by the item's width, which is a zoom level rather than lost text. NEW: "Fix names from the sheet" is the other authority, and it sits beside its opposite. "Fix wrong names from transcript" asks the audio which line is read under each marker, for when you do not trust the name; this one assumes every line is already in the right place in the sheet and rewrites the timeline to agree -- the take with Sel gets the plain delivered name, and every take that is Keep without Sel gets the alt name, numbered from the top. Only you know which of the two you mean, so neither could be a flag on the other. Unlike "Auto-name the alts", which fills blanks and never overwrites, this one imposes the convention -- which is the point, because the numbering it produces is the numbering the sheet describes rather than whatever the takes accumulated on their way here. That distinction needed one more: a name "Auto-name the alts" generated is stored the same way a name you typed is, so obeying every stored name would have frozen the numbering after a single press and left a first alt reading "_alt2" with nothing able to renumber it. A stored name that is only the convention applied to the line -- "line_042_alt1" -- is not a decision about anything and is renumbered; a name with a reason behind it -- "line_042_pickup", "line_042_alt1_room" -- is kept verbatim. It writes the ITEM NAME and nothing else. Writing the take marker as well was built and reverted the same day: the marker's asset is what the sheet reads to decide which LINE a take belongs to, so putting the alt convention into it re-pointed every take of a line at the same row -- all of them reading as selects, all of them jumping to the same line when clicked. The marker names the line; the item name names the delivery; they are different facts and only the second is this button's business. Which means this cannot move a take's Keep or Sel, and should not: a take on the wrong line is a reassignment, and reassignment is Identify's job. An uncut recording holds many takes in one item and an item has one name, so the first take claims it and the rest are reported rather than overwriting each other -- what those takes need is a cut, not a rename. FIXED: the Word Substitutions panel had been unreachable, raising "expected a valid ImGui_Context*, got 0x0" on open. Its draw function was defined about 1,800 lines above the context it uses, so the name resolved to a nil global; the context is now declared once, above everything that draws. FIXED: a recording that had not been built yet could be handed the NEXT recording's Selects/Alts/Review folder as its own -- the child scan only stopped when the folder depth went negative, and a complete folder sitting below a plain track brings the depth back to zero without ever crossing it. A plain track has no children now, so Pull builds it its own folder instead of borrowing the neighbour's. FIXED: "Match takes to script" on a fully identified session returned "already identified" before painting the disagreements -- the steady state, which is exactly where a hand-edited marker or a half-covered take lives, never got checked. The mismatch paint and PARTIAL notes now run even when there is nothing to write. NEW (Sources): transcription progress WITHIN the current file. A 39-minute read decodes for over a minute, and "file 2 of 5" alone does not move in all that time -- a run that is working looked the same as one that had hung. The status line now reads the decoder's own log a few times a second and shows the position it has reached -- "7:56 of 38:44 (20%)" -- falling back to whisper's percent before the first timestamp lands. On a failure, the error tail skips the per-word segment flood so the actual error is what you see.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -411,8 +411,10 @@ end
 -- produced, including per-script errors and headers for the column pickers.
 --
 -- Skip values are not part of the project file (vo.PROJECT_HEADER carries only
--- the mapping); the default skip list (vo.DEFAULT_SKIP_VALUES) is what
--- vo.BuildScriptLines falls back to when none is supplied.
+-- the mapping); they come from the shared config (VO Settings saves them as
+-- cfg.skip_values), with vo.DEFAULT_SKIP_VALUES as the fallback when the
+-- config has none. For a long time the config value was saved but never read
+-- on this path -- Settings said "Saved." and the load ignored it.
 local function LoadScripts()
   -- Hand this project's substitutions to the lib before anything reads a
   -- config. Every vo.LoadConfig() call below -- and there are dozens, across
@@ -424,7 +426,13 @@ local function LoadScripts()
   -- changes.
   vo.SetProjectSubstitutions(vo.SubMap(state.subs))
 
-  state.loaded = vo.LoadScripts(state.scripts, ReadFile)
+  -- An EMPTY saved list must not mean "skip nothing": only a non-empty
+  -- config value overrides the default.
+  local saved_skips = vo.LoadConfig().skip_values
+  local filters = (saved_skips and #saved_skips > 0)
+    and { skip_values = saved_skips } or nil
+
+  state.loaded = vo.LoadScripts(state.scripts, ReadFile, filters)
   -- A script whose columns were never mapped gets the header's own suggestion,
   -- so a freshly added CSV usually just works. Auto-detection knows the usual
   -- header names and no more; when it comes up short the panel that fixes it
@@ -437,7 +445,9 @@ local function LoadScripts()
       guessed = true
     end
   end
-  if guessed then state.loaded = vo.LoadScripts(state.scripts, ReadFile) end
+  if guessed then
+    state.loaded = vo.LoadScripts(state.scripts, ReadFile, filters)
+  end
 
   for _, sc in ipairs(state.loaded.scripts) do
     if sc.error and sc.error ~= "" then
@@ -935,9 +945,16 @@ local function Rebuild()
   for key, list in pairs(pool) do
     for _, extra_item in ipairs(list) do
       local at, template = nil, nil
+      -- FIRST match, same as the row-adopt loop above. Without the break this
+      -- kept overwriting and settled on the LAST row sharing the name -- so
+      -- when two lines collide on one delivered name (state.dupe_assets, the
+      -- un-Appended case), the extra audio attached to an arbitrary line. The
+      -- collision itself stays the dupe banner's job; this just makes both
+      -- loops agree on the same row until the user resolves it.
       for i, row in ipairs(state.overview) do
         if vo.NormalizeItemName(row.deliver or row.asset or "") == key then
           at, template = i, row
+          break
         end
       end
       if template then
@@ -1209,8 +1226,13 @@ local function AddTakeMarkerFromSelection(row)
   -- vo.AddMarkerToItem, not vo.WriteTakeMarkers: the write replaces the tool's
   -- whole set, so handing it this one marker alone would wipe every other take
   -- in the item -- the whole session, on an uncut recording.
-  local ok, added, why = vo.AddMarkerToItem(item,
-    { start = range.from, stop = range.to, asset = row.asset, id = id })
+  -- In a transaction like every sibling marker verb, so Ctrl+Z removes the
+  -- marker as one step instead of merging into whatever came before.
+  local ok, added, why
+  core.Transaction("VO Overview: add take marker", function()
+    ok, added, why = vo.AddMarkerToItem(item,
+      { start = range.from, stop = range.to, asset = row.asset, id = id })
+  end)
   if not ok then
     state.message, state.message_kind = "Could not write the marker: " .. tostring(why), "error"
     return
@@ -1641,7 +1663,11 @@ local function SnapMarkerToItem(row)
     state.message, state.message_kind = "No item coverage to snap to.", "warn"
     return
   end
-  if RewriteMarker(row, function(mk) mk.start, mk.stop = span.from, span.to end) then
+  local ok = false
+  core.Transaction("VO Overview: snap marker to item", function()
+    ok = RewriteMarker(row, function(mk) mk.start, mk.stop = span.from, span.to end)
+  end)
+  if ok then
     state.dirty = true
     Reload()
     state.message, state.message_kind = string.format(
@@ -1652,7 +1678,11 @@ local function SnapMarkerToItem(row)
 end
 
 local function DeleteTakeMarker(row)
-  if RewriteMarker(row, function() return false end) then
+  local ok = false
+  core.Transaction("VO Overview: delete take marker", function()
+    ok = RewriteMarker(row, function() return false end)
+  end)
+  if ok then
     state.dirty = true
     Reload()
     state.message, state.message_kind =
@@ -2556,9 +2586,11 @@ local function IdentifyItems(opts)
   end
   Reload()
 
+  -- Always "in the selection": the scope IS the picked items (line 2252) --
+  -- the old `scoped and ...` read an undefined global and never showed.
   local parts = { anything
-    and string.format("Identified %d item(s)%s: marked %d take(s), named %d.",
-      #items, scoped and " in the selection" or "", wrote, named)
+    and string.format("Identified %d item(s) in the selection: marked %d take(s), named %d.",
+      #items, wrote, named)
     or string.format(
       "Everything in scope is already identified: %d take(s), %d recording(s), " ..
       "%d item(s) matching no line.", counts.one, counts.many, counts.none) }
@@ -2744,13 +2776,18 @@ function Trim.update(dir, opts)
           if from_item then
             if Trim.snap_apply(info, mk) then acted = acted + 1 end
           else
-            if Trim.apply(info, mk) then acted = acted + 1 end
+            local applied = Trim.apply(info, mk)
+            if applied then acted = acted + 1 end
             -- The marker says which line this is, and the name IS the
             -- assignment. PlanAdopt never overwrites a name that already
             -- resolves to a line, so this fills blanks and leaves a real name
             -- -- right or wrong -- alone: correcting one is a reassignment,
             -- which is Identify's job, not a trim's.
-            local take = r.GetActiveTake(item)
+            --
+            -- Gated on the trim LANDING: naming a blank item after a failed
+            -- apply stamps a delivery name onto audio whose edges never moved
+            -- to match the marker -- a name the audio doesn't back.
+            local take = applied and r.GetActiveTake(item)
             if take and mk.asset then
               local _, cur = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
               local renames = vo.PlanAdopt(
@@ -3321,13 +3358,18 @@ local function TightenItems()
         local from_end = {}
         for k = #windows, 1, -1 do from_end[#from_end + 1] = windows[k] end
         local ropts = { floor_db = TIGHTEN_FLOOR_DB }
+        -- Keyed per ITEM, not per take name: PlanTighten only echoes `name`
+        -- back, and two pool items can legitimately share one name (an old
+        -- take beside its re-record). Keying the lookup by bare name sent
+        -- both edits to the last item seen -- trimmed twice, into speech.
+        local key = string.format("%d|%s", #measured + 1, nm)
         measured[#measured + 1] = {
-          name = nm,
+          name = key,
           head_room = vo.EffectiveRoom(windows, step, ropts),
           tail_room = vo.EffectiveRoom(from_end, step, ropts),
           user_touched = touched,
         }
-        by_name[nm] = item
+        by_name[key] = item
       end
     end
   end
@@ -6015,7 +6057,14 @@ function Trim.restore_missing()
       -- same on every item of a source and any of them would do; preferring
       -- the recording track only matters for picking the track itself.
       local trk = info.track
-      local _, tn = trk and r.GetSetMediaTrackInfo_String(trk, "P_NAME", "", false)
+      -- Read in a statement of its own: `trk and r.GetSet...` adjusts the
+      -- call to ONE value, which left `tn` always nil and `is_dest` always
+      -- false -- so a Selects/Alts/Review track could overwrite home[path].
+      local tn
+      if trk then
+        local _
+        _, tn = r.GetSetMediaTrackInfo_String(trk, "P_NAME", "", false)
+      end
       local is_dest = trk and vo.IsDestTrackName(tn or "", bases)
       if trk and not home[info.path] then
         home[info.path] = is_dest and (r.GetParentTrack(trk) or trk) or trk
@@ -7841,6 +7890,13 @@ local function DrawTakeRowMenu(row)
     local captured = row
     pending_action = function() SnapMarkerToItem(captured) end
   end
+  -- Directly after ITS MenuItem: IsItemHovered reads the last-drawn widget,
+  -- so this block sitting below "Trim item to marker" put Snap's tooltip on
+  -- Trim and left Snap with none.
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Set this take's marker to the item's current edges --\n" ..
+                       "the fix for trimming the head past the marker start.")
+  end
   if im.MenuItem(ctx, "Trim item to marker", nil, nil,
                  row.marker_id ~= nil and row.item_info ~= nil) then
     local captured = row
@@ -7869,10 +7925,6 @@ local function DrawTakeRowMenu(row)
     im.SetTooltip(ctx, "The other direction: set the ITEM's edges to this\n" ..
                        "take's marker. The audio does not move.")
   end
-  if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Set this take's marker to the item's current edges --\n" ..
-                       "the fix for trimming the head past the marker start.")
-  end
   if im.MenuItem(ctx, "Delete take marker", nil, nil, row.marker_id ~= nil) then
     local captured = row
     pending_action = function() DeleteTakeMarker(captured) end
@@ -7880,6 +7932,26 @@ local function DrawTakeRowMenu(row)
   if im.IsItemHovered(ctx) then
     im.SetTooltip(ctx, "The take leaves the sheet with the marker; native\n" ..
                        "gestures (drag the marker, alt-drag its end) edit it.")
+  end
+  -- The Overview->Sources handoff (SPEC-sources.md section 4). The writer
+  -- lived on the old table's Source cell and was lost in the cards rewrite;
+  -- Sources still reads focus_source every frame, so this is the write side
+  -- coming back, now on the row that knows its recording.
+  if im.MenuItem(ctx, "Show source in Sources", nil, nil,
+                 row.source_path ~= nil) then
+    local captured = row.source_path
+    pending_action = function()
+      -- Written BEFORE the launch and read every frame by Sources, so an
+      -- already-open Sources window picks the handoff up too, rather than
+      -- only a freshly launched one.
+      r.SetExtState(vo.EXT_SECTION, "focus_source", captured, false)
+      local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
+      if not ok then state.message, state.message_kind = tostring(why), "error" end
+    end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Open the Sources window on this take's recording and\n" ..
+                       "its transcript.")
   end
 
   im.Separator(ctx)
@@ -11171,7 +11243,12 @@ local function loop()
          or state.alt_names_follow_tracks then
         Trim.changes_since_last_look()
         state.item_snapshot_at = r.GetProjectStateChangeCount(0)
-        state.pending_retracked, state.pending_edited = nil, nil
+        -- The pending flags are NOT cleared here. Each is consumed at its own
+        -- dispatch; when a retrack and an edit land in the same settle window,
+        -- the elseif above runs only the retrack, and clearing both here
+        -- silently dropped the edit-follow forever -- its change is folded
+        -- into the new baseline and can never be detected again. A survivor
+        -- waits out another settle and fires on its captured item list.
         state.edit_settle = 0
       end
     end

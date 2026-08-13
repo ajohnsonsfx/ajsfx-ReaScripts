@@ -5893,6 +5893,30 @@ test("a disabled script is loaded but contributes no lines", function()
   assert(#got.lines == 0, "It contributes nothing while off")
 end)
 
+test("filters reach BuildScriptLines: a custom skip value drops its rows", function()
+  -- The Settings-saved skip list was persisted but never consulted: LoadScripts
+  -- had no filters parameter, so every caller silently got the default list.
+  local csv = "Filename,Line\nline_a,Alpha\nCUT,Bravo\nTO RECORD,Charlie\n"
+  local got = vo.LoadScripts(
+    { { path = "a.csv", mapping = { asset = "Filename", text = "Line" } } },
+    reader({ ["a.csv"] = csv }),
+    { skip_values = { "CUT" } })
+  assert(#got.lines == 2,
+    "Expected the CUT row skipped and the rest kept, got " .. #got.lines)
+  -- The custom list REPLACES the default rather than adding to it.
+  local texts = got.lines[1].text .. "|" .. got.lines[2].text
+  assert(texts == "Alpha|Charlie", "Got " .. texts)
+end)
+
+test("no filters still means the default skip list", function()
+  local csv = "Filename,Line\nline_a,Alpha\nTO RECORD,Bravo\n"
+  local got = vo.LoadScripts(
+    { { path = "a.csv", mapping = { asset = "Filename", text = "Line" } } },
+    reader({ ["a.csv"] = csv }))
+  assert(#got.lines == 1 and got.lines[1].text == "Alpha",
+    "TO RECORD must still be skipped by default")
+end)
+
 --------------------------------
 -- deliver threading
 --------------------------------

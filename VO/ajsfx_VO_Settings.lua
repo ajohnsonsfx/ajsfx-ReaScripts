@@ -118,8 +118,8 @@ end
 
 local function Apply()
   cfg.substitutions = vo.ParseSubstitutionText(subs_text)
-  -- Skip tokens live with the script's own layout, not here; this round-trip
-  -- exists only so a config saved before that move is not silently emptied.
+  -- Read back by the Overview's LoadScripts (handed to vo.BuildScriptLines
+  -- as filters.skip_values); an empty list there means "use the default".
   cfg.skip_values = {}
   for v in skip_text:gmatch("[^\n]+") do
     local trimmed = v:match("^%s*(.-)%s*$")
@@ -786,6 +786,18 @@ local function DrawScript()
     "beside the sheet where you notice one.\n\n" ..
     "Substitutions already entered here were copied into this project the\n" ..
     "first time it was opened; nothing was lost.")
+
+  im.Spacing(ctx)
+  im.Separator(ctx)
+  im.Spacing(ctx)
+  im.Text(ctx, "Skip values")
+  local changed, text = im.InputTextMultiline(ctx, "##skip_values", skip_text,
+                                              420, 80)
+  if changed then skip_text = text end
+  im.TextDisabled(ctx,
+    "One per line. A script row whose asset cell reads one of these is not\n" ..
+    "a line to record. Blank falls back to the default: TO RECORD.\n" ..
+    "Applies when the Overview next reloads its scripts.")
 end
 
 local function DrawAdvanced()

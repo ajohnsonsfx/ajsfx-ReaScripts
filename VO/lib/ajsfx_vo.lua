@@ -1,7 +1,7 @@
 -- @description ajsfx VO Shared Library
 -- @author ajsfx
--- @version 0.9
--- @changelog Agreement: candidates are ranked by TOKENS of agreement (score x window length) rather than by score, so a short line matched perfectly no longer takes the words out of the middle of a long one. ExtraWords: an LCS alignment of a line against a take, for colouring the words the take has and the line does not. FindSpanLines: the matcher backwards -- which script lines could THESE words be -- behind the orphan right-click. TranscriptForRange: what was said inside a take marker's range, so marker-owned rows keep their transcript and score after a Cut. SummarizeOverview counts dismissed spans separately and leaves them out of the orphan count. ParagraphWords and the loop detector break on the reader's PAUSES, so four reads of one line are no longer reported as a transcriber loop. ParseExitFile: a launcher that has not written its exit code yet reads as not finished, not as failure. From 0.8: PlanAdopt, MakeSourceProbe, gap-hole reporting.
+-- @version 0.10
+-- @changelog LoadScripts takes an optional `filters` table and hands it to BuildScriptLines unchanged, so a caller's skip_values (the Settings-saved list) finally reaches the row filter instead of silently falling back to the default. From 0.9: Agreement: candidates are ranked by TOKENS of agreement (score x window length) rather than by score, so a short line matched perfectly no longer takes the words out of the middle of a long one. ExtraWords: an LCS alignment of a line against a take, for colouring the words the take has and the line does not. FindSpanLines: the matcher backwards -- which script lines could THESE words be -- behind the orphan right-click. TranscriptForRange: what was said inside a take marker's range, so marker-owned rows keep their transcript and score after a Cut. SummarizeOverview counts dismissed spans separately and leaves them out of the orphan count. ParagraphWords and the loop detector break on the reader's PAUSES, so four reads of one line are no longer reported as a transcriber loop. ParseExitFile: a launcher that has not written its exit code yet reads as not finished, not as failure. From 0.8: PlanAdopt, MakeSourceProbe, gap-hole reporting.
 -- @noindex
 -- @about Shared logic for the ajsfx VO windows.
 --        Split into a pure layer (parsing, normalization, matching, naming —
@@ -1232,7 +1232,9 @@ end
 --
 -- `lines` do NOT carry `deliver`: the caller runs vo.ResolveNames once it has
 -- read the project's appends.
-function vo.LoadScripts(entries, read_fn)
+-- `filters` is handed to vo.BuildScriptLines unchanged (skip_values,
+-- speakers, canonicalize); nil keeps the defaults.
+function vo.LoadScripts(entries, read_fn, filters)
   local scripts = {}
 
   for _, e in ipairs(entries or {}) do
@@ -1269,7 +1271,7 @@ function vo.LoadScripts(entries, read_fn)
             if not cols then
               sc.error = "This script's Filename and Line text columns are not mapped."
             else
-              sc.lines = vo.BuildScriptLines(rows, cols)
+              sc.lines = vo.BuildScriptLines(rows, cols, filters)
             end
           end
         end

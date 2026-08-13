@@ -156,9 +156,10 @@ produce a fresh result even when a sidecar already exists.
 
 ## 4. Handoff from Overview
 
-Double-clicking a Source cell in `ajsfx_VO_Overview.lua` writes the source
-path to `SetExtState("ajsfx_vo", "focus_source", path)` and launches this
-script via `vo.LaunchSibling`. Sources reads that key every frame — not once
+"Show source in Sources" in `ajsfx_VO_Overview.lua`'s take-row context menu
+(formerly a double-click on the table's Source cell, before the card rewrite)
+writes the source path to `SetExtState("ajsfx_vo", "focus_source", path)` and
+launches this script via `vo.LaunchSibling`. Sources reads that key every frame — not once
 at startup — so an already-open window responds to a second handoff too. On a
 non-empty value it clears the key, selects and scrolls to the matching row,
 and opens its detail panel; if the current filter would hide the row, the
