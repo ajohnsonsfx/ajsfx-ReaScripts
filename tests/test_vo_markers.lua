@@ -132,6 +132,97 @@ test("a tilde inside the asset does not fake an id", function()
   assert(asset == "weird~name here")
 end)
 
+-- MarkerOwnsSpan: is this marker THIS take's, or one reaching across it?
+--
+-- From a real session: one marker 76.53..91.02 covered two consecutive takes,
+-- so the second read as "already marked", Identify refused to mark it, Update
+-- from Item refused to mark it, and the clip sat named-but-unmarked with no
+-- button that would fix it.
+print("\nMarkerOwnsSpan:")
+
+test("a marker that is the span plus padding owns it", function()
+  -- What Identify actually writes: the span, padded by head/tail room.
+  local span = { start = 10.00, stop = 13.50 }
+  local mk   = { start =  9.75, stop = 13.85 }
+  assert(vo.MarkerOwnsSpan(mk, span), "padded marker rejected")
+end)
+
+test("a marker straddling two takes owns neither", function()
+  local mk = { start = 76.530, stop = 91.020 }          -- 14.49s, two takes
+  local a  = { start = 76.530, stop = 83.120 }          -- the orphaned one
+  local b  = { start = 83.350, stop = 90.210 }
+  assert(not vo.MarkerOwnsSpan(mk, a), "straddling marker claimed the first take")
+  assert(not vo.MarkerOwnsSpan(mk, b), "straddling marker claimed the second take")
+end)
+
+test("a marker barely touching a span does not own it", function()
+  local span = { start = 10.0, stop = 13.0 }
+  local mk   = { start = 12.8, stop = 16.0 }
+  assert(not vo.MarkerOwnsSpan(mk, span), "a graze counted as ownership")
+end)
+
+test("an exact marker owns its span", function()
+  local span = { start = 5.0, stop = 8.0 }
+  assert(vo.MarkerOwnsSpan({ start = 5.0, stop = 8.0 }, span), "exact match rejected")
+end)
+
+test("degenerate ranges are refused rather than erroring", function()
+  local span = { start = 5.0, stop = 8.0 }
+  assert(not vo.MarkerOwnsSpan(nil, span))
+  assert(not vo.MarkerOwnsSpan({ start = 5, stop = 5 }, span), "zero-length marker")
+  assert(not vo.MarkerOwnsSpan({ start = 5, stop = 8 }, { start = 5, stop = 5 }),
+         "zero-length span")
+  assert(not vo.MarkerOwnsSpan({ start = 20, stop = 25 }, span), "no overlap at all")
+end)
+
+-- NOTE MARKERS. A run's explanation of what it did to a take, parked on the
+-- clip. The whole design rests on a note being INVISIBLE to identity: it
+-- carries no ` ~id`, and every piece of identity logic is guarded by `if id`.
+-- These pin that, because a note that ever started counting as a take would
+-- silently change what the sheet thinks the session contains.
+test("a note marker carries no id, so nothing reads it as a take", function()
+  local name = vo.FormatNoteMarker("2026-08-12 14:03", "not pulled: no Sel mark")
+  local asset, id = vo.ParseMarkerName(name)
+  assert(id == nil, "a note parsed as a take, id=" .. tostring(id))
+  assert(vo.IsNoteMarker(name), "a note is not recognised as one")
+  assert(name:find("2026%-08%-12"), "the stamp is missing: " .. name)
+  assert(name:find("no Sel mark", 1, true), "the reason is missing: " .. name)
+end)
+
+test("a real take marker is not mistaken for a note", function()
+  assert(not vo.IsNoteMarker(vo.FormatMarkerName("DBP_Grumbar_Book", "k7")))
+end)
+
+test("wording cannot turn a note into a take", function()
+  -- Whatever a future caller passes as the reason, the result must still have
+  -- no id -- otherwise a stray "~ab" in a message would mint a phantom take.
+  for _, evil in ipairs({ "looks like ~k9", "A ~k1", "~zz", "tilde ~ end" }) do
+    local name = vo.FormatNoteMarker("2026-08-12", evil)
+    local _, id = vo.ParseMarkerName(name)
+    assert(id == nil,
+           string.format("reason %q produced id %s", evil, tostring(id)))
+  end
+end)
+
+test("a long reason is truncated rather than allowed to bloat the chunk", function()
+  local name = vo.FormatNoteMarker("2026-08-12", string.rep("x", 400))
+  -- Measured against the constant, not a number copied out of it: the cap was
+  -- raised from 80 once already, and a hardcoded bound turns that into a test
+  -- failure that says nothing about what actually broke.
+  assert(#name < vo.NOTE_MAX_CHARS + 40, "note not truncated: " .. #name)
+  assert(name:find("\u{2026}"), "a cut reason does not say it was cut")
+end)
+
+test("a reason that fits is not marked as cut", function()
+  local name = vo.FormatNoteMarker("2026-08-12", "overlaps the next take")
+  assert(not name:find("\u{2026}"), "an intact reason was marked truncated")
+end)
+
+test("newlines in a reason are flattened, so the chunk stays parseable", function()
+  local name = vo.FormatNoteMarker("2026-08-12", "line one\nline two")
+  assert(not name:find("\n"), "a newline survived into a marker name")
+end)
+
 --------------------------------
 print("PlanTrimToRange:")
 
