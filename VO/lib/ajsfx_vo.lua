@@ -1126,6 +1126,97 @@ function vo.PlanAltNames(rows, opts)
   return edits, skipped
 end
 
+-- Is this name nothing more than the alt convention applied to `base`?
+--
+-- It matters because "Name them" stamps the name it generates into
+-- `name_override`, so a machine-made alt name is indistinguishable from a
+-- hand-typed one by storage alone. A name the convention itself would have
+-- produced is not a judgement about anything, and a verb that renumbers must be
+-- free to renumber it -- otherwise one press of "Name them" freezes the
+-- numbering forever. Anything else is somebody's decision and is left alone.
+--
+-- Anchored at both ends: "line_042_alt1_room" is a name with a reason behind
+-- it, not the convention.
+function vo.IsConventionalAltName(name, base, pattern)
+  if not name or not base or base == "" then return false end
+  -- Lua patterns: braces are not magic, so escaping the rest leaves "{n}"
+  -- findable afterwards.
+  local function esc(s)
+    return (tostring(s):gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1"))
+  end
+  local tail = esc(pattern or "_alt{n}")
+  if tail:find("{n}", 1, true) then
+    tail = tail:gsub("{n}", "%%d+")
+  else
+    tail = tail .. "%d+"
+  end
+  return name:match("^" .. esc(base) .. tail .. "$") ~= nil
+end
+
+-- Takes the SHEET as authority and gives every delivered take the name its row
+-- says it should have -- overwriting, unlike `vo.PlanAltNames`, which only fills
+-- blanks. The deliberate opposite of fixing names from the transcript: that one
+-- is for "I do not trust the name", this is for "the sheet is right, make the
+-- timeline say so". Only the user knows which they mean, so both exist.
+--
+-- Per line, over its takes in row order:
+--   name_override      -> that name, verbatim -- a hand-given name outranks any
+--                         convention, and still CONSUMES its alt number so
+--                         naming one alt by hand does not renumber the next
+--   Sel                -> the plain delivered name
+--   Keep without Sel   -> delivered name .. the alt append
+--   neither            -> left alone. It is not a take being delivered, and
+--                         renaming it would claim that it is.
+--
+-- Numbering is keyed by `script_row` like `vo.PlanAltNames`, so two lines that
+-- share a filename number their alts separately. Because every run renumbers
+-- from the top, a line whose alts drifted to `_alt2` comes back to `_alt1`.
+--
+-- Returns `{ { index = <index into rows>, name = <string> }, ... }`, the number
+-- left alone, and the number ticked but unnameable -- so the REAPER side stays
+-- a thin writer. The last two are counted separately because they are different
+-- news: one is the verb working as designed, the other is the sheet missing
+-- something.
+function vo.PlanNamesFromSheet(rows, opts)
+  opts = opts or {}
+  local pattern = opts.pattern or "_alt{n}"
+  local start   = math.floor(tonumber(opts.start) or 1)
+  local digits  = math.floor(tonumber(opts.digits) or 1)
+
+  local edits, skipped, nameless, seen = {}, 0, 0, {}
+  for i, row in ipairs(rows or {}) do
+    local base = row.deliver or row.asset
+    if not (row.user_select or row.user_keep) then
+      skipped = skipped + 1
+    -- The sheet is the authority, so a ticked row the sheet cannot name is a
+    -- row this verb has nothing to say about. Counted rather than guessed at,
+    -- and counted BEFORE the numbering, so it does not silently eat an alt
+    -- number from a line whose other takes are perfectly nameable.
+    elseif not base or base == "" then
+      nameless = nameless + 1
+    else
+      local name
+      -- An alt is a take kept but not chosen, same reading as vo.PlanAltNames.
+      if row.user_keep and not row.user_select then
+        local key = tostring(row.script_row or ((row.script or "") .. "\0" .. tostring(row.asset)))
+        local n = (seen[key] or start - 1) + 1
+        seen[key] = n
+        name = base .. vo.FormatAltAppend(pattern, n, digits)
+      else
+        name = base
+      end
+      local override = row.name_override and trim(row.name_override) or ""
+      -- See vo.IsConventionalAltName: an override that is only the convention
+      -- was written by the tool, not chosen, so it does not outrank the sheet.
+      if override ~= "" and not vo.IsConventionalAltName(override, base, pattern) then
+        name = override
+      end
+      edits[#edits + 1] = { index = i, name = name }
+    end
+  end
+  return edits, skipped, nameless
+end
+
 -- The whole script side of a project, loaded in one call. Both ajsfx VO Overview
 -- and the old ajsfx VO Cut window kept near-identical copies of this; it is now
 -- one function, so a script that loads for the table cannot fail to load for
@@ -1939,21 +2030,49 @@ end
 -- empty scope and disables the button rather than letting a press be a
 -- surprise.
 --
--- `rows` is the pool a selection picks FROM (what the filters are showing).
+-- `rows` is the pool a ROW selection picks FROM (what the filters are showing).
+-- `all_rows` is the unfiltered pool an ITEM selection picks from; omit it and
+-- both fall back to `rows`, which is the old behaviour.
+--
+-- THE TWO SELECTIONS ARE FILTERED DIFFERENTLY, and they have to be:
+--
+--   a ROW selection is already filtered, tautologically -- you cannot click a
+--   row the filters are hiding, so narrowing it by the filters changes nothing
+--   and keeps "a filtered table acts on what it is showing" true.
+--
+--   an ITEM selection is made in the ARRANGE, where the sheet's filters do not
+--   exist. Selecting a recording means the takes inside it; what the table
+--   happens to be displaying is not part of that intention. Intersecting the
+--   two produced the worst outcome available: a speaker filter left on from
+--   earlier reading silently emptied the scope of an explicit selection, so
+--   "select the recording, press Cut" cut nothing and said only that something
+--   was hidden.
+--
+-- This is NOT the "never silently widens" rule being relaxed. That rule exists
+-- so that NO selection means nothing rather than everything, and it is
+-- untouched: no selection still returns an empty scope. Honouring a selection
+-- the user made by hand is the opposite of widening silently.
+--
 -- Returns: rows in scope, picked (whether any selection exists at all).
 -- picked == false always means #rows == 0; the two together let the caller
 -- tell "nothing selected" from "selection is hidden by the filters".
-function vo.ResolveScope(rows, selected_uids, selected_items)
+function vo.ResolveScope(rows, selected_uids, selected_items, all_rows)
   local picked = (selected_uids and next(selected_uids) ~= nil)
               or (selected_items and next(selected_items) ~= nil)
   if not picked then return {}, false end
 
-  local out = {}
+  local out, seen = {}, {}
+  local function take(row)
+    if seen[row] then return end
+    seen[row] = true
+    out[#out + 1] = row
+  end
+
   for _, row in ipairs(rows or {}) do
-    if (row.uid ~= nil and selected_uids and selected_uids[row.uid])
-       or (row.item ~= nil and selected_items and selected_items[row.item]) then
-      out[#out + 1] = row
-    end
+    if row.uid ~= nil and selected_uids and selected_uids[row.uid] then take(row) end
+  end
+  for _, row in ipairs(all_rows or rows or {}) do
+    if row.item ~= nil and selected_items and selected_items[row.item] then take(row) end
   end
   return out, true
 end
@@ -2090,6 +2209,99 @@ function vo.FormatMarkerName(asset, id)
   return tostring(asset or "") .. " ~" .. tostring(id or "")
 end
 
+-- NOTE MARKERS: a run saying, on the timeline, what it decided about a take.
+--
+-- "It was identified but not faded or pulled" is a question you ask while
+-- LOOKING AT THE CLIP, so the answer belongs there rather than in a report you
+-- have to go and find. A note is a zero-length take marker -- a point, not a
+-- range, so it never reads as a take's extent -- carrying a timestamp and a few
+-- words.
+--
+-- It deliberately has NO ` ~id`, which is what makes it free. Every piece of
+-- identity logic in the tool is guarded by `if id then`, so a note is invisible
+-- to counting, to the coverage rule, to Remove Extra Take Markers and to
+-- everything that decides what a take is. vo.WriteTakeMarkers already keeps
+-- id-less markers when it rewrites the tool's set, so a note also survives a
+-- re-cut -- which is why the writer prunes its own previous notes rather than
+-- letting one accumulate per run.
+--
+-- The `!` prefix is what makes a note recognisable as OURS while still being
+-- id-less. A marker you placed by hand is untouched unless you happened to
+-- start its name with an exclamation mark.
+vo.NOTE_PREFIX = "!"
+
+-- How much of a reason a note keeps. Long enough for a whole sentence, since
+-- the note IS the explanation and half of one explains nothing.
+vo.NOTE_MAX_CHARS = 220
+
+function vo.IsNoteMarker(name)
+  return tostring(name or ""):sub(1, #vo.NOTE_PREFIX) == vo.NOTE_PREFIX
+end
+
+-- `when` is a preformatted stamp (the caller owns the clock, so this stays
+-- testable); `text` is the reason. Both are flattened to one line.
+function vo.FormatNoteMarker(when, text)
+  -- The tilde is REMOVED, not merely discouraged. ParseMarkerName anchors an
+  -- id to the end of the name, so a reason that happened to end in "~k9" --
+  -- quoting a marker, say -- would make this note parse as a take with a
+  -- phantom id, and the sheet would grow a take nothing recorded. Found by the
+  -- test that tries exactly that, not by reading the pattern.
+  local function clean(s)
+    return tostring(s or ""):gsub("~", "-"):gsub("[%c]", " ")
+                            :gsub("%s+", " "):gsub("^%s*(.-)%s*$", "%1")
+  end
+  -- The note's own cut-off, and the only one in the chain: names go into the
+  -- chunk quoted (vo.FormatTKMLine -> tkm_quote), so spaces survive the round
+  -- trip and nothing below this truncates. 80 characters was short enough to
+  -- lose the end of an ordinary sentence -- a reason cut mid-word reads as a
+  -- bug in the tool rather than as the explanation it is. What REAPER shows on
+  -- a narrow item is clipped by the item's width whatever this says; that is a
+  -- zoom level, not lost text.
+  local body = clean(text)
+  if #body > vo.NOTE_MAX_CHARS then
+    body = body:sub(1, vo.NOTE_MAX_CHARS - 1) .. "\u{2026}"
+  end
+  local stamp = clean(when)
+  local out = vo.NOTE_PREFIX
+  if stamp ~= "" then out = out .. " " .. stamp end
+  if body ~= "" then out = out .. "  " .. body end
+  return out
+end
+
+-- Replace this item's note markers with one saying `text`, at `pos` (source
+-- time). Passing no text just clears them. Returns ok, and how many were
+-- removed.
+--
+-- Zero length, always: a note is an annotation, not an extent.
+function vo.WriteNoteMarker(item, pos, when, text)
+  local ok, chunk = r.GetItemStateChunk(item, "", false)
+  if not ok then return false, 0 end
+  local keep, dropped = {}, 0
+  for _, m in ipairs(vo.ParseTKMChunk(chunk)) do
+    if vo.IsNoteMarker(m.name) then
+      dropped = dropped + 1
+    else
+      keep[#keep + 1] = m
+    end
+  end
+  if text and text ~= "" then
+    keep[#keep + 1] = { pos = pos or 0, name = vo.FormatNoteMarker(when, text),
+                        color = 0, length = 0 }
+  end
+  local patched, did = vo.PatchTKMChunk(chunk, keep)
+  if not did then return false, 0 end
+  r.SetItemStateChunk(item, patched, false)
+  return true, dropped
+end
+
+-- The id is ANCHORED TO THE END, and that anchor is load-bearing: text after it
+-- stops the name matching at all, and a marker that does not parse is a take
+-- the sheet cannot see. Text before it is captured as part of the asset, which
+-- is what names the item.
+--
+-- That is why a run's explanation of what it did to a take is NOT kept here.
+-- It rides on a separate note marker (vo.FormatNoteMarker) that carries no id
+-- at all, so it cannot cost a take its identity however it is worded.
 function vo.ParseMarkerName(name)
   name = tostring(name or "")
   local asset, id = name:match("^(.-)%s+~(%w+)$")
@@ -2118,6 +2330,50 @@ end
 -- a take vanish from the sheet while Remove Extra Take Markers saw nothing
 -- wrong.
 vo.marker_same_take = 0.80
+
+-- How much of a MARKER a span must account for before that marker is taken to
+-- be this take's marker rather than one that merely swallows it.
+--
+-- A marker is the padded form of its span -- a few hundred milliseconds of head
+-- and tail room -- so a real pairing accounts for nearly all of it. A marker
+-- left straddling two clips by a split accounts for about half, and that is the
+-- case this number exists to reject.
+--
+-- Without it, "does a marker already own this audio?" was answered by ANY
+-- overlap, so one over-long marker covering two takes made the second take read
+-- as already marked. Identify then refused to mark it, "Update from Item"
+-- refused to mark it, and the clip sat there named, unmarked, and with no
+-- button that would fix it -- which is exactly how it looked from the outside:
+-- nothing wrong on screen, and nothing that helped.
+vo.marker_covers_span = 0.60
+
+-- How much of the span that marks it a clip must actually contain before it is
+-- a whole take rather than a piece of one.
+--
+-- A clip covering half of a 13-second "take" is not a take, it is the front of
+-- a match that swallowed two reads -- and it looks EXACTLY like a healthy clip
+-- on screen: named, in the sheet, audible. Identify is right to leave it alone
+-- (its span really is marked), so no button fixes it and nothing says why. This
+-- is the number that lets the tool notice and say so.
+vo.partial_take_fraction = 0.70
+
+-- Is `mk` plausibly the marker FOR `span`, rather than one that merely reaches
+-- across it? Both ranges are source time, { start, stop }.
+--
+-- Two questions, because one is not enough:
+--   most of the SPAN inside the marker  -- the marker really does cover it
+--   most of the MARKER used by the span -- and it is not covering much else
+function vo.MarkerOwnsSpan(mk, span, fraction)
+  if not (mk and span) then return false end
+  local a0, a1 = mk.start or 0, mk.stop or 0
+  local b0, b1 = span.start or 0, span.stop or 0
+  local mlen, slen = a1 - a0, b1 - b0
+  if mlen <= 0 or slen <= 0 then return false end
+  local overlap = math.min(a1, b1) - math.max(a0, b0)
+  if overlap <= 0 then return false end
+  return overlap >= slen * vo.marker_same_take
+     and overlap >= mlen * (fraction or vo.marker_covers_span)
+end
 
 -- How much of a marker, or of an item, the two must share before the marker is
 -- one the item HOLDS rather than one it merely touches.
@@ -5272,6 +5528,180 @@ function vo.SourceCoverageRanges(items)
   return out
 end
 
+-- Merge overlapping/touching source ranges into the fewest that cover the same
+-- audio, in time order. Input may be in any order and may overlap; the ranges
+-- come from items scattered across the project, so neither is a safe assumption.
+function vo.MergeRanges(ranges)
+  local sorted = {}
+  for _, g in ipairs(ranges or {}) do
+    local from, to = g.from or g.start or 0, g.to or g.stop or 0
+    if to > from then sorted[#sorted + 1] = { from = from, to = to } end
+  end
+  table.sort(sorted, function(a, b) return a.from < b.from end)
+  local out = {}
+  for _, g in ipairs(sorted) do
+    local last = out[#out]
+    if last and g.from <= last.to then
+      if g.to > last.to then last.to = g.to end
+    else
+      out[#out + 1] = { from = g.from, to = g.to }
+    end
+  end
+  return out
+end
+
+-- ONE ITEM, ONE TAKE PER LINE: markers inside a single item that name the SAME
+-- asset are one take seen twice, and the one covering more of the item wins.
+--
+-- The gap this closes, measured on a real clip: two markers for
+-- "..._Trying", 0.385s and 1.875s, ADJACENT and not overlapping at all. The
+-- existing dedupe (vo.marker_same_take) merges markers that overlap by 80% of
+-- the shorter, so at zero overlap it correctly concluded they were two
+-- different takes and left both -- which left the item with no single range to
+-- trim onto, and a note saying so instead of a fix.
+--
+-- Overlap is the wrong question between markers that are already inside one
+-- item. Two takes of one line cannot both be in one clip: cutting is what puts
+-- each take in its own item, so a second marker for the same line here is
+-- residue -- REAPER's split copying the set into both halves, or a re-mark
+-- landing beside the old one -- not a second performance.
+--
+-- Only ever within one asset. Two markers naming DIFFERENT lines in one item is
+-- an uncut recording holding two takes, which is the normal state of a session
+-- before the cut and must never be pruned.
+--
+-- markers: { { start, stop, asset, id } }. cov: the item's { from, to } source
+-- window. Returns keep, dropped -- both arrays, keep in the given order.
+function vo.PlanSameAssetPrune(markers, cov)
+  local function inside(mk)
+    if not cov then return (mk.stop or 0) - (mk.start or 0) end
+    local o = math.min(mk.stop or 0, cov.to or 0) - math.max(mk.start or 0, cov.from or 0)
+    return (o > 0) and o or 0
+  end
+
+  local best = {}
+  for _, mk in ipairs(markers or {}) do
+    if mk.asset and mk.asset ~= "" then
+      local cur = best[mk.asset]
+      -- Ties break on the LONGER marker, then on nothing at all: a stable
+      -- first-wins, so the same item pruned twice keeps the same id and the
+      -- marks filed under it survive a second press.
+      if not cur
+         or inside(mk) > inside(cur)
+         or (inside(mk) == inside(cur)
+             and (mk.stop - mk.start) > (cur.stop - cur.start)) then
+        best[mk.asset] = mk
+      end
+    end
+  end
+
+  local keep, dropped = {}, {}
+  for _, mk in ipairs(markers or {}) do
+    if not mk.asset or mk.asset == "" or best[mk.asset] == mk then
+      keep[#keep + 1] = mk
+    else
+      dropped[#dropped + 1] = mk
+    end
+  end
+  return keep, dropped
+end
+
+-- SPEECH THE PROJECT NO LONGER HOLDS: stretches of a source where the
+-- transcript has words but no item in the project plays them.
+--
+-- This is the reverse of every other check in the tool. Those all start from
+-- what the project contains and ask whether it is right; this one starts from
+-- the RECORDING and asks what the project lost. Nothing else can, because
+-- everything the tool knows about a take -- its marker, its name, its row --
+-- lives on the item, so an item that is gone takes its own evidence with it.
+-- The transcript is the only record that outlives the timeline, which is what
+-- makes it the thing to ask.
+--
+-- A word counts as present when at least half of it is covered. Half, not "any
+-- overlap" and not "all of it": a word straddling an item edge must not read as
+-- missing (that would restore a sliver beside every clip), and a word barely
+-- clipped by a neighbour must not read as present (that would leave the read it
+-- belongs to unrecoverable).
+--
+-- Runs of missing words become one range each, padded and then CLAMPED to the
+-- covered audio either side. Clamping rather than overlapping is the one place
+-- this verb is not generous: a restored item that laps over its neighbour puts
+-- two items on the same audio, and the whole tool reasons about a take through
+-- the item covering it. Butted up against them instead, the union is continuous
+-- and every stage sees each stretch exactly once.
+--
+-- covered: source ranges the project already plays, { from, to }, any order.
+-- words:   the source's transcript words, { t0, t1, text }.
+-- Returns: array of { from, to, text, count } in time order.
+function vo.MissingAudioGaps(covered, words, min_gap, pad)
+  min_gap = min_gap or 0.20
+  pad     = pad or 0.25
+  local held = vo.MergeRanges(covered)
+
+  local function covered_fraction(t0, t1)
+    local len = t1 - t0
+    if len <= 0 then return 1.0 end
+    local hit = 0.0
+    for _, g in ipairs(held) do
+      local o = math.min(g.to, t1) - math.max(g.from, t0)
+      if o > 0 then hit = hit + o end
+    end
+    return hit / len
+  end
+
+  -- Where the padding has to stop on each side: the covered audio nearest the
+  -- RUN, not nearest the padded edge. Measuring from the padded edge asks the
+  -- wrong question -- pad far enough and it steps clean over a whole covered
+  -- range and finds the one beyond, which is how a 5-second pad landed inside
+  -- an item instead of butting against it.
+  local function clamp_low(t, anchor)
+    local best = -math.huge
+    for _, g in ipairs(held) do
+      if g.to <= anchor and g.to > best then best = g.to end
+    end
+    return (best > -math.huge) and math.max(t, best) or t
+  end
+  local function clamp_high(t, anchor)
+    local best = math.huge
+    for _, g in ipairs(held) do
+      if g.from >= anchor and g.from < best then best = g.from end
+    end
+    return (best < math.huge) and math.min(t, best) or t
+  end
+
+  local out, run = {}, nil
+  local function close_run()
+    if not run then return end
+    local from = clamp_low(run.from - pad, run.from)
+    local to   = clamp_high(run.to + pad, run.to)
+    if to - from >= min_gap then
+      out[#out + 1] = { from = from, to = to,
+                        text = table.concat(run.text, " "), count = #run.text }
+    end
+    run = nil
+  end
+
+  for _, w in ipairs(words or {}) do
+    local t0, t1 = w.t0 or 0, w.t1 or 0
+    if t1 > t0 and covered_fraction(t0, t1) < 0.5 then
+      -- Two missing words with an ITEM between them are two lost stretches,
+      -- not one. Only a covered word closed a run before, so a hole either
+      -- side of a surviving clip came back as a single range straddling it --
+      -- and restoring that would have laid an item over the clip.
+      if run and t0 > run.to and covered_fraction(run.to, t0) > 0 then
+        close_run()
+      end
+      if not run then run = { from = t0, to = t1, text = {} } end
+      run.to = math.max(run.to, t1)
+      run.text[#run.text + 1] = tostring(w.text or "")
+    else
+      close_run()
+    end
+  end
+  close_run()
+  return out
+end
+
 -- Where an item has to sit to show exactly one stretch of its source.
 --
 -- The other direction from vo.SourceCoverageRanges: given the SOURCE range you
@@ -8152,6 +8582,129 @@ function vo.MakeTakeProbe(take)
   return probe, function() r.DestroyAudioAccessor(acc) end
 end
 
+-- How many FRAMES one batched read may ask for. The same ceiling the per-window
+-- probe puts on a single read, so a pathological item cannot allocate without
+-- bound; the profile below simply makes many windows share one read of this
+-- size instead of taking one read each.
+vo.PROFILE_MAX_FRAMES = 65536
+
+-- Take every Nth sample when measuring a window's level, rather than all of
+-- them. 1 measures every sample.
+--
+-- This is where the time actually was, and it took measuring to find: profiling
+-- 125 seconds of audio across 40 items costs 10ms of buffer allocation, 63ms of
+-- REAPER decoding the audio, and 398ms summing squares in Lua. The sum is 84%
+-- of it, so batching the reads -- which only ever attacked the 10ms -- measured
+-- as a wash, and no arrangement of block sizes changed that.
+--
+-- Sound to subsample because of what the number is FOR. Each window is 10ms and
+-- its level is compared against a noise floor to answer "is this speech or is
+-- this room?". At 48kHz every 4th sample still averages 120 of them per window,
+-- and the RMS of a subsample is an unbiased estimate of the RMS of the whole
+-- for any signal that is not conspiring with the stride. Speech and room tone
+-- are not.
+vo.PROFILE_STRIDE = 4
+
+-- Every `step`-long window between `from` and `to` (PROJECT time), as dB, in
+-- order. The batched form of calling MakeTakeProbe in a loop.
+--
+-- Same arithmetic, far fewer calls. Profiling an item window-by-window costs
+-- one r.new_array ALLOCATION and one GetAudioAccessorSamples CALL per window --
+-- at a 10ms step that is 100 of each per second of audio, so a 3.5s take took
+-- 350 of each and a 1720s recording took 172,000. Reading a block once and
+-- slicing the windows out of it in Lua does the identical multiply-adds over
+-- the identical samples, but amortises the allocation and the API call across
+-- ~136 windows at a time.
+--
+-- The arithmetic per window is identical to the loop it replaces -- the same
+-- multiply-adds over the same sample count -- and `spw` is fixed rather than
+-- recomputed per window because every window in the old loop was a whole step
+-- and floored to the same count anyway, so pinning it removes a float wobble
+-- rather than introducing one.
+--
+-- It is NOT bit-identical, and pretending otherwise would be the wrong claim to
+-- build on. A batch asks the accessor for one run of frames, so a sample's time
+-- inside it is reached by a different float path than the same sample reached
+-- window by window (k*spw/rate against k*step). On real audio that is inaudible
+-- and unmeasurable; against a synthetic source that steps between amplitudes at
+-- an exact instant it can flip a single sample at that instant. What must hold
+-- is that vo.EffectiveRoom reaches the same edge either way, and the tests
+-- assert that rather than value equality.
+--
+-- Returns: the array of dB values (PROBE_FLOOR_DB where a read failed, which is
+-- what the per-window caller substituted for a nil probe), or nil if no
+-- accessor could be made.
+function vo.MakeTakeProfile(take, from, to, step)
+  if not take or not r.CreateTakeAudioAccessor then return nil end
+  if not (from and to and step) or step <= 0 or to <= from then return nil end
+
+  local acc = r.CreateTakeAudioAccessor(take)
+  if not acc then return nil end
+
+  local source = r.GetMediaItemTake_Source(take)
+  local rate   = source and r.GetMediaSourceSampleRate and
+                 r.GetMediaSourceSampleRate(source) or 48000
+  if not rate or rate <= 0 then rate = 48000 end
+  local chans  = source and r.GetMediaSourceNumChannels and
+                 r.GetMediaSourceNumChannels(source) or 1
+  if not chans or chans < 1 then chans = 1 end
+
+  -- The accessor's clock starts at the take's own start; callers reason in
+  -- project time. Same conversion MakeTakeProbe makes, and for the same reason.
+  local item = r.GetMediaItemTake_Item and r.GetMediaItemTake_Item(take)
+  local item_pos = item and r.GetMediaItemInfo_Value(item, "D_POSITION") or 0
+
+  local spw = math.floor(step * rate)
+  local total = math.floor((to - from) / step)
+  if spw < 1 or total < 1 then
+    r.DestroyAudioAccessor(acc)
+    return nil
+  end
+
+  local per_block = math.floor(vo.PROFILE_MAX_FRAMES / spw)
+  if per_block < 1 then per_block = 1 end
+
+  local stride = math.floor(vo.PROFILE_STRIDE or 1)
+  if stride < 1 then stride = 1 end
+
+  local out = {}
+  local w = 0
+  while w < total do
+    local nw     = math.min(per_block, total - w)
+    local frames = nw * spw
+    local buf    = r.new_array(frames * chans)
+    buf.clear()
+    -- Associated exactly as the per-window probe associated it -- (pos + k*step)
+    -- - item_pos, not (pos - item_pos) + k*step. The two differ in the last
+    -- bits, and this is the one difference between batched and per-window
+    -- reading that is ours to remove rather than the accessor's.
+    local t0 = (from + w * step) - item_pos
+    local ok = r.GetAudioAccessorSamples(acc, rate, chans, t0, frames, buf) == 1
+    for k = 0, nw - 1 do
+      if not ok then
+        out[#out + 1] = vo.PROBE_FLOOR_DB
+      else
+        -- Divided by what was actually summed, not by the window size: a
+        -- stride that does not divide the window evenly would otherwise report
+        -- every window a little quiet, which is a floor comparison shifted.
+        local base, sum, cnt = k * spw * chans, 0.0, 0
+        for i = 1, spw * chans, stride do
+          local v = buf[base + i] or 0.0
+          sum = sum + v * v
+          cnt = cnt + 1
+        end
+        local rms = (cnt > 0) and math.sqrt(sum / cnt) or 0.0
+        out[#out + 1] = (rms <= 0) and vo.PROBE_FLOOR_DB
+                        or (20.0 * math.log(rms, 10))
+      end
+    end
+    w = w + nw
+  end
+
+  r.DestroyAudioAccessor(acc)
+  return out
+end
+
 --------------------------------
 -- Coupled layer: project inspection
 --------------------------------
@@ -8513,18 +9066,60 @@ end
 -- Pull's destinations are children rather than siblings because a session's
 -- Selects belong to the recording they came out of: collapsed, the recording
 -- and everything cut from it read as one thing.
+-- The children of `parent`, in track order: everything below it until the
+-- folder closes. Depth accumulates -- a child that opens its own folder adds 1,
+-- one that closes subtracts -- and the parent's own run ends when the running
+-- total returns to zero.
+function vo.FolderChildren(parent)
+  local out = {}
+  local first = math.floor(r.GetMediaTrackInfo_Value(parent, "IP_TRACKNUMBER"))
+  local depth = 0
+  for i = first, r.CountTracks(0) - 1 do
+    local t = r.GetTrack(0, i)
+    out[#out + 1] = t
+    depth = depth + r.GetMediaTrackInfo_Value(t, "I_FOLDERDEPTH")
+    if depth < 0 then break end
+  end
+  return out
+end
+
+-- A track named `name` among THIS parent's children, or nil.
+--
+-- Scoped to the folder, and that is the whole point. vo.EnsureTrackBelow
+-- searches the project by name, which is right for a track that is meant to be
+-- unique and wrong for these: every recording has its own "Selects", "Alts" and
+-- "Review". With two recordings in a session the second one's build found the
+-- FIRST one's Alts, decided it already existed, and nested nothing under itself
+-- -- so the second recording's alts had nowhere of their own to go.
+function vo.FindChildTrack(parent, name)
+  for _, t in ipairs(vo.FolderChildren(parent)) do
+    local _, existing = r.GetSetMediaTrackInfo_String(t, "P_NAME", "", false)
+    if existing == name then return t end
+  end
+  return nil
+end
+
 function vo.EnsureChildTrack(parent, name)
   local parent_depth, child_depth =
     vo.FolderDepthForChild(r.GetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH"))
-  local child, created = vo.EnsureTrackBelow(parent, name)
+  -- This parent's OWN child, or none. Deliberately NOT vo.EnsureTrackBelow:
+  -- its search is project-wide, so with two recordings it would hand back the
+  -- other one's "Alts" and this folder would never get its own.
+  local existing = vo.FindChildTrack(parent, name)
+  if existing then return existing end
+
+  -- IP_TRACKNUMBER is 1-based, so it is already the 0-based index *after* the
+  -- parent -- exactly where a first child belongs.
+  local insert_at = math.floor(r.GetMediaTrackInfo_Value(parent, "IP_TRACKNUMBER"))
+  r.InsertTrackAtIndex(insert_at, true)
+  local child = r.GetTrack(0, insert_at)
+  r.GetSetMediaTrackInfo_String(child, "P_NAME", name, true)
   -- Depths are shaped only on creation. An existing child already sits inside
   -- the folder, and rewriting its depth from the PARENT's current depth would
   -- hand the track that closes the folder a 0 — leaving the folder open to
   -- swallow whatever gets added below it.
-  if created then
-    r.SetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH", parent_depth)
-    r.SetMediaTrackInfo_Value(child, "I_FOLDERDEPTH", child_depth)
-  end
+  r.SetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH", parent_depth)
+  r.SetMediaTrackInfo_Value(child, "I_FOLDERDEPTH", child_depth)
   return child
 end
 

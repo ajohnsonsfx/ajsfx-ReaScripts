@@ -911,6 +911,131 @@ test("only alts are touched", function()
 end)
 
 --------------------------------
+-- PlanNamesFromSheet
+--------------------------------
+print("\nPlanNamesFromSheet:")
+
+-- The opposite authority to fix_names_from_transcript: the sheet is right, so
+-- this one OVERWRITES rather than filling blanks.
+local ALT_OPTS = { pattern = "_alt{n}", start = 1, digits = 1 }
+
+test("the select gets the plain name and its alts count from one", function()
+  local edits = vo.PlanNamesFromSheet({
+    alt_row("select", "line_042", 1), alt_row("keep", "line_042", 1),
+    alt_row("keep", "line_042", 1),
+  }, ALT_OPTS)
+  assert(#edits == 3, "every delivered take is named, got " .. #edits)
+  assert(edits[1].name == "line_042", "the select is plain: " .. tostring(edits[1].name))
+  assert(edits[2].name == "line_042_alt1" and edits[3].name == "line_042_alt2",
+    "alts number from one: " .. tostring(edits[2].name) .. ", " .. tostring(edits[3].name))
+end)
+
+test("a hand-given name beats the convention", function()
+  local edits = vo.PlanNamesFromSheet({
+    alt_row("select", "line_042", 1),
+    alt_row("keep", "line_042", 1, "line_042_pickup"),
+    alt_row("keep", "line_042", 1),
+  }, ALT_OPTS)
+  assert(edits[2].name == "line_042_pickup", "verbatim: " .. tostring(edits[2].name))
+  assert(edits[3].name == "line_042_alt2",
+    "and it still consumes its number: " .. tostring(edits[3].name))
+end)
+
+test("a take with neither Keep nor Sel is left alone", function()
+  local edits, skipped = vo.PlanNamesFromSheet({
+    alt_row("select", "line_042", 1), alt_row(nil, "line_042", 1),
+  }, ALT_OPTS)
+  assert(#edits == 1 and edits[1].index == 1,
+    "only the delivered take is named, got " .. #edits)
+  assert(skipped == 1, "and the untouched one is counted, got " .. tostring(skipped))
+end)
+
+test("two lines sharing a filename number their alts separately", function()
+  local edits = vo.PlanNamesFromSheet({
+    alt_row("keep", "dup", 7), alt_row("keep", "dup", 9),
+  }, ALT_OPTS)
+  assert(edits[1].name == "dup_alt1" and edits[2].name == "dup_alt1",
+    "each line counts its own alts")
+end)
+
+test("a line with no select ticked still starts its alts at one", function()
+  -- The reported _alt2: whatever the takes are marked now, a rerun renumbers
+  -- from the top, so the first alt cannot come out as _alt2.
+  local edits = vo.PlanNamesFromSheet({
+    alt_row("keep", "line_042", 1), alt_row("keep", "line_042", 1),
+  }, ALT_OPTS)
+  assert(edits[1].name == "line_042_alt1", "Got " .. tostring(edits[1].name))
+  assert(edits[2].name == "line_042_alt2", "Got " .. tostring(edits[2].name))
+end)
+
+test("an override that is only the convention is renumbered, not obeyed", function()
+  -- "Name them" stamps its generated name into name_override, so after one
+  -- press every alt LOOKS hand-given. Obeying those would make this button a
+  -- no-op on the projects that need it most.
+  local edits = vo.PlanNamesFromSheet({
+    alt_row("select", "line_042", 1, "line_042_alt1"),
+    alt_row("keep",   "line_042", 1, "line_042_alt2"),
+  }, ALT_OPTS)
+  assert(edits[1].name == "line_042",
+    "the select drops the alt name it used to carry: " .. tostring(edits[1].name))
+  assert(edits[2].name == "line_042_alt1",
+    "and the alt renumbers from the top: " .. tostring(edits[2].name))
+end)
+
+test("an override that is a real judgement is still obeyed", function()
+  local edits = vo.PlanNamesFromSheet({
+    alt_row("keep", "line_042", 1, "line_042_pickup"),
+  }, ALT_OPTS)
+  assert(edits[1].name == "line_042_pickup", "Got " .. tostring(edits[1].name))
+end)
+
+test("the convention test is anchored, so a longer name is a judgement", function()
+  local edits = vo.PlanNamesFromSheet({
+    alt_row("keep", "line_042", 1, "line_042_alt1_room"),
+  }, ALT_OPTS)
+  assert(edits[1].name == "line_042_alt1_room",
+    "an alt name with more on the end is not the convention: " .. tostring(edits[1].name))
+end)
+
+test("a ticked row the sheet has no name for is reported, not crashed on", function()
+  -- Seen live: a row with Keep ticked and neither deliver nor asset. The sheet
+  -- is the authority here, so a row it cannot name is a row this verb has
+  -- nothing to say about -- but it must say so rather than raise.
+  local row = alt_row("keep", nil, 1)
+  row.deliver, row.asset = nil, nil
+  local edits, untouched, nameless = vo.PlanNamesFromSheet({ row }, ALT_OPTS)
+  assert(#edits == 0, "nothing can be named, got " .. #edits)
+  assert(untouched == 0, "it was ticked, so it is not 'left alone'")
+  assert(nameless == 1, "and it is counted as nameless, got " .. tostring(nameless))
+end)
+
+test("a nameless row does not consume an alt number from its line", function()
+  local blank = alt_row("keep", nil, 1)
+  blank.deliver, blank.asset = nil, nil
+  local edits = vo.PlanNamesFromSheet({
+    blank, alt_row("keep", "line_042", 1),
+  }, ALT_OPTS)
+  assert(#edits == 1 and edits[1].name == "line_042_alt1",
+    "the real alt is still the first: " .. tostring(edits[1] and edits[1].name))
+end)
+
+test("running it twice changes nothing the second time", function()
+  local rows = {
+    alt_row("select", "line_042", 1), alt_row("keep", "line_042", 1),
+  }
+  local first = vo.PlanNamesFromSheet(rows, ALT_OPTS)
+  -- What the write does: the take marker's asset becomes the planned name. The
+  -- sheet's `deliver` is untouched, which is what keeps the second run stable.
+  for _, e in ipairs(first) do rows[e.index].asset = e.name end
+  local second = vo.PlanNamesFromSheet(rows, ALT_OPTS)
+  assert(#second == #first, "the plan changed size on a rerun")
+  for i = 1, #first do
+    assert(second[i].name == first[i].name,
+      "run two renamed " .. tostring(first[i].name) .. " to " .. tostring(second[i].name))
+  end
+end)
+
+--------------------------------
 -- AppendMap / SetAppend / ResolveNames
 --------------------------------
 print("\nAppendMap and SetAppend:")
@@ -7705,6 +7830,67 @@ test("a linenote entry round-trips through the project file", function()
   end
   assert(found, "linenote entry was dropped")
   assert(found.notes == "line-level note", "note lost: " .. tostring(found and found.notes))
+end)
+
+--------------------------------
+-- Destination tracks are per RECORDING, not per project
+--
+-- The bug: EnsureChildTrack used vo.EnsureTrackBelow, whose search is
+-- project-wide by name. Every recording wants its own "Selects", "Alts" and
+-- "Review", so with two recordings the second one's build found the FIRST
+-- one's Alts, called it done, and nested nothing under itself -- the second
+-- recording's alts then had nowhere of their own to go.
+--------------------------------
+print("\nDestination tracks per recording:")
+
+-- A flat project of named tracks with folder depths, as the mock models it.
+local function make_tracks(spec)
+  mock.reset()
+  for _, s in ipairs(spec) do
+    mock.tracks[#mock.tracks + 1] =
+      { info = { I_FOLDERDEPTH = s[2] }, items = {}, name = s[1] }
+  end
+  return mock.tracks
+end
+
+test("FolderChildren stops at the track that closes the folder", function()
+  make_tracks({ { "RecA", 1 }, { "Review", 0 }, { "Alts", -1 }, { "RecB", 1 },
+                { "Review", 0 }, { "Alts", -1 } })
+  local kids = vo.FolderChildren(mock.tracks[1])
+  assert(#kids == 2, "expected 2 children of RecA, got " .. #kids)
+  assert(kids[1].name == "Review" and kids[2].name == "Alts",
+         "wrong children: " .. kids[1].name .. ", " .. kids[2].name)
+end)
+
+test("FindChildTrack finds this folder's Alts, not the other recording's", function()
+  make_tracks({ { "RecA", 1 }, { "Review", 0 }, { "Alts", -1 }, { "RecB", 1 },
+                { "Review", 0 }, { "Alts", -1 } })
+  local a = vo.FindChildTrack(mock.tracks[1], "Alts")
+  local b = vo.FindChildTrack(mock.tracks[4], "Alts")
+  assert(a == mock.tracks[3], "RecA got the wrong Alts")
+  assert(b == mock.tracks[6], "RecB got the wrong Alts")
+  assert(a ~= b, "both recordings resolved to the same Alts track")
+end)
+
+test("a second recording gets its OWN Alts rather than the first one's", function()
+  -- RecB has no children at all. The old code found RecA's "Alts" by name and
+  -- returned it, so RecB never got one.
+  make_tracks({ { "RecA", 1 }, { "Alts", -1 }, { "RecB", 0 } })
+  local before = #mock.tracks
+  local child = vo.EnsureChildTrack(mock.tracks[3], "Alts")
+  assert(#mock.tracks == before + 1,
+         "no track was created for the second recording")
+  assert(child ~= mock.tracks[2], "RecB was handed RecA's Alts")
+  assert(child.name == "Alts", "created track is named " .. tostring(child.name))
+end)
+
+test("an existing child is reused, and nothing is created twice", function()
+  make_tracks({ { "RecA", 1 }, { "Alts", -1 } })
+  local before = #mock.tracks
+  local first  = vo.EnsureChildTrack(mock.tracks[1], "Alts")
+  local second = vo.EnsureChildTrack(mock.tracks[1], "Alts")
+  assert(first == second, "the same call returned two different tracks")
+  assert(#mock.tracks == before, "an existing child was duplicated")
 end)
 
 --------------------------------
