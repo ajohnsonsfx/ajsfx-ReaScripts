@@ -7578,6 +7578,11 @@ function Verify.Finish()
                                  or "nothing to verify.")
   state.message_kind = (counts["wrong line"] or counts["unsure"]
                         or counts["error"]) and "warn" or "ok"
+  -- Rebuild NOW: a P_EXT stamp write does not bump the project change count
+  -- the frame loop watches, so without this the vetted boxes a run just
+  -- earned stay unticked until some unrelated edit rebuilds the sheet.
+  -- (Found live, on the fixture: stamps on the items, sheet showing nothing.)
+  Reload()
 end
 
 -- The window is closing. Without this, a multi-item run dies silently: the
