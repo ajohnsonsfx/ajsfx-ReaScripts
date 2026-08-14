@@ -95,5 +95,27 @@ test("nil takes is empty, not an error", function()
 end)
 
 --------------------------------
+print("ParityAttribute:")
+
+test("one element moved names the authority", function()
+  assert(vo.ParityAttribute({ edge = true })   == "item",   "edge -> item")
+  assert(vo.ParityAttribute({ name = true })   == "name",   "name -> name")
+  assert(vo.ParityAttribute({ marker = true }) == "marker", "marker -> marker")
+  assert(vo.ParityAttribute({ track = true })  == "sheet",  "track -> sheet")
+end)
+
+test("two elements moved is nobody's authority", function()
+  assert(vo.ParityAttribute({ edge = true, marker = true }) == nil,
+    "edge+marker attributed")
+  assert(vo.ParityAttribute({ name = true, track = true }) == nil,
+    "name+track attributed")
+end)
+
+test("nothing moved, nil, and nil input is not an error", function()
+  assert(vo.ParityAttribute({})  == nil, "empty set attributed")
+  assert(vo.ParityAttribute(nil) == nil, "nil errored or attributed")
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

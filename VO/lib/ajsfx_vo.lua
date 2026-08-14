@@ -2041,6 +2041,29 @@ function vo.ParityDiff(takes, opts)
   return out
 end
 
+-- Which single element did the user edit? The watcher hands in what changed
+-- since the baseline; exactly one changed element IS the authority, anything
+-- else is nil -- the tool acts on knowledge or it asks (spec §4.2).
+--
+-- "edge" means LENGTH or the source window changed, not position alone: a
+-- track move keeps an item's length, and treating position as an edge would
+-- turn every vertical drag into two changed elements and queue every one.
+-- The caller (the snapshot pass) owns that distinction; here four booleans
+-- go in and one name comes out.
+function vo.ParityAttribute(changed)
+  if not changed then return nil end
+  local map = { edge = "item", name = "name", marker = "marker",
+                track = "sheet" }
+  local hit = nil
+  for k, authority in pairs(map) do
+    if changed[k] then
+      if hit then return nil end
+      hit = authority
+    end
+  end
+  return hit
+end
+
 -- Which of `ranges` is the same take as `span`, by overlap.
 --
 -- "Is this take already marked?" cannot be asked by comparing start times. A
