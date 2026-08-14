@@ -4293,13 +4293,14 @@ end
 
 -- The Follow menu's toggles: user preferences like the layout settings above,
 -- so ExtState, not the project file.
--- "marks_follow_tracks" rides along with the Follow settings because it is
--- stored the same way, not because it is one of them: it is about the SHEET
--- following the timeline, where the others are about the view following the
--- edit cursor.
+-- "session_sync" rides along with the Follow settings because it is stored
+-- the same way, not because it is one of them: it is the parity watcher's
+-- one switch -- the sheet, markers and names following the user's edits --
+-- where the others are about the view following the edit cursor. It replaced
+-- the three per-case followers (marks_follow_tracks, tracking_follows_edit,
+-- alt_names_follow_tracks); their old ExtState keys are simply abandoned.
 local FOLLOW_KEYS = { "follow_scroll", "follow_unfold", "follow_fold",
-                      "marks_follow_tracks", "tracking_follows_edit",
-                      "alt_names_follow_tracks" }
+                      "session_sync" }
 
 -- How many frames the project must sit UNCHANGED before an automatic edit runs.
 --
@@ -4371,6 +4372,9 @@ local function LoadFollowSettings()
     if raw == "1" then state[key] = true
     elseif raw == "0" then state[key] = false end
   end
+  -- The sync switch defaults ON: the queue is what makes that safe -- every
+  -- automatic act is logged, and anything uncertain queues instead of acting.
+  if state.session_sync == nil then state.session_sync = true end
 end
 
 local function SetFollowSetting(key, value)
@@ -7481,6 +7485,98 @@ local function ApplyAltNames()
     why),
     (named > 0) and "ok" or "error"
   state.pull_result, state.pull_result_kind = state.message, state.message_kind
+end
+
+-- The user typed a line's name onto an item: the name IS the assignment (the
+-- governing rule of the whole tool), so the marker follows it. Only names
+-- that RESOLVE to a script line count -- "great one, keep" is a note, not a
+-- reassignment, and the marker it does not resolve to stays put. Unresolvable
+-- renames queue instead, with the item as the evidence.
+function Trim.retarget_from_names(items)
+  local index = vo.BuildNameIndex(state.lines)
+  local moved, kept = 0, 0
+  core.Transaction("VO Overview: marker follows the name", function()
+    for item in pairs(items or {}) do
+      if Trim.item_alive(item) then
+        local take = r.GetActiveTake(item)
+        local nm = ""
+        if take then
+          local _, got = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+          nm = got or ""
+        end
+        local at = vo.ResolveItemName(index, nm)
+        local line = at and state.lines and state.lines[at]
+        -- markers_in needs the info record's coverage, so find the real one.
+        local mks = {}
+        for _, info in ipairs(state.items or {}) do
+          if info.item == item then mks = Trim.markers_in(info) break end
+        end
+        if line and line.asset and #mks == 1 then
+          local ok, changed = vo.RetargetMarkerOnItem(item, mks[1].id, line.asset)
+          if ok and changed then moved = moved + 1 end
+        else
+          state.parity_queue_manual = state.parity_queue_manual or {}
+          state.parity_queue_manual[item] = true
+          kept = kept + 1
+        end
+      end
+    end
+  end)
+  if moved > 0 then
+    state.message, state.message_kind = string.format(
+      "%d marker(s) followed the name typed on their item.", moved), "ok"
+  elseif kept > 0 then
+    state.message, state.message_kind = string.format(
+      "%d renamed item(s) resolve to no script line -- sent to Out of sync.",
+      kept), "warn"
+  end
+  state.dirty = true
+  Reload()
+end
+
+-- The authority -> waterfall router, used by the watcher's automatic pass and
+-- by the queue panel's "Fix from ..." buttons alike, so a hand-picked fix and
+-- an automatic one cannot drift apart. `attributed` maps item -> authority
+-- ("item" | "marker" | "name" | "sheet").
+--
+-- Ordering inside one settle batch: sheet adoptions first (marks), then
+-- geometry and name syncs, then the alt names -- the same marks-before-names
+-- rule the old followers enforced, because an alt name is decided by whether
+-- the take is a select, and the marks are what say so.
+function Trim.sync_dispatch(attributed)
+  local by = { item = {}, name = {}, marker = {}, sheet = {} }
+  local n  = { item = 0,  name = 0,  marker = 0,  sheet = 0 }
+  for item, who in pairs(attributed or {}) do
+    if by[who] then by[who][item] = true; n[who] = n[who] + 1 end
+  end
+  if n.sheet > 0 then
+    local adopted = Trim.adopt_track_marks(by.sheet)
+    if adopted > 0 then
+      state.message, state.message_kind = string.format(
+        "%d take(s) followed their track -- Selects ticks Sel, Alts ticks " ..
+        "Keep, anywhere else clears both.", adopted), "ok"
+      ApplyAltNames()
+    end
+  end
+  if n.item > 0 then
+    Trim.update("item", { picked = by.item })
+    -- AFTER the edges, never before: the marker is snapped to the item
+    -- first, so the range this asks the transcript about is the one the
+    -- item now plays.
+    local fixed = Trim.fix_names_from_transcript({
+      picked = by.item, no_reload = true, quiet = true })
+    if (fixed or 0) > 0 then
+      state.message, state.message_kind = string.format(
+        "%s Renamed %d marker(s) the transcript disagreed with.",
+        state.message or "", fixed), "ok"
+    end
+  end
+  if n.marker > 0 then
+    Trim.update("marker", { picked = by.marker })
+  end
+  if n.name > 0 then
+    Trim.retarget_from_names(by.name)
+  end
 end
 
 -- "Match takes to script": work out which line each read is, and mark it.
@@ -12425,79 +12521,28 @@ local function loop()
           "Coverage is counted from EVERY item wherever it now sits, so a take\n" ..
           "already pulled to Selects is never restored a second time.")
 
-      -- The standing form of the button beside it: instead of reporting that
-      -- the sheet and the tracks disagree and waiting to be told to adopt the
-      -- timeline, do it on every change.
-      Sep("Selects follow track placement")
-      local hit, v = im.Checkbox(ctx, "Selects follow track placement",
-                                 state.marks_follow_tracks == true)
-      if hit then SetFollowSetting("marks_follow_tracks", v) end
+      -- The parity watcher's one switch, where three per-case followers used
+      -- to stand. Each of the three named one edit and one follower; the
+      -- watcher attributes ANY single-element edit and syncs from it, so the
+      -- choice left for a checkbox is only "act by itself or queue it all".
+      Sep("Keep the session in sync")
+      local hit, v = im.Checkbox(ctx, "Keep the session in sync",
+                                 state.session_sync == true)
+      if hit then SetFollowSetting("session_sync", v) end
       TooltipEvenWhenDisabled(
-        "Drag a take onto a track and the sheet catches up by itself:\n\n" ..
-        "  onto " .. (vo.LoadConfig().track_selects or "Selects") ..
-        "   ->  ticked Sel\n" ..
-        "  onto " .. (vo.LoadConfig().track_alts or "Alts") ..
-        "      ->  ticked Keep\n" ..
-        "  anywhere else  ->  neither (Review, its recording, a scratch\n" ..
-        "                     track -- moving it OFF clears the tick)\n\n" ..
-        "The same rule Pull uses in the other direction, so a take you moved\n" ..
-        "by hand and a take Pull moved say the same thing about themselves.\n\n" ..
-        "It writes the SHEET only -- no item moves, nothing is renamed, and\n" ..
-        "there is nothing to undo. With this off, \"Marks vs tracks\" beside\n" ..
-        "it reports the same disagreements and waits to be told.\n\n" ..
-        "A tick you set BY HAND is an explicit decision and is not\n" ..
-        "overwritten until the item actually moves.")
-      im.SameLine(ctx)
-
-      Flow("Tracking follows item edit")
-      local hit2, v2 = im.Checkbox(ctx, "Tracking follows item edit",
-                                   state.tracking_follows_edit == true)
-      if hit2 then SetFollowSetting("tracking_follows_edit", v2) end
-      TooltipEvenWhenDisabled(
-        "Trim a tracked clip's edge and \"Update from Item\" runs on it by\n" ..
-        "itself: the marker snaps to the new edges and the missing fade is\n" ..
-        "filled. The item's edges are the truth and everything catches up --\n" ..
-        "which is what you meant by dragging them.\n\n" ..
-        "It waits for the drag to FINISH. An edge moves on every frame while\n" ..
-        "you hold it, so this only runs once the project has sat still for\n" ..
-        "about half a second -- on the edge you let go of, not the ones you\n" ..
-        "passed through.\n\n" ..
-        "Only clips that already have a take marker, and only ones whose\n" ..
-        "edges actually moved. A clip that appeared this frame -- from a cut,\n" ..
-        "a paste -- has no previous edge to differ from and is left alone.\n\n" ..
-        "It then asks the TRANSCRIPT whether the marker still names the right\n" ..
-        "line, and renames it when it does not -- after the edges are snapped,\n" ..
-        "so the range it asks about is the one the item now plays. This is the\n" ..
-        "repair for a split: both halves come out of REAPER wearing the whole\n" ..
-        "marker set and the original name, and the audio is the only thing\n" ..
-        "that can say which half is which. The marker keeps its id, so a\n" ..
-        "rename never costs a take its Keep and Sel.\n\n" ..
-        "This one CHANGES ITEMS, unlike the checkbox beside it: each step is\n" ..
-        "its own undo step, so trimming a clip can leave three -- your trim,\n" ..
-        "the update, and the rename if one was needed. Undo past all of them.")
-
-      -- The third follower, and the one that makes the other two worth having:
-      -- moving a take between Alts and Selects changes what its NAME should be,
-      -- and until now that was a separate button pressed from memory. Off by
-      -- default, because it renames items on its own and a rename nobody asked
-      -- for is worse than a stale name.
-      Flow("Alt names follow track placement")
-      local hit3, v3 = im.Checkbox(ctx, "Alt names follow track placement",
-                                   state.alt_names_follow_tracks == true)
-      if hit3 then SetFollowSetting("alt_names_follow_tracks", v3) end
-      TooltipEvenWhenDisabled(
-        "Drag a take onto Alts or Selects and \"Auto-name the alts\" runs by\n" ..
-        "itself: the select keeps the plain name, every take marked Keep gets\n" ..
-        "its own numbered alt name from the pattern in Settings, and a take\n" ..
-        "that already has a name of its own is left alone.\n\n" ..
-        "It runs AFTER the marks settle, never before -- an alt name is\n" ..
-        "decided by whether the take is a select, and the marks are what say\n" ..
-        "so. Naming first would give every take the alts pattern on the way\n" ..
-        "past.\n\n" ..
-        "Like the two beside it, it waits for the drag to finish and only\n" ..
-        "looks at items that actually moved. It does NOT fire when you open a\n" ..
-        "project or merely select something.\n\n" ..
-        "This one CHANGES ITEMS: each run is its own undo step.")
+        "Edit one thing and the rest catches up by itself. The watcher sees\n" ..
+        "which single element you changed and syncs the others FROM it:\n\n" ..
+        "  trimmed the item     ->  the marker snaps to the new edges\n" ..
+        "  dragged the marker   ->  the item trims and renames onto it\n" ..
+        "  renamed the item     ->  the marker follows the new line\n" ..
+        "  moved between tracks ->  the sheet's Sel / Keep follow, then\n" ..
+        "                           the alt names\n\n" ..
+        "It waits for the drag to finish, acts once, and each sync is its\n" ..
+        "own undo step. Anything it cannot pin on ONE element -- a split, a\n" ..
+        "paste, two edits in one gesture -- goes to \"Out of sync\" instead\n" ..
+        "of being guessed at.\n\n" ..
+        "Off: nothing runs by itself, and \"Out of sync\" collects\n" ..
+        "everything for you to fix by hand.")
 
       -- Two buttons, not a button and a rule combo. The combo was the one
       -- control on the toolbar that did nothing when clicked -- it set state
@@ -13009,39 +13054,43 @@ local function loop()
     DrawSettingsWindow()
     DrawCandidatesWindow()
 
-    -- THE AUTOMATIC FOLLOWERS: the sheet catching up to a drag, and tracking
-    -- catching up to a trim.
+    -- THE PARITY WATCHER: one element edited by hand, everything else
+    -- catching up from it.
     --
-    -- Nothing here happens unless the PROJECT CHANGED. The first version tested
-    -- "are there disagreements?", which is true on every frame for as long as
-    -- one exists -- so it re-queued the adopt forever, and each adopt rebuilt
-    -- the match once per row. That is what made it crawl. A change counter is
-    -- the difference between "react to edits" and "run constantly".
-    if state.marks_follow_tracks or state.tracking_follows_edit
-       or state.alt_names_follow_tracks then
+    -- Nothing here happens unless the PROJECT CHANGED. The first version
+    -- tested "are there disagreements?", which is true on every frame for as
+    -- long as one exists -- so it re-queued the adopt forever, and each adopt
+    -- rebuilt the match once per row. That is what made it crawl. A change
+    -- counter is the difference between "react to edits" and "run constantly".
+    --
+    -- ALWAYS runs, even with "Keep the session in sync" off: the snapshot is
+    -- also what feeds "Out of sync", and a queue that only fills while the
+    -- automation is on would go blind exactly when the user asked to drive.
+    do
       local now = r.GetProjectStateChangeCount(0)
       if now ~= state.item_snapshot_at then
         state.item_snapshot_at = now
-        local attributed, n_at = Trim.changes_since_last_look()
-        -- TRANSLATION SHIM, removed when the dispatcher lands: the snapshot
-        -- now attributes each change to the one element that moved, and the
-        -- two legacy followers consume the two authorities they understand.
+        local attributed, n_at, queued, n_q = Trim.changes_since_last_look()
         if n_at > 0 then
-          local retracked, edited = nil, nil
+          state.pending_attributed = state.pending_attributed or {}
           for item, who in pairs(attributed) do
-            if who == "sheet" then
-              retracked = retracked or {}; retracked[item] = true
-            elseif who == "item" then
-              edited = edited or {}; edited[item] = true
+            -- Two DIFFERENT attributions for one item across ticks of the
+            -- same gesture is two elements moved, which is nobody's
+            -- authority: demote it to the queue rather than let the later
+            -- tick overwrite the earlier one.
+            if state.pending_attributed[item] ~= nil
+               and state.pending_attributed[item] ~= who then
+              state.pending_attributed[item] = nil
+              state.pending_queued = state.pending_queued or {}
+              state.pending_queued[item] = true
+            else
+              state.pending_attributed[item] = who
             end
           end
-          if retracked and (state.marks_follow_tracks
-                            or state.alt_names_follow_tracks) then
-            state.pending_retracked = retracked
-          end
-          if edited and state.tracking_follows_edit then
-            state.pending_edited = edited
-          end
+        end
+        if n_q > 0 then
+          state.pending_queued = state.pending_queued or {}
+          for item in pairs(queued) do state.pending_queued[item] = true end
         end
         state.edit_settle = 0
       else
@@ -13049,50 +13098,41 @@ local function loop()
         state.edit_settle = (state.edit_settle or 0) + 1
       end
 
-      -- Both wait for the drag to FINISH. An item being dragged changes track
-      -- and length on every frame of the gesture, so acting on the first change
-      -- would mark it for a track it is merely passing over, and snap a marker
-      -- to an edge still moving under the mouse.
+      -- Wait for the drag to FINISH. An item being dragged changes track and
+      -- length on every frame of the gesture, so acting on the first change
+      -- would mark it for a track it is merely passing over, and snap a
+      -- marker to an edge still moving under the mouse.
       if (state.edit_settle or 0) >= 15 and not pending_action then
-        if state.pending_retracked then
-          local moved = state.pending_retracked
-          state.pending_retracked = nil
-          pending_action = function()
-            local n = state.marks_follow_tracks
-                      and Trim.adopt_track_marks(moved) or 0
-            -- AFTER the marks, never before: an alt name is decided by whether
-            -- the take is a select, and the marks are what say so. Naming first
-            -- would name every take the alts pattern on the way past.
-            if state.alt_names_follow_tracks then ApplyAltNames() end
-            if n > 0 then
-              state.message, state.message_kind = string.format(
-                "%d take(s) followed their track -- Selects ticks Sel, Alts " ..
-                "ticks Keep, anywhere else clears both.", n), "ok"
+        -- Ctrl+Z after an automatic sync bumps the change counter and moves
+        -- the very elements the sync moved -- which would read as a fresh
+        -- user edit and redo what the undo undid, forever. The top of the
+        -- REDO stack names the transaction that was just undone; if it is
+        -- one of ours, this change is an undo, and the only correct response
+        -- is to adopt it as the new baseline and stay quiet.
+        local redo = r.Undo_CanRedo2 and r.Undo_CanRedo2(0)
+        if redo and tostring(redo):find("^VO Overview") then
+          state.pending_attributed, state.pending_queued = nil, nil
+        end
+
+        if state.pending_attributed and next(state.pending_attributed) then
+          local batch = state.pending_attributed
+          state.pending_attributed = nil
+          if state.session_sync then
+            pending_action = function() Trim.sync_dispatch(batch) end
+          else
+            -- Sync is off: the user drives, the queue collects.
+            state.parity_queue_manual = state.parity_queue_manual or {}
+            for item in pairs(batch) do
+              state.parity_queue_manual[item] = true
             end
           end
-        elseif state.pending_edited then
-          local moved = state.pending_edited
-          state.pending_edited = nil
-          pending_action = function()
-            Trim.update("item", { picked = moved })
-            -- AFTER the edges, never before: the marker is snapped to the item
-            -- first, so the range this asks the transcript about is the range
-            -- the item actually plays. Asking first would ask about the old
-            -- edges -- which, right after a split, are the ones that are wrong.
-            --
-            -- Scoped to the items that MOVED, so a trim never re-reads a whole
-            -- project. Its own undo step, like the update before it: folding
-            -- them together means running both bare inside one transaction,
-            -- and the two verbs disagree about when to Reload -- worth doing,
-            -- not worth risking on the path that runs unattended.
-            local fixed = Trim.fix_names_from_transcript({
-              picked = moved, no_reload = true, quiet = true })
-            if (fixed or 0) > 0 then
-              state.message, state.message_kind = string.format(
-                "%s Renamed %d marker(s) the transcript disagreed with.",
-                state.message or "", fixed), "ok"
-            end
+        end
+        if state.pending_queued and next(state.pending_queued) then
+          state.parity_queue_manual = state.parity_queue_manual or {}
+          for item in pairs(state.pending_queued) do
+            state.parity_queue_manual[item] = true
           end
+          state.pending_queued = nil
         end
       end
     end
@@ -13116,27 +13156,22 @@ local function loop()
       state.logged_message = nil
       action()
 
-      -- RE-BASELINE, and this is what stops the followers chasing their own
-      -- tail. Pull moves items between tracks; Update from Item moves edges.
-      -- Both are exactly what the two settings watch for -- so without this,
-      -- pressing Pull would immediately look like the user had dragged
-      -- everything, fire the adopt, and any action that reply triggered would
-      -- look like another edit again.
+      -- RE-BASELINE, and this is what stops the watcher chasing its own
+      -- tail. Pull moves items between tracks; a sync moves edges, markers
+      -- and names. All of it is exactly what the snapshot watches for -- so
+      -- without this, pressing Pull would immediately look like the user had
+      -- dragged everything, fire the sync, and any action that reply
+      -- triggered would look like another edit again.
       --
-      -- Re-snapshotting AFTER the action makes the tool's own work part of the
-      -- new baseline: only what happens outside this window counts as a change.
-      if state.marks_follow_tracks or state.tracking_follows_edit
-         or state.alt_names_follow_tracks then
-        Trim.changes_since_last_look()
-        state.item_snapshot_at = r.GetProjectStateChangeCount(0)
-        -- The pending flags are NOT cleared here. Each is consumed at its own
-        -- dispatch; when a retrack and an edit land in the same settle window,
-        -- the elseif above runs only the retrack, and clearing both here
-        -- silently dropped the edit-follow forever -- its change is folded
-        -- into the new baseline and can never be detected again. A survivor
-        -- waits out another settle and fires on its captured item list.
-        state.edit_settle = 0
-      end
+      -- Re-snapshotting AFTER the action makes the tool's own work part of
+      -- the new baseline: only what happens outside this window counts as a
+      -- change. The pending sets are NOT cleared here: a survivor from the
+      -- same settle window waits out another settle and fires on its
+      -- captured item list, rather than being folded into the baseline and
+      -- lost.
+      Trim.changes_since_last_look()
+      state.item_snapshot_at = r.GetProjectStateChangeCount(0)
+      state.edit_settle = 0
     end
   end
 
