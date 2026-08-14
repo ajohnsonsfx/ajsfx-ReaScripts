@@ -8175,6 +8175,97 @@ test("ScanSuspects: each trigger fires alone", function()
   assert(by.moved and by.moved.stamp, "vetted fingerprint no longer matches")
 end)
 
+test("WordsWithin: clips the 30s decode overflow back to the span", function()
+  -- whisper decodes a full 30-second window regardless of -d: a 3s take's
+  -- "fresh" words arrive carrying every take that follows it. Unclipped,
+  -- one take is judged as five and can never match its line.
+  local lines = {
+    { asset = "ChainIsChain",   text = "Chain is chain." },
+    { asset = "EvenIfYouSmile", text = "Even if you smile." },
+  }
+  local overflow = {}
+  local takes = { "chain", "is", "chain" }
+  for rep = 0, 4 do
+    for i, w in ipairs(takes) do
+      local t0 = rep * 6 + (i - 1)
+      overflow[#overflow + 1] = { t0 = t0, t1 = t0 + 0.8, text = w }
+    end
+    overflow[#overflow + 1] = { t0 = rep * 6 + 3, t1 = rep * 6 + 4,
+                                text = rep % 2 == 0 and "rose" or "grumbar" }
+  end
+  local clipped = vo.WordsWithin(overflow, 0, 3.0)
+  assert(#clipped == 3, "span holds one take, got " .. #clipped)
+  local T = vo.VERIFY_THRESH
+  local v = vo.JudgeLine(clipped, lines, "ChainIsChain", {}, T)
+  assert(v.verdict == "match", "clipped take matches its line: " .. v.verdict)
+end)
+
+test("MergeRepairWords: replace supersedes the span, append fills a gap", function()
+  local stored = {
+    { t0 = 0.0, t1 = 0.5, text = "old" }, { t0 = 0.6, t1 = 1.0, text = "words" },
+    { t0 = 5.0, t1 = 5.5, text = "elsewhere" },
+  }
+  local fresh = { { t0 = 0.1, t1 = 0.4, text = "new" } }
+  -- Verify's stale-merge: the span already holds words and fresh supersedes.
+  local rep = vo.MergeRepairWords(stored, {
+    { span = { from = 0.0, to = 1.2 }, words = fresh, replace = true } })
+  assert(#rep == 2, "in-span stored words replaced, got " .. #rep)
+  assert(rep[1].text == "new" and rep[2].text == "elsewhere",
+         "fresh in, out-of-span untouched")
+  -- Gap repair keeps append semantics: nothing is removed.
+  local app = vo.MergeRepairWords(stored, {
+    { span = { from = 0.0, to = 1.2 }, words = fresh } })
+  assert(#app == 4, "append keeps stored words, got " .. #app)
+end)
+
+test("NamedAssetOf: the name is the assignment, marker is the fallback", function()
+  local lines = {
+    { asset = "ChainIsChain",   text = "Chain is chain." },
+    { asset = "EvenIfYouSmile", text = "Even if you smile." },
+  }
+  local cfg = { alt_append_pattern = "_alt{n}" }
+  assert(vo.NamedAssetOf("ChainIsChain", "EvenIfYouSmile", lines, cfg)
+         == "ChainIsChain", "named line wins over the marker's")
+  assert(vo.NamedAssetOf("ChainIsChain_alt2", nil, lines, cfg)
+         == "ChainIsChain", "alt suffix strips before resolving")
+  assert(vo.NamedAssetOf(nil, "EvenIfYouSmile", lines, cfg)
+         == "EvenIfYouSmile", "no name at all: the marker is the one claim")
+  assert(vo.NamedAssetOf("", "EvenIfYouSmile", lines, cfg)
+         == "EvenIfYouSmile", "empty name: same")
+  assert(vo.NamedAssetOf("RoomTone_03", nil, lines, cfg)
+         == "RoomTone_03", "unscripted name passes through as itself")
+end)
+
+test("ScanSuspects: judges the take NAME's line, not the marker's", function()
+  local lines = {
+    { asset = "ChainIsChain",   text = "Chain is chain." },
+    { asset = "EvenIfYouSmile", text = "Even if you smile." },
+  }
+  local words = {
+    { t0 = 0.1, t1 = 0.5, text = "chain" }, { t0 = 0.5, t1 = 0.7, text = "is" },
+    { t0 = 0.7, t1 = 1.2, text = "chain" },
+  }
+  local transcripts = { { path = "a.wav", words = words } }
+  local rows = {
+    -- Marker says the other line, but the NAME matches the words: not a
+    -- suspect. The name is the assignment.
+    { uid = "renamed", item = {}, status = "ok", source_path = "a.wav",
+      asset = "EvenIfYouSmile", take_name = "ChainIsChain",
+      source_start = 0.0, source_stop = 1.3, marker_id = 1 },
+    -- Marker matches the words, but the NAME claims the other line: exactly
+    -- the misnamed take this trigger exists to catch.
+    { uid = "misnamed", item = {}, status = "ok", source_path = "a.wav",
+      asset = "ChainIsChain", take_name = "EvenIfYouSmile",
+      source_start = 0.0, source_stop = 1.3, marker_id = 2 },
+  }
+  local sus = vo.ScanSuspects(rows, transcripts, lines, {}, vo.VERIFY_THRESH)
+  local by = {}
+  for _, s in ipairs(sus) do by[s.row.uid] = s.triggers end
+  assert(by.renamed == nil, "right name over a wrong marker is not a suspect")
+  assert(by.misnamed and by.misnamed.name_mismatch,
+         "wrong name over a right marker IS the suspect")
+end)
+
 test("ReadVetted/WriteVetted round-trip on the mock item", function()
   local item = { info = {} }
   assert(vo.ReadVetted(item) == nil, "empty item reads nil")

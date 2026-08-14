@@ -3128,6 +3128,20 @@ function vo.MergeRepairWords(words, repairs)
   local added = 0
   for _, rep in ipairs(repairs or {}) do
     local span = rep.span or {}
+    -- replace=true: the span already holds words and the fresh ones supersede
+    -- them (Verify's stale-merge). Without it the stored in-span words stay
+    -- and the fresh ones are appended alongside -- duplicates. Gap repair
+    -- keeps the append semantics: its spans are gaps, there is nothing there.
+    if rep.replace then
+      local kept = {}
+      for _, w in ipairs(merged) do
+        local mid = ((w.t0 or 0) + (w.t1 or 0)) / 2
+        if mid < (span.from or 0) - 1e-6 or mid > (span.to or 0) + 1e-6 then
+          kept[#kept + 1] = w
+        end
+      end
+      merged = kept
+    end
     for _, w in ipairs(rep.words or {}) do
       local mid = ((w.t0 or 0) + (w.t1 or 0)) / 2
       if mid >= (span.from or 0) - 1e-6 and mid <= (span.to or 0) + 1e-6 then
@@ -5750,6 +5764,25 @@ local function words_within(words, from, to)
   return out
 end
 
+-- Exposed for the Verify driver: whisper decodes a full 30-second window no
+-- matter how short -d says the span is, so a span decode comes back carrying
+-- every take that follows the item. Fresh words MUST be clipped to the span
+-- before any comparison, or one take is judged against five takes' words.
+vo.WordsWithin = words_within
+
+-- The line a take should be judged against: the one its NAME claims. The
+-- name is the assignment; the marker's line (fallback_asset) is only the
+-- answer for a take with no name at all. Shared by Verify's judge and the
+-- Suspects scan so neither can regress to judging the marker's line -- the
+-- bug that let a misnamed take pass as clear (commit 32c68c6).
+function vo.NamedAssetOf(take_name, fallback_asset, lines, cfg)
+  if not take_name or take_name == "" then return fallback_asset end
+  local base = vo.StripAltSuffix(take_name, (cfg or {}).alt_append_pattern)
+               or take_name
+  local at = vo.ResolveItemName(vo.BuildNameIndex(lines or {}), base)
+  return at and ((lines or {})[at] or {}).asset or base
+end
+
 -- The free hunt: no whisper, stored data only. Report-only by contract --
 -- the caller decides what to do with the list.
 function vo.ScanSuspects(rows, transcripts, lines, cfg, thresh)
@@ -5772,7 +5805,10 @@ function vo.ScanSuspects(rows, transcripts, lines, cfg, thresh)
         trig.thin = true
       end
       if #words > 0 then
-        local v = vo.JudgeLine(words, lines, row.asset, cfg, T)
+        -- Judged against the NAME's line, not the marker's: a misnamed take
+        -- over a correct marker is exactly what this trigger exists to catch.
+        local v = vo.JudgeLine(words, lines,
+          vo.NamedAssetOf(row.take_name, row.asset, lines, cfg), cfg, T)
         if v.verdict ~= "match" then trig.name_mismatch = true end
       end
       if not row.marker_id then trig.unmarked = true end
@@ -8029,7 +8065,11 @@ function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error
              bat:gsub("/", "\\"):gsub('"', '""') .. '" & Chr(34), 0, False\r\n')
     fv:close()
 
-    launched = os.execute('wscript.exe //nologo //B "' .. vbs:gsub("/", "\\") .. '"')
+    -- ExecProcess, not os.execute: os.execute goes through cmd.exe, which
+    -- flashes a console and steals focus ON EVERY LAUNCH -- once per queue
+    -- item on a Verify run. ExecProcess spawns wscript directly, windowless;
+    -- -2 means don't wait. nil is the only failure signal.
+    launched = r.ExecProcess('wscript.exe //nologo //B "' .. vbs:gsub("/", "\\") .. '"', -2) ~= nil
   else
     launched = os.execute(string.format("(%s > %s 2>&1; echo $? > %s) &",
       cmd_str,
@@ -8153,7 +8193,9 @@ function vo.RunWhisperAsync(cfg, argv, scratch_dir, on_done, on_cancel, on_error
 
     local pressed_cancel = false
     if visible then
-      im.Text(ctx, spinner[spin] .. "  Transcribing session audio…")
+      -- opts.label lets a queued caller (Verify) say WHICH item this decode
+      -- is -- "item 12 of 65" -- instead of the generic session line.
+      im.Text(ctx, spinner[spin] .. "  " .. (opts.label or "Transcribing session audio…"))
       im.Spacing(ctx)
       local where = vo.FormatWhisperProgress(progress, opts.duration)
       im.TextDisabled(ctx, where and ("decoding " .. where) or "starting up…")
@@ -8218,7 +8260,9 @@ function vo.RunDownloadAsync(cfg, url, dest_path, expected_bytes, on_done, on_ca
     fv:write('oShell.Run "cmd /c " & Chr(34) & "' ..
              bat:gsub("/", "\\"):gsub('"', '""') .. '" & Chr(34), 0, False\r\n')
     fv:close()
-    launched = os.execute('wscript.exe //nologo //B "' .. vbs:gsub("/", "\\") .. '"')
+    -- Same windowless ExecProcess launch as RunWhisperAsync, same reason:
+    -- os.execute's cmd.exe hop flashes a console and steals focus.
+    launched = r.ExecProcess('wscript.exe //nologo //B "' .. vbs:gsub("/", "\\") .. '"', -2) ~= nil
   else
     launched = os.execute(string.format("(%s > %s 2>&1; echo $? > %s) &",
       cmd_str, vo.QuoteArg(log_file, "Other"), vo.QuoteArg(done_file, "Other")))
