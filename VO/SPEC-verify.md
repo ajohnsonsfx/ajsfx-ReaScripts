@@ -222,10 +222,16 @@ time cost so the spend is never a surprise. Everything else:
 - **Off — quick check.** Judge the **stored** sidecar words under each
   take against the line its name claims (`vo.NamedAssetOf` +
   `vo.JudgeLine`, same thresholds). Instant, free, no decode. Verdicts:
-  `agrees` / `wrong line` / `unsure`, all `(paper only)` in the report.
-  **Never stamps** — staleness is exactly what paper cannot see, and the
-  Vetted box keeps meaning "the machine listened".
-- **On — the §2 judge**, which can stamp.
+  `agrees` / `wrong line` / `unsure`. `[beta14]` **Agreement stamps
+  Vetted** — the stamp means "the machine verified this exact state with
+  the tools at hand", and the fingerprint keeps it honest identically to
+  a decode stamp: any edit to the item, marker, name or words falsifies
+  the equality and the box unchecks. A failed quick check strips an
+  existing stamp, same as a failed decode. What a decode adds is hearing
+  audio the sidecar never described (staleness); that remains the
+  re-listen path's exclusive claim, and the report still says which kind
+  of check produced each verdict.
+- **On — the §2 judge.**
 
 Off by default because each decode currently reloads the model (~20 s per
 item); a persistent decode server is the planned fix, and the default
