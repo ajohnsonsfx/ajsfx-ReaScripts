@@ -7312,7 +7312,7 @@ local Repair = {}
 -- Verify: the machine listens so you don't have to (SPEC-verify.md). Queue,
 -- verdicts, stamp, report -- one table, same 200-local reasoning as Repair.
 local Verify = { queue = {}, queued = {}, active = nil, report = {},
-                 moves = nil, suggest = {}, warned_model = false }
+                 suggest = {}, warned_model = false }
 
 -- Feed rows into the queue, de-duplicated against what is already waiting or
 -- decoding. A click is a request: enqueueing twice must not decode twice.
@@ -7565,7 +7565,7 @@ end
 -- paper agrees with itself -- staleness (audio edited since whisper ran) is
 -- exactly what it cannot see -- so it NEVER writes a stamp; the Vetted box
 -- stays "the machine listened", and this stays a report.
-function Verify.QuickCheck(rows)
+function Verify.QuickCheck(rows, notes)
   local cfg = vo.LoadConfig()
   local T = vo.VERIFY_THRESH
   local by_path = {}
@@ -7600,6 +7600,9 @@ function Verify.QuickCheck(rows)
       end
     end
   end
+  -- Notes ride in BEFORE Finish so the one-line summary counts them; an
+  -- append after Finish would show in the tree but never in the Log line.
+  for _, n in ipairs(notes or {}) do Verify.report[#Verify.report + 1] = n end
   Verify.Finish()
 end
 
@@ -7607,9 +7610,13 @@ end
 -- verify request decodes audio (the queue) or reads the paper (QuickCheck).
 -- The remote seam's `vet` verb calls Enqueue directly -- the harness tests
 -- the decode path and must not depend on a UI toggle.
-function Verify.Kick(rows)
-  if state.verify_relisten then Verify.Enqueue(rows)
-  else Verify.QuickCheck(rows) end
+function Verify.Kick(rows, notes)
+  if state.verify_relisten then
+    Verify.Enqueue(rows)
+    for _, n in ipairs(notes or {}) do Verify.report[#Verify.report + 1] = n end
+  else
+    Verify.QuickCheck(rows, notes)
+  end
 end
 
 -- The Check tab's "Verify items (N)" button: the ARRANGE selection is the
@@ -7651,8 +7658,7 @@ function Verify.KickSelection()
       end
     end
   end
-  Verify.Kick(rows)
-  for _, n in ipairs(notes) do Verify.report[#Verify.report + 1] = n end
+  Verify.Kick(rows, notes)
 end
 
 -- Stamp against the ENQUEUE-time snapshot (entry.fp), never a fresh read:
@@ -7740,13 +7746,24 @@ function Repair.Suspects()
     im.TextDisabled(ctx, "No suspects. The sheet and the audio agree.")
     return
   end
-  if im.Button(ctx, string.format("Verify %d suspects", #list)) then
+  -- Always the DECODING judge, never quick check, and the label says so:
+  -- every suspect was found from stored data, so re-reading the stored data
+  -- would only re-report this panel to itself. Re-listening is the one thing
+  -- that can move a suspect forward -- and the one verify button allowed to
+  -- cost whisper time regardless of the Re-listen toggle (SPEC-verify.md).
+  if im.Button(ctx, string.format("Re-listen to %d suspects", #list)) then
     local rows = {}
     for _, s in ipairs(list) do rows[#rows + 1] = s.row end
     pending_action = function() Verify.Enqueue(rows) end
   end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Fresh whisper decodes, one per suspect, whatever the\n" ..
+                       "Re-listen toggle says: these were found from stored\n" ..
+                       "data, so only the audio can settle them. The model\n" ..
+                       "reloads per item -- budget roughly 20s each.")
+  end
   im.SameLine(ctx)
-  im.TextDisabled(ctx, "each decode is roughly real time; cancel any time")
+  im.TextDisabled(ctx, string.format("~%ds of decoding; cancel any time", #list * 20))
   im.Spacing(ctx)
   local NAMES = { name_mismatch = "name vs words", thin = "thin coverage",
                   unmarked = "no marker", stamp = "was vetted, changed since" }

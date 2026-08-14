@@ -211,9 +211,13 @@ action re-checks Lock at click time. Lock outranks the machine, by design.
 ### Quick check `[beta13]`
 
 The **"Re-listen (whisper)"** toggle on the Check tab, **off by default**,
-decides what every verify request does (`Verify.Kick`; the remote seam's
-`vet` verb bypasses it and always decodes — the harness tests the decode
-path):
+decides what every verify request does (`Verify.Kick`). Two deliberate
+exceptions always decode, toggle or no toggle: the remote seam's `vet`
+verb (the harness tests the decode path), and the Suspects panel's
+**"Re-listen to N suspects"** button — every suspect was found from
+stored data, so quick-checking it would only re-report the panel to
+itself; the button is labelled as a re-listen and its caption carries the
+time cost so the spend is never a surprise. Everything else:
 
 - **Off — quick check.** Judge the **stored** sidecar words under each
   take against the line its name claims (`vo.NamedAssetOf` +
