@@ -2833,6 +2833,55 @@ function vo.PlanMarkerAdd(existing, add)
   return list, true
 end
 
+-- Hand ONE marker to a different line, leaving every sibling alone.
+--
+-- This is how a take moves between lines: the marker names the LINE, so
+-- rewriting its asset IS the move. The id and the span are deliberately kept --
+-- the id because the stored marks are keyed `tkm|<id>` and a fresh one would
+-- strand every note and tick on the take being moved, the span because where
+-- the performance sits in the source is a fact about the recording and has
+-- nothing to do with which line it was filed under.
+--
+-- Same `existing` shape and same user-marker handling as vo.PlanMarkerAdd.
+-- Returns the list to write, plus whether anything changed -- false when no
+-- marker carries that id, or when it already names that asset.
+function vo.PlanMarkerRetarget(existing, marker_id, new_asset)
+  local list, changed = {}, false
+  for _, m in ipairs(existing or {}) do
+    local asset, id = vo.ParseMarkerName(m.name)
+    if id then
+      if id == marker_id and asset ~= new_asset then
+        asset = new_asset
+        changed = true
+      end
+      list[#list + 1] = { start = m.pos, stop = m.pos + (m.length or 0),
+                          asset = asset, id = id }
+    end
+  end
+  return list, changed
+end
+
+-- Take one marker out, leaving every sibling alone.
+--
+-- Un-assigning a take: with no marker naming it, the audio goes back to being
+-- an unmatched span, which is what the orphan list is built from. The audio
+-- itself is never touched.
+function vo.PlanMarkerRemove(existing, marker_id)
+  local list, changed = {}, false
+  for _, m in ipairs(existing or {}) do
+    local asset, id = vo.ParseMarkerName(m.name)
+    if id then
+      if id == marker_id then
+        changed = true
+      else
+        list[#list + 1] = { start = m.pos, stop = m.pos + (m.length or 0),
+                            asset = asset, id = id }
+      end
+    end
+  end
+  return list, changed
+end
+
 -- Markers that are arguing over the SAME stretch of audio, grouped.
 --
 -- The unit of work is the range, never the item. An uncut recording
@@ -8713,6 +8762,34 @@ function vo.AddMarkerToItem(item, add)
   if not ok then return false, false, "cannot read item chunk" end
   local list, added = vo.PlanMarkerAdd(vo.ParseTKMChunk(chunk), add)
   if not added then return true, false end
+  local wrote, why = vo.WriteTakeMarkers(item, list)
+  return wrote and true or false, wrote and true or false, why
+end
+
+-- Move ONE marker to another line, in place, keeping every other marker.
+--
+-- The write half of vo.PlanMarkerRetarget; the rule worth testing lives in the
+-- planner, and this does only chunk in, chunk out. Returns ok, changed, why --
+-- `changed` false with ok true means the marker already named that line, which
+-- is a no-op to report, not an error.
+-- UNVERIFIED outside REAPER — see SPEC.md §10.
+function vo.RetargetMarkerOnItem(item, marker_id, new_asset)
+  local ok, chunk = r.GetItemStateChunk(item, "", false)
+  if not ok then return false, false, "cannot read item chunk" end
+  local list, changed = vo.PlanMarkerRetarget(vo.ParseTKMChunk(chunk),
+                                              marker_id, new_asset)
+  if not changed then return true, false end
+  local wrote, why = vo.WriteTakeMarkers(item, list)
+  return wrote and true or false, wrote and true or false, why
+end
+
+-- Take ONE marker off an item, keeping every other marker.
+-- UNVERIFIED outside REAPER — see SPEC.md §10.
+function vo.RemoveMarkerFromItem(item, marker_id)
+  local ok, chunk = r.GetItemStateChunk(item, "", false)
+  if not ok then return false, false, "cannot read item chunk" end
+  local list, changed = vo.PlanMarkerRemove(vo.ParseTKMChunk(chunk), marker_id)
+  if not changed then return true, false end
   local wrote, why = vo.WriteTakeMarkers(item, list)
   return wrote and true or false, wrote and true or false, why
 end

@@ -160,8 +160,22 @@ local COLUMNS = {
   { key = "sel",   label = "",      width =  30, nofilter = true },
   { key = "keep",  label = "",      width =  30, nofilter = true },
   { key = "lock",  label = "",      width =  30, nofilter = true },
+  -- TWO filter boxes over one column, not one over both fields. A single box
+  -- matching `line_text .. transcript` could only ever ask "either of these",
+  -- and the question worth asking is the other one: the script says X and the
+  -- take says Y. That is what a flubbed read looks like, and it was unaskable.
+  -- The column keeps no `text` accessor of its own -- with sub-filters there is
+  -- no needle it could belong to, and leaving one would give the column a
+  -- third, invisible meaning.
   { key = "text",  label = "Text",  width = 260, stretch = 2.0,
-    text = function(row) return (row.line_text or "") .. " " .. (row.transcript or "") end,
+    filters = {
+      { key = "text.script", label = "Script",
+        text = function(row) return row.line_text or "" end,
+        tip = "Matches what the SCRIPT says -- the line, not the take." },
+      { key = "text.said",   label = "Transcript",
+        text = function(row) return row.transcript or "" end,
+        tip = "Matches what was actually SAID -- the take, not the line." },
+    },
     tip = "Line: what the script says. Take: what was actually said,\n" ..
           "directly beneath it for comparison." },
   { key = "name",  label = "Name",  width = 190,
@@ -180,8 +194,16 @@ local COLUMNS = {
     tip = "Line: which script CSV, and its row.\nTake: which recording, and when." },
 }
 
+-- Sub-filters are registered under their own keys alongside the columns, which
+-- is the whole trick: Matches, the project-file load guard and Clear filters
+-- all work off this table and need no idea that two of its entries are not
+-- columns. ColumnKeys() deliberately does NOT gain them -- that drives per
+-- column WIDTHS, and a sub-filter has no column to be the width of.
 local COLUMN_BY_KEY = {}
-for _, c in ipairs(COLUMNS) do COLUMN_BY_KEY[c.key] = c end
+for _, c in ipairs(COLUMNS) do
+  COLUMN_BY_KEY[c.key] = c
+  for _, f in ipairs(c.filters or {}) do COLUMN_BY_KEY[f.key] = f end
+end
 
 -- Every column key, in declaration order. Used to load, save and clear the
 -- per-column settings without anything having to restate the list.
@@ -564,7 +586,14 @@ local function LoadProjectFile()
     state.filter_row  = v.filter_row or false
     state.col_filters = {}
     for key, needle in pairs(v.col_filters or {}) do
-      if COLUMN_BY_KEY[key] then state.col_filters[key] = needle end
+      -- A column with sub-filters has no needle of its own, so a `text` key
+      -- written before the Script/Transcript split is dropped rather than
+      -- carried: which of the two boxes it meant cannot be known, and putting
+      -- it in both would AND two different questions together. Checking the
+      -- column rather than the key name is what keeps it from surviving --
+      -- COLUMN_BY_KEY["text"] still exists, it is just no longer a filter.
+      local col = COLUMN_BY_KEY[key]
+      if col and not col.filters then state.col_filters[key] = needle end
     end
     state.check_character = (v.character ~= nil)
     state.expanded = {}
@@ -8224,16 +8253,23 @@ local function DrawFilters()
   -- under, so each box wears its field's name as its hint.
   if state.filter_row then
     local first = true
+    -- A column contributes either its own box or one per sub-filter, never
+    -- both: `filters` and `text` are alternatives, not layers.
+    local function box(f)
+      if first then first = false else im.SameLine(ctx) end
+      im.PushID(ctx, "flt_" .. f.key)
+      im.SetNextItemWidth(ctx, 150)
+      local fchanged, ftext = im.InputTextWithHint(ctx, "##f", f.label,
+                                                   state.col_filters[f.key] or "")
+      if fchanged then state.col_filters[f.key] = ftext; state.dirty = true end
+      if im.IsItemHovered(ctx) and f.tip then im.SetTooltip(ctx, f.tip) end
+      im.PopID(ctx)
+    end
     for _, c in ipairs(COLUMNS) do
-      if c.text and not c.nofilter then
-        if first then first = false else im.SameLine(ctx) end
-        im.PushID(ctx, "flt_" .. c.key)
-        im.SetNextItemWidth(ctx, 150)
-        local fchanged, ftext = im.InputTextWithHint(ctx, "##f", c.label,
-                                                     state.col_filters[c.key] or "")
-        if fchanged then state.col_filters[c.key] = ftext; state.dirty = true end
-        if im.IsItemHovered(ctx) and c.tip then im.SetTooltip(ctx, c.tip) end
-        im.PopID(ctx)
+      if c.filters then
+        for _, f in ipairs(c.filters) do box(f) end
+      elseif c.text and not c.nofilter then
+        box(c)
       end
     end
   end
