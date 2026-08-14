@@ -39,12 +39,16 @@ Dropping take *T* onto line *L* changes three facts, in one
      The id is deliberately preserved: the stored marks are keyed `tkm|<id>`,
      so notes ride along with the take rather than being stranded.
    - **`T.marker_id` is nil** (an orphan — an unmatched transcript span, which
-     is a span row and has never had a marker) — a marker is minted with
-     `vo.MintMarkerId(TakenMarkerIds())` and added with `vo.AddMarkerToItem`,
-     spanning the item's source coverage via `vo.SourceCoverageRanges`. The
-     row's stored entry is re-keyed from `row.key` to `tkm|<id>`, so its marks
-     and notes are not stranded on a key nothing builds any more. This is the
-     marker half of `AssignSelectedItems`, which already does exactly this.
+     is a span row and has never had a marker) — this is precisely what
+     `AssignOrphanToLine` ([ajsfx_VO_Overview.lua:4501](../../../VO/ajsfx_VO_Overview.lua))
+     already does, and the drop calls into it rather than re-deriving it. Two
+     details there are load-bearing and must not be re-invented:
+     the marker spans `row.source_start`/`row.source_stop`, **not** the item's
+     source coverage — the item behind an orphan is routinely a whole uncut
+     recording, so its coverage is the entire session; and the write rides
+     every existing marker along, because `vo.WriteTakeMarkers` replaces the
+     tool's whole set and dropping them would orphan every other take in that
+     item. The row's stored entry is re-keyed from `row.key` to `tkm|<id>`.
 2. **The item is renamed** to the next free *alt* name in `L`'s family —
    `L.deliver` plus `vo.FormatAltAppend(...)` at the lowest unused number,
    computed the same way `MakeSelect` computes it. Never the plain delivered
@@ -53,13 +57,43 @@ Dropping take *T* onto line *L* changes three facts, in one
 3. **The item moves to the Review track** (`cfg.track_review`, default
    `Review`). `vo.MarkFromTrack` maps that track to no mark at all — it means
    "undecided, look at this" — which is exactly the state a just-moved take is
-   in. If no track by that name exists, one is created at the end of the track
-   list.
+   in.
+
+### One item, one name: steps 2 and 3 are conditional
+
+Take markers exist so that ONE item can hold many takes — an uncut recording
+carries the whole session's takes as markers in a single clip. When the dragged
+take shares its item with another take, steps 2 and 3 **do not run**: renaming
+the item would misname every neighbour, and moving it would drag them to the
+Review track with it.
+
+Step 1 still runs, and that is the point — the marker IS the assignment, so
+retargeting it genuinely moves the take. The item catches up when Cut splits it
+out. The drop says so rather than staying quiet:
+
+> `Moved to line_042. It shares an item with 3 other takes, so the item was not
+> renamed or moved — Cut will split it out.`
+
+This is the same guard, in the same words, that `Verify.AcceptSuggestion`
+([ajsfx_VO_Overview.lua:7595](../../../VO/ajsfx_VO_Overview.lua)), the
+marker-is-right rename ([:8529](../../../VO/ajsfx_VO_Overview.lua)) and "Fix
+names from the sheet" ([:6397](../../../VO/ajsfx_VO_Overview.lua)) already
+give. It counts shared takes the way they do: rows in `state.overview` whose
+`row.item` is the same item.
 
 Stored `select` and `keep` on the take's entry are cleared: they were
 decisions about the line it came from. `notes` and `status` are left alone.
 
 Afterwards the sheet reloads once for the whole drop, not once per take.
+
+### The Review track, when it is missing
+
+If no track is named `cfg.track_review`, one is created: top level, at the end
+of the track list. Creating a destination rather than silently skipping is
+precedented — `vo.EnsureSortChildTracks` / `vo.EnsureChildTrack` do it for
+Sort — and it is the only way the drop can keep the promise the gesture makes.
+`MakeSelect` and `PlaceSelectedItems` no-op instead, but they are filing an
+item into a structure the user already built; a drop is creating that state.
 
 ### Refusals, reported not silent
 
@@ -131,25 +165,36 @@ fourth copy, it moves to `vo.TrackNamed(name)` in `VO/lib/ajsfx_vo.lua` and
 the three existing callers use it — a targeted tidy inside the code this
 feature already touches, and it makes the function testable.
 
-Retargeting a marker needs a helper alongside the existing
-`vo.AddMarkerToItem`:
+Retargeting a marker needs helpers, split the way `vo.PlanMarkerAdd` /
+`vo.AddMarkerToItem` are already split — a **pure planner** that the mock can
+test, and a thin item-level wrapper that cannot be:
 
 ```
-vo.RetargetMarkerOnItem(item, marker_id, new_asset) -> ok, changed, why
-vo.RemoveMarkerFromItem(item, marker_id)            -> ok, changed, why
+vo.PlanMarkerRetarget(existing, marker_id, new_asset) -> list, changed
+vo.PlanMarkerRemove(existing, marker_id)              -> list, changed
+vo.RetargetMarkerOnItem(item, marker_id, new_asset)   -> ok, changed, why
+vo.RemoveMarkerFromItem(item, marker_id)              -> ok, changed, why
 ```
 
-Both parse with `vo.ParseTKMChunk`, edit the one marker whose id matches, and
-write with `vo.WriteTakeMarkers`. Both are pure enough to test against the
-mock REAPER.
+The planners take and return a marker list and hold every rule worth testing:
+the id and span survive a retarget, siblings are untouched, and a plan that
+changes nothing reports `changed = false`. The wrappers do only
+`GetItemStateChunk` → `vo.ParseTKMChunk` → planner → `vo.WriteTakeMarkers`.
+
+`tests/mock_reaper.lua` implements no item state chunks, so the wrappers are
+**not unit-testable** — the same limit their siblings already carry, marked
+"UNVERIFIED outside REAPER". They are verified in the live-REAPER manual pass,
+not by `run_tests.sh`. Keeping them thin is what makes that acceptable.
 
 ### Tests
 
-In `tests/`, against the mock:
+In `tests/`, against the mock. Everything here exercises a pure function; the
+chunk-level wrappers and the gesture itself are covered by the live-REAPER
+manual pass in `VO/MANUAL_TEST.md`, not by `run_tests.sh`.
 
-1. `vo.RetargetMarkerOnItem` rewrites only the named marker and preserves its
-   id and span.
-2. `vo.RemoveMarkerFromItem` removes one marker and leaves siblings intact.
+1. `vo.PlanMarkerRetarget` rewrites only the named marker, preserves its id and
+   span, and leaves siblings byte-identical.
+2. `vo.PlanMarkerRemove` removes one marker and leaves siblings intact.
 3. `DND.NextAltName` skips numbers already used by the target line's takes.
 4. After a retarget, `vo.BuildOverview` reports the take under the new line and
    not under the old one.
@@ -160,6 +205,8 @@ In `tests/`, against the mock:
    while it was an orphan survives.
 8. A locked take is refused and the message counts it.
 9. Un-assigning removes the marker and the span comes back as an orphan.
+10. A take sharing its item with another take is still retargeted, and the
+    shared-item count reaches the message.
 
 ---
 
@@ -213,9 +260,13 @@ the one field it matches.
 A `col_filters.text` needle saved by an earlier version is dropped on load
 rather than migrated: it cannot be known which of the two boxes the user
 meant, and putting it in both would AND two different questions together.
-The load guard already discards keys `COLUMN_BY_KEY` does not know, so this
-happens with no new code. Same precedent as the restored-character filter,
-which is dropped rather than shown matching nothing.
+
+This needs one explicit line, not zero. `COLUMN_BY_KEY["text"]` still exists
+after the split — it is the parent column entry — so the load guard's
+`if COLUMN_BY_KEY[key]` would keep accepting the old needle. It would then
+match nothing (the column has no `text` accessor any more) and persist in the
+project file forever as invisible dead state. The load therefore skips a key
+whose column has `filters`, since such a column has no needle of its own.
 
 ### Tests
 
