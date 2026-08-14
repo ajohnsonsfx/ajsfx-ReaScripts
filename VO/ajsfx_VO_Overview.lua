@@ -2733,8 +2733,8 @@ local function IdentifyItems(opts)
       vo.WriteNoteMarker(p.item, p.at or 0, note_stamp2, string.format(
         "PARTIAL: this clip holds %.1fs of the %.1fs take %s, marker -%s at " ..
         "%.2f-%.2f. Either the clip was cut short of the line, or the marker " ..
-        "is. Snap markers to items fixes the marker; extending the clip fixes " ..
-        "the clip.",
+        "is. \"Fix from Item\" in Out of sync fixes the marker; extending " ..
+        "the clip fixes the clip.",
         p.covered or 0, p.span_len or 0, tostring(p.asset),
         tostring(p.marker_id or "?"), p.marker_from or 0, p.marker_to or 0))
     end
@@ -2983,7 +2983,7 @@ function Trim.update(dir, opts)
           -- not faded or pulled?" with no answer anywhere on screen.
           vo.WriteNoteMarker(item, mks[1] and mks[1].start or 0, note_stamp,
             string.format("left alone: %d markers here, no single range to " ..
-                          "trim onto. Remove Extra Take Markers, or delete " ..
+                          "trim onto. Cut from markers splits it, or delete " ..
                           "the wrong one.", #mks))
         elseif #shape.nomarker == 1 then
           nomarker = nomarker + 1
@@ -2995,7 +2995,7 @@ function Trim.update(dir, opts)
           local at = tk and r.GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS") or 0
           vo.WriteNoteMarker(item, at, note_stamp,
             "left alone: no take marker, so nothing says which line this is. " ..
-            "Match takes to script, or Update from Item.")
+            "Match takes to script marks it.")
         end
 
         local was_in  = r.GetMediaItemInfo_Value(item, "D_FADEINLEN")
@@ -3050,8 +3050,8 @@ function Trim.update(dir, opts)
   end
   if nomarker > 0 then
     parts[#parts + 1] = string.format(
-      "%d item(s) have no take marker to update from -- Update from Item " ..
-      "marks those.", nomarker)
+      "%d item(s) have no take marker to update from -- Match takes to " ..
+      "script marks those.", nomarker)
   end
   if marked and marked.none > 0 then
     parts[#parts + 1] = string.format(
@@ -8949,7 +8949,7 @@ function Repair.NoAudio()
     end
     im.TextDisabled(ctx,
       "The item this marker lived in was deleted or trimmed past it. Relink\n" ..
-      "to the right item, or Remove Extra Take Markers to drop the leftovers.")
+      "to the right item; a sync or a re-cut drops the leftovers.")
     im.Separator(ctx)
   end
 
@@ -12401,35 +12401,45 @@ local function loop()
       -- organising rule, and it is why the two panels-that-act and the three
       -- follower checkboxes moved down here from there.
       Group("Fix:")
+      -- The row's MACRO slot holds the one authority that is not "my edits":
+      -- the TRANSCRIPT. Every my-edit authority -- trimmed item, dragged
+      -- marker, typed name, moved track -- is the parity watcher's job now,
+      -- handled the moment it happens or queued in "Out of sync" beside
+      -- this. What is left for a button is the external evidence.
       ActsOn()
-      -- First in the row, before the single-step verbs they are built out of:
-      -- this position is the row's MACRO slot -- the one press that does the
-      -- whole job, with the steps behind it for when it guesses wrong.
-      --
-      -- TWO macros, because there are two authorities. Which element did you
-      -- just make correct? Everything else catches up to it. The names are
-      -- deliberately one word apart, so each tooltip states its authority in
-      -- its first line.
-      if im.Button(ctx, "Update from Item") then
-        pending_action = Trim.update_from_item
+      if im.Button(ctx, "Fix from Transcript") then
+        pending_action = Trim.fix_names_from_transcript
       end
-      Tip("The ITEM's edges are right -- you just trimmed the clip -- and\n" ..
-          "everything else catches up. In one undo step:\n\n" ..
-          "1. any item with NO take marker gets one, identified from the\n" ..
-          "   script (a missing marker is usually one never written or\n" ..
-          "   deleted, so this does not refuse on a weak score), then\n" ..
-          "2. Remove Extra Take Markers (below), then\n" ..
-          "3. snap the surviving marker to the item's new edges, then\n" ..
-          "4. put the standard fade on any edge left at zero.\n\n" ..
-          "The transcript needs no step: a take's words are read from inside\n" ..
-          "its marker, so they narrow with it by themselves.\n\n" ..
-          "Fades are FILLED, never overwritten: a trim leaves the edge it cut\n" ..
-          "raw and the other edge's fade intact, so only the raw one is\n" ..
-          "restored and a fade you drew by hand survives.\n\n" ..
-          "A clip still holding several markers -- because the words refused\n" ..
-          "to choose between them -- is not snapped, and is reported.\n\n" ..
-          "Acts on the selection, or everything when nothing is selected.")
+      ActsEnd()
+      Tip("The TRANSCRIPT is the authority: my edits and names are suspect,\n" ..
+          "re-derive who is who from the words.\n\n" ..
+          "For every take marker in the selection, ask the transcript which\n" ..
+          "line is actually read there -- and when it is a different line,\n" ..
+          "rewrite the marker and the item name to say so.\n\n" ..
+          "This is the repair for a bad split. REAPER hands BOTH halves the\n" ..
+          "whole marker set and the original take name, so one wrong split\n" ..
+          "leaves two items each claiming the line, with nothing on screen to\n" ..
+          "tell you which one is right.\n\n" ..
+          "The marker keeps its ID, so a rename never costs a take its Keep\n" ..
+          "and Sel -- the sheet's marks are keyed to the id, not the name.\n\n" ..
+          "Markers of your own -- anything without the tool's ~id suffix --\n" ..
+          "are never touched." .. NEEDS_SEL)
 
+      -- The queue, beside the macro: the same "who is right?" question,
+      -- asked per take, for everything the watcher refused to guess about.
+      Flow("Out of sync")
+      do
+        local n_oos = #(state.parity_queue or {})
+                      + #((state.reconcile or {}).disagree or {})
+        PanelButton("outofsync", string.format("Out of sync (%d)", n_oos),
+          "Takes whose marker, item name, sheet row or edges no longer\n" ..
+          "tell one story, plus anything the watcher refused to guess\n" ..
+          "about. Each row says what disagrees and takes a \"Fix from\n" ..
+          "...\" with you naming the authority. (0) means the session\n" ..
+          "agrees with itself.")
+      end
+
+      ActsOn()
       Flow("Cut from markers")
       if im.Button(ctx, "Cut from markers") then
         pending_action = RunCut
@@ -12447,9 +12457,9 @@ local function loop()
           "before pressing is what you get. Cut used to fall back to edges\n" ..
           "derived from the word timings when a marker was missing, which is\n" ..
           "why the same button could produce two kinds of edge.\n\n" ..
-          "Overlapping markers are resolved first, by the words spoken there\n" ..
-          "(Remove Extra Take Markers, below). A cluster it refuses to call is\n" ..
-          "skipped and named rather than cut.\n\n" ..
+          "Overlapping markers are resolved first, by the words spoken\n" ..
+          "there. A cluster it refuses to call is skipped and named rather\n" ..
+          "than cut.\n\n" ..
           "The audio does not move for a trim: the same sample stays at the\n" ..
           "same project time. Nothing is decided either -- Pull is where a\n" ..
           "take's fate is settled." .. NEEDS_SEL)
@@ -12488,54 +12498,21 @@ local function loop()
           "override, and it leaves a REVIEW note when used.\n\n" ..
           "One Ctrl+Z puts everything back." .. NEEDS_SEL)
 
-      -- The STEPS band: the four verbs the two macros above are made of, in the
-      -- order the macros run them. Remove Extras leads because both macros call
-      -- it first -- with two markers fighting there is no single range to trim
-      -- onto -- and it used to sit fifth, so reading the row told you the wrong
-      -- order.
-      Sep("Remove Extra Take Markers")
-      if im.Button(ctx, "Remove Extra Take Markers") then
-        pending_action = Trim.remove_extras
-      end
-      Tip("Everything on a clip that is not its own take marker:\n\n" ..
-          "DUPLICATES -- two script lines that have both claimed the same\n" ..
-          "stretch of audio. The words spoken there decide which is right\n" ..
-          "and the loser's marker is deleted. Only OVERLAPPING markers are\n" ..
-          "ever compared, so an uncut recording -- one marker per take, none\n" ..
-          "overlapping -- has nothing to lose here. It refuses whenever the\n" ..
-          "words do not clearly pick a winner (no transcript, nothing\n" ..
-          "matching well, or two lines too close to call) and reports those\n" ..
-          "by name.\n\n" ..
-          "LEFTOVERS -- markers before and after this clip's own audio, which\n" ..
-          "is what REAPER's split leaves behind when it copies the whole\n" ..
-          "marker set into both halves.\n\n" ..
-          "Acts on the selection, or everything when nothing is selected.")
-
-      Flow("Trim items to their markers")
-      if im.Button(ctx, "Trim items to their markers") then
-        pending_action = function() Trim.run("item") end
-      end
-      Tip("Set each item's edges to the take marker inside it -- no re-cut,\n" ..
-          "no re-match, no split. The manual half of \"the marker is what\n" ..
-          "the cut will be\": drag a marker to where the clip should start\n" ..
-          "and end, then trim the item onto it.\n\n" ..
-          "The audio does not move: the same sample stays at the same\n" ..
-          "project time. An item holding SEVERAL markers is a recording,\n" ..
-          "not a take, and is left alone -- Cut is what splits those.")
-
-      Flow("Snap markers to items")
-      if im.Button(ctx, "Snap markers to items") then
-        pending_action = function() Trim.run("marker") end
-      end
-      Tip("Set each take marker to the edges of the item it sits in -- the\n" ..
-          "other direction from Trim, and the batch form of \"Snap marker\n" ..
-          "to item\" in a take's menu.\n\n" ..
-          "This is what to press after adjusting a head or tail by hand:\n" ..
-          "the item is now the truth and the marker is stale. (Auto-adjust\n" ..
-          "head and tail already moves the marker for you; only a drag\n" ..
-          "leaves the two disagreeing.)\n\n" ..
-          "An item holding SEVERAL markers is a recording, not a take, and\n" ..
-          "is left alone -- there is no one marker to snap.")
+      -- The MEASURING band: the two verbs no authority may run for you.
+      -- Auto-adjust decides an edge by listening, where every sync copies an
+      -- edge from something already made correct; Apply fades re-enrols a
+      -- hand-trimmed clip. (Remove Extras, Trim-to-marker and Snap-to-item
+      -- lost their buttons when the watcher took their jobs: each was one
+      -- authority's waterfall run by hand, and the waterfalls run themselves
+      -- now -- or wait in "Out of sync" with the authority named.)
+      Sep("Auto-adjust head and tail")
+      if im.Button(ctx, "Auto-adjust head and tail") then pending_action = TightenItems end
+      Tip("Measure where the audio really is in each item and set its edges\n" ..
+          "to the standard head and tail room. Inward only, so speech is\n" ..
+          "never lost; hand-trimmed items (custom fades) are left alone. The\n" ..
+          "take's marker follows the new edges. Works on the REAPER\n" ..
+          "selection, or everything on Selects + Alts when nothing is\n" ..
+          "selected.")
 
       Flow("Apply the cut fades")
       if im.Button(ctx, "Apply the cut fades") then pending_action = Trim.fades end
@@ -12548,72 +12525,15 @@ local function loop()
           "willing to measure and move again.\n\n" ..
           "Acts on the REAPER selection.")
 
-      -- The LEFTOVER band: the only verb on this row neither macro calls. It
-      -- MEASURES the audio and decides an edge for itself, where every step
-      -- above copies an edge from something the user already made correct --
-      -- which is exactly why no authority macro runs it.
-      Sep("Auto-adjust head and tail")
-      if im.Button(ctx, "Auto-adjust head and tail") then pending_action = TightenItems end
-      Tip("Measure where the audio really is in each item and set its edges\n" ..
-          "to the standard head and tail room. Inward only, so speech is\n" ..
-          "never lost; hand-trimmed items (custom fades) are left alone. The\n" ..
-          "take's marker follows the new edges. Works on the REAPER\n" ..
-          "selection, or everything on Selects + Alts when nothing is\n" ..
-          "selected.")
-
       -- The row's selection-scoped block ENDS here. Everything above needs
       -- items picked and greys without them; nothing below does. "Restore
-      -- missing lines" reads the whole project by design -- the audio it looks
-      -- for is exactly the audio no item covers, so a selection cannot name it
-      -- -- and the three checkboxes are settings, which must stay clickable
-      -- when nothing is selected or a follower could only be turned off by
-      -- first selecting something.
+      -- missing lines" reads the whole project by design -- the audio it
+      -- looks for is exactly the audio no item covers, so a selection cannot
+      -- name it -- and the sync checkbox is a setting, which must stay
+      -- clickable when nothing is selected.
       ActsEnd()
 
-      -- Its neighbour below restores a take the timeline lost; this one fixes a
-      -- take the timeline kept but mislabelled. Both answer "the name is
-      -- wrong" -- one because there is no audio behind it, one because there is
-      -- the wrong audio behind it.
-      Flow("Fix wrong names from transcript")
-      ActsOn()
-      if im.Button(ctx, "Fix wrong names from transcript") then
-        pending_action = Trim.fix_names_from_transcript
-      end
-      ActsEnd()
-      Tip("For every take marker in the selection, ask the transcript which\n" ..
-          "line is actually read there -- and when it is a different line,\n" ..
-          "rewrite the marker and the item name to say so.\n\n" ..
-          "This is the repair for a bad split. REAPER hands BOTH halves the\n" ..
-          "whole marker set and the original take name, so one wrong split\n" ..
-          "leaves two items each claiming the line, with nothing on screen to\n" ..
-          "tell you which one is right.\n\n" ..
-          "The marker keeps its ID, so a rename never costs a take its Keep\n" ..
-          "and Sel -- the sheet's marks are keyed to the id, not the name.\n\n" ..
-          "Markers of your own -- anything without the tool's ~id suffix --\n" ..
-          "are never touched." .. NEEDS_SEL)
-
-      -- The pair: one takes the audio's word, one takes the sheet's. NOT wrapped
-      -- in ActsOn -- its scope is the rows on screen when nothing is selected in
-      -- REAPER, so greying it on an empty arrange selection would hide the verb
-      -- exactly when you want it over the whole sheet.
-      Flow("Fix names from the sheet")
-      if im.Button(ctx, "Fix names from the sheet") then
-        pending_action = Trim.fix_names_from_sheet
-      end
-      Tip("The opposite authority to the button above: assume every line is in\n" ..
-          "the right place in the sheet, and rename the timeline to match.\n\n" ..
-          "Per line: the take with Sel gets the plain delivered name, and each\n" ..
-          "take that is Keep without Sel gets the alt name, numbered from the\n" ..
-          "top. A take with neither ticked is left alone -- it is not being\n" ..
-          "delivered, and naming it would claim that it is.\n\n" ..
-          "Unlike \"Auto-name the alts\", this OVERWRITES. Names it generated\n" ..
-          "itself are renumbered; a name you typed is kept.\n\n" ..
-          "It writes the ITEM NAME only. The take marker is left alone: the\n" ..
-          "marker says which LINE a take is, and that is not this button's\n" ..
-          "business -- it makes the clip agree with the marks, it does not\n" ..
-          "move a take to a different line. Use Identify for that.")
-
-      Flow("Restore missing lines")
+      Sep("Restore missing lines")
       if im.Button(ctx, "Restore missing lines") then
         pending_action = Trim.restore_missing
       end
@@ -12687,7 +12607,7 @@ local function loop()
 
       ActsEnd()
       Group("Pull:")
-      -- The row's MACRO slot, same as Update from Item leads Edit: one press for
+      -- The row's MACRO slot, same as Fix from Transcript leads Fix: one press for
       -- the whole job, with the steps still behind it.
       ActsOn()
       -- "Pull", not "Deliver". The old name promised the end of the job and
