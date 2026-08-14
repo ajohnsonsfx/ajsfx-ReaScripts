@@ -6914,7 +6914,12 @@ function Trim.fix_names_from_sheet(opts)
   opts = opts or {}
   if not opts.no_reload then Reload() end
   local cfg  = vo.LoadConfig()
-  local rows = AffectedRows()
+  -- A scoped run (the Out of sync panel naming ONE take) plans over the
+  -- WHOLE sheet, not the filtered view: the queued item may sit outside the
+  -- current filters, and a fix that silently no-ops because of what the
+  -- table happens to show is a fix that lies. An unscoped press keeps the
+  -- filtered view as its range, as ever.
+  local rows = opts.picked and (state.overview or {}) or AffectedRows()
   local edits, untouched, nameless = vo.PlanNamesFromSheet(rows, {
     pattern = cfg.alt_append_pattern,
     start   = cfg.alt_append_start,
@@ -6930,21 +6935,22 @@ function Trim.fix_names_from_sheet(opts)
       for _, e in ipairs(edits) do
         local row   = rows[e.index]
         local clean = row and vo.SanitizeName(e.name) or ""
-        if clean == "" then
+        local info = row and row.marker_id and state.marker_info
+                     and state.marker_info[row.marker_id]
+        local item = (info and info.item) or (row and row.item)
+        -- Scoped run (the Out of sync panel fixes ONE take): a row whose
+        -- item is outside the picked set is not this press's business --
+        -- neither renamed nor counted as anything, or a one-row fix would
+        -- report the whole sheet's strays as its own.
+        if opts.picked and not (item and opts.picked[item]) then -- luacheck: ignore
+        elseif clean == "" then
           stranded = stranded + 1
         else
-          local info = row.marker_id and state.marker_info
-                       and state.marker_info[row.marker_id]
-          local item = (info and info.item) or row.item
           -- No marker and no item is a PLANNED take -- a line the sheet has
           -- but the timeline does not. There is nothing on screen to rename,
           -- and inventing one would claim the read exists.
           if not item then
             stranded = stranded + 1
-          -- Scoped run (the Out of sync panel fixes ONE take): a row whose
-          -- item is outside the picked set is not this press's business --
-          -- neither renamed nor counted as anything.
-          elseif opts.picked and not opts.picked[item] then -- luacheck: ignore
           -- An uncut recording holds many takes in ONE item, and an item has one
           -- name. Naming it for each take in turn would just leave it wearing
           -- the last one, which is a name that lies about everything above it.
@@ -6970,6 +6976,11 @@ function Trim.fix_names_from_sheet(opts)
   end
 
   if opts.quiet then return named, stranded end
+
+  -- A scoped run's report is about the picked takes only: the planner's
+  -- whole-sheet tallies (untouched, nameless) would count rows this press
+  -- deliberately skipped.
+  if opts.picked then untouched, nameless = 0, 0 end
 
   -- Named nothing with nothing left alone means nothing was TICKED, which is
   -- the likely confusion: this names what is being DELIVERED, and a take that
@@ -13102,8 +13113,18 @@ local function loop()
     -- automation is on would go blind exactly when the user asked to drive.
     do
       local now = r.GetProjectStateChangeCount(0)
-      if now ~= state.item_snapshot_at then
+      -- TWO triggers, not one. The change counter catches edges, names and
+      -- track moves, which the snapshot reads live -- but the MARKER
+      -- signature is read from state.take_markers, which only the throttled
+      -- Reload refreshes. A marker-only drag bumps the change counter while
+      -- both signatures are still the stale collection, compares equal, and
+      -- would simply vanish -- neither synced nor queued. So a fresh Reload
+      -- (scanned_at moved) is itself a reason to look again: the collection
+      -- it just rebuilt is where that drag first becomes visible.
+      if now ~= state.item_snapshot_at
+         or state.parity_scan_seen ~= state.scanned_at then
         state.item_snapshot_at = now
+        state.parity_scan_seen = state.scanned_at
         local attributed, n_at, queued, n_q = Trim.changes_since_last_look()
         if n_at > 0 then
           state.pending_attributed = state.pending_attributed or {}
@@ -13111,8 +13132,13 @@ local function loop()
             -- Two DIFFERENT attributions for one item across ticks of the
             -- same gesture is two elements moved, which is nobody's
             -- authority: demote it to the queue rather than let the later
-            -- tick overwrite the earlier one.
-            if state.pending_attributed[item] ~= nil
+            -- tick overwrite the earlier one -- and once DEMOTED, it stays
+            -- demoted for the rest of the batch, or the next tick would
+            -- quietly re-attribute an item the queue already owns and the
+            -- same edit would be both auto-synced and asked about.
+            if state.pending_queued and state.pending_queued[item] then
+              -- already the queue's; stays there
+            elseif state.pending_attributed[item] ~= nil
                and state.pending_attributed[item] ~= who then
               state.pending_attributed[item] = nil
               state.pending_queued = state.pending_queued or {}
@@ -13124,7 +13150,14 @@ local function loop()
         end
         if n_q > 0 then
           state.pending_queued = state.pending_queued or {}
-          for item in pairs(queued) do state.pending_queued[item] = true end
+          for item in pairs(queued) do
+            state.pending_queued[item] = true
+            -- The queue outranks a pending attribution for the same item:
+            -- both existing means two kinds of change were seen.
+            if state.pending_attributed then
+              state.pending_attributed[item] = nil
+            end
+          end
         end
         state.edit_settle = 0
       else
@@ -13205,6 +13238,7 @@ local function loop()
       -- lost.
       Trim.changes_since_last_look()
       state.item_snapshot_at = r.GetProjectStateChangeCount(0)
+      state.parity_scan_seen = state.scanned_at
       state.edit_settle = 0
     end
   end
