@@ -185,7 +185,7 @@ is, so the raw fresh words carry every take that follows the item.
 | --- | --- | --- |
 | **Clear** | `F`≈`S`, `F` matches `L` | Write stamp. Nothing else. |
 | **Stale, right line** | `F`≉`S`, `F` matches `L` | Merge `F` into the sidecar for the span (`vo.MergeRepairWords` with `replace = true` `[beta13]` — the fresh words supersede the stored in-span words rather than piling beside them), then stamp **against the merged words**. |
-| **Wrong line** | `F` matches some other line clearly better than `L` | Report row, painted, with the winning line as a suggestion through the existing orphan "This is line…" menu. **No move, no auto-rename, no stamp.** |
+| **Wrong line** | `F` matches some other line clearly better than `L` | Report row, painted, with the winning line as a suggestion. **No move, no auto-rename, no stamp.** `[beta15]` The suggestion is actionable from two places sharing one implementation (`Verify.AcceptSuggestion`): the report row's `Make it "X"` button and the take-row menu's "Verify says X — make it that line". Accepting renames the take and repoints its marker asset (same id, Keep/Sel survive); the click is the user's judgment, the machine only guessed. |
 | **Can't tell** | `F` matches nothing convincingly | Report row, flagged, no suggestion, no stamp. **No move.** |
 
 `[beta13]` **Verdicts never move items.** The first live run judged 63
