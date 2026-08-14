@@ -1928,8 +1928,9 @@ function Trim.changes_since_last_look()
   state.item_snapshot_proj = proj
 
   local snap = {}
-  local retracked, n_re = {}, 0
-  local edited, n_ed = {}, 0
+  local attributed, n_at = {}, 0
+  local queued, n_q = {}, 0
+  local msigs = Trim.marker_sigs()
   for _, info in ipairs(state.items or {}) do
     local item = info.item
     -- VALIDATED, because this runs the moment the project changes and DELETING
@@ -1940,21 +1941,38 @@ function Trim.changes_since_last_look()
     -- deliberately runs before one, so it has to check.
     if item and not info.skip and Trim.item_alive(item) then
       local track = r.GetMediaItem_Track(item)
+      local take  = r.GetActiveTake(item)
+      local nm    = ""
+      if take then
+        local _, got = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+        nm = got or ""
+      end
       -- Rounded: a float differing in its last bits is the same edge measured
-      -- twice, not an edit.
+      -- twice, not an edit. LENGTH and the source window are an edge; POSITION
+      -- alone is a slide -- the marker lives in SOURCE time, and a slide moves
+      -- neither the source window nor the marker, so it is not a parity edit.
       local edge = string.format("%.5f|%.5f",
-        r.GetMediaItemInfo_Value(item, "D_POSITION"),
-        r.GetMediaItemInfo_Value(item, "D_LENGTH"))
-      snap[item] = { track = track, edge = edge }
+        r.GetMediaItemInfo_Value(item, "D_LENGTH"),
+        take and r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS") or 0)
+      snap[item] = { track = track, edge = edge, name = nm,
+                     msig = msigs[item] or "" }
       local was = prev and prev[item]
       if was then
-        if was.track ~= track then
-          retracked[item] = true
-          n_re = n_re + 1
-        end
-        if was.edge ~= edge and Trim.has_marker(item) then
-          edited[item] = true
-          n_ed = n_ed + 1
+        local changed = {
+          track  = (was.track ~= track) or nil,
+          edge   = (was.edge ~= edge and Trim.has_marker(item)) or nil,
+          name   = (was.name ~= nm) or nil,
+          marker = (was.msig ~= (msigs[item] or "")) or nil,
+        }
+        local who = vo.ParityAttribute(changed)
+        if who then
+          attributed[item] = who
+          n_at = n_at + 1
+        elseif next(changed) ~= nil then
+          -- Something moved, but not ONE thing: a split, a paste, two edits
+          -- in one settle window. The tool acts on knowledge or it asks.
+          queued[item] = true
+          n_q = n_q + 1
         end
       end
     end
@@ -1971,7 +1989,36 @@ function Trim.changes_since_last_look()
   -- and later passes can say anything moved.
   if not prev then return {}, 0, {}, 0 end
 
-  return retracked, n_re, edited, n_ed
+  return attributed, n_at, queued, n_q
+end
+
+-- One string per item summarising its tool markers, from the LAST RELOAD's
+-- collection (state.take_markers) -- so comparing two of these asks "did a
+-- marker move or change its line since the baseline" without reading a
+-- chunk. This function runs on every change tick, and chunk reads here
+-- would double the per-rescan tax the take markers already charge; the cost
+-- of reusing the collection is one tick of lag, which the settle window
+-- already absorbs. Returns { [item] = sig }.
+function Trim.marker_sigs()
+  local out = {}
+  for _, group in pairs(state.take_markers or {}) do
+    for _, entry in ipairs(group) do
+      local item = entry.info and entry.info.item
+      if item then
+        local parts = {}
+        for _, m in ipairs(entry.markers or {}) do
+          local asset, id = vo.ParseMarkerName(m.name or "")
+          if id then
+            parts[#parts + 1] = string.format("%s|%s|%.5f|%.5f",
+              id, tostring(asset), m.pos or 0, m.length or 0)
+          end
+        end
+        table.sort(parts)
+        out[item] = table.concat(parts, ";")
+      end
+    end
+  end
+  return out
 end
 
 -- The sheet catching up to where you dragged an item.
@@ -12975,15 +13022,26 @@ local function loop()
       local now = r.GetProjectStateChangeCount(0)
       if now ~= state.item_snapshot_at then
         state.item_snapshot_at = now
-        local retracked, n_re, edited, n_ed = Trim.changes_since_last_look()
-        -- Both track-followers ride the SAME moved-item set, so a drag costs
-        -- one snapshot pass whether one is on or both are.
-        if (state.marks_follow_tracks or state.alt_names_follow_tracks)
-           and n_re > 0 then
-          state.pending_retracked = retracked
-        end
-        if state.tracking_follows_edit and n_ed > 0 then
-          state.pending_edited = edited
+        local attributed, n_at = Trim.changes_since_last_look()
+        -- TRANSLATION SHIM, removed when the dispatcher lands: the snapshot
+        -- now attributes each change to the one element that moved, and the
+        -- two legacy followers consume the two authorities they understand.
+        if n_at > 0 then
+          local retracked, edited = nil, nil
+          for item, who in pairs(attributed) do
+            if who == "sheet" then
+              retracked = retracked or {}; retracked[item] = true
+            elseif who == "item" then
+              edited = edited or {}; edited[item] = true
+            end
+          end
+          if retracked and (state.marks_follow_tracks
+                            or state.alt_names_follow_tracks) then
+            state.pending_retracked = retracked
+          end
+          if edited and state.tracking_follows_edit then
+            state.pending_edited = edited
+          end
         end
         state.edit_settle = 0
       else
