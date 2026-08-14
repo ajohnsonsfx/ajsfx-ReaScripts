@@ -6443,8 +6443,10 @@ function Trim.recut_items()
       local source = r.GetMediaItemTake_Source(take)
       local path   = source and r.GetMediaSourceFileName(source, "") or ""
       if path ~= "" then
+        local _, name = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
         out[#out + 1] = {
           item       = item,
+          name       = name,
           pos        = r.GetMediaItemInfo_Value(item, "D_POSITION"),
           length     = r.GetMediaItemInfo_Value(item, "D_LENGTH"),
           start_offs = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS"),
@@ -7484,12 +7486,13 @@ local function MatchTakes(opts)
   -- button. Re-cutting from the catch-all would throw markers away on a press
   -- the user made for a different reason, and a clump they split deliberately
   -- is not a bug the sheet gets to overrule.
-  local split_clumps = 0
-  for _, clump in ipairs(vo.ClusterClumps(Trim.recut_items())) do
-    if #clump > 1 then split_clumps = split_clumps + 1 end
-  end
+  -- Contiguity alone would flag every healthy session: a correct cut splits at
+  -- markers that abut, so its own output is a run of touching clips. Only a
+  -- clump whose clips claim the SAME line is a line broken in half.
+  local split_clumps = #vo.ClumpsSharingALine(
+    vo.ClusterClumps(Trim.recut_items()))
   local clump_note = (split_clumps > 0) and string.format(
-    "%d clump(s) of split clips found -- press \"Re-cut selected takes\"",
+    "%d clip run(s) share one line -- press \"Re-cut selected takes\"",
     split_clumps) or nil
 
   local bits = { string.format("%d line%s refreshed", refreshed,
@@ -7678,6 +7681,17 @@ function Trim.recut(opts)
       -- re-cut is about to answer, and writing an empty note is how you clear
       -- them all.
       vo.WriteTakeMarkers(survivor, {})
+
+      -- The NAME goes with the markers, and for the same reason. The name IS
+      -- the line assignment (vo-name-is-the-assignment), so a name inherited
+      -- from the bad cut is a wrong assignment -- and the cut's naming step
+      -- will not overwrite a name that already means a line, so leaving it
+      -- would let the very drift this verb exists to fix survive the fix.
+      -- Measured on the Grumbar clump 2026-08-14: markers came back correct
+      -- and both clips stayed named for the wrong line.
+      if take then
+        r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", true)
+      end
 
       local note = nil
       if #plan.dropped_rate > 0 then
@@ -11148,6 +11162,10 @@ local function RunRemoteCommand(command)
     -- harness script is written against it.
     Trim.cut_from_markers()
     return state.cut_result or "cut ran with no result string"
+  elseif verb == "recut" then
+    -- The new button, headless: heal the selected clumps and re-derive them.
+    Trim.recut()
+    return state.message or "recut ran with no result string"
   elseif verb == "cut_spans" then
     -- The OLD cut, transcript-derived edges and all, with no button on it any
     -- more. Kept for the harness alone: it is the only way to assert that the

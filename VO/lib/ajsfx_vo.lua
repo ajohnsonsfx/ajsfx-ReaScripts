@@ -5747,6 +5747,40 @@ function vo.ClusterClumps(items, tol)
   return clumps
 end
 
+-- The clumps that are actually a SPLIT LINE: two or more items carrying the
+-- same line assignment.
+--
+-- Contiguity alone cannot answer this. A correct cut splits at markers that
+-- abut exactly, so its output is a run of items touching in project AND source
+-- time -- indistinguishable, by geometry, from the damage this verb repairs. A
+-- report keyed on geometry would therefore flag every healthy session forever,
+-- and a warning that is always on is not a warning.
+--
+-- What separates them is the ASSIGNMENT. Two contiguous items that are two
+-- different lines are a normal cut; two contiguous items claiming ONE line are
+-- that line broken in half, which is the whole complaint. The name is the
+-- assignment (vo-name-is-the-assignment), so a repeated name is the signal.
+--
+-- Blank names never match each other: an unnamed item is undecided, not
+-- claimed, and two undecided items are not evidence of anything.
+function vo.ClumpsSharingALine(clumps)
+  local out = {}
+  for _, clump in ipairs(clumps or {}) do
+    if #clump > 1 then
+      local seen, shared = {}, false
+      for _, info in ipairs(clump) do
+        local nm = info.name
+        if nm and nm ~= "" then
+          if seen[nm] then shared = true end
+          seen[nm] = true
+        end
+      end
+      if shared then out[#out + 1] = clump end
+    end
+  end
+  return out
+end
+
 -- Decide whether a clump may be re-cut, and over what SOURCE window.
 --
 -- The window starts as the clump's own source coverage -- the same question

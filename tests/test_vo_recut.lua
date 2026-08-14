@@ -244,6 +244,49 @@ test("an empty clump refuses without indexing nil", function()
   assert(p.refuse, "an empty clump must refuse")
 end)
 
+print("\nClumpsSharingALine:")
+
+test("two items claiming one line is a split line", function()
+  local a = info(1, 10.0, 1.0, 100.0); a.name = "line_a"
+  local b = info(2, 11.0, 1.0, 101.0); b.name = "line_a"
+  assert(#vo.ClumpsSharingALine({ { a, b } }) == 1)
+end)
+
+test("two items that are two different lines is a normal cut", function()
+  -- Exactly what a correct cut leaves behind: markers abut, so the items do.
+  local a = info(1, 10.0, 1.0, 100.0); a.name = "line_a"
+  local b = info(2, 11.0, 1.0, 101.0); b.name = "line_b"
+  assert(#vo.ClumpsSharingALine({ { a, b } }) == 0,
+         "a healthy cut must not be reported as a clump")
+end)
+
+test("a clump of one is never a split line", function()
+  local a = info(1, 10.0, 1.0, 100.0); a.name = "line_a"
+  assert(#vo.ClumpsSharingALine({ { a } }) == 0)
+end)
+
+test("blank names do not match each other", function()
+  local a = info(1, 10.0, 1.0, 100.0); a.name = ""
+  local b = info(2, 11.0, 1.0, 101.0); b.name = ""
+  assert(#vo.ClumpsSharingALine({ { a, b } }) == 0,
+         "two undecided items are not evidence of a split line")
+end)
+
+test("the observed Grumbar clump is a split line", function()
+  -- Both items were named DBP_Grumbar_Grumbar_IBreakOar.
+  local a = info(1, 1254.510, 0.595, 1254.510)
+  local b = info(2, 1255.105, 1.125, 1255.105)
+  a.name, b.name = "DBP_Grumbar_Grumbar_IBreakOar", "DBP_Grumbar_Grumbar_IBreakOar"
+  assert(#vo.ClumpsSharingALine({ { a, b } }) == 1)
+end)
+
+test("three items, only two sharing, still reports the clump once", function()
+  local a = info(1, 10.0, 1.0, 100.0); a.name = "line_a"
+  local b = info(2, 11.0, 1.0, 101.0); b.name = "line_b"
+  local c = info(3, 12.0, 1.0, 102.0); c.name = "line_a"
+  assert(#vo.ClumpsSharingALine({ { a, b, c } }) == 1)
+end)
+
 print("\nConfig:")
 
 test("recut_ignore_rate is in the schema and defaults to false", function()
