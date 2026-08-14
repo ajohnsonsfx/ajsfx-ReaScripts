@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
 -- @version 0.15beta18
--- @changelog PRE-RELEASE: DRAG A TAKE ONTO THE LINE IT BELONGS TO. A take under the wrong line could only be moved by retyping a filename, and that never took it OFF the line it was on -- the marker names the line, and a rename does not touch the marker. Now drag the take onto the right card: the marker is retargeted, the item takes the next free alt name and lands on the Review track, undecided. Drag an orphan onto a card to identify it, or a take onto "Not on the script" to take it off. Drag several at once by selecting them first. An uncut clip holding several takes is still moved, but its item is not renamed or relocated -- one item, one name -- and the drop says so; Cut splits it out. Locked takes refuse to move. Also: the Text filter box is now TWO boxes, Script and Transcript, so "the script says X but the take says Y" is finally a question you can ask.
+-- @changelog PRE-RELEASE: DRAG A TAKE ONTO THE LINE IT BELONGS TO. A take under the wrong line could only be moved by retyping a filename, and that never took it OFF the line it was on -- the marker names the line, and a rename does not touch the marker. Now drag the take onto the right card: the marker is retargeted, the item takes the next free alt name and lands on the Review track, undecided. Drag an orphan onto a card to identify it, or a take onto "Not on the script" to take it off. Drag several at once by selecting them first. An uncut clip holding several takes is still moved, but its item is not renamed or relocated -- one item, one name -- and the drop says so; Cut splits it out. Locked takes refuse to move. Also: the Text filter box is now TWO boxes, Script and Transcript, and they OR rather than AND -- put the same word in both and you get the line that WANTS it beside the take that SAYS it, which is exactly the pair you need on screen to drag one onto the other.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -171,10 +171,18 @@ local COLUMNS = {
     filters = {
       { key = "text.script", label = "Script",
         text = function(row) return row.line_text or "" end,
-        tip = "Matches what the SCRIPT says -- the line, not the take." },
+        tip = "Matches what the SCRIPT says -- the line, not the take.\n" ..
+              "Script and Transcript are OR, not AND: fill in both and you\n" ..
+              "get everything either one finds. Put the same word in both to\n" ..
+              "see the line that wants it beside the take that says it, then\n" ..
+              "drag one onto the other." },
       { key = "text.said",   label = "Transcript",
         text = function(row) return row.transcript or "" end,
-        tip = "Matches what was actually SAID -- the take, not the line." },
+        tip = "Matches what was actually SAID -- the take, not the line.\n" ..
+              "Script and Transcript are OR, not AND: fill in both and you\n" ..
+              "get everything either one finds. Put the same word in both to\n" ..
+              "see the line that wants it beside the take that says it, then\n" ..
+              "drag one onto the other." },
     },
     tip = "Line: what the script says. Take: what was actually said,\n" ..
           "directly beneath it for comparison." },
@@ -4048,11 +4056,36 @@ local function Matches(row)
 
   -- Column filters AND with each other and with everything above: each box
   -- narrows what the ones before it left.
-  for key, needle in pairs(state.col_filters) do
-    if needle ~= "" then
-      local col = COLUMN_BY_KEY[key]
-      if col and col.text
-         and not col.text(row):lower():find(needle:lower(), 1, true) then
+  --
+  -- EXCEPT within one column's own group of boxes, where they OR -- and that
+  -- exception is the entire point of splitting Text into Script and
+  -- Transcript. The job those two boxes exist for is "the script says please
+  -- HERE, and a take says please over THERE, let me drag one onto the other",
+  -- and under AND that is unreachable by construction: no single row is both
+  -- the line missing its take and the take under the wrong line, so asking for
+  -- both at once returns nothing. ORed, both cards are on screen together,
+  -- which is what makes the drag possible.
+  --
+  -- Only boxes with something typed in them join the OR. An empty box is not
+  -- an alternative that always fails; it is a question not asked.
+  for _, c in ipairs(COLUMNS) do
+    if c.filters then
+      local asked, hit = false, false
+      for _, f in ipairs(c.filters) do
+        local needle = state.col_filters[f.key]
+        if needle and needle ~= "" then
+          asked = true
+          if f.text(row):lower():find(needle:lower(), 1, true) then
+            hit = true
+            break
+          end
+        end
+      end
+      if asked and not hit then return false end
+    elseif c.text and not c.nofilter then
+      local needle = state.col_filters[c.key]
+      if needle and needle ~= ""
+         and not c.text(row):lower():find(needle:lower(), 1, true) then
         return false
       end
     end
@@ -8510,7 +8543,10 @@ local function DrawFilters()
   if im.IsItemHovered(ctx) then
     im.SetTooltip(ctx, "Show a box per field, to narrow the sheet by what a\n" ..
                        "field contains. Filters pick LINES: a match on any take\n" ..
-                       "keeps its whole card.")
+                       "keeps its whole card.\n" ..
+                       "Different fields AND together. Script and Transcript are\n" ..
+                       "the exception -- they OR, so the same word in both shows\n" ..
+                       "the line that wants it beside the take that says it.")
   end
   if filtering then
     im.SameLine(ctx)

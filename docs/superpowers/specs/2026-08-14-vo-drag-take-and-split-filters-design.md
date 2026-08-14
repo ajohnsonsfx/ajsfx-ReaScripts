@@ -223,9 +223,22 @@ way to ask for a line whose script says one thing and whose take says another
 
 The single box hinted `Text` becomes two boxes side by side in the same filter
 row, hinted **Script** and **Transcript**. Script matches `row.line_text`;
-Transcript matches `row.transcript`. They AND with each other and with
-everything else, exactly as any two column boxes do today. Typing the same
-thing in both is allowed and means "the script says it and the take says it".
+Transcript matches `row.transcript`.
+
+**The two OR each other**, which is an exception to how every other filter in
+this window composes — and the exception is the reason the split is worth
+making. The job is: the script says "please" on one line, a misfiled take says
+"please" under another, and I want to drag the second onto the first. Under AND
+that is unreachable by construction — no single row is both the line missing
+its take and the take under the wrong line, so asking for both at once returns
+an empty sheet. ORed, both cards are on screen together and the drag is
+possible. Typing the same word in both is therefore the *expected* use, not an
+edge case.
+
+Everything else is unchanged: the group as a whole still ANDs with the
+character combo, the global search and the other columns' boxes. An empty box
+contributes nothing to the OR — it is a question not asked, not an alternative
+that always fails.
 
 ### How
 
@@ -248,8 +261,12 @@ The column's header tip is unchanged; each box also carries its own tip naming
 the one field it matches.
 
 - The `COLUMN_BY_KEY` build loop also registers each `c.filters` entry under
-  its own key. That is the only change `Matches`, the project-file load guard
-  and `Clear filters` need — all three already work off that table.
+  its own key. The project-file load guard and `Clear filters` need nothing
+  else — both already work off that table.
+- `Matches` walks `COLUMNS` rather than `state.col_filters`, because the OR is
+  a property of the GROUP and a flat walk over needles cannot see groups. A
+  column with `filters` fails a row only when at least one of its boxes has a
+  needle and none of them matches; a column without them behaves as before.
 - `ColumnKeys()` is **not** extended. It drives per-column *view* settings
   (widths, visibility); a sub-filter is not a column.
 - `DrawFilters` draws one box per `c.filters` entry when a column has them,
@@ -270,10 +287,21 @@ whose column has `filters`, since such a column has no needle of its own.
 
 ### Tests
 
+`Matches` is a local inside the GUI script, which the mock harness cannot load
+(it needs a live ReaImGui context) and which `tests/reaper/ajsfx_VO_SelfTest.lua`
+does not reach either — that self-test covers the library. So these are steps
+in `VO/MANUAL_TEST.md`, not `run_tests.sh` cases, and they are listed here so
+the list of what must hold is written down somewhere:
+
 1. A Script needle matches on `line_text` and not on `transcript`.
 2. A Transcript needle matches on `transcript` and not on `line_text`.
-3. Both set: only rows matching both survive.
-4. A saved `text` key does not survive a load.
+3. Both set: a row matching EITHER survives — the same word in both keeps the
+   line that wants it and the take that says it.
+4. Both set, a row matching neither is still dropped.
+5. One box set, the other empty: the empty box does not fail every row.
+6. A Script needle and a `where` needle still AND — the OR does not leak past
+   the group.
+7. A saved `text` key does not survive a load.
 
 ---
 

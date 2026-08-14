@@ -1094,8 +1094,14 @@ one UNCUT recording holding several takes as markers in one item.
 1. Press Filters. Expect two boxes where one said "Text": **Script** and
    **Transcript**.
 2. Type a word that appears in a script line but not in its take's transcript
-   into Script. Expect the line shown. Type the same word into Transcript.
-   Expect it hidden.
-3. Type into both: only rows matching both survive.
-4. Open a project saved by 0.15beta17 or earlier that had a Text filter set.
+   into Script. Expect the line shown. Clear it, type the same word into
+   Transcript. Expect it hidden.
+3. **The two boxes OR.** Type the same word into both — say `please`, where one
+   line's SCRIPT says it and a misfiled take's TRANSCRIPT says it under some
+   other line. Expect BOTH cards on screen at once: the line that wants the
+   word, and the card holding the take that says it. That pairing is the whole
+   point — it is what makes the take draggable onto the line.
+4. Filters still AND across different fields: with `please` in Transcript, type
+   a script name into Where. Expect the result narrowed, not widened.
+5. Open a project saved by 0.15beta17 or earlier that had a Text filter set.
    Expect both boxes empty, and no ghost filtering.
