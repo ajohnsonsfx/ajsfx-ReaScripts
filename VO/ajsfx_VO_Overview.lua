@@ -4620,9 +4620,11 @@ function DND.UsedAltNumbers(line, cfg)
       local take = r.GetActiveTake(row.item)
       local nm = take and select(2, r.GetSetMediaItemTakeInfo_String(
                                      take, "P_NAME", "", false)) or ""
-      if nm == base then
-        used.plain = true
-      elseif vo.StripAltSuffix(nm, cfg.alt_append_pattern) == base then
+      -- The plain delivered name is excluded rather than recorded: it is never
+      -- handed out (see DND.NextAltName), and an asset ending in digits --
+      -- line_042 -- would otherwise have its own number read off as an alt.
+      if nm ~= base
+         and vo.StripAltSuffix(nm, cfg.alt_append_pattern) == base then
         local n = tonumber(nm:match("(%d+)%s*$") or "")
         if n then used[n] = true end
       end
