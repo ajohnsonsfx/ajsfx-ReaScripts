@@ -6426,6 +6426,84 @@ function Trim.cut_from_markers(opts)
   state.cut_result, state.cut_result_kind = state.message, state.message_kind
 end
 
+-- The selection, in the shape vo.ClusterClumps wants.
+--
+-- Deliberately NOT vo.CollectSourceSpans: that skips any item whose playrate is
+-- not 1.0, and a skipped info carries no length or offset at all -- so a
+-- stretched clump would not merely refuse, it would be INVISIBLE, and the
+-- report would say "nothing selected" about two items plainly on screen. The
+-- rate question belongs to vo.PlanReCut, which can refuse it OR honour the
+-- user's override; it cannot do either if the item never arrives.
+function Trim.recut_items()
+  local out = {}
+  for i = 0, r.CountSelectedMediaItems(0) - 1 do
+    local item = r.GetSelectedMediaItem(0, i)
+    local take = item and r.GetActiveTake(item)
+    if take and not r.TakeIsMIDI(take) then
+      local source = r.GetMediaItemTake_Source(take)
+      local path   = source and r.GetMediaSourceFileName(source, "") or ""
+      if path ~= "" then
+        out[#out + 1] = {
+          item       = item,
+          pos        = r.GetMediaItemInfo_Value(item, "D_POSITION"),
+          length     = r.GetMediaItemInfo_Value(item, "D_LENGTH"),
+          start_offs = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS"),
+          playrate   = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE"),
+          pitch      = r.GetMediaItemTakeInfo_Value(take, "D_PITCH"),
+          path       = path,
+          track      = r.GetMediaItem_Track(item),
+          locked     = r.GetMediaItemInfo_Value(item, "C_LOCK") >= 1,
+        }
+      end
+    end
+  end
+  table.sort(out, function(a, b) return (a.pos or 0) < (b.pos or 0) end)
+  return out
+end
+
+-- Every match span, tagged with the source it came from -- the SAME spans
+-- CutCandidates reads, built the same way, so the window vo.PlanReCut opens and
+-- the spans the cut later resolves into it cannot disagree.
+--
+-- Fresh tables rather than the memoised ones: CutCandidates mutates the span
+-- tables it walks (source_path, in_range), and a planner has no business
+-- depending on whether a cut ran first.
+function Trim.recut_spans()
+  local out = {}
+  for _, m in ipairs(state.matches or {}) do
+    for _, s in ipairs(m.spans or {}) do
+      out[#out + 1] = { source_path = m.path, start = s.start, stop = s.stop }
+    end
+  end
+  return out
+end
+
+-- Every item NOT in the clumps being re-cut, in the shape vo.PlanReCut's
+-- neighbour clamp wants. These bound how far a reclaim window may grow.
+function Trim.recut_neighbours(in_clump)
+  local out = {}
+  for i = 0, r.CountMediaItems(0) - 1 do
+    local item = r.GetMediaItem(0, i)
+    if not in_clump[item] then
+      local take = r.GetActiveTake(item)
+      local source = (take and not r.TakeIsMIDI(take))
+                     and r.GetMediaItemTake_Source(take) or nil
+      if source then
+        out[#out + 1] = {
+          item       = item,
+          length     = r.GetMediaItemInfo_Value(item, "D_LENGTH"),
+          start_offs = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS"),
+          playrate   = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE"),
+          path       = r.GetMediaSourceFileName(source, ""),
+          track      = r.GetMediaItem_Track(item),
+        }
+      end
+    end
+  end
+  return out
+end
+
+
 -- Cut, wrapped. An error in the cut path used to escape into the defer loop,
 -- which stops the script dead and looks exactly like the button doing nothing.
 -- Whatever went wrong belongs on screen.
@@ -7464,6 +7542,172 @@ local function MatchTakes(opts)
   state.message = table.concat(parts, " ")
   state.message_kind = (#conflicts > 0 or got.none > 0 or got.unusable > 0)
                        and "warn" or "ok"
+end
+
+-- "Re-cut selected takes": un-split a clump so the cut can run again.
+--
+-- The verb owns no matcher and no cutter. It puts the audio back into the one
+-- state the existing pipeline already knows how to process -- A RECORDING --
+-- and then presses the existing buttons at it. Everything is undo-able as ONE
+-- press, which matters more than usual here: this is the verb that throws
+-- markers away, and a user who does not like the result must get the old ones
+-- back with one Ctrl+Z.
+--
+-- Order is not negotiable:
+--   1. heal    -- native 40548, no render, requires the abutment
+--                 vo.ClusterClumps already proved
+--   2. resize  -- reveal the reclaimed source; still no render
+--   3. strip   -- WHY it works. MatchTakes UPDATES rather than re-marks, so a
+--                 surviving wrong marker would be kept and merely re-measured,
+--                 and the re-cut would faithfully rebuild the bad cut.
+--   4. match   -- the item is a recording again; mark every read in it
+--   5. cut     -- split at those markers
+--
+-- opts (all optional -- with none, this is exactly the button):
+--   no_transaction  the caller owns the undo block
+--   no_reload       the caller has already reloaded
+function Trim.recut(opts)
+  opts = opts or {}
+  if not opts.no_reload then Reload() end
+  local cfg = vo.LoadConfig()
+  local picked = Trim.recut_items()
+
+  if #picked == 0 then
+    state.message = "Re-cut needs a selection: select the split clips first."
+    state.message_kind = "error"
+    state.cut_result, state.cut_result_kind = state.message, "error"
+    return
+  end
+
+  local clumps = vo.ClusterClumps(picked)
+  local in_clump = {}
+  for _, clump in ipairs(clumps) do
+    for _, info in ipairs(clump) do in_clump[info.item] = true end
+  end
+
+  local spans      = Trim.recut_spans()
+  local neighbours = Trim.recut_neighbours(in_clump)
+
+  local plans, refusals = {}, {}
+  for _, clump in ipairs(clumps) do
+    local plan = vo.PlanReCut(clump, spans, neighbours,
+                              { ignore_rate = cfg.recut_ignore_rate })
+    if plan.refuse then
+      refusals[#refusals + 1] = plan.refuse
+    else
+      plans[#plans + 1] = plan
+    end
+  end
+
+  if #plans == 0 then
+    state.message = (#refusals > 0)
+      and ("Nothing re-cut: " .. table.concat(refusals, "; ") .. ".")
+      or  "Nothing re-cut: the selection holds no clump to heal."
+    state.message_kind = "error"
+    state.cut_result, state.cut_result_kind = state.message, "error"
+    return
+  end
+
+  -- Read ONCE, so every note this press writes carries the same stamp -- the
+  -- same reason Trim.update reads it once.
+  local note_stamp = os.date("%Y-%m-%d %H:%M")
+  local healed, grown, noted = 0, 0, 0
+
+  ;(opts.no_transaction and Trim.bare or core.Transaction)(
+      "VO Overview: re-cut selected takes", function()
+    local survivors = {}
+
+    for _, plan in ipairs(plans) do
+      -- 1. HEAL. Select exactly this clump and nothing else: 40548 acts on the
+      -- selection, so an item left over from the previous clump would be healed
+      -- into a neighbour without a word.
+      r.Main_OnCommand(40289, 0)  -- Item: Unselect all items
+      for _, info in ipairs(plan.items) do
+        r.SetMediaItemSelected(info.item, true)
+      end
+      if #plan.items > 1 then
+        r.Main_OnCommand(40548, 0)  -- Item: Heal splits in items
+        healed = healed + 1
+      end
+
+      -- Whatever is selected now is the survivor. Heal leaves one item; with a
+      -- clump of one, that is the item we started from.
+      local survivor = r.GetSelectedMediaItem(0, 0) or plan.items[1].item
+      local take = r.GetActiveTake(survivor)
+      survivors[#survivors + 1] = survivor
+
+      -- 2. RESIZE to the reclaim window. vo.PlanTrimToRange does the source ->
+      -- project arithmetic -- the same helper the trim path uses, so the two
+      -- cannot round differently.
+      if take then
+        r.SetMediaItemTakeInfo_Value(take, "D_PLAYRATE", plan.rate)
+        r.SetMediaItemTakeInfo_Value(take, "D_PITCH", plan.pitch)
+        local geom = vo.PlanTrimToRange({
+          pos        = r.GetMediaItemInfo_Value(survivor, "D_POSITION"),
+          start_offs = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS"),
+          playrate   = plan.rate,
+        }, plan.window.from, plan.window.to)
+        if geom then
+          r.SetMediaItemInfo_Value(survivor, "D_POSITION", geom.pos)
+          r.SetMediaItemInfo_Value(survivor, "D_LENGTH", geom.length)
+          r.SetMediaItemTakeInfo_Value(take, "D_STARTOFFS", geom.start_offs)
+          if plan.grew then grown = grown + 1 end
+        end
+      end
+
+      -- 3. STRIP. Two calls, because they clear two different populations:
+      -- WriteTakeMarkers replaces the tool's OWN lines (the ones carrying a
+      -- ~id) and deliberately preserves anything the user placed by hand --
+      -- and a note marker carries no id, so it survives that pass. The note
+      -- pass below is what clears the stale "! PARTIAL:" complaint this
+      -- re-cut is about to answer, and writing an empty note is how you clear
+      -- them all.
+      vo.WriteTakeMarkers(survivor, {})
+
+      local note = nil
+      if #plan.dropped_rate > 0 then
+        local bits = {}
+        for _, d in ipairs(plan.dropped_rate) do
+          bits[#bits + 1] = string.format("playrate %.3f / pitch %+d",
+                                          d.playrate, math.floor(d.pitch))
+        end
+        note = string.format("RATE: re-cut dropped %s from %d item(s).",
+                             table.concat(bits, ", "), #plan.dropped_rate)
+        noted = noted + 1
+      end
+      vo.WriteNoteMarker(survivor,
+        take and r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS") or 0,
+        note_stamp, note)
+    end
+
+    -- 4 and 5. Every survivor, selected together, handed to the existing
+    -- pipeline unchanged: match marks every read in them, cut splits at those
+    -- markers. Re-selecting is not optional -- the heal loop above left only
+    -- the LAST clump selected, and both verbs read the selection.
+    r.Main_OnCommand(40289, 0)  -- Item: Unselect all items
+    for _, item in ipairs(survivors) do r.SetMediaItemSelected(item, true) end
+
+    MatchTakes({ mark = true })
+    Trim.cut_from_markers({ no_transaction = true, quiet = true })
+  end)
+
+  local parts = { string.format("Re-cut %d clump(s); healed %d split(s).",
+                                #plans, healed) }
+  if grown > 0 then
+    parts[#parts + 1] = string.format(
+      "%d reclaimed source a matched line ran into.", grown)
+  end
+  if noted > 0 then
+    parts[#parts + 1] = string.format(
+      "%d carry a REVIEW note about dropped rate/pitch.", noted)
+  end
+  if #refusals > 0 then
+    parts[#parts + 1] = string.format("%d clump(s) refused: %s.",
+                                      #refusals, table.concat(refusals, "; "))
+  end
+  state.message = table.concat(parts, " ")
+  state.message_kind = (#refusals > 0) and "warn" or "ok"
+  state.cut_result, state.cut_result_kind = state.message, state.message_kind
 end
 
 -- Delete this project's VO data so the session can be processed again from
@@ -11923,6 +12167,40 @@ local function loop()
           "The audio does not move for a trim: the same sample stays at the\n" ..
           "same project time. Nothing is decided either -- Pull is where a\n" ..
           "take's fate is settled." .. NEEDS_SEL)
+
+      Flow("Re-cut selected takes")
+      if im.Button(ctx, "Re-cut selected takes") then
+        pending_action = function()
+          local ok, err = pcall(Trim.recut)
+          if not ok then
+            state.message, state.message_kind =
+              "Re-cut failed: " .. tostring(err), "error"
+            state.cut_result, state.cut_result_kind = state.message, "error"
+            r.ShowConsoleMsg("ajsfx VO — Re-cut FAILED\n" .. tostring(err) .. "\n\n")
+          end
+        end
+      end
+      Tip("ONE line arrived as several clips. Put it back together, and cut it\n" ..
+          "again properly.\n\n" ..
+          "It looks for CLUMPS: runs of selected clips that touch on the\n" ..
+          "timeline AND come from touching parts of the recording -- which is\n" ..
+          "what a clip that got split looks like, and what a clip you\n" ..
+          "assembled from two places does not.\n\n" ..
+          "For each clump, in one press:\n\n" ..
+          "  1. heal the splits back into one clip -- no render, the audio is\n" ..
+          "     never re-written,\n" ..
+          "  2. grow it outward if a matched line only PARTLY fits inside it,\n" ..
+          "     stopping at the next clip on the track,\n" ..
+          "  3. throw its take markers away,\n" ..
+          "  4. match, and 5. cut -- exactly the two buttons above.\n\n" ..
+          "The markers have to go: \"Match takes to script\" UPDATES rather\n" ..
+          "than re-marks, so a wrong marker left in place would be kept and\n" ..
+          "merely re-measured, and the re-cut would faithfully rebuild the\n" ..
+          "bad cut.\n\n" ..
+          "It REFUSES a clump whose clips disagree about playrate or pitch --\n" ..
+          "healing those changes how the audio sounds. Settings has an\n" ..
+          "override, and it leaves a REVIEW note when used.\n\n" ..
+          "One Ctrl+Z puts everything back." .. NEEDS_SEL)
 
       -- The STEPS band: the four verbs the two macros above are made of, in the
       -- order the macros run them. Remove Extras leads because both macros call
