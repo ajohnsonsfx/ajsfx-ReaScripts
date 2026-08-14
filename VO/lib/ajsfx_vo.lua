@@ -2041,6 +2041,49 @@ function vo.ParityDiff(takes, opts)
   return out
 end
 
+-- Shape one project's collected take markers plus sheet rows into ParityDiff
+-- input. `collected` is vo.CollectTakeMarkers' by-path map; `rows` are sheet
+-- rows (item, asset, take_name). An item the sheet does not know contributes
+-- no sheet element and no item name -- ParityDiff treats nil as nothing to
+-- compare, not as a divergence.
+function vo.ParityAssemble(collected, rows, opts)
+  local sheet_by_item = {}
+  for _, row in ipairs(rows or {}) do
+    if row.item and not sheet_by_item[row.item] then
+      sheet_by_item[row.item] = { asset = row.asset, name = row.take_name }
+    end
+  end
+  local out = {}
+  for _, group in pairs(collected or {}) do
+    for _, entry in ipairs(group) do
+      local item = entry.info and entry.info.item
+      if item then
+        local tool = {}
+        for _, m in ipairs(entry.markers or {}) do
+          local asset, id = vo.ParseMarkerName(m.name or "")
+          if id and not vo.IsNoteMarker(m.name or "") then
+            tool[#tool + 1] = { asset = asset, start = m.pos or 0,
+                                stop = (m.pos or 0) + (m.length or 0) }
+          end
+        end
+        local row = sheet_by_item[item]
+        out[#out + 1] = {
+          key = item,
+          marker = tool[1],
+          marker_count = #tool,
+          item = entry.coverage and {
+            name = row and row.name or nil,
+            from = entry.coverage.from,
+            to   = entry.coverage.to,
+          } or nil,
+          sheet = (row and row.asset) and { asset = row.asset } or nil,
+        }
+      end
+    end
+  end
+  return out
+end
+
 -- Which single element did the user edit? The watcher hands in what changed
 -- since the baseline; exactly one changed element IS the authority, anything
 -- else is nil -- the tool acts on knowledge or it asks (spec §4.2).

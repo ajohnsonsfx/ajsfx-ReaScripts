@@ -117,5 +117,62 @@ test("nothing moved, nil, and nil input is not an error", function()
 end)
 
 --------------------------------
+print("ParityAssemble:")
+
+test("a collected item becomes a diffable take", function()
+  local collected = { ["src.wav"] = { {
+    coverage = { from = 1.25, to = 3.50 },
+    markers  = { { pos = 1.25, length = 2.25, name = "IWinBig_02 ~abc" } },
+    info     = { item = "ITEM1" },
+  } } }
+  local rows = { { item = "ITEM1", asset = "IWinBig_02",
+                   take_name = "IWinBig_02" } }
+  local takes = vo.ParityAssemble(collected, rows)
+  assert(#takes == 1, "expected one take, got " .. #takes)
+  assert(takes[1].key == "ITEM1", "key is not the item")
+  assert(takes[1].marker.asset == "IWinBig_02", "marker asset lost")
+  assert(takes[1].marker_count == 1, "marker count wrong")
+  assert(takes[1].item.name == "IWinBig_02", "item name lost")
+  assert(takes[1].item.from == 1.25, "coverage lost")
+  assert(takes[1].sheet.asset == "IWinBig_02", "sheet asset lost")
+end)
+
+test("assemble + diff finds a renamed clip", function()
+  local collected = { ["src.wav"] = { {
+    coverage = { from = 1.25, to = 3.50 },
+    markers  = { { pos = 1.25, length = 2.25, name = "IWinBig_02 ~abc" } },
+    info     = { item = "ITEM1" },
+  } } }
+  local rows = { { item = "ITEM1", asset = "IWinBig_02",
+                   take_name = "IWinLittle_01" } }
+  local d = vo.ParityDiff(vo.ParityAssemble(collected, rows))
+  assert(#d == 1 and d[1].fields[1] == "name", "rename not surfaced")
+end)
+
+test("a note marker does not count as a take marker", function()
+  local collected = { ["src.wav"] = { {
+    coverage = { from = 1.25, to = 3.50 },
+    markers  = {
+      { pos = 1.25, length = 2.25, name = "IWinBig_02 ~abc" },
+      { pos = 1.25, length = 0,    name = vo.NOTE_PREFIX .. " left alone" },
+    },
+    info     = { item = "ITEM1" },
+  } } }
+  local takes = vo.ParityAssemble(collected, {})
+  assert(takes[1].marker_count == 1, "note marker counted as a take")
+end)
+
+test("an item the sheet does not know has no sheet element", function()
+  local collected = { ["src.wav"] = { {
+    coverage = { from = 1.25, to = 3.50 },
+    markers  = { { pos = 1.25, length = 2.25, name = "IWinBig_02 ~abc" } },
+    info     = { item = "ITEM1" },
+  } } }
+  local takes = vo.ParityAssemble(collected, {})
+  assert(takes[1].sheet == nil, "invented a sheet element")
+  assert(#vo.ParityDiff(takes) == 0, "missing sheet read as divergence")
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

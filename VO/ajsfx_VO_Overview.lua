@@ -1112,6 +1112,45 @@ local function Rebuild()
   for _, c in ipairs(state.conflicts) do state.conflict_keys[c.key] = c.count end
   state.reconcile = vo.PlanReconcile(state.overview, cfg)
 
+  -- THE PARITY QUEUE: every divergence the watcher may not fix by itself.
+  -- Diffed fresh per Rebuild from the same collections the sheet already
+  -- paid for -- no chunk read here that Reload did not already make. The
+  -- manual set (splits, pastes, refused syncs, sync-off edits) is merged in
+  -- and survives until its item either agrees or dies: an item whose diff
+  -- came back clean holding one marker was FIXED, and leaves; a recording
+  -- stays queued until Cut turns it into takes.
+  state.parity_queue = {}
+  local pq_takes = vo.ParityAssemble(state.take_markers, state.overview)
+  local pq_clean, pq_single = {}, {}
+  for _, tk in ipairs(pq_takes) do
+    pq_clean[tk.key] = true
+    if (tk.marker_count or 0) == 1 then pq_single[tk.key] = true end
+  end
+  local pq_seen = {}
+  for _, d in ipairs(vo.ParityDiff(pq_takes,
+      { alt_pattern = cfg.alt_append_pattern })) do
+    state.parity_queue[#state.parity_queue + 1] = { item = d.key, divergence = d }
+    pq_seen[d.key] = true
+    pq_clean[d.key] = nil
+  end
+  for item in pairs(state.parity_queue_manual or {}) do
+    -- Inlined liveness (Trim is declared below this function): a pointer
+    -- held from before a delete is a freed address, and only ValidatePtr
+    -- can safely ask.
+    local alive = r.ValidatePtr2 and r.ValidatePtr2(0, item, "MediaItem*")
+                  or (not r.ValidatePtr2 and r.ValidatePtr
+                      and r.ValidatePtr(item, "MediaItem*"))
+    if not alive then
+      state.parity_queue_manual[item] = nil          -- died
+    elseif pq_clean[item] and pq_single[item] then
+      state.parity_queue_manual[item] = nil          -- fixed
+    elseif not pq_seen[item] then
+      state.parity_queue[#state.parity_queue + 1] = { item = item,
+        divergence = { fields = { "unattributed" },
+          detail = "changed in a way the watcher could not pin on one element" } }
+    end
+  end
+
   -- Out-of-band rename detection: the name IS the assignment, and anything --
   -- F2, a batch renamer, another script -- can move it silently. The baseline
   -- re-arms whenever this window renames things itself, so what is reported
@@ -6902,6 +6941,10 @@ function Trim.fix_names_from_sheet(opts)
           -- and inventing one would claim the read exists.
           if not item then
             stranded = stranded + 1
+          -- Scoped run (the Out of sync panel fixes ONE take): a row whose
+          -- item is outside the picked set is not this press's business --
+          -- neither renamed nor counted as anything.
+          elseif opts.picked and not opts.picked[item] then -- luacheck: ignore
           -- An uncut recording holds many takes in ONE item, and an item has one
           -- name. Naming it for each take in turn would just leave it wearing
           -- the last one, which is a name that lies about everything above it.
@@ -8173,13 +8216,14 @@ local REPAIR_LIST_CAP = 12
 -- marks always shared the same Relink. Each button wears its count, so the
 -- Check row reads as state, not as navigation.
 
-local function DrawDisagreePanel()
+local function DrawOutOfSyncPanel()
   local cfg  = vo.LoadConfig()
   local plan = state.reconcile or vo.PlanReconcile(state.overview, cfg)
+  local queue = state.parity_queue or {}
 
-  if #plan.disagree == 0 then
+  if #queue == 0 and #plan.disagree == 0 then
     im.TextColored(ctx, 0x66BB66FF,
-      "Every take's marks agree with the track its item sits on.")
+      "(0) -- the session agrees with itself.")
     im.Separator(ctx)
     return
   end
@@ -8191,7 +8235,73 @@ local function DrawDisagreePanel()
     state.scroll_to_uid    = row.uid
     state.scroll_to_frames = 2
   end
-  do
+
+  -- PARITY: marker, item name, sheet row or edges telling different
+  -- stories, plus anything the watcher refused to guess about. Each "Fix
+  -- from" routes through Trim.sync_dispatch with a one-item map, so a
+  -- hand-picked fix and an automatic one are the same code path -- except
+  -- Transcript, which is not an edit-authority but the external evidence,
+  -- and Sheet, which renames from the marks.
+  if #queue > 0 then
+    im.TextColored(ctx, 0xDDAA33FF, string.format(
+      "%d take(s) out of sync:", #queue))
+    local function FixButtons(suffix, picked)
+      local acts = {
+        { "Transcript", function()
+            Trim.fix_names_from_transcript({ picked = picked }) end,
+          "The words win: ask the transcript which line is read there,\n" ..
+          "and rewrite the marker and name to say so." },
+        { "Marker", function()
+            local m = {}
+            for it in pairs(picked) do m[it] = "marker" end
+            Trim.sync_dispatch(m) end,
+          "The marker wins: trim the item onto it and name it for its line." },
+        { "Item", function()
+            local m = {}
+            for it in pairs(picked) do m[it] = "item" end
+            Trim.sync_dispatch(m) end,
+          "The item wins: snap the marker to its edges, fill the fades." },
+        { "Sheet", function()
+            Trim.fix_names_from_sheet({ picked = picked }) end,
+          "The sheet wins: rename the delivery from the Keep/Sel marks." },
+      }
+      for _, a in ipairs(acts) do
+        im.SameLine(ctx)
+        if im.SmallButton(ctx, string.format("Fix from %s##%s", a[1], suffix)) then
+          local run, set = a[2], picked
+          pending_action = function()
+            run()
+            if state.parity_queue_manual then
+              for it in pairs(set) do state.parity_queue_manual[it] = nil end
+            end
+            Reload()
+          end
+        end
+        if im.IsItemHovered(ctx) then im.SetTooltip(ctx, a[3]) end
+      end
+    end
+
+    for i, q in ipairs(queue) do
+      if i > REPAIR_LIST_CAP then
+        im.TextDisabled(ctx, string.format("   ...and %d more",
+          #queue - REPAIR_LIST_CAP))
+        break
+      end
+      im.Bullet(ctx)
+      im.SameLine(ctx)
+      im.Text(ctx, q.divergence.detail or "out of sync")
+      FixButtons(string.format("oos%d", i), { [q.item] = true })
+    end
+    if #queue > 1 then
+      im.Text(ctx, "All of them:")
+      local all = {}
+      for _, q in ipairs(queue) do all[q.item] = true end
+      FixButtons("oosall", all)
+    end
+    im.Separator(ctx)
+  end
+
+  if #plan.disagree > 0 then
     im.TextColored(ctx, 0xDDAA33FF, string.format(
       "%d take(s) disagree with where their item sits:", #plan.disagree))
     for i, f in ipairs(plan.disagree) do
@@ -12678,11 +12788,15 @@ local function loop()
       local n_dis  = #rec.disagree
       local n_gone = #rec.unbacked_markers + #rec.orphan_marks
 
-      PanelButton("disagree", string.format("Marks vs tracks (%d)", n_dis),
-        "Takes whose Keep/Sel marks contradict the track their item sits\n" ..
-        "on. The panel lists each one and fixes them as a batch: adopt the\n" ..
-        "timeline (the tracks are right) or adopt the sheet (the marks are\n" ..
-        "right -- Pull moves the items to match).")
+      local n_oos = #(state.parity_queue or {}) + n_dis
+      PanelButton("outofsync", string.format("Out of sync (%d)", n_oos),
+        "Takes whose marker, item name, sheet row or edges no longer tell\n" ..
+        "one story, plus anything the watcher refused to guess about --\n" ..
+        "splits, pastes, two edits in one gesture -- and takes whose\n" ..
+        "Keep/Sel marks contradict the track their item sits on. Each row\n" ..
+        "says what disagrees and takes a \"Fix from ...\": the same\n" ..
+        "waterfalls the watcher runs, with you naming the authority.\n" ..
+        "(0) means the session agrees with itself.")
 
       Flow(string.format("Takes without audio (%d)", n_gone))
       PanelButton("noaudio", string.format("Takes without audio (%d)", n_gone),
@@ -12769,7 +12883,7 @@ local function loop()
     if ribbon_h > (state.ribbon_h or 0) then state.ribbon_h = ribbon_h end
     if ribbon_h < state.ribbon_h then im.Dummy(ctx, 1, state.ribbon_h - ribbon_h) end
 
-    if     state.panel == "disagree" then DrawDisagreePanel()
+    if     state.panel == "outofsync" then DrawOutOfSyncPanel()
     elseif state.panel == "noaudio"  then Repair.NoAudio()
     elseif state.panel == "unidentified" then Repair.Unidentified()
     elseif state.panel == "unheard" then Repair.Unheard()
