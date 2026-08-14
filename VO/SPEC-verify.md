@@ -1,6 +1,27 @@
 # ajsfx VO — Verify: the machine listens so you don't have to
 
-**Status:** Implemented (0.15beta12); manual pass pending · **Date:** 2026-08-13
+**Status:** Implemented (0.15beta12); revised (0.15beta13) after the first
+live run · **Date:** 2026-08-13
+
+**beta13 revisions** (each described in place below, flagged `[beta13]`):
+
+1. **Fresh words are clipped to the span.** whisper decodes a full
+   30-second window regardless of `-d`; unclipped, a short take was judged
+   against every take that followed it (63 of 70 takes "unsure" on the
+   first live run).
+2. **Verdicts never move items.** The run is a report; moves are applied
+   from the report, per row or in bulk, by the user.
+3. **Quick check (no whisper) is the default.** A "Re-listen" toggle on
+   the new Check tab switches to the decoding judge; only re-listening can
+   stamp.
+4. **The Check tab** hosts the five Check panels and "Verify items (N)",
+   scoped to the arrange selection so untracked items are reachable.
+5. Fixes: false "not large-v3" warning (plain find of an escaped
+   pattern); stale-merge duplicated in-span sidecar words (`replace`
+   semantics added); Suspects judged the marker's line instead of the take
+   name's (`vo.NamedAssetOf` is now the one resolver); console flash per
+   decode (windowless `ExecProcess` launch); Vetted box drew under the
+   transcript column.
 
 The most tedious part of VO editing is re-listening. The sheet shows a
 transcript and a name, but neither is proof: the transcript may be stale
@@ -156,17 +177,25 @@ For each item, with fresh words `F`, stored sidecar words under the span
 
 ### Verdicts and actions
 
+`[beta13]` `F` is **clipped to the span first** (`vo.WordsWithin`):
+whisper decodes a full 30-second window however short `-d` says the span
+is, so the raw fresh words carry every take that follows the item.
+
 | Verdict | Condition | Action |
 | --- | --- | --- |
 | **Clear** | `F`≈`S`, `F` matches `L` | Write stamp. Nothing else. |
-| **Stale, right line** | `F`≉`S`, `F` matches `L` | Merge `F` into the sidecar for the span (`vo.MergeRepairWords` path, same as gap repair), then stamp **against the merged words**. Item does not move — the delivery was right, only the metadata was behind. |
-| **Wrong line** | `F` matches some other line clearly better than `L` | Move item to its recording's **Review** track. Attach the winning line as a suggestion surfaced through the existing orphan "This is line…" menu. **No auto-rename**: the name is a fact the user states; the machine only guesses. No stamp. |
-| **Can't tell** | `F` matches nothing convincingly | Move to Review, flagged, no suggestion, no stamp. |
+| **Stale, right line** | `F`≉`S`, `F` matches `L` | Merge `F` into the sidecar for the span (`vo.MergeRepairWords` with `replace = true` `[beta13]` — the fresh words supersede the stored in-span words rather than piling beside them), then stamp **against the merged words**. |
+| **Wrong line** | `F` matches some other line clearly better than `L` | Report row, painted, with the winning line as a suggestion through the existing orphan "This is line…" menu. **No move, no auto-rename, no stamp.** |
+| **Can't tell** | `F` matches nothing convincingly | Report row, flagged, no suggestion, no stamp. **No move.** |
 
-Item moves are wrapped in `core.Transaction("VO: Verify")` — one undo
-point per queue run, not per item. Sidecar merges are file writes and sit
-outside the transaction (they are not undoable; the spec accepts this, as
-gap repair already does).
+`[beta13]` **Verdicts never move items.** The first live run judged 63
+takes unsure and swept a session's selects onto Review, destroying the
+user's layout in one pass. The report is now the whole output: wrong-line
+and unsure rows carry a per-row **"Move to Review"** button and a bulk
+**"Move all flagged"**; each click is one `core.Transaction`, Lock is
+re-checked at click time, and dead pointers are skipped. Sidecar merges
+remain file writes outside any transaction (not undoable, as gap repair
+already accepts).
 
 Results land in a per-run report (reuse the Log tab's list style): one
 line per item, verdict + what changed, so a 40-line batch is auditable
@@ -174,10 +203,44 @@ after the fact.
 
 ### Interaction with Lock
 
-Lock means "rematching will not move it". Verify's wrong-line action *is*
-a move, so: a **locked** item that fails verification is **not moved** —
-it is flagged in the report and painted, and the row's disagreement is
-left for the user. Lock outranks the machine, by design.
+Lock means "rematching will not move it". `[beta13]` Since verdicts no
+longer move anything, Lock's job shifts to the report's move buttons: a
+locked item's report row is "flagged" rather than movable, and the move
+action re-checks Lock at click time. Lock outranks the machine, by design.
+
+### Quick check `[beta13]`
+
+The **"Re-listen (whisper)"** toggle on the Check tab, **off by default**,
+decides what every verify request does (`Verify.Kick`). Two deliberate
+exceptions always decode, toggle or no toggle: the remote seam's `vet`
+verb (the harness tests the decode path), and the Suspects panel's
+**"Re-listen to N suspects"** button — every suspect was found from
+stored data, so quick-checking it would only re-report the panel to
+itself; the button is labelled as a re-listen and its caption carries the
+time cost so the spend is never a surprise. Everything else:
+
+- **Off — quick check.** Judge the **stored** sidecar words under each
+  take against the line its name claims (`vo.NamedAssetOf` +
+  `vo.JudgeLine`, same thresholds). Instant, free, no decode. Verdicts:
+  `agrees` / `wrong line` / `unsure`, all `(paper only)` in the report.
+  **Never stamps** — staleness is exactly what paper cannot see, and the
+  Vetted box keeps meaning "the machine listened".
+- **On — the §2 judge**, which can stamp.
+
+Off by default because each decode currently reloads the model (~20 s per
+item); a persistent decode server is the planned fix, and the default
+flips when it lands.
+
+### The Check tab and "Verify items (N)" `[beta13]`
+
+The five Check panels move from the Main row to their own **Check** tab,
+alongside the Verify controls: the re-listen toggle and **"Verify items
+(N)"**, scoped to the **arrange selection** — the sheet's right-click menu
+cannot reach items the sheet does not track. Tracked items resolve to
+their rows; untracked items become row-shaped queue entries when
+re-listening (judged by their take name against the whole script), or a
+"skipped — not tracked" report line under quick check, where there is no
+stored assignment to check against.
 
 ---
 
