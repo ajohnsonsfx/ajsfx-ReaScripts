@@ -5747,6 +5747,124 @@ function vo.ClusterClumps(items, tol)
   return clumps
 end
 
+-- Decide whether a clump may be re-cut, and over what SOURCE window.
+--
+-- The window starts as the clump's own source coverage -- the same question
+-- vo.ResolveSourceSpanForCut asks when it resolves a span to its item, so
+-- scope and resolution cannot disagree (vo-rows-are-not-spans). It then grows
+-- to swallow any matched span it only PARTLY holds, because a line straddling
+-- the clump's edge cannot be re-derived from half of itself, and stopping
+-- short only re-earns the PARTIAL complaint on the next pass.
+--
+-- Growth is bounded by the nearest item that is not in the clump, on the same
+-- track and source. Re-cut may reclaim audio no item covers; it may never eat
+-- a neighbour.
+--
+-- It decides and returns. Nothing here touches REAPER, and a plan carrying
+-- `refuse` has no window at all -- an applier that ignores the refusal has
+-- nothing to apply.
+function vo.PlanReCut(clump, spans, neighbours, opts)
+  opts = opts or {}
+  local tol = opts.tol or 1e-3
+  local min_overlap = opts.min_overlap or 1e-3
+  local plan = { items = clump, rate = 1.0, pitch = 0, dropped_rate = {},
+                 grew = false }
+
+  if not clump or #clump == 0 then
+    plan.refuse = "empty clump"
+    return plan
+  end
+
+  for _, info in ipairs(clump) do
+    if info.locked then
+      plan.refuse = "an item in the clump is locked"
+      return plan
+    end
+  end
+
+  -- The survivor's rate and pitch: the longest item's, so the majority of the
+  -- audio keeps sounding as it did.
+  local longest = clump[1]
+  for _, info in ipairs(clump) do
+    if (info.length or 0) > (longest.length or 0) then longest = info end
+  end
+  plan.rate  = safe_playrate(longest)
+  plan.pitch = longest.pitch or 0
+
+  local mixed_rate, mixed_pitch = false, false
+  for _, info in ipairs(clump) do
+    if math.abs(safe_playrate(info) - plan.rate) > 1e-6 then mixed_rate = true end
+    if math.abs((info.pitch or 0) - plan.pitch) > 1e-6 then mixed_pitch = true end
+  end
+
+  if mixed_rate or mixed_pitch then
+    if not opts.ignore_rate then
+      plan.refuse = mixed_rate
+        and "items in the clump have different playrates"
+        or  "items in the clump have different pitch"
+      return plan
+    end
+    for _, info in ipairs(clump) do
+      local rate, pitch = safe_playrate(info), info.pitch or 0
+      if math.abs(rate - plan.rate) > 1e-6
+      or math.abs(pitch - plan.pitch) > 1e-6 then
+        plan.dropped_rate[#plan.dropped_rate + 1] =
+          { playrate = rate, pitch = pitch }
+      end
+    end
+  end
+
+  -- Coverage: the union of the clump's source ranges. The clump abuts by
+  -- construction, so first-from to last-to is the union.
+  local ranges = vo.SourceCoverageRanges(clump)
+  local from, to = ranges[1].from, ranges[1].to
+  for _, rg in ipairs(ranges) do
+    if rg.from < from then from = rg.from end
+    if rg.to   > to   then to   = rg.to   end
+  end
+  local cov_from, cov_to = from, to
+
+  local path = clump[1].path
+  local touched = 0
+  for _, s in ipairs(spans or {}) do
+    if s.source_path == path then
+      local overlap = math.min(s.stop or 0, cov_to) - math.max(s.start or 0, cov_from)
+      if overlap > min_overlap then
+        touched = touched + 1
+        if (s.start or 0) < from then from = s.start end
+        if (s.stop  or 0) > to   then to   = s.stop  end
+      end
+    end
+  end
+
+  if touched == 0 then
+    plan.refuse = "no match span covers this clump"
+    return plan
+  end
+
+  -- Clamp to the nearest neighbour on the same track and source. A neighbour
+  -- ENTIRELY inside the grown window would otherwise be silently overrun, so
+  -- the bound is taken from any neighbour lying on the correct side of the
+  -- coverage, not merely of the window.
+  for _, nb in ipairs(neighbours or {}) do
+    if nb.track == clump[1].track and nb.path == path then
+      local nb_from = nb.start_offs or 0
+      local nb_to   = nb_from + (nb.length or 0) * safe_playrate(nb)
+      if nb_to <= cov_from + tol and nb_to > from then from = nb_to end
+      if nb_from >= cov_to - tol and nb_from < to then to = nb_from end
+    end
+  end
+
+  if to - from <= tol then
+    plan.refuse = "the reclaim window collapsed to nothing"
+    return plan
+  end
+
+  plan.window = { from = from, to = to }
+  plan.grew = (from < cov_from - tol) or (to > cov_to + tol)
+  return plan
+end
+
 -- djb2 over the words whose midpoint falls inside [from, to]. The hash keys
 -- the vetted fingerprint to the transcript content under one item, so a
 -- gap-repair merge elsewhere in the file cannot invalidate this item.

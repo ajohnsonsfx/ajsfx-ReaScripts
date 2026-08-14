@@ -120,5 +120,129 @@ test("source abutment uses each item's own playrate", function()
          "mixed rates must still cluster; the RATE REFUSAL is PlanReCut's job")
 end)
 
+print("\nPlanReCut:")
+
+-- The clump observed on the Grumbar session, plus its right-hand neighbour.
+local function grumbar()
+  local a = info(1, 1254.510, 0.595, 1254.510)
+  local b = info(2, 1255.105, 1.125, 1255.105)
+  local right = info(3, 1258.280, 3.770, 1258.280)
+  return { a, b }, { right }
+end
+
+test("window is the clump coverage when no span overflows it", function()
+  local clump = { info(1, 10.0, 1.0, 100.0), info(2, 11.0, 1.0, 101.0) }
+  local spans = { { source_path = "rec.wav", start = 100.2, stop = 101.8 } }
+  local p = vo.PlanReCut(clump, spans, {}, {})
+  assert(not p.refuse, "unexpected refusal: " .. tostring(p.refuse))
+  assert(math.abs(p.window.from - 100.0) < 1e-6, "from " .. p.window.from)
+  assert(math.abs(p.window.to - 102.0) < 1e-6, "to " .. p.window.to)
+  assert(p.grew == false, "window should not have grown")
+end)
+
+test("a span overflowing the coverage grows the window", function()
+  local clump, neighbours = grumbar()
+  local spans = {
+    { source_path = "rec.wav", start = 1254.20, stop = 1255.74 },
+    { source_path = "rec.wav", start = 1255.74, stop = 1258.28 },
+  }
+  local p = vo.PlanReCut(clump, spans, neighbours, {})
+  assert(not p.refuse, tostring(p.refuse))
+  -- Coverage is 1254.510..1256.230; the second span overflows to 1258.28.
+  assert(math.abs(p.window.to - 1258.28) < 1e-6, "to " .. p.window.to)
+  assert(p.grew == true)
+end)
+
+test("growth stops at a same-track neighbour's edge", function()
+  local clump, neighbours = grumbar()
+  -- A span that would run past item3's start at source 1258.28.
+  local spans = { { source_path = "rec.wav", start = 1255.74, stop = 1262.00 } }
+  local p = vo.PlanReCut(clump, spans, neighbours, {})
+  assert(math.abs(p.window.to - 1258.28) < 1e-6,
+         "must clamp to the neighbour, got " .. p.window.to)
+end)
+
+test("growth stops at a neighbour on the left too", function()
+  local left = info(9, 1249.200, 2.497, 1249.200)   -- ends at source 1251.697
+  local clump = select(1, grumbar())
+  local spans = { { source_path = "rec.wav", start = 1248.00, stop = 1255.00 } }
+  local p = vo.PlanReCut(clump, spans, { left }, {})
+  assert(math.abs(p.window.from - 1251.697) < 1e-6,
+         "must clamp to the left neighbour, got " .. p.window.from)
+end)
+
+test("a neighbour on another track does not bound the window", function()
+  local clump, _ = grumbar()
+  local elsewhere = info(3, 1258.280, 3.770, 1258.280, { track = {} })
+  local spans = { { source_path = "rec.wav", start = 1255.74, stop = 1259.00 } }
+  local p = vo.PlanReCut(clump, spans, { elsewhere }, {})
+  assert(math.abs(p.window.to - 1259.00) < 1e-6, "to " .. p.window.to)
+end)
+
+test("spans from another source are ignored", function()
+  local clump = { info(1, 10.0, 1.0, 100.0) }
+  local spans = { { source_path = "other.wav", start = 50.0, stop = 500.0 } }
+  local p = vo.PlanReCut(clump, spans, {}, {})
+  assert(p.refuse, "a clump with no span of its own must refuse")
+end)
+
+test("no span clearing the window refuses rather than guessing", function()
+  local clump = { info(1, 10.0, 1.0, 100.0) }
+  local p = vo.PlanReCut(clump, {}, {}, {})
+  assert(p.refuse and p.refuse:match("no match"), tostring(p.refuse))
+  assert(p.window == nil, "a refusal must carry no window")
+end)
+
+test("a locked item refuses the whole clump", function()
+  local a = info(1, 10.0, 1.0, 100.0)
+  local b = info(2, 11.0, 1.0, 101.0, { locked = true })
+  local spans = { { source_path = "rec.wav", start = 100.2, stop = 101.8 } }
+  local p = vo.PlanReCut({ a, b }, spans, {}, {})
+  assert(p.refuse and p.refuse:match("locked"), tostring(p.refuse))
+end)
+
+test("mixed playrates refuse by default", function()
+  local a = info(1, 10.0, 2.0, 100.0, { playrate = 0.5 })
+  local b = info(2, 12.0, 1.0, 101.0)
+  local spans = { { source_path = "rec.wav", start = 100.2, stop = 101.8 } }
+  local p = vo.PlanReCut({ a, b }, spans, {}, {})
+  assert(p.refuse and p.refuse:match("playrate"), tostring(p.refuse))
+end)
+
+test("mixed pitch refuses by default", function()
+  local a = info(1, 10.0, 1.0, 100.0, { pitch = -1 })
+  local b = info(2, 11.0, 1.0, 101.0)
+  local spans = { { source_path = "rec.wav", start = 100.2, stop = 101.8 } }
+  local p = vo.PlanReCut({ a, b }, spans, {}, {})
+  assert(p.refuse and p.refuse:match("pitch"), tostring(p.refuse))
+end)
+
+test("ignore_rate proceeds, takes the LONGEST item's rate, records the rest", function()
+  -- item1 is 2.0s long at rate 0.5; item2 is 1.0s at rate 1.0.
+  local a = info(1, 10.0, 2.0, 100.0, { playrate = 0.5, pitch = -2 })
+  local b = info(2, 12.0, 1.0, 101.0)
+  local spans = { { source_path = "rec.wav", start = 100.2, stop = 101.8 } }
+  local p = vo.PlanReCut({ a, b }, spans, {}, { ignore_rate = true })
+  assert(not p.refuse, tostring(p.refuse))
+  assert(math.abs(p.rate - 0.5) < 1e-9, "rate " .. tostring(p.rate))
+  assert(math.abs(p.pitch - (-2)) < 1e-9, "pitch " .. tostring(p.pitch))
+  assert(#p.dropped_rate == 1, "dropped " .. #p.dropped_rate)
+  assert(math.abs(p.dropped_rate[1].playrate - 1.0) < 1e-9)
+end)
+
+test("uniform rates need no override and drop nothing", function()
+  local clump = { info(1, 10.0, 1.0, 100.0), info(2, 11.0, 1.0, 101.0) }
+  local spans = { { source_path = "rec.wav", start = 100.2, stop = 101.8 } }
+  local p = vo.PlanReCut(clump, spans, {}, {})
+  assert(not p.refuse, tostring(p.refuse))
+  assert(math.abs(p.rate - 1.0) < 1e-9)
+  assert(#p.dropped_rate == 0)
+end)
+
+test("an empty clump refuses without indexing nil", function()
+  local p = vo.PlanReCut({}, {}, {}, {})
+  assert(p.refuse, "an empty clump must refuse")
+end)
+
 print(string.format("\n%d passed, %d failed\n", passed, failed))
 os.exit(failed > 0 and 1 or 0)
