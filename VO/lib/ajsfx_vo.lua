@@ -5700,6 +5700,53 @@ function vo.SourceCoverageRanges(items)
   return out
 end
 
+-- Group items into CLUMPS: runs that abut in project time AND source time, and
+-- so are one continuous stretch of the recording that got split.
+--
+-- Requiring BOTH is the whole safety of the re-cut. Two items that merely touch
+-- on the timeline but come from different parts of the file are a deliberate
+-- assembly -- healing them would splice unrelated audio into one clip and call
+-- it a take. Two items from adjacent source that sit apart on the timeline were
+-- moved there on purpose. Only a run that matches on both axes was one clip.
+--
+-- Mixed playrates still cluster: the source test uses each item's own rate, so
+-- the arithmetic is right either way. Whether a mixed-rate clump may be HEALED
+-- is vo.PlanReCut's decision, not this one -- clustering answers "was this one
+-- clip?", not "may I touch it?".
+--
+-- A lone item is a clump of one. That is not a special case to filter out: an
+-- item with one misplaced marker is the degenerate form of the same problem,
+-- and re-cutting it is meaningful.
+function vo.ClusterClumps(items, tol)
+  tol = tol or 1e-3
+  local sorted = {}
+  for _, info in ipairs(items or {}) do sorted[#sorted + 1] = info end
+  table.sort(sorted, function(a, b) return (a.pos or 0) < (b.pos or 0) end)
+
+  local clumps, current = {}, nil
+  for _, info in ipairs(sorted) do
+    local joins = false
+    if current then
+      local prev = current[#current]
+      local same = prev.track == info.track and prev.path == info.path
+      if same then
+        local p_end = (prev.pos or 0) + (prev.length or 0)
+        local s_end = (prev.start_offs or 0)
+                    + (prev.length or 0) * safe_playrate(prev)
+        joins = math.abs(p_end - (info.pos or 0)) <= tol
+            and math.abs(s_end - (info.start_offs or 0)) <= tol
+      end
+    end
+    if joins then
+      current[#current + 1] = info
+    else
+      current = { info }
+      clumps[#clumps + 1] = current
+    end
+  end
+  return clumps
+end
+
 -- djb2 over the words whose midpoint falls inside [from, to]. The hash keys
 -- the vetted fingerprint to the transcript content under one item, so a
 -- gap-repair merge elsewhere in the file cannot invalidate this item.
