@@ -1990,6 +1990,57 @@ function vo.PlanUpdatePass(items, dir)
   return out
 end
 
+-- Parity: does one take's marker, item and sheet row still tell one story?
+--
+-- Pure -- the caller assembles the elements, this only compares. A recording
+-- (several markers) is never compared: it has no one name and no one range,
+-- and Cut is what turns it into takes. An unmarked item is Match's business,
+-- not parity's. Duplicate clusters reach the queue from the update pass's
+-- refusals, not from here.
+-- See docs/superpowers/specs/2026-08-14-vo-parity-watcher-design.md §3.
+--
+-- takes: { { key, marker = {asset,start,stop}|nil, marker_count,
+--            item = {name,from,to}|nil, sheet = {asset}|nil }, ... }
+-- opts:  { eps = edge tolerance in seconds (default 0.005),
+--          alt_pattern = the alt naming pattern, so a conventional alt name
+--                        over its own line's marker is agreement, not drift }
+-- Returns: { { key, fields = {"name"|"edges",...}, detail }, ... }
+function vo.ParityDiff(takes, opts)
+  opts = opts or {}
+  local eps = opts.eps or 0.005
+  local out = {}
+  for _, tk in ipairs(takes or {}) do
+    if tk.marker and (tk.marker_count or 0) == 1 then
+      local fields, detail = {}, nil
+      local iname = tk.item and tk.item.name
+      if iname and iname ~= "" and iname ~= tk.marker.asset
+         and not vo.IsConventionalAltName(iname, tk.marker.asset,
+                                          opts.alt_pattern) then
+        fields[#fields + 1] = "name"
+        detail = string.format("marker says %s, item says %s",
+                               tostring(tk.marker.asset), iname)
+      end
+      if tk.sheet and tk.sheet.asset and tk.sheet.asset ~= tk.marker.asset then
+        if fields[#fields] ~= "name" then fields[#fields + 1] = "name" end
+        detail = detail or string.format("marker says %s, sheet says %s",
+                 tostring(tk.marker.asset), tostring(tk.sheet.asset))
+      end
+      if tk.item and tk.item.from
+         and (math.abs(tk.marker.start - tk.item.from) > eps
+              or math.abs(tk.marker.stop - (tk.item.to or 0)) > eps) then
+        fields[#fields + 1] = "edges"
+        detail = detail or string.format(
+          "marker %.3f-%.3f, item %.3f-%.3f",
+          tk.marker.start, tk.marker.stop, tk.item.from, tk.item.to or 0)
+      end
+      if #fields > 0 then
+        out[#out + 1] = { key = tk.key, fields = fields, detail = detail }
+      end
+    end
+  end
+  return out
+end
+
 -- Which of `ranges` is the same take as `span`, by overlap.
 --
 -- "Is this take already marked?" cannot be asked by comparing start times. A
