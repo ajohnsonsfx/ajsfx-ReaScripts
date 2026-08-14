@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.15beta20
--- @changelog PRE-RELEASE: PUT THE LINE BACK TOGETHER. New button in the Edit row, "Re-cut selected takes", for the case where ONE spoken line arrived as several clips carrying markers that contradict each other. It looks for CLUMPS -- runs of selected clips that touch on the timeline AND come from touching parts of the recording, which is what a clip that got split looks like and what a clip you assembled from two places does not. For each clump it heals the splits back into one clip (no render), grows it outward if a matched line only partly fits inside it, stopping at the next clip on the track, throws its take markers away, then matches and cuts -- exactly the two buttons above it. The markers have to go: "Match takes to script" updates rather than re-marks, so a wrong marker left in place would be kept and the re-cut would faithfully rebuild the bad cut. One Ctrl+Z puts everything back. It refuses a clump whose clips disagree about playrate or pitch, since healing those changes how the audio sounds; Settings has an override, and it leaves a REVIEW note on the clip when used. "Match takes to script" now also counts the clumps it can see and points at the new button rather than quietly re-cutting anything itself.
+-- @version 0.15beta21
+-- @changelog PRE-RELEASE: THE SESSION KEEPS ITSELF IN SYNC. Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -1112,6 +1112,45 @@ local function Rebuild()
   for _, c in ipairs(state.conflicts) do state.conflict_keys[c.key] = c.count end
   state.reconcile = vo.PlanReconcile(state.overview, cfg)
 
+  -- THE PARITY QUEUE: every divergence the watcher may not fix by itself.
+  -- Diffed fresh per Rebuild from the same collections the sheet already
+  -- paid for -- no chunk read here that Reload did not already make. The
+  -- manual set (splits, pastes, refused syncs, sync-off edits) is merged in
+  -- and survives until its item either agrees or dies: an item whose diff
+  -- came back clean holding one marker was FIXED, and leaves; a recording
+  -- stays queued until Cut turns it into takes.
+  state.parity_queue = {}
+  local pq_takes = vo.ParityAssemble(state.take_markers, state.overview)
+  local pq_clean, pq_single = {}, {}
+  for _, tk in ipairs(pq_takes) do
+    pq_clean[tk.key] = true
+    if (tk.marker_count or 0) == 1 then pq_single[tk.key] = true end
+  end
+  local pq_seen = {}
+  for _, d in ipairs(vo.ParityDiff(pq_takes,
+      { alt_pattern = cfg.alt_append_pattern })) do
+    state.parity_queue[#state.parity_queue + 1] = { item = d.key, divergence = d }
+    pq_seen[d.key] = true
+    pq_clean[d.key] = nil
+  end
+  for item in pairs(state.parity_queue_manual or {}) do
+    -- Inlined liveness (Trim is declared below this function): a pointer
+    -- held from before a delete is a freed address, and only ValidatePtr
+    -- can safely ask.
+    local alive = r.ValidatePtr2 and r.ValidatePtr2(0, item, "MediaItem*")
+                  or (not r.ValidatePtr2 and r.ValidatePtr
+                      and r.ValidatePtr(item, "MediaItem*"))
+    if not alive then
+      state.parity_queue_manual[item] = nil          -- died
+    elseif pq_clean[item] and pq_single[item] then
+      state.parity_queue_manual[item] = nil          -- fixed
+    elseif not pq_seen[item] then
+      state.parity_queue[#state.parity_queue + 1] = { item = item,
+        divergence = { fields = { "unattributed" },
+          detail = "changed in a way the watcher could not pin on one element" } }
+    end
+  end
+
   -- Out-of-band rename detection: the name IS the assignment, and anything --
   -- F2, a batch renamer, another script -- can move it silently. The baseline
   -- re-arms whenever this window renames things itself, so what is reported
@@ -1928,8 +1967,9 @@ function Trim.changes_since_last_look()
   state.item_snapshot_proj = proj
 
   local snap = {}
-  local retracked, n_re = {}, 0
-  local edited, n_ed = {}, 0
+  local attributed, n_at = {}, 0
+  local queued, n_q = {}, 0
+  local msigs = Trim.marker_sigs()
   for _, info in ipairs(state.items or {}) do
     local item = info.item
     -- VALIDATED, because this runs the moment the project changes and DELETING
@@ -1940,21 +1980,38 @@ function Trim.changes_since_last_look()
     -- deliberately runs before one, so it has to check.
     if item and not info.skip and Trim.item_alive(item) then
       local track = r.GetMediaItem_Track(item)
+      local take  = r.GetActiveTake(item)
+      local nm    = ""
+      if take then
+        local _, got = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+        nm = got or ""
+      end
       -- Rounded: a float differing in its last bits is the same edge measured
-      -- twice, not an edit.
+      -- twice, not an edit. LENGTH and the source window are an edge; POSITION
+      -- alone is a slide -- the marker lives in SOURCE time, and a slide moves
+      -- neither the source window nor the marker, so it is not a parity edit.
       local edge = string.format("%.5f|%.5f",
-        r.GetMediaItemInfo_Value(item, "D_POSITION"),
-        r.GetMediaItemInfo_Value(item, "D_LENGTH"))
-      snap[item] = { track = track, edge = edge }
+        r.GetMediaItemInfo_Value(item, "D_LENGTH"),
+        take and r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS") or 0)
+      snap[item] = { track = track, edge = edge, name = nm,
+                     msig = msigs[item] or "" }
       local was = prev and prev[item]
       if was then
-        if was.track ~= track then
-          retracked[item] = true
-          n_re = n_re + 1
-        end
-        if was.edge ~= edge and Trim.has_marker(item) then
-          edited[item] = true
-          n_ed = n_ed + 1
+        local changed = {
+          track  = (was.track ~= track) or nil,
+          edge   = (was.edge ~= edge and Trim.has_marker(item)) or nil,
+          name   = (was.name ~= nm) or nil,
+          marker = (was.msig ~= (msigs[item] or "")) or nil,
+        }
+        local who = vo.ParityAttribute(changed)
+        if who then
+          attributed[item] = who
+          n_at = n_at + 1
+        elseif next(changed) ~= nil then
+          -- Something moved, but not ONE thing: a split, a paste, two edits
+          -- in one settle window. The tool acts on knowledge or it asks.
+          queued[item] = true
+          n_q = n_q + 1
         end
       end
     end
@@ -1971,7 +2028,36 @@ function Trim.changes_since_last_look()
   -- and later passes can say anything moved.
   if not prev then return {}, 0, {}, 0 end
 
-  return retracked, n_re, edited, n_ed
+  return attributed, n_at, queued, n_q
+end
+
+-- One string per item summarising its tool markers, from the LAST RELOAD's
+-- collection (state.take_markers) -- so comparing two of these asks "did a
+-- marker move or change its line since the baseline" without reading a
+-- chunk. This function runs on every change tick, and chunk reads here
+-- would double the per-rescan tax the take markers already charge; the cost
+-- of reusing the collection is one tick of lag, which the settle window
+-- already absorbs. Returns { [item] = sig }.
+function Trim.marker_sigs()
+  local out = {}
+  for _, group in pairs(state.take_markers or {}) do
+    for _, entry in ipairs(group) do
+      local item = entry.info and entry.info.item
+      if item then
+        local parts = {}
+        for _, m in ipairs(entry.markers or {}) do
+          local asset, id = vo.ParseMarkerName(m.name or "")
+          if id then
+            parts[#parts + 1] = string.format("%s|%s|%.5f|%.5f",
+              id, tostring(asset), m.pos or 0, m.length or 0)
+          end
+        end
+        table.sort(parts)
+        out[item] = table.concat(parts, ";")
+      end
+    end
+  end
+  return out
 end
 
 -- The sheet catching up to where you dragged an item.
@@ -2647,8 +2733,8 @@ local function IdentifyItems(opts)
       vo.WriteNoteMarker(p.item, p.at or 0, note_stamp2, string.format(
         "PARTIAL: this clip holds %.1fs of the %.1fs take %s, marker -%s at " ..
         "%.2f-%.2f. Either the clip was cut short of the line, or the marker " ..
-        "is. Snap markers to items fixes the marker; extending the clip fixes " ..
-        "the clip.",
+        "is. \"Fix from Item\" in Out of sync fixes the marker; extending " ..
+        "the clip fixes the clip.",
         p.covered or 0, p.span_len or 0, tostring(p.asset),
         tostring(p.marker_id or "?"), p.marker_from or 0, p.marker_to or 0))
     end
@@ -2897,7 +2983,7 @@ function Trim.update(dir, opts)
           -- not faded or pulled?" with no answer anywhere on screen.
           vo.WriteNoteMarker(item, mks[1] and mks[1].start or 0, note_stamp,
             string.format("left alone: %d markers here, no single range to " ..
-                          "trim onto. Remove Extra Take Markers, or delete " ..
+                          "trim onto. Cut from markers splits it, or delete " ..
                           "the wrong one.", #mks))
         elseif #shape.nomarker == 1 then
           nomarker = nomarker + 1
@@ -2909,7 +2995,7 @@ function Trim.update(dir, opts)
           local at = tk and r.GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS") or 0
           vo.WriteNoteMarker(item, at, note_stamp,
             "left alone: no take marker, so nothing says which line this is. " ..
-            "Match takes to script, or Update from Item.")
+            "Match takes to script marks it.")
         end
 
         local was_in  = r.GetMediaItemInfo_Value(item, "D_FADEINLEN")
@@ -2964,8 +3050,8 @@ function Trim.update(dir, opts)
   end
   if nomarker > 0 then
     parts[#parts + 1] = string.format(
-      "%d item(s) have no take marker to update from -- Update from Item " ..
-      "marks those.", nomarker)
+      "%d item(s) have no take marker to update from -- Match takes to " ..
+      "script marks those.", nomarker)
   end
   if marked and marked.none > 0 then
     parts[#parts + 1] = string.format(
@@ -4246,13 +4332,14 @@ end
 
 -- The Follow menu's toggles: user preferences like the layout settings above,
 -- so ExtState, not the project file.
--- "marks_follow_tracks" rides along with the Follow settings because it is
--- stored the same way, not because it is one of them: it is about the SHEET
--- following the timeline, where the others are about the view following the
--- edit cursor.
+-- "session_sync" rides along with the Follow settings because it is stored
+-- the same way, not because it is one of them: it is the parity watcher's
+-- one switch -- the sheet, markers and names following the user's edits --
+-- where the others are about the view following the edit cursor. It replaced
+-- the three per-case followers (marks_follow_tracks, tracking_follows_edit,
+-- alt_names_follow_tracks); their old ExtState keys are simply abandoned.
 local FOLLOW_KEYS = { "follow_scroll", "follow_unfold", "follow_fold",
-                      "marks_follow_tracks", "tracking_follows_edit",
-                      "alt_names_follow_tracks" }
+                      "session_sync" }
 
 -- How many frames the project must sit UNCHANGED before an automatic edit runs.
 --
@@ -4324,6 +4411,9 @@ local function LoadFollowSettings()
     if raw == "1" then state[key] = true
     elseif raw == "0" then state[key] = false end
   end
+  -- The sync switch defaults ON: the queue is what makes that safe -- every
+  -- automatic act is logged, and anything uncertain queues instead of acting.
+  if state.session_sync == nil then state.session_sync = true end
 end
 
 local function SetFollowSetting(key, value)
@@ -6824,7 +6914,12 @@ function Trim.fix_names_from_sheet(opts)
   opts = opts or {}
   if not opts.no_reload then Reload() end
   local cfg  = vo.LoadConfig()
-  local rows = AffectedRows()
+  -- A scoped run (the Out of sync panel naming ONE take) plans over the
+  -- WHOLE sheet, not the filtered view: the queued item may sit outside the
+  -- current filters, and a fix that silently no-ops because of what the
+  -- table happens to show is a fix that lies. An unscoped press keeps the
+  -- filtered view as its range, as ever.
+  local rows = opts.picked and (state.overview or {}) or AffectedRows()
   local edits, untouched, nameless = vo.PlanNamesFromSheet(rows, {
     pattern = cfg.alt_append_pattern,
     start   = cfg.alt_append_start,
@@ -6840,12 +6935,17 @@ function Trim.fix_names_from_sheet(opts)
       for _, e in ipairs(edits) do
         local row   = rows[e.index]
         local clean = row and vo.SanitizeName(e.name) or ""
-        if clean == "" then
+        local info = row and row.marker_id and state.marker_info
+                     and state.marker_info[row.marker_id]
+        local item = (info and info.item) or (row and row.item)
+        -- Scoped run (the Out of sync panel fixes ONE take): a row whose
+        -- item is outside the picked set is not this press's business --
+        -- neither renamed nor counted as anything, or a one-row fix would
+        -- report the whole sheet's strays as its own.
+        if opts.picked and not (item and opts.picked[item]) then -- luacheck: ignore
+        elseif clean == "" then
           stranded = stranded + 1
         else
-          local info = row.marker_id and state.marker_info
-                       and state.marker_info[row.marker_id]
-          local item = (info and info.item) or row.item
           -- No marker and no item is a PLANNED take -- a line the sheet has
           -- but the timeline does not. There is nothing on screen to rename,
           -- and inventing one would claim the read exists.
@@ -6876,6 +6976,11 @@ function Trim.fix_names_from_sheet(opts)
   end
 
   if opts.quiet then return named, stranded end
+
+  -- A scoped run's report is about the picked takes only: the planner's
+  -- whole-sheet tallies (untouched, nameless) would count rows this press
+  -- deliberately skipped.
+  if opts.picked then untouched, nameless = 0, 0 end
 
   -- Named nothing with nothing left alone means nothing was TICKED, which is
   -- the likely confusion: this names what is being DELIVERED, and a take that
@@ -7434,6 +7539,98 @@ local function ApplyAltNames()
     why),
     (named > 0) and "ok" or "error"
   state.pull_result, state.pull_result_kind = state.message, state.message_kind
+end
+
+-- The user typed a line's name onto an item: the name IS the assignment (the
+-- governing rule of the whole tool), so the marker follows it. Only names
+-- that RESOLVE to a script line count -- "great one, keep" is a note, not a
+-- reassignment, and the marker it does not resolve to stays put. Unresolvable
+-- renames queue instead, with the item as the evidence.
+function Trim.retarget_from_names(items)
+  local index = vo.BuildNameIndex(state.lines)
+  local moved, kept = 0, 0
+  core.Transaction("VO Overview: marker follows the name", function()
+    for item in pairs(items or {}) do
+      if Trim.item_alive(item) then
+        local take = r.GetActiveTake(item)
+        local nm = ""
+        if take then
+          local _, got = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+          nm = got or ""
+        end
+        local at = vo.ResolveItemName(index, nm)
+        local line = at and state.lines and state.lines[at]
+        -- markers_in needs the info record's coverage, so find the real one.
+        local mks = {}
+        for _, info in ipairs(state.items or {}) do
+          if info.item == item then mks = Trim.markers_in(info) break end
+        end
+        if line and line.asset and #mks == 1 then
+          local ok, changed = vo.RetargetMarkerOnItem(item, mks[1].id, line.asset)
+          if ok and changed then moved = moved + 1 end
+        else
+          state.parity_queue_manual = state.parity_queue_manual or {}
+          state.parity_queue_manual[item] = true
+          kept = kept + 1
+        end
+      end
+    end
+  end)
+  if moved > 0 then
+    state.message, state.message_kind = string.format(
+      "%d marker(s) followed the name typed on their item.", moved), "ok"
+  elseif kept > 0 then
+    state.message, state.message_kind = string.format(
+      "%d renamed item(s) resolve to no script line -- sent to Out of sync.",
+      kept), "warn"
+  end
+  state.dirty = true
+  Reload()
+end
+
+-- The authority -> waterfall router, used by the watcher's automatic pass and
+-- by the queue panel's "Fix from ..." buttons alike, so a hand-picked fix and
+-- an automatic one cannot drift apart. `attributed` maps item -> authority
+-- ("item" | "marker" | "name" | "sheet").
+--
+-- Ordering inside one settle batch: sheet adoptions first (marks), then
+-- geometry and name syncs, then the alt names -- the same marks-before-names
+-- rule the old followers enforced, because an alt name is decided by whether
+-- the take is a select, and the marks are what say so.
+function Trim.sync_dispatch(attributed)
+  local by = { item = {}, name = {}, marker = {}, sheet = {} }
+  local n  = { item = 0,  name = 0,  marker = 0,  sheet = 0 }
+  for item, who in pairs(attributed or {}) do
+    if by[who] then by[who][item] = true; n[who] = n[who] + 1 end
+  end
+  if n.sheet > 0 then
+    local adopted = Trim.adopt_track_marks(by.sheet)
+    if adopted > 0 then
+      state.message, state.message_kind = string.format(
+        "%d take(s) followed their track -- Selects ticks Sel, Alts ticks " ..
+        "Keep, anywhere else clears both.", adopted), "ok"
+      ApplyAltNames()
+    end
+  end
+  if n.item > 0 then
+    Trim.update("item", { picked = by.item })
+    -- AFTER the edges, never before: the marker is snapped to the item
+    -- first, so the range this asks the transcript about is the one the
+    -- item now plays.
+    local fixed = Trim.fix_names_from_transcript({
+      picked = by.item, no_reload = true, quiet = true })
+    if (fixed or 0) > 0 then
+      state.message, state.message_kind = string.format(
+        "%s Renamed %d marker(s) the transcript disagreed with.",
+        state.message or "", fixed), "ok"
+    end
+  end
+  if n.marker > 0 then
+    Trim.update("marker", { picked = by.marker })
+  end
+  if n.name > 0 then
+    Trim.retarget_from_names(by.name)
+  end
 end
 
 -- "Match takes to script": work out which line each read is, and mark it.
@@ -8030,13 +8227,14 @@ local REPAIR_LIST_CAP = 12
 -- marks always shared the same Relink. Each button wears its count, so the
 -- Check row reads as state, not as navigation.
 
-local function DrawDisagreePanel()
+local function DrawOutOfSyncPanel()
   local cfg  = vo.LoadConfig()
   local plan = state.reconcile or vo.PlanReconcile(state.overview, cfg)
+  local queue = state.parity_queue or {}
 
-  if #plan.disagree == 0 then
+  if #queue == 0 and #plan.disagree == 0 then
     im.TextColored(ctx, 0x66BB66FF,
-      "Every take's marks agree with the track its item sits on.")
+      "(0) -- the session agrees with itself.")
     im.Separator(ctx)
     return
   end
@@ -8048,7 +8246,73 @@ local function DrawDisagreePanel()
     state.scroll_to_uid    = row.uid
     state.scroll_to_frames = 2
   end
-  do
+
+  -- PARITY: marker, item name, sheet row or edges telling different
+  -- stories, plus anything the watcher refused to guess about. Each "Fix
+  -- from" routes through Trim.sync_dispatch with a one-item map, so a
+  -- hand-picked fix and an automatic one are the same code path -- except
+  -- Transcript, which is not an edit-authority but the external evidence,
+  -- and Sheet, which renames from the marks.
+  if #queue > 0 then
+    im.TextColored(ctx, 0xDDAA33FF, string.format(
+      "%d take(s) out of sync:", #queue))
+    local function FixButtons(suffix, picked)
+      local acts = {
+        { "Transcript", function()
+            Trim.fix_names_from_transcript({ picked = picked }) end,
+          "The words win: ask the transcript which line is read there,\n" ..
+          "and rewrite the marker and name to say so." },
+        { "Marker", function()
+            local m = {}
+            for it in pairs(picked) do m[it] = "marker" end
+            Trim.sync_dispatch(m) end,
+          "The marker wins: trim the item onto it and name it for its line." },
+        { "Item", function()
+            local m = {}
+            for it in pairs(picked) do m[it] = "item" end
+            Trim.sync_dispatch(m) end,
+          "The item wins: snap the marker to its edges, fill the fades." },
+        { "Sheet", function()
+            Trim.fix_names_from_sheet({ picked = picked }) end,
+          "The sheet wins: rename the delivery from the Keep/Sel marks." },
+      }
+      for _, a in ipairs(acts) do
+        im.SameLine(ctx)
+        if im.SmallButton(ctx, string.format("Fix from %s##%s", a[1], suffix)) then
+          local run, set = a[2], picked
+          pending_action = function()
+            run()
+            if state.parity_queue_manual then
+              for it in pairs(set) do state.parity_queue_manual[it] = nil end
+            end
+            Reload()
+          end
+        end
+        if im.IsItemHovered(ctx) then im.SetTooltip(ctx, a[3]) end
+      end
+    end
+
+    for i, q in ipairs(queue) do
+      if i > REPAIR_LIST_CAP then
+        im.TextDisabled(ctx, string.format("   ...and %d more",
+          #queue - REPAIR_LIST_CAP))
+        break
+      end
+      im.Bullet(ctx)
+      im.SameLine(ctx)
+      im.Text(ctx, q.divergence.detail or "out of sync")
+      FixButtons(string.format("oos%d", i), { [q.item] = true })
+    end
+    if #queue > 1 then
+      im.Text(ctx, "All of them:")
+      local all = {}
+      for _, q in ipairs(queue) do all[q.item] = true end
+      FixButtons("oosall", all)
+    end
+    im.Separator(ctx)
+  end
+
+  if #plan.disagree > 0 then
     im.TextColored(ctx, 0xDDAA33FF, string.format(
       "%d take(s) disagree with where their item sits:", #plan.disagree))
     for i, f in ipairs(plan.disagree) do
@@ -8696,7 +8960,7 @@ function Repair.NoAudio()
     end
     im.TextDisabled(ctx,
       "The item this marker lived in was deleted or trimmed past it. Relink\n" ..
-      "to the right item, or Remove Extra Take Markers to drop the leftovers.")
+      "to the right item; a sync or a re-cut drops the leftovers.")
     im.Separator(ctx)
   end
 
@@ -12148,35 +12412,45 @@ local function loop()
       -- organising rule, and it is why the two panels-that-act and the three
       -- follower checkboxes moved down here from there.
       Group("Fix:")
+      -- The row's MACRO slot holds the one authority that is not "my edits":
+      -- the TRANSCRIPT. Every my-edit authority -- trimmed item, dragged
+      -- marker, typed name, moved track -- is the parity watcher's job now,
+      -- handled the moment it happens or queued in "Out of sync" beside
+      -- this. What is left for a button is the external evidence.
       ActsOn()
-      -- First in the row, before the single-step verbs they are built out of:
-      -- this position is the row's MACRO slot -- the one press that does the
-      -- whole job, with the steps behind it for when it guesses wrong.
-      --
-      -- TWO macros, because there are two authorities. Which element did you
-      -- just make correct? Everything else catches up to it. The names are
-      -- deliberately one word apart, so each tooltip states its authority in
-      -- its first line.
-      if im.Button(ctx, "Update from Item") then
-        pending_action = Trim.update_from_item
+      if im.Button(ctx, "Fix from Transcript") then
+        pending_action = Trim.fix_names_from_transcript
       end
-      Tip("The ITEM's edges are right -- you just trimmed the clip -- and\n" ..
-          "everything else catches up. In one undo step:\n\n" ..
-          "1. any item with NO take marker gets one, identified from the\n" ..
-          "   script (a missing marker is usually one never written or\n" ..
-          "   deleted, so this does not refuse on a weak score), then\n" ..
-          "2. Remove Extra Take Markers (below), then\n" ..
-          "3. snap the surviving marker to the item's new edges, then\n" ..
-          "4. put the standard fade on any edge left at zero.\n\n" ..
-          "The transcript needs no step: a take's words are read from inside\n" ..
-          "its marker, so they narrow with it by themselves.\n\n" ..
-          "Fades are FILLED, never overwritten: a trim leaves the edge it cut\n" ..
-          "raw and the other edge's fade intact, so only the raw one is\n" ..
-          "restored and a fade you drew by hand survives.\n\n" ..
-          "A clip still holding several markers -- because the words refused\n" ..
-          "to choose between them -- is not snapped, and is reported.\n\n" ..
-          "Acts on the selection, or everything when nothing is selected.")
+      ActsEnd()
+      Tip("The TRANSCRIPT is the authority: my edits and names are suspect,\n" ..
+          "re-derive who is who from the words.\n\n" ..
+          "For every take marker in the selection, ask the transcript which\n" ..
+          "line is actually read there -- and when it is a different line,\n" ..
+          "rewrite the marker and the item name to say so.\n\n" ..
+          "This is the repair for a bad split. REAPER hands BOTH halves the\n" ..
+          "whole marker set and the original take name, so one wrong split\n" ..
+          "leaves two items each claiming the line, with nothing on screen to\n" ..
+          "tell you which one is right.\n\n" ..
+          "The marker keeps its ID, so a rename never costs a take its Keep\n" ..
+          "and Sel -- the sheet's marks are keyed to the id, not the name.\n\n" ..
+          "Markers of your own -- anything without the tool's ~id suffix --\n" ..
+          "are never touched." .. NEEDS_SEL)
 
+      -- The queue, beside the macro: the same "who is right?" question,
+      -- asked per take, for everything the watcher refused to guess about.
+      Flow("Out of sync")
+      do
+        local n_oos = #(state.parity_queue or {})
+                      + #((state.reconcile or {}).disagree or {})
+        PanelButton("outofsync", string.format("Out of sync (%d)", n_oos),
+          "Takes whose marker, item name, sheet row or edges no longer\n" ..
+          "tell one story, plus anything the watcher refused to guess\n" ..
+          "about. Each row says what disagrees and takes a \"Fix from\n" ..
+          "...\" with you naming the authority. (0) means the session\n" ..
+          "agrees with itself.")
+      end
+
+      ActsOn()
       Flow("Cut from markers")
       if im.Button(ctx, "Cut from markers") then
         pending_action = RunCut
@@ -12194,9 +12468,9 @@ local function loop()
           "before pressing is what you get. Cut used to fall back to edges\n" ..
           "derived from the word timings when a marker was missing, which is\n" ..
           "why the same button could produce two kinds of edge.\n\n" ..
-          "Overlapping markers are resolved first, by the words spoken there\n" ..
-          "(Remove Extra Take Markers, below). A cluster it refuses to call is\n" ..
-          "skipped and named rather than cut.\n\n" ..
+          "Overlapping markers are resolved first, by the words spoken\n" ..
+          "there. A cluster it refuses to call is skipped and named rather\n" ..
+          "than cut.\n\n" ..
           "The audio does not move for a trim: the same sample stays at the\n" ..
           "same project time. Nothing is decided either -- Pull is where a\n" ..
           "take's fate is settled." .. NEEDS_SEL)
@@ -12235,54 +12509,21 @@ local function loop()
           "override, and it leaves a REVIEW note when used.\n\n" ..
           "One Ctrl+Z puts everything back." .. NEEDS_SEL)
 
-      -- The STEPS band: the four verbs the two macros above are made of, in the
-      -- order the macros run them. Remove Extras leads because both macros call
-      -- it first -- with two markers fighting there is no single range to trim
-      -- onto -- and it used to sit fifth, so reading the row told you the wrong
-      -- order.
-      Sep("Remove Extra Take Markers")
-      if im.Button(ctx, "Remove Extra Take Markers") then
-        pending_action = Trim.remove_extras
-      end
-      Tip("Everything on a clip that is not its own take marker:\n\n" ..
-          "DUPLICATES -- two script lines that have both claimed the same\n" ..
-          "stretch of audio. The words spoken there decide which is right\n" ..
-          "and the loser's marker is deleted. Only OVERLAPPING markers are\n" ..
-          "ever compared, so an uncut recording -- one marker per take, none\n" ..
-          "overlapping -- has nothing to lose here. It refuses whenever the\n" ..
-          "words do not clearly pick a winner (no transcript, nothing\n" ..
-          "matching well, or two lines too close to call) and reports those\n" ..
-          "by name.\n\n" ..
-          "LEFTOVERS -- markers before and after this clip's own audio, which\n" ..
-          "is what REAPER's split leaves behind when it copies the whole\n" ..
-          "marker set into both halves.\n\n" ..
-          "Acts on the selection, or everything when nothing is selected.")
-
-      Flow("Trim items to their markers")
-      if im.Button(ctx, "Trim items to their markers") then
-        pending_action = function() Trim.run("item") end
-      end
-      Tip("Set each item's edges to the take marker inside it -- no re-cut,\n" ..
-          "no re-match, no split. The manual half of \"the marker is what\n" ..
-          "the cut will be\": drag a marker to where the clip should start\n" ..
-          "and end, then trim the item onto it.\n\n" ..
-          "The audio does not move: the same sample stays at the same\n" ..
-          "project time. An item holding SEVERAL markers is a recording,\n" ..
-          "not a take, and is left alone -- Cut is what splits those.")
-
-      Flow("Snap markers to items")
-      if im.Button(ctx, "Snap markers to items") then
-        pending_action = function() Trim.run("marker") end
-      end
-      Tip("Set each take marker to the edges of the item it sits in -- the\n" ..
-          "other direction from Trim, and the batch form of \"Snap marker\n" ..
-          "to item\" in a take's menu.\n\n" ..
-          "This is what to press after adjusting a head or tail by hand:\n" ..
-          "the item is now the truth and the marker is stale. (Auto-adjust\n" ..
-          "head and tail already moves the marker for you; only a drag\n" ..
-          "leaves the two disagreeing.)\n\n" ..
-          "An item holding SEVERAL markers is a recording, not a take, and\n" ..
-          "is left alone -- there is no one marker to snap.")
+      -- The MEASURING band: the two verbs no authority may run for you.
+      -- Auto-adjust decides an edge by listening, where every sync copies an
+      -- edge from something already made correct; Apply fades re-enrols a
+      -- hand-trimmed clip. (Remove Extras, Trim-to-marker and Snap-to-item
+      -- lost their buttons when the watcher took their jobs: each was one
+      -- authority's waterfall run by hand, and the waterfalls run themselves
+      -- now -- or wait in "Out of sync" with the authority named.)
+      Sep("Auto-adjust head and tail")
+      if im.Button(ctx, "Auto-adjust head and tail") then pending_action = TightenItems end
+      Tip("Measure where the audio really is in each item and set its edges\n" ..
+          "to the standard head and tail room. Inward only, so speech is\n" ..
+          "never lost; hand-trimmed items (custom fades) are left alone. The\n" ..
+          "take's marker follows the new edges. Works on the REAPER\n" ..
+          "selection, or everything on Selects + Alts when nothing is\n" ..
+          "selected.")
 
       Flow("Apply the cut fades")
       if im.Button(ctx, "Apply the cut fades") then pending_action = Trim.fades end
@@ -12295,72 +12536,15 @@ local function loop()
           "willing to measure and move again.\n\n" ..
           "Acts on the REAPER selection.")
 
-      -- The LEFTOVER band: the only verb on this row neither macro calls. It
-      -- MEASURES the audio and decides an edge for itself, where every step
-      -- above copies an edge from something the user already made correct --
-      -- which is exactly why no authority macro runs it.
-      Sep("Auto-adjust head and tail")
-      if im.Button(ctx, "Auto-adjust head and tail") then pending_action = TightenItems end
-      Tip("Measure where the audio really is in each item and set its edges\n" ..
-          "to the standard head and tail room. Inward only, so speech is\n" ..
-          "never lost; hand-trimmed items (custom fades) are left alone. The\n" ..
-          "take's marker follows the new edges. Works on the REAPER\n" ..
-          "selection, or everything on Selects + Alts when nothing is\n" ..
-          "selected.")
-
       -- The row's selection-scoped block ENDS here. Everything above needs
       -- items picked and greys without them; nothing below does. "Restore
-      -- missing lines" reads the whole project by design -- the audio it looks
-      -- for is exactly the audio no item covers, so a selection cannot name it
-      -- -- and the three checkboxes are settings, which must stay clickable
-      -- when nothing is selected or a follower could only be turned off by
-      -- first selecting something.
+      -- missing lines" reads the whole project by design -- the audio it
+      -- looks for is exactly the audio no item covers, so a selection cannot
+      -- name it -- and the sync checkbox is a setting, which must stay
+      -- clickable when nothing is selected.
       ActsEnd()
 
-      -- Its neighbour below restores a take the timeline lost; this one fixes a
-      -- take the timeline kept but mislabelled. Both answer "the name is
-      -- wrong" -- one because there is no audio behind it, one because there is
-      -- the wrong audio behind it.
-      Flow("Fix wrong names from transcript")
-      ActsOn()
-      if im.Button(ctx, "Fix wrong names from transcript") then
-        pending_action = Trim.fix_names_from_transcript
-      end
-      ActsEnd()
-      Tip("For every take marker in the selection, ask the transcript which\n" ..
-          "line is actually read there -- and when it is a different line,\n" ..
-          "rewrite the marker and the item name to say so.\n\n" ..
-          "This is the repair for a bad split. REAPER hands BOTH halves the\n" ..
-          "whole marker set and the original take name, so one wrong split\n" ..
-          "leaves two items each claiming the line, with nothing on screen to\n" ..
-          "tell you which one is right.\n\n" ..
-          "The marker keeps its ID, so a rename never costs a take its Keep\n" ..
-          "and Sel -- the sheet's marks are keyed to the id, not the name.\n\n" ..
-          "Markers of your own -- anything without the tool's ~id suffix --\n" ..
-          "are never touched." .. NEEDS_SEL)
-
-      -- The pair: one takes the audio's word, one takes the sheet's. NOT wrapped
-      -- in ActsOn -- its scope is the rows on screen when nothing is selected in
-      -- REAPER, so greying it on an empty arrange selection would hide the verb
-      -- exactly when you want it over the whole sheet.
-      Flow("Fix names from the sheet")
-      if im.Button(ctx, "Fix names from the sheet") then
-        pending_action = Trim.fix_names_from_sheet
-      end
-      Tip("The opposite authority to the button above: assume every line is in\n" ..
-          "the right place in the sheet, and rename the timeline to match.\n\n" ..
-          "Per line: the take with Sel gets the plain delivered name, and each\n" ..
-          "take that is Keep without Sel gets the alt name, numbered from the\n" ..
-          "top. A take with neither ticked is left alone -- it is not being\n" ..
-          "delivered, and naming it would claim that it is.\n\n" ..
-          "Unlike \"Auto-name the alts\", this OVERWRITES. Names it generated\n" ..
-          "itself are renumbered; a name you typed is kept.\n\n" ..
-          "It writes the ITEM NAME only. The take marker is left alone: the\n" ..
-          "marker says which LINE a take is, and that is not this button's\n" ..
-          "business -- it makes the clip agree with the marks, it does not\n" ..
-          "move a take to a different line. Use Identify for that.")
-
-      Flow("Restore missing lines")
+      Sep("Restore missing lines")
       if im.Button(ctx, "Restore missing lines") then
         pending_action = Trim.restore_missing
       end
@@ -12378,79 +12562,28 @@ local function loop()
           "Coverage is counted from EVERY item wherever it now sits, so a take\n" ..
           "already pulled to Selects is never restored a second time.")
 
-      -- The standing form of the button beside it: instead of reporting that
-      -- the sheet and the tracks disagree and waiting to be told to adopt the
-      -- timeline, do it on every change.
-      Sep("Selects follow track placement")
-      local hit, v = im.Checkbox(ctx, "Selects follow track placement",
-                                 state.marks_follow_tracks == true)
-      if hit then SetFollowSetting("marks_follow_tracks", v) end
+      -- The parity watcher's one switch, where three per-case followers used
+      -- to stand. Each of the three named one edit and one follower; the
+      -- watcher attributes ANY single-element edit and syncs from it, so the
+      -- choice left for a checkbox is only "act by itself or queue it all".
+      Sep("Keep the session in sync")
+      local hit, v = im.Checkbox(ctx, "Keep the session in sync",
+                                 state.session_sync == true)
+      if hit then SetFollowSetting("session_sync", v) end
       TooltipEvenWhenDisabled(
-        "Drag a take onto a track and the sheet catches up by itself:\n\n" ..
-        "  onto " .. (vo.LoadConfig().track_selects or "Selects") ..
-        "   ->  ticked Sel\n" ..
-        "  onto " .. (vo.LoadConfig().track_alts or "Alts") ..
-        "      ->  ticked Keep\n" ..
-        "  anywhere else  ->  neither (Review, its recording, a scratch\n" ..
-        "                     track -- moving it OFF clears the tick)\n\n" ..
-        "The same rule Pull uses in the other direction, so a take you moved\n" ..
-        "by hand and a take Pull moved say the same thing about themselves.\n\n" ..
-        "It writes the SHEET only -- no item moves, nothing is renamed, and\n" ..
-        "there is nothing to undo. With this off, \"Marks vs tracks\" beside\n" ..
-        "it reports the same disagreements and waits to be told.\n\n" ..
-        "A tick you set BY HAND is an explicit decision and is not\n" ..
-        "overwritten until the item actually moves.")
-      im.SameLine(ctx)
-
-      Flow("Tracking follows item edit")
-      local hit2, v2 = im.Checkbox(ctx, "Tracking follows item edit",
-                                   state.tracking_follows_edit == true)
-      if hit2 then SetFollowSetting("tracking_follows_edit", v2) end
-      TooltipEvenWhenDisabled(
-        "Trim a tracked clip's edge and \"Update from Item\" runs on it by\n" ..
-        "itself: the marker snaps to the new edges and the missing fade is\n" ..
-        "filled. The item's edges are the truth and everything catches up --\n" ..
-        "which is what you meant by dragging them.\n\n" ..
-        "It waits for the drag to FINISH. An edge moves on every frame while\n" ..
-        "you hold it, so this only runs once the project has sat still for\n" ..
-        "about half a second -- on the edge you let go of, not the ones you\n" ..
-        "passed through.\n\n" ..
-        "Only clips that already have a take marker, and only ones whose\n" ..
-        "edges actually moved. A clip that appeared this frame -- from a cut,\n" ..
-        "a paste -- has no previous edge to differ from and is left alone.\n\n" ..
-        "It then asks the TRANSCRIPT whether the marker still names the right\n" ..
-        "line, and renames it when it does not -- after the edges are snapped,\n" ..
-        "so the range it asks about is the one the item now plays. This is the\n" ..
-        "repair for a split: both halves come out of REAPER wearing the whole\n" ..
-        "marker set and the original name, and the audio is the only thing\n" ..
-        "that can say which half is which. The marker keeps its id, so a\n" ..
-        "rename never costs a take its Keep and Sel.\n\n" ..
-        "This one CHANGES ITEMS, unlike the checkbox beside it: each step is\n" ..
-        "its own undo step, so trimming a clip can leave three -- your trim,\n" ..
-        "the update, and the rename if one was needed. Undo past all of them.")
-
-      -- The third follower, and the one that makes the other two worth having:
-      -- moving a take between Alts and Selects changes what its NAME should be,
-      -- and until now that was a separate button pressed from memory. Off by
-      -- default, because it renames items on its own and a rename nobody asked
-      -- for is worse than a stale name.
-      Flow("Alt names follow track placement")
-      local hit3, v3 = im.Checkbox(ctx, "Alt names follow track placement",
-                                   state.alt_names_follow_tracks == true)
-      if hit3 then SetFollowSetting("alt_names_follow_tracks", v3) end
-      TooltipEvenWhenDisabled(
-        "Drag a take onto Alts or Selects and \"Auto-name the alts\" runs by\n" ..
-        "itself: the select keeps the plain name, every take marked Keep gets\n" ..
-        "its own numbered alt name from the pattern in Settings, and a take\n" ..
-        "that already has a name of its own is left alone.\n\n" ..
-        "It runs AFTER the marks settle, never before -- an alt name is\n" ..
-        "decided by whether the take is a select, and the marks are what say\n" ..
-        "so. Naming first would give every take the alts pattern on the way\n" ..
-        "past.\n\n" ..
-        "Like the two beside it, it waits for the drag to finish and only\n" ..
-        "looks at items that actually moved. It does NOT fire when you open a\n" ..
-        "project or merely select something.\n\n" ..
-        "This one CHANGES ITEMS: each run is its own undo step.")
+        "Edit one thing and the rest catches up by itself. The watcher sees\n" ..
+        "which single element you changed and syncs the others FROM it:\n\n" ..
+        "  trimmed the item     ->  the marker snaps to the new edges\n" ..
+        "  dragged the marker   ->  the item trims and renames onto it\n" ..
+        "  renamed the item     ->  the marker follows the new line\n" ..
+        "  moved between tracks ->  the sheet's Sel / Keep follow, then\n" ..
+        "                           the alt names\n\n" ..
+        "It waits for the drag to finish, acts once, and each sync is its\n" ..
+        "own undo step. Anything it cannot pin on ONE element -- a split, a\n" ..
+        "paste, two edits in one gesture -- goes to \"Out of sync\" instead\n" ..
+        "of being guessed at.\n\n" ..
+        "Off: nothing runs by itself, and \"Out of sync\" collects\n" ..
+        "everything for you to fix by hand.")
 
       -- Two buttons, not a button and a rule combo. The combo was the one
       -- control on the toolbar that did nothing when clicked -- it set state
@@ -12485,7 +12618,7 @@ local function loop()
 
       ActsEnd()
       Group("Pull:")
-      -- The row's MACRO slot, same as Update from Item leads Edit: one press for
+      -- The row's MACRO slot, same as Fix from Transcript leads Fix: one press for
       -- the whole job, with the steps still behind it.
       ActsOn()
       -- "Pull", not "Deliver". The old name promised the end of the job and
@@ -12586,11 +12719,15 @@ local function loop()
       local n_dis  = #rec.disagree
       local n_gone = #rec.unbacked_markers + #rec.orphan_marks
 
-      PanelButton("disagree", string.format("Marks vs tracks (%d)", n_dis),
-        "Takes whose Keep/Sel marks contradict the track their item sits\n" ..
-        "on. The panel lists each one and fixes them as a batch: adopt the\n" ..
-        "timeline (the tracks are right) or adopt the sheet (the marks are\n" ..
-        "right -- Pull moves the items to match).")
+      local n_oos = #(state.parity_queue or {}) + n_dis
+      PanelButton("outofsync", string.format("Out of sync (%d)", n_oos),
+        "Takes whose marker, item name, sheet row or edges no longer tell\n" ..
+        "one story, plus anything the watcher refused to guess about --\n" ..
+        "splits, pastes, two edits in one gesture -- and takes whose\n" ..
+        "Keep/Sel marks contradict the track their item sits on. Each row\n" ..
+        "says what disagrees and takes a \"Fix from ...\": the same\n" ..
+        "waterfalls the watcher runs, with you naming the authority.\n" ..
+        "(0) means the session agrees with itself.")
 
       Flow(string.format("Takes without audio (%d)", n_gone))
       PanelButton("noaudio", string.format("Takes without audio (%d)", n_gone),
@@ -12677,7 +12814,7 @@ local function loop()
     if ribbon_h > (state.ribbon_h or 0) then state.ribbon_h = ribbon_h end
     if ribbon_h < state.ribbon_h then im.Dummy(ctx, 1, state.ribbon_h - ribbon_h) end
 
-    if     state.panel == "disagree" then DrawDisagreePanel()
+    if     state.panel == "outofsync" then DrawOutOfSyncPanel()
     elseif state.panel == "noaudio"  then Repair.NoAudio()
     elseif state.panel == "unidentified" then Repair.Unidentified()
     elseif state.panel == "unheard" then Repair.Unheard()
@@ -12962,28 +13099,65 @@ local function loop()
     DrawSettingsWindow()
     DrawCandidatesWindow()
 
-    -- THE AUTOMATIC FOLLOWERS: the sheet catching up to a drag, and tracking
-    -- catching up to a trim.
+    -- THE PARITY WATCHER: one element edited by hand, everything else
+    -- catching up from it.
     --
-    -- Nothing here happens unless the PROJECT CHANGED. The first version tested
-    -- "are there disagreements?", which is true on every frame for as long as
-    -- one exists -- so it re-queued the adopt forever, and each adopt rebuilt
-    -- the match once per row. That is what made it crawl. A change counter is
-    -- the difference between "react to edits" and "run constantly".
-    if state.marks_follow_tracks or state.tracking_follows_edit
-       or state.alt_names_follow_tracks then
+    -- Nothing here happens unless the PROJECT CHANGED. The first version
+    -- tested "are there disagreements?", which is true on every frame for as
+    -- long as one exists -- so it re-queued the adopt forever, and each adopt
+    -- rebuilt the match once per row. That is what made it crawl. A change
+    -- counter is the difference between "react to edits" and "run constantly".
+    --
+    -- ALWAYS runs, even with "Keep the session in sync" off: the snapshot is
+    -- also what feeds "Out of sync", and a queue that only fills while the
+    -- automation is on would go blind exactly when the user asked to drive.
+    do
       local now = r.GetProjectStateChangeCount(0)
-      if now ~= state.item_snapshot_at then
+      -- TWO triggers, not one. The change counter catches edges, names and
+      -- track moves, which the snapshot reads live -- but the MARKER
+      -- signature is read from state.take_markers, which only the throttled
+      -- Reload refreshes. A marker-only drag bumps the change counter while
+      -- both signatures are still the stale collection, compares equal, and
+      -- would simply vanish -- neither synced nor queued. So a fresh Reload
+      -- (scanned_at moved) is itself a reason to look again: the collection
+      -- it just rebuilt is where that drag first becomes visible.
+      if now ~= state.item_snapshot_at
+         or state.parity_scan_seen ~= state.scanned_at then
         state.item_snapshot_at = now
-        local retracked, n_re, edited, n_ed = Trim.changes_since_last_look()
-        -- Both track-followers ride the SAME moved-item set, so a drag costs
-        -- one snapshot pass whether one is on or both are.
-        if (state.marks_follow_tracks or state.alt_names_follow_tracks)
-           and n_re > 0 then
-          state.pending_retracked = retracked
+        state.parity_scan_seen = state.scanned_at
+        local attributed, n_at, queued, n_q = Trim.changes_since_last_look()
+        if n_at > 0 then
+          state.pending_attributed = state.pending_attributed or {}
+          for item, who in pairs(attributed) do
+            -- Two DIFFERENT attributions for one item across ticks of the
+            -- same gesture is two elements moved, which is nobody's
+            -- authority: demote it to the queue rather than let the later
+            -- tick overwrite the earlier one -- and once DEMOTED, it stays
+            -- demoted for the rest of the batch, or the next tick would
+            -- quietly re-attribute an item the queue already owns and the
+            -- same edit would be both auto-synced and asked about.
+            if state.pending_queued and state.pending_queued[item] then
+              -- already the queue's; stays there
+            elseif state.pending_attributed[item] ~= nil
+               and state.pending_attributed[item] ~= who then
+              state.pending_attributed[item] = nil
+              state.pending_queued = state.pending_queued or {}
+              state.pending_queued[item] = true
+            else
+              state.pending_attributed[item] = who
+            end
+          end
         end
-        if state.tracking_follows_edit and n_ed > 0 then
-          state.pending_edited = edited
+        if n_q > 0 then
+          state.pending_queued = state.pending_queued or {}
+          for item in pairs(queued) do
+            state.pending_queued[item] = true
+            -- The queue outranks a pending attribution for the same item:
+            -- both existing means two kinds of change were seen.
+            if state.pending_attributed then
+              state.pending_attributed[item] = nil
+            end
+          end
         end
         state.edit_settle = 0
       else
@@ -12991,50 +13165,41 @@ local function loop()
         state.edit_settle = (state.edit_settle or 0) + 1
       end
 
-      -- Both wait for the drag to FINISH. An item being dragged changes track
-      -- and length on every frame of the gesture, so acting on the first change
-      -- would mark it for a track it is merely passing over, and snap a marker
-      -- to an edge still moving under the mouse.
+      -- Wait for the drag to FINISH. An item being dragged changes track and
+      -- length on every frame of the gesture, so acting on the first change
+      -- would mark it for a track it is merely passing over, and snap a
+      -- marker to an edge still moving under the mouse.
       if (state.edit_settle or 0) >= 15 and not pending_action then
-        if state.pending_retracked then
-          local moved = state.pending_retracked
-          state.pending_retracked = nil
-          pending_action = function()
-            local n = state.marks_follow_tracks
-                      and Trim.adopt_track_marks(moved) or 0
-            -- AFTER the marks, never before: an alt name is decided by whether
-            -- the take is a select, and the marks are what say so. Naming first
-            -- would name every take the alts pattern on the way past.
-            if state.alt_names_follow_tracks then ApplyAltNames() end
-            if n > 0 then
-              state.message, state.message_kind = string.format(
-                "%d take(s) followed their track -- Selects ticks Sel, Alts " ..
-                "ticks Keep, anywhere else clears both.", n), "ok"
+        -- Ctrl+Z after an automatic sync bumps the change counter and moves
+        -- the very elements the sync moved -- which would read as a fresh
+        -- user edit and redo what the undo undid, forever. The top of the
+        -- REDO stack names the transaction that was just undone; if it is
+        -- one of ours, this change is an undo, and the only correct response
+        -- is to adopt it as the new baseline and stay quiet.
+        local redo = r.Undo_CanRedo2 and r.Undo_CanRedo2(0)
+        if redo and tostring(redo):find("^VO Overview") then
+          state.pending_attributed, state.pending_queued = nil, nil
+        end
+
+        if state.pending_attributed and next(state.pending_attributed) then
+          local batch = state.pending_attributed
+          state.pending_attributed = nil
+          if state.session_sync then
+            pending_action = function() Trim.sync_dispatch(batch) end
+          else
+            -- Sync is off: the user drives, the queue collects.
+            state.parity_queue_manual = state.parity_queue_manual or {}
+            for item in pairs(batch) do
+              state.parity_queue_manual[item] = true
             end
           end
-        elseif state.pending_edited then
-          local moved = state.pending_edited
-          state.pending_edited = nil
-          pending_action = function()
-            Trim.update("item", { picked = moved })
-            -- AFTER the edges, never before: the marker is snapped to the item
-            -- first, so the range this asks the transcript about is the range
-            -- the item actually plays. Asking first would ask about the old
-            -- edges -- which, right after a split, are the ones that are wrong.
-            --
-            -- Scoped to the items that MOVED, so a trim never re-reads a whole
-            -- project. Its own undo step, like the update before it: folding
-            -- them together means running both bare inside one transaction,
-            -- and the two verbs disagree about when to Reload -- worth doing,
-            -- not worth risking on the path that runs unattended.
-            local fixed = Trim.fix_names_from_transcript({
-              picked = moved, no_reload = true, quiet = true })
-            if (fixed or 0) > 0 then
-              state.message, state.message_kind = string.format(
-                "%s Renamed %d marker(s) the transcript disagreed with.",
-                state.message or "", fixed), "ok"
-            end
+        end
+        if state.pending_queued and next(state.pending_queued) then
+          state.parity_queue_manual = state.parity_queue_manual or {}
+          for item in pairs(state.pending_queued) do
+            state.parity_queue_manual[item] = true
           end
+          state.pending_queued = nil
         end
       end
     end
@@ -13058,27 +13223,23 @@ local function loop()
       state.logged_message = nil
       action()
 
-      -- RE-BASELINE, and this is what stops the followers chasing their own
-      -- tail. Pull moves items between tracks; Update from Item moves edges.
-      -- Both are exactly what the two settings watch for -- so without this,
-      -- pressing Pull would immediately look like the user had dragged
-      -- everything, fire the adopt, and any action that reply triggered would
-      -- look like another edit again.
+      -- RE-BASELINE, and this is what stops the watcher chasing its own
+      -- tail. Pull moves items between tracks; a sync moves edges, markers
+      -- and names. All of it is exactly what the snapshot watches for -- so
+      -- without this, pressing Pull would immediately look like the user had
+      -- dragged everything, fire the sync, and any action that reply
+      -- triggered would look like another edit again.
       --
-      -- Re-snapshotting AFTER the action makes the tool's own work part of the
-      -- new baseline: only what happens outside this window counts as a change.
-      if state.marks_follow_tracks or state.tracking_follows_edit
-         or state.alt_names_follow_tracks then
-        Trim.changes_since_last_look()
-        state.item_snapshot_at = r.GetProjectStateChangeCount(0)
-        -- The pending flags are NOT cleared here. Each is consumed at its own
-        -- dispatch; when a retrack and an edit land in the same settle window,
-        -- the elseif above runs only the retrack, and clearing both here
-        -- silently dropped the edit-follow forever -- its change is folded
-        -- into the new baseline and can never be detected again. A survivor
-        -- waits out another settle and fires on its captured item list.
-        state.edit_settle = 0
-      end
+      -- Re-snapshotting AFTER the action makes the tool's own work part of
+      -- the new baseline: only what happens outside this window counts as a
+      -- change. The pending sets are NOT cleared here: a survivor from the
+      -- same settle window waits out another settle and fires on its
+      -- captured item list, rather than being folded into the baseline and
+      -- lost.
+      Trim.changes_since_last_look()
+      state.item_snapshot_at = r.GetProjectStateChangeCount(0)
+      state.parity_scan_seen = state.scanned_at
+      state.edit_settle = 0
     end
   end
 

@@ -1105,3 +1105,23 @@ one UNCUT recording holding several takes as markers in one item.
    a script name into Where. Expect the result narrowed, not widened.
 5. Open a project saved by 0.15beta17 or earlier that had a Text filter set.
    Expect both boxes empty, and no ghost filtering.
+
+## Parity watcher (0.15beta21)
+
+1. Trim a tracked clip's edge -> within a second the marker snaps to it,
+   one undo step, one log line. Ctrl+Z once undoes the sync, twice the
+   trim; after both undos nothing re-fires (the redo-stack guard).
+2. Drag a take marker inside a clip -> the item trims and renames onto it.
+   One undo step.
+3. Rename an item to another line's exact name -> the marker follows (same
+   id, Keep/Sel survive). Rename it to "asdf" -> nothing changes;
+   Out of sync gains a row saying the name resolves to no line.
+4. Drag a take from Review to Selects -> Sel ticks itself, alt names run
+   after the marks. Untick "Keep the session in sync", repeat with another
+   take -> nothing moves, Out of sync gains the row instead.
+5. Split a clip -> both halves change several elements at once, so both
+   queue; neither is renamed automatically.
+6. Press "Fix from Marker" on a queued row -> that item alone trims and
+   names onto its marker, and the row leaves the queue on the next diff.
+7. One press, one undo: every automatic sync and every "Fix from ..." is a
+   single undo step.

@@ -1,6 +1,8 @@
 # ajsfx VO — Update from Item / Update from Marker
 
-**Status:** Implemented, unverified in REAPER · **Date:** 2026-08-11
+**Status:** Superseded by `VO/SPEC-parity-watcher.md` (0.15beta21) — the two
+macros became two of the parity watcher's four waterfalls, and their buttons
+retired. · **Date:** 2026-08-11
 
 Routing is unit-tested (`vo.PlanUpdatePass`, 7 tests in `tests/test_vo_tidy.lua`);
 every REAPER write is checked by hand — see `VO/MANUAL_TEST.md`, last section.

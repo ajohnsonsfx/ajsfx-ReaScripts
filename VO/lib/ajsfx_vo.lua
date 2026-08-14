@@ -1990,6 +1990,123 @@ function vo.PlanUpdatePass(items, dir)
   return out
 end
 
+-- Parity: does one take's marker, item and sheet row still tell one story?
+--
+-- Pure -- the caller assembles the elements, this only compares. A recording
+-- (several markers) is never compared: it has no one name and no one range,
+-- and Cut is what turns it into takes. An unmarked item is Match's business,
+-- not parity's. Duplicate clusters reach the queue from the update pass's
+-- refusals, not from here.
+-- See docs/superpowers/specs/2026-08-14-vo-parity-watcher-design.md §3.
+--
+-- takes: { { key, marker = {asset,start,stop}|nil, marker_count,
+--            item = {name,from,to}|nil, sheet = {asset}|nil }, ... }
+-- opts:  { eps = edge tolerance in seconds (default 0.005),
+--          alt_pattern = the alt naming pattern, so a conventional alt name
+--                        over its own line's marker is agreement, not drift }
+-- Returns: { { key, fields = {"name"|"edges",...}, detail }, ... }
+function vo.ParityDiff(takes, opts)
+  opts = opts or {}
+  local eps = opts.eps or 0.005
+  local out = {}
+  for _, tk in ipairs(takes or {}) do
+    if tk.marker and (tk.marker_count or 0) == 1 then
+      local fields, detail = {}, nil
+      local iname = tk.item and tk.item.name
+      if iname and iname ~= "" and iname ~= tk.marker.asset
+         and not vo.IsConventionalAltName(iname, tk.marker.asset,
+                                          opts.alt_pattern) then
+        fields[#fields + 1] = "name"
+        detail = string.format("marker says %s, item says %s",
+                               tostring(tk.marker.asset), iname)
+      end
+      if tk.sheet and tk.sheet.asset and tk.sheet.asset ~= tk.marker.asset then
+        if fields[#fields] ~= "name" then fields[#fields + 1] = "name" end
+        detail = detail or string.format("marker says %s, sheet says %s",
+                 tostring(tk.marker.asset), tostring(tk.sheet.asset))
+      end
+      if tk.item and tk.item.from
+         and (math.abs(tk.marker.start - tk.item.from) > eps
+              or math.abs(tk.marker.stop - (tk.item.to or 0)) > eps) then
+        fields[#fields + 1] = "edges"
+        detail = detail or string.format(
+          "marker %.3f-%.3f, item %.3f-%.3f",
+          tk.marker.start, tk.marker.stop, tk.item.from, tk.item.to or 0)
+      end
+      if #fields > 0 then
+        out[#out + 1] = { key = tk.key, fields = fields, detail = detail }
+      end
+    end
+  end
+  return out
+end
+
+-- Shape one project's collected take markers plus sheet rows into ParityDiff
+-- input. `collected` is vo.CollectTakeMarkers' by-path map; `rows` are sheet
+-- rows (item, asset, take_name). An item the sheet does not know contributes
+-- no sheet element and no item name -- ParityDiff treats nil as nothing to
+-- compare, not as a divergence.
+function vo.ParityAssemble(collected, rows, opts)
+  local sheet_by_item = {}
+  for _, row in ipairs(rows or {}) do
+    if row.item and not sheet_by_item[row.item] then
+      sheet_by_item[row.item] = { asset = row.asset, name = row.take_name }
+    end
+  end
+  local out = {}
+  for _, group in pairs(collected or {}) do
+    for _, entry in ipairs(group) do
+      local item = entry.info and entry.info.item
+      if item then
+        local tool = {}
+        for _, m in ipairs(entry.markers or {}) do
+          local asset, id = vo.ParseMarkerName(m.name or "")
+          if id and not vo.IsNoteMarker(m.name or "") then
+            tool[#tool + 1] = { asset = asset, start = m.pos or 0,
+                                stop = (m.pos or 0) + (m.length or 0) }
+          end
+        end
+        local row = sheet_by_item[item]
+        out[#out + 1] = {
+          key = item,
+          marker = tool[1],
+          marker_count = #tool,
+          item = entry.coverage and {
+            name = row and row.name or nil,
+            from = entry.coverage.from,
+            to   = entry.coverage.to,
+          } or nil,
+          sheet = (row and row.asset) and { asset = row.asset } or nil,
+        }
+      end
+    end
+  end
+  return out
+end
+
+-- Which single element did the user edit? The watcher hands in what changed
+-- since the baseline; exactly one changed element IS the authority, anything
+-- else is nil -- the tool acts on knowledge or it asks (spec §4.2).
+--
+-- "edge" means LENGTH or the source window changed, not position alone: a
+-- track move keeps an item's length, and treating position as an edge would
+-- turn every vertical drag into two changed elements and queue every one.
+-- The caller (the snapshot pass) owns that distinction; here four booleans
+-- go in and one name comes out.
+function vo.ParityAttribute(changed)
+  if not changed then return nil end
+  local map = { edge = "item", name = "name", marker = "marker",
+                track = "sheet" }
+  local hit = nil
+  for k, authority in pairs(map) do
+    if changed[k] then
+      if hit then return nil end
+      hit = authority
+    end
+  end
+  return hit
+end
+
 -- Which of `ranges` is the same take as `span`, by overlap.
 --
 -- "Is this take already marked?" cannot be asked by comparing start times. A
