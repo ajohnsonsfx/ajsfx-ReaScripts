@@ -208,6 +208,16 @@ halves rather than renaming either*, and *Ctrl+Z after an automatic sync does
 not immediately re-trigger it* (undo bumps the change count; the re-baseline
 must swallow it).
 
+## 7.1 No backwards compatibility
+
+There is exactly one session in the world using this tool (the author's).
+The first `Diff` over that project will surface every divergence past
+repairs missed — and that is the desired outcome: **fix the project through
+the queue, once**, rather than teach the engine to tolerate or special-case
+historical drift. No migration shims, no legacy leniency in the comparators,
+no "grandfathered" states. If the engine and the project disagree, the
+project gets fixed.
+
 ## 8. Not changing
 
 - The waterfall steps: `Trim.extras`, `Trim.apply`, `Trim.snap_apply`,
