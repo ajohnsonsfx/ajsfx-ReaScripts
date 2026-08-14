@@ -7479,12 +7479,26 @@ local function MatchTakes(opts)
   end
 
   local conflicts = vo.SelectConflicts(state.overview)
+
+  -- A clump is not this verb's to fix -- it counts them and points at the
+  -- button. Re-cutting from the catch-all would throw markers away on a press
+  -- the user made for a different reason, and a clump they split deliberately
+  -- is not a bug the sheet gets to overrule.
+  local split_clumps = 0
+  for _, clump in ipairs(vo.ClusterClumps(Trim.recut_items())) do
+    if #clump > 1 then split_clumps = split_clumps + 1 end
+  end
+  local clump_note = (split_clumps > 0) and string.format(
+    "%d clump(s) of split clips found -- press \"Re-cut selected takes\"",
+    split_clumps) or nil
+
   local bits = { string.format("%d line%s refreshed", refreshed,
                                refreshed == 1 and "" or "s") }
   if adopted > 0 then bits[#bits + 1] = adopted .. " mark(s) adopted from the timeline" end
   if #conflicts > 0 then
     bits[#bits + 1] = #conflicts .. " line(s) with two selects -- pick one"
   end
+  if clump_note then bits[#bits + 1] = clump_note end
   state.dirty = true
 
   if not opts.mark then
@@ -7534,6 +7548,7 @@ local function MatchTakes(opts)
       "%d clip(s) hold only PART of the take that marks them -- noted on the " ..
       "clip.", got.partial)
   end
+  if clump_note then parts[#parts + 1] = clump_note .. "." end
   if #conflicts > 0 then
     parts[#parts + 1] = string.format(
       "%d line(s) carry two selects -- pick one.", #conflicts)
