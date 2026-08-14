@@ -244,5 +244,17 @@ test("an empty clump refuses without indexing nil", function()
   assert(p.refuse, "an empty clump must refuse")
 end)
 
+print("\nConfig:")
+
+test("recut_ignore_rate is in the schema and defaults to false", function()
+  local found
+  for _, f in ipairs(vo.CONFIG_SCHEMA) do
+    if f.key == "recut_ignore_rate" then found = f end
+  end
+  assert(found, "recut_ignore_rate is not in vo.CONFIG_SCHEMA")
+  assert(found.kind == "bool", "kind: " .. tostring(found.kind))
+  assert(found.default == false, "default: " .. tostring(found.default))
+end)
+
 print(string.format("\n%d passed, %d failed\n", passed, failed))
 os.exit(failed > 0 and 1 or 0)

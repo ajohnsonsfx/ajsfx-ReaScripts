@@ -7925,6 +7925,13 @@ vo.CONFIG_SCHEMA = {
   { key = "trim_head_slack",    kind = "number", default = vo.DEFAULTS.trim_head_slack },
   { key = "trim_tail_slack",    kind = "number", default = vo.DEFAULTS.trim_tail_slack },
 
+  -- Re-cut refuses a clump whose items disagree about playrate or pitch,
+  -- because healing them collapses two different readings of the audio into
+  -- one and the result is a lie about what was recorded. This lets the user
+  -- say "do it anyway" -- the survivor takes the longest item's rate, and a
+  -- REVIEW note records what was dropped, so the override is never silent.
+  { key = "recut_ignore_rate",  kind = "bool",   default = false },
+
   { key = "track_selects",      kind = "string", default = "Selects" },
   { key = "track_alts",         kind = "string", default = "Alts" },
   { key = "track_review",       kind = "string", default = "Review" },
