@@ -113,6 +113,35 @@ test("an unrelated or missing track sets no mark", function()
 end)
 
 --------------------------------
+print("TrackForMarks:")
+
+test("Sel goes to Selects and Keep alone goes to Alts", function()
+  assert(vo.TrackForMarks({ select = true, keep = true }) == "selects")
+  assert(vo.TrackForMarks({ select = true, keep = false }) == "selects",
+         "Sel must win over Keep, as in PlanPull")
+  assert(vo.TrackForMarks({ select = false, keep = true }) == "alts")
+end)
+
+test("no marks is no destination -- the caller hands it back to the parent", function()
+  assert(vo.TrackForMarks({ select = false, keep = false }) == nil)
+  assert(vo.TrackForMarks({}) == nil)
+  assert(vo.TrackForMarks(nil) == nil)
+end)
+
+test("it round-trips with MarkFromTrack", function()
+  -- The two directions have to agree, or an auto-sorted item would read back
+  -- off its new track as a different mark on the very next rebuild.
+  local names = { selects = "Selects", alts = "Alts" }
+  for _, marks in ipairs({ { select = true, keep = true },
+                           { select = false, keep = true } }) do
+    local cat = assert(vo.TrackForMarks(marks))
+    local back = vo.MarkFromTrack(names[cat], {})
+    assert(back == (marks.select and "select" or "keep"),
+           "round trip broke at " .. cat .. ": " .. tostring(back))
+  end
+end)
+
+--------------------------------
 print("EffectiveMarks:")
 
 test("a blank mark defers to the item's track", function()

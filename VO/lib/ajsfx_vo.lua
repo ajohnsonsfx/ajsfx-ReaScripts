@@ -1814,6 +1814,27 @@ function vo.MarkFromTrack(track_name, cfg)
   return nil
 end
 
+-- THE OTHER DIRECTION: which destination a take's marks say it belongs on.
+-- The exact inverse of vo.MarkFromTrack, and its neighbour on purpose -- a tick
+-- that moves an item and an item whose track speaks for its tick have to agree,
+-- or the sheet would fight itself on the next rebuild.
+--
+-- Sel wins over Keep, the same precedence vo.PlanPull uses: a take that is both
+-- is THE delivery, and a take that is only Keep ships beside it as an alt.
+--
+-- Returns nil for "no decision", and nil is deliberately NOT Review here. Pull
+-- parks undecided takes on Review because a first pass has to put everything
+-- somewhere before anyone has listened. Auto-sort answers a click that just
+-- REMOVED a decision, and the honest place for a take nobody is keeping is the
+-- recording it was cut out of -- the caller reads nil as "hand it back to its
+-- parent".
+function vo.TrackForMarks(marks)
+  marks = marks or {}
+  if marks.select then return "selects" end
+  if marks.keep   then return "alts"    end
+  return nil
+end
+
 -- What a take's Sel and Keep actually are, given what the user stored and where
 -- the item sits. ONE function, so the rule cannot drift between the sheet, Pull
 -- and the repair pass.
@@ -2833,6 +2854,55 @@ function vo.PlanMarkerAdd(existing, add)
   return list, true
 end
 
+-- Hand ONE marker to a different line, leaving every sibling alone.
+--
+-- This is how a take moves between lines: the marker names the LINE, so
+-- rewriting its asset IS the move. The id and the span are deliberately kept --
+-- the id because the stored marks are keyed `tkm|<id>` and a fresh one would
+-- strand every note and tick on the take being moved, the span because where
+-- the performance sits in the source is a fact about the recording and has
+-- nothing to do with which line it was filed under.
+--
+-- Same `existing` shape and same user-marker handling as vo.PlanMarkerAdd.
+-- Returns the list to write, plus whether anything changed -- false when no
+-- marker carries that id, or when it already names that asset.
+function vo.PlanMarkerRetarget(existing, marker_id, new_asset)
+  local list, changed = {}, false
+  for _, m in ipairs(existing or {}) do
+    local asset, id = vo.ParseMarkerName(m.name)
+    if id then
+      if id == marker_id and asset ~= new_asset then
+        asset = new_asset
+        changed = true
+      end
+      list[#list + 1] = { start = m.pos, stop = m.pos + (m.length or 0),
+                          asset = asset, id = id }
+    end
+  end
+  return list, changed
+end
+
+-- Take one marker out, leaving every sibling alone.
+--
+-- Un-assigning a take: with no marker naming it, the audio goes back to being
+-- an unmatched span, which is what the orphan list is built from. The audio
+-- itself is never touched.
+function vo.PlanMarkerRemove(existing, marker_id)
+  local list, changed = {}, false
+  for _, m in ipairs(existing or {}) do
+    local asset, id = vo.ParseMarkerName(m.name)
+    if id then
+      if id == marker_id then
+        changed = true
+      else
+        list[#list + 1] = { start = m.pos, stop = m.pos + (m.length or 0),
+                            asset = asset, id = id }
+      end
+    end
+  end
+  return list, changed
+end
+
 -- Markers that are arguing over the SAME stretch of audio, grouped.
 --
 -- The unit of work is the range, never the item. An uncut recording
@@ -3168,6 +3238,11 @@ vo.DEFAULTS = {
 
   -- Which take "Select takes" marks when a line was read more than once.
   auto_select_take = "last",  -- "last" | "first"
+
+  -- Tick a mark and the item MOVES to the track that mark means, without
+  -- waiting for a Pull. Off by default: everything else a tick does is
+  -- reversible bookkeeping, and this one rearranges audio.
+  auto_sort_marks = false,
 
   -- Sequence. A session is read roughly in script order, and that is the only
   -- evidence there is for placing a line too short to identify itself.
@@ -5625,6 +5700,205 @@ function vo.SourceCoverageRanges(items)
   return out
 end
 
+-- Group items into CLUMPS: runs that abut in project time AND source time, and
+-- so are one continuous stretch of the recording that got split.
+--
+-- Requiring BOTH is the whole safety of the re-cut. Two items that merely touch
+-- on the timeline but come from different parts of the file are a deliberate
+-- assembly -- healing them would splice unrelated audio into one clip and call
+-- it a take. Two items from adjacent source that sit apart on the timeline were
+-- moved there on purpose. Only a run that matches on both axes was one clip.
+--
+-- Mixed playrates still cluster: the source test uses each item's own rate, so
+-- the arithmetic is right either way. Whether a mixed-rate clump may be HEALED
+-- is vo.PlanReCut's decision, not this one -- clustering answers "was this one
+-- clip?", not "may I touch it?".
+--
+-- A lone item is a clump of one. That is not a special case to filter out: an
+-- item with one misplaced marker is the degenerate form of the same problem,
+-- and re-cutting it is meaningful.
+function vo.ClusterClumps(items, tol)
+  tol = tol or 1e-3
+  local sorted = {}
+  for _, info in ipairs(items or {}) do sorted[#sorted + 1] = info end
+  table.sort(sorted, function(a, b) return (a.pos or 0) < (b.pos or 0) end)
+
+  local clumps, current = {}, nil
+  for _, info in ipairs(sorted) do
+    local joins = false
+    if current then
+      local prev = current[#current]
+      local same = prev.track == info.track and prev.path == info.path
+      if same then
+        local p_end = (prev.pos or 0) + (prev.length or 0)
+        local s_end = (prev.start_offs or 0)
+                    + (prev.length or 0) * safe_playrate(prev)
+        joins = math.abs(p_end - (info.pos or 0)) <= tol
+            and math.abs(s_end - (info.start_offs or 0)) <= tol
+      end
+    end
+    if joins then
+      current[#current + 1] = info
+    else
+      current = { info }
+      clumps[#clumps + 1] = current
+    end
+  end
+  return clumps
+end
+
+-- The clumps that are actually a SPLIT LINE: two or more items carrying the
+-- same line assignment.
+--
+-- Contiguity alone cannot answer this. A correct cut splits at markers that
+-- abut exactly, so its output is a run of items touching in project AND source
+-- time -- indistinguishable, by geometry, from the damage this verb repairs. A
+-- report keyed on geometry would therefore flag every healthy session forever,
+-- and a warning that is always on is not a warning.
+--
+-- What separates them is the ASSIGNMENT. Two contiguous items that are two
+-- different lines are a normal cut; two contiguous items claiming ONE line are
+-- that line broken in half, which is the whole complaint. The name is the
+-- assignment (vo-name-is-the-assignment), so a repeated name is the signal.
+--
+-- Blank names never match each other: an unnamed item is undecided, not
+-- claimed, and two undecided items are not evidence of anything.
+function vo.ClumpsSharingALine(clumps)
+  local out = {}
+  for _, clump in ipairs(clumps or {}) do
+    if #clump > 1 then
+      local seen, shared = {}, false
+      for _, info in ipairs(clump) do
+        local nm = info.name
+        if nm and nm ~= "" then
+          if seen[nm] then shared = true end
+          seen[nm] = true
+        end
+      end
+      if shared then out[#out + 1] = clump end
+    end
+  end
+  return out
+end
+
+-- Decide whether a clump may be re-cut, and over what SOURCE window.
+--
+-- The window starts as the clump's own source coverage -- the same question
+-- vo.ResolveSourceSpanForCut asks when it resolves a span to its item, so
+-- scope and resolution cannot disagree (vo-rows-are-not-spans). It then grows
+-- to swallow any matched span it only PARTLY holds, because a line straddling
+-- the clump's edge cannot be re-derived from half of itself, and stopping
+-- short only re-earns the PARTIAL complaint on the next pass.
+--
+-- Growth is bounded by the nearest item that is not in the clump, on the same
+-- track and source. Re-cut may reclaim audio no item covers; it may never eat
+-- a neighbour.
+--
+-- It decides and returns. Nothing here touches REAPER, and a plan carrying
+-- `refuse` has no window at all -- an applier that ignores the refusal has
+-- nothing to apply.
+function vo.PlanReCut(clump, spans, neighbours, opts)
+  opts = opts or {}
+  local tol = opts.tol or 1e-3
+  local min_overlap = opts.min_overlap or 1e-3
+  local plan = { items = clump, rate = 1.0, pitch = 0, dropped_rate = {},
+                 grew = false }
+
+  if not clump or #clump == 0 then
+    plan.refuse = "empty clump"
+    return plan
+  end
+
+  for _, info in ipairs(clump) do
+    if info.locked then
+      plan.refuse = "an item in the clump is locked"
+      return plan
+    end
+  end
+
+  -- The survivor's rate and pitch: the longest item's, so the majority of the
+  -- audio keeps sounding as it did.
+  local longest = clump[1]
+  for _, info in ipairs(clump) do
+    if (info.length or 0) > (longest.length or 0) then longest = info end
+  end
+  plan.rate  = safe_playrate(longest)
+  plan.pitch = longest.pitch or 0
+
+  local mixed_rate, mixed_pitch = false, false
+  for _, info in ipairs(clump) do
+    if math.abs(safe_playrate(info) - plan.rate) > 1e-6 then mixed_rate = true end
+    if math.abs((info.pitch or 0) - plan.pitch) > 1e-6 then mixed_pitch = true end
+  end
+
+  if mixed_rate or mixed_pitch then
+    if not opts.ignore_rate then
+      plan.refuse = mixed_rate
+        and "items in the clump have different playrates"
+        or  "items in the clump have different pitch"
+      return plan
+    end
+    for _, info in ipairs(clump) do
+      local rate, pitch = safe_playrate(info), info.pitch or 0
+      if math.abs(rate - plan.rate) > 1e-6
+      or math.abs(pitch - plan.pitch) > 1e-6 then
+        plan.dropped_rate[#plan.dropped_rate + 1] =
+          { playrate = rate, pitch = pitch }
+      end
+    end
+  end
+
+  -- Coverage: the union of the clump's source ranges. The clump abuts by
+  -- construction, so first-from to last-to is the union.
+  local ranges = vo.SourceCoverageRanges(clump)
+  local from, to = ranges[1].from, ranges[1].to
+  for _, rg in ipairs(ranges) do
+    if rg.from < from then from = rg.from end
+    if rg.to   > to   then to   = rg.to   end
+  end
+  local cov_from, cov_to = from, to
+
+  local path = clump[1].path
+  local touched = 0
+  for _, s in ipairs(spans or {}) do
+    if s.source_path == path then
+      local overlap = math.min(s.stop or 0, cov_to) - math.max(s.start or 0, cov_from)
+      if overlap > min_overlap then
+        touched = touched + 1
+        if (s.start or 0) < from then from = s.start end
+        if (s.stop  or 0) > to   then to   = s.stop  end
+      end
+    end
+  end
+
+  if touched == 0 then
+    plan.refuse = "no match span covers this clump"
+    return plan
+  end
+
+  -- Clamp to the nearest neighbour on the same track and source. A neighbour
+  -- ENTIRELY inside the grown window would otherwise be silently overrun, so
+  -- the bound is taken from any neighbour lying on the correct side of the
+  -- coverage, not merely of the window.
+  for _, nb in ipairs(neighbours or {}) do
+    if nb.track == clump[1].track and nb.path == path then
+      local nb_from = nb.start_offs or 0
+      local nb_to   = nb_from + (nb.length or 0) * safe_playrate(nb)
+      if nb_to <= cov_from + tol and nb_to > from then from = nb_to end
+      if nb_from >= cov_to - tol and nb_from < to then to = nb_from end
+    end
+  end
+
+  if to - from <= tol then
+    plan.refuse = "the reclaim window collapsed to nothing"
+    return plan
+  end
+
+  plan.window = { from = from, to = to }
+  plan.grew = (from < cov_from - tol) or (to > cov_to + tol)
+  return plan
+end
+
 -- djb2 over the words whose midpoint falls inside [from, to]. The hash keys
 -- the vetted fingerprint to the transcript content under one item, so a
 -- gap-repair merge elsewhere in the file cannot invalidate this item.
@@ -7658,6 +7932,7 @@ vo.CONFIG_SCHEMA = {
   { key = "margin_threshold",   kind = "number", default = vo.DEFAULTS.margin_threshold },
   { key = "anchor_count",       kind = "number", default = vo.DEFAULTS.anchor_count },
   { key = "auto_select_take",    kind = "string", default = vo.DEFAULTS.auto_select_take },
+  { key = "auto_sort_marks",     kind = "bool",   default = vo.DEFAULTS.auto_sort_marks },
   { key = "order_weight",        kind = "number", default = vo.DEFAULTS.order_weight },
   { key = "backbone_min_tokens", kind = "number", default = vo.DEFAULTS.backbone_min_tokens },
   { key = "pre_pad",            kind = "number", default = vo.DEFAULTS.pre_pad },
@@ -7683,6 +7958,13 @@ vo.CONFIG_SCHEMA = {
   { key = "unheard_join",       kind = "number", default = vo.DEFAULTS.unheard_join },
   { key = "trim_head_slack",    kind = "number", default = vo.DEFAULTS.trim_head_slack },
   { key = "trim_tail_slack",    kind = "number", default = vo.DEFAULTS.trim_tail_slack },
+
+  -- Re-cut refuses a clump whose items disagree about playrate or pitch,
+  -- because healing them collapses two different readings of the audio into
+  -- one and the result is a lie about what was recorded. This lets the user
+  -- say "do it anyway" -- the survivor takes the longest item's rate, and a
+  -- REVIEW note records what was dropped, so the override is never silent.
+  { key = "recut_ignore_rate",  kind = "bool",   default = false },
 
   { key = "track_selects",      kind = "string", default = "Selects" },
   { key = "track_alts",         kind = "string", default = "Alts" },
@@ -8713,6 +8995,34 @@ function vo.AddMarkerToItem(item, add)
   if not ok then return false, false, "cannot read item chunk" end
   local list, added = vo.PlanMarkerAdd(vo.ParseTKMChunk(chunk), add)
   if not added then return true, false end
+  local wrote, why = vo.WriteTakeMarkers(item, list)
+  return wrote and true or false, wrote and true or false, why
+end
+
+-- Move ONE marker to another line, in place, keeping every other marker.
+--
+-- The write half of vo.PlanMarkerRetarget; the rule worth testing lives in the
+-- planner, and this does only chunk in, chunk out. Returns ok, changed, why --
+-- `changed` false with ok true means the marker already named that line, which
+-- is a no-op to report, not an error.
+-- UNVERIFIED outside REAPER — see SPEC.md §10.
+function vo.RetargetMarkerOnItem(item, marker_id, new_asset)
+  local ok, chunk = r.GetItemStateChunk(item, "", false)
+  if not ok then return false, false, "cannot read item chunk" end
+  local list, changed = vo.PlanMarkerRetarget(vo.ParseTKMChunk(chunk),
+                                              marker_id, new_asset)
+  if not changed then return true, false end
+  local wrote, why = vo.WriteTakeMarkers(item, list)
+  return wrote and true or false, wrote and true or false, why
+end
+
+-- Take ONE marker off an item, keeping every other marker.
+-- UNVERIFIED outside REAPER — see SPEC.md §10.
+function vo.RemoveMarkerFromItem(item, marker_id)
+  local ok, chunk = r.GetItemStateChunk(item, "", false)
+  if not ok then return false, false, "cannot read item chunk" end
+  local list, changed = vo.PlanMarkerRemove(vo.ParseTKMChunk(chunk), marker_id)
+  if not changed then return true, false end
   local wrote, why = vo.WriteTakeMarkers(item, list)
   return wrote and true or false, wrote and true or false, why
 end

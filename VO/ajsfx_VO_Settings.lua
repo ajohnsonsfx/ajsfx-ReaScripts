@@ -809,6 +809,18 @@ local function DrawAdvanced()
   changed, cfg.timeout_s = im.InputInt(ctx, "Transcription timeout (s)", cfg.timeout_s)
   changed, cfg.force_retranscribe = im.Checkbox(ctx, "Always re-transcribe (ignore cache)", cfg.force_retranscribe)
   im.TextDisabled(ctx, "Transcripts are cached by source file, size and model, so\nre-running after a threshold change is instant.")
+
+  im.Spacing(ctx)
+  changed, cfg.recut_ignore_rate =
+    im.Checkbox(ctx, "Ignore item pitch/playrate when re-cutting", cfg.recut_ignore_rate)
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "\"Re-cut selected takes\" normally refuses a clump whose clips\n" ..
+                       "have different playrates or pitch: healing them into one clip\n" ..
+                       "would change how the audio sounds.\n\n" ..
+                       "On: it proceeds anyway. The surviving clip takes the LONGEST\n" ..
+                       "item's rate and pitch, and a REVIEW note marker records what\n" ..
+                       "was dropped -- the override is never silent.")
+  end
 end
 
 local function loop()

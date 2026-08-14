@@ -1043,3 +1043,65 @@ transcript. All six steps in order; each assumes the one before.
 6. **One undo.** After a run that moved items, one Ctrl+Z puts every moved
    item back at once (stamps and sidecar merges are not undone — files and
    P_EXT written outside the move transaction survive, by design).
+
+## Dragging a take onto another line (0.15beta18)
+
+The two `vo.*MarkerOnItem` / `vo.*MarkerFromItem` wrappers go through
+`GetItemStateChunk` / `SetItemStateChunk`, which `tests/mock_reaper.lua` does
+not implement — the same limit `vo.WriteTakeMarkers` and `vo.AddMarkerToItem`
+already carry. The rules they enforce are unit-tested in the planners
+(`vo.PlanMarkerRetarget`, `vo.PlanMarkerRemove`, `tests/test_vo_markers.lua`);
+the write, and the gesture, are verified here.
+
+Needs a session with at least two script lines that have takes, and at least
+one UNCUT recording holding several takes as markers in one item.
+
+1. **A take moves.** Unfold two lines. Drag a take row from line A onto line
+   B's band. Expect: the row leaves A and appears under B; the item is renamed
+   to B's name with the next free alt suffix (not the plain delivered name);
+   the item is now on the Review track, which is created at the end of the
+   track list if it was not there. One Ctrl+Z puts all of it back.
+2. **Sel and Keep are cleared, notes are not.** Before dragging, tick Sel on
+   the take and type a note. After the drop: Sel and Keep are clear, the note
+   is still there. (The marker keeps its id, which is what carries the note.)
+3. **Folded cards take drops.** Fold line B. Drag a take onto its band.
+   Expect the same result — the band is the target whether open or shut.
+4. **One item, one name.** Drag a take that lives in the uncut multi-take
+   item. Expect: the take moves to the new line (its marker is retargeted and
+   the row appears under the new card), the item is NOT renamed and does NOT
+   move to Review, and the message says so — `... shares an item with N other
+   takes, so the item was not renamed or moved -- Cut will split it out.`
+   Check the neighbouring takes in that item are still under their own lines.
+5. **An orphan is identified.** Drag a row out of "Not on the script" onto a
+   line's card. Expect a marker minted over THAT ROW's span — not the whole
+   recording — so only that stretch becomes a take of the line, and the other
+   takes in the same recording are untouched.
+6. **Off the script.** Drag a take onto the "Not on the script" heading.
+   Expect: its marker is gone, its item name is cleared (REAPER shows the
+   source filename), and the span reappears in the orphan queue. Its stored
+   marks are gone with it.
+7. **Several at once.** Select three takes (click, then shift-click), drag one
+   of them onto a line. All three move, and they get three DIFFERENT alt
+   numbers. Then drag an UNSELECTED take: only that one moves.
+8. **Refusals.** Lock a take, drag it: it does not move and the message counts
+   it. Drag a take onto the line it is already on: nothing happens.
+9. **Click still works.** After all of the above, a plain click on a take row
+   still auditions it (moves the cursor, selects the item) and right-click
+   still opens the take menu. The drag source must not have eaten either.
+
+## Two filter boxes: Script and Transcript (0.15beta18)
+
+1. Press Filters. Expect two boxes where one said "Text": **Script** and
+   **Transcript**.
+2. Type a word that appears in a script line but not in its take's transcript
+   into Script. Expect the line shown. Clear it, type the same word into
+   Transcript. Expect it hidden.
+3. **The two boxes OR.** Type the same word into both — say `please`, where one
+   line's SCRIPT says it and a misfiled take's TRANSCRIPT says it under some
+   other line. Expect BOTH cards on screen at once: the line that wants the
+   word, and the card holding the take that says it. That pairing is the whole
+   point — it is what makes the take draggable onto the line.
+4. Filters still AND across different fields: with `please` in Transcript, type
+   a script name into Where. Expect the result narrowed, not widened.
+5. Open a project saved by 0.15beta17 or earlier that had a Text filter set.
+   Expect both boxes empty, and no ghost filtering.

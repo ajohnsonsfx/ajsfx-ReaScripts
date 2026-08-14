@@ -966,5 +966,84 @@ test("a brush of under half the new range is not the same take", function()
 end)
 
 --------------------------------
+print("\nPlanMarkerRetarget -- moving one take to another line:")
+
+test("the named marker changes line and keeps its id and span", function()
+  local list, changed = vo.PlanMarkerRetarget(
+    { tkm(0, "L1 ~aaa", 2), tkm(5, "L1 ~bbb", 3) }, "bbb", "L2")
+  assert(changed == true, "reported as unchanged")
+  local by_id = {}
+  for _, m in ipairs(list) do by_id[m.id] = m end
+  assert(by_id.bbb.asset == "L2", "asset: " .. tostring(by_id.bbb.asset))
+  assert(by_id.bbb.start == 5 and by_id.bbb.stop == 8,
+         "the span moved with the line")
+end)
+
+test("every sibling is left exactly as it was", function()
+  -- The whole session lives in one uncut item; moving one take must not so
+  -- much as touch the other nine.
+  local existing = {}
+  for i = 1, 10 do
+    existing[i] = tkm((i - 1) * 10, string.format("L%d ~id%d", i, i), 4)
+  end
+  local list = vo.PlanMarkerRetarget(existing, "id7", "MOVED")
+  assert(#list == 10, "count: " .. #list)
+  for _, m in ipairs(list) do
+    if m.id ~= "id7" then
+      local n = tonumber(m.id:match("%d+"))
+      assert(m.asset == "L" .. n, "sibling " .. m.id .. " became " .. m.asset)
+      assert(m.start == (n - 1) * 10 and m.stop == (n - 1) * 10 + 4,
+             "sibling " .. m.id .. " moved")
+    end
+  end
+end)
+
+test("an id no marker carries changes nothing", function()
+  local list, changed = vo.PlanMarkerRetarget({ tkm(0, "L1 ~aaa", 2) },
+                                              "nope", "L2")
+  assert(changed == false, "claimed a change")
+  assert(#list == 1 and list[1].asset == "L1", "disturbed the item anyway")
+end)
+
+test("a marker already naming that line is not a change", function()
+  local list, changed = vo.PlanMarkerRetarget({ tkm(0, "L1 ~aaa", 2) },
+                                              "aaa", "L1")
+  assert(changed == false, "a no-op reported as a move")
+  assert(#list == 1 and list[1].id == "aaa")
+end)
+
+test("user markers are not returned -- WriteTakeMarkers preserves them", function()
+  local list = vo.PlanMarkerRetarget(
+    { tkm(0, "plain note", 0), tkm(1, "L1 ~aaa", 2) }, "aaa", "L2")
+  assert(#list == 1 and list[1].id == "aaa", "count: " .. #list)
+end)
+
+--------------------------------
+print("\nPlanMarkerRemove -- un-assigning a take:")
+
+test("the named marker goes and the others stay", function()
+  local list, changed = vo.PlanMarkerRemove(
+    { tkm(0, "L1 ~aaa", 2), tkm(5, "L2 ~bbb", 3), tkm(9, "L3 ~ccc", 1) }, "bbb")
+  assert(changed == true, "reported as unchanged")
+  assert(#list == 2, "count: " .. #list)
+  for _, m in ipairs(list) do assert(m.id ~= "bbb", "bbb survived") end
+  local by_id = {}
+  for _, m in ipairs(list) do by_id[m.id] = m end
+  assert(by_id.aaa.asset == "L1" and by_id.ccc.start == 9, "a sibling moved")
+end)
+
+test("an id no marker carries changes nothing", function()
+  local list, changed = vo.PlanMarkerRemove({ tkm(0, "L1 ~aaa", 2) }, "nope")
+  assert(changed == false, "claimed a change")
+  assert(#list == 1, "count: " .. #list)
+end)
+
+test("removing the only marker leaves an empty list, not nil", function()
+  local list, changed = vo.PlanMarkerRemove({ tkm(0, "L1 ~aaa", 2) }, "aaa")
+  assert(changed == true and type(list) == "table" and #list == 0,
+         "count: " .. tostring(list and #list))
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
