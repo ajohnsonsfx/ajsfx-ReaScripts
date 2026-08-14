@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.15beta18
--- @changelog PRE-RELEASE: DRAG A TAKE ONTO THE LINE IT BELONGS TO. A take under the wrong line could only be moved by retyping a filename, and that never took it OFF the line it was on -- the marker names the line, and a rename does not touch the marker. Now drag the take onto the right card: the marker is retargeted, the item takes the next free alt name and lands on the Review track, undecided. Drag an orphan onto a card to identify it, or a take onto "Not on the script" to take it off. Drag several at once by selecting them first. An uncut clip holding several takes is still moved, but its item is not renamed or relocated -- one item, one name -- and the drop says so; Cut splits it out. Locked takes refuse to move. Also: the Text filter box is now TWO boxes, Script and Transcript, and they OR rather than AND -- put the same word in both and you get the line that WANTS it beside the take that SAYS it, which is exactly the pair you need on screen to drag one onto the other.
+-- @version 0.15beta19
+-- @changelog PRE-RELEASE: THE ITEM FOLLOWS THE MARK. New checkbox in the Pull panel, "Sort takes onto their tracks as I mark them": with it on, ticking Sel moves the take to Selects there and then, ticking Keep moves it to Alts, and clearing both hands it back to the recording track it was cut out of -- no waiting for a Pull, and the timeline never disagrees with the sheet. It only MOVES; names are still Pull's job. Off by default, because it is the one thing a tick does that rearranges audio. Also fixed, with or without the checkbox: making a DIFFERENT take the Sel used to be able to clear the old one's Keep as well -- a take whose marks came from sitting on the Selects track had no stored Keep to fall back on, so the take you merely stopped delivering went dark instead of becoming an alt. Moving the Sel around now never costs you the alt. Ticking a mark across a block of highlighted rows is also one undo step instead of one per row.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -1208,6 +1208,15 @@ end
 -- and every cell that assigns to it, so they all see the same local.
 local pending_action = nil
 
+-- Pull's destination namespace, DECLARED here and filled in far below (search
+-- "function Dest.names"). It is hoisted this high because the mark checkboxes
+-- and Batch() both call into it, and both sit above the Pull section -- a local
+-- declared below its caller resolves as a nil GLOBAL, which fails only inside
+-- REAPER. It is a table rather than file locals for the usual reason: the main
+-- chunk is AT Lua's 200-local ceiling, and one more would stop the script
+-- parsing at all.
+local Dest = {}
+
 -- The project-file entry backing a row, created on demand. Rows are rebuilt
 -- often, so edits are written to the entry (which survives) rather than to
 -- the row.
@@ -1249,6 +1258,11 @@ local function Batch(fn)
   local ok, err = pcall(fn)
   batch_depth = batch_depth - 1
   if batch_depth == 0 then Rebuild() end
+  -- Auto-sort moves queued during the batch happen HERE, as one transaction on
+  -- rows the rebuild has just refreshed. Per-mark moves would otherwise put
+  -- "Pick a take for each line" through a transaction and a track walk per row,
+  -- which is the same cost that made the per-line rebuild crawl.
+  if batch_depth == 0 then Dest.flush_auto_sort() end
   if not ok then error(err, 0) end
 end
 
@@ -3100,6 +3114,7 @@ end
 -- first (see vo.BuildOverview's "no first/last fallback").
 local function SetSelect(row, on)
   local cfg = vo.LoadConfig()
+  local demoted = {}
   if on then
     local mine = LineKeyOf(row)
     for _, other in ipairs(state.overview) do
@@ -3111,12 +3126,21 @@ local function SetSelect(row, on)
         -- on the very next rebuild -- two Sels on one line, which is the exact
         -- state this exclusivity exists to prevent.
         local sibling = other
+        demoted[#demoted + 1] = sibling
         Mutate(sibling, function(e)
           if vo.MarkFromTrack(sibling.track_name, cfg) == "select" then
             e.select = false
           else
             e.select = nil
           end
+          -- THE TAKE THAT LOSES SEL IS STILL A KEEP. Written explicitly rather
+          -- than left to the track, because the track is about to disagree:
+          -- a sibling whose Sel came from sitting on Selects has no stored keep
+          -- at all, so an explicit "not Sel" plus a Selects track reads as
+          -- keep=false (vo.EffectiveMarks decides each mark on its own) and the
+          -- take you merely stopped delivering would go dark. Moving the select
+          -- around must never cost you the alt.
+          e.keep = true
         end)
       end
     end
@@ -3143,6 +3167,13 @@ local function SetSelect(row, on)
       e.select = nil
     end
   end)
+
+  -- The demoted siblings move too: this row's take is heading for Selects, and
+  -- leaving the old one there is exactly the two-Sels-on-one-line state the
+  -- exclusivity above exists to prevent -- read back off the tracks next
+  -- rebuild.
+  Dest.auto_sort(row)
+  for _, sibling in ipairs(demoted) do Dest.auto_sort(sibling) end
 end
 
 -- Any number of takes may be KEPT, so this has no exclusivity at all. A keep
@@ -3168,6 +3199,7 @@ local function SetKeep(row, on)
       end
     end
   end)
+  Dest.auto_sort(row)
 end
 
 -- Renaming is the one edit that reaches into the project. It is recorded in
@@ -6441,10 +6473,8 @@ end
 
 
 -- Pull's destinations: naming them, finding what they nest under, and building
--- them. One table rather than three file locals -- the main chunk sits at Lua's
--- 200-local ceiling, so related helpers share a namespace instead of each
--- taking a slot.
-local Dest = {}
+-- them. `local Dest = {}` is up beside pending_action, not here -- the mark
+-- checkboxes call Dest.auto_sort and sit above this section.
 
 -- PUT BACK THE AUDIO THE TIMELINE LOST: for every recording, the stretches its
 -- transcript says were spoken that no item in the project plays any more.
@@ -6897,6 +6927,93 @@ function Dest.build()
           made, #parents, base.selects, base.alts, base.review)
     or  string.format("Every one of the %d recording(s) already has its %s, %s and %s.",
           #parents, base.selects, base.alts, base.review), "ok"
+end
+
+-- AUTO-SORT: the item follows the mark, the moment the mark changes.
+--
+-- Opt-in (the Pull panel's checkbox, stored as cfg.auto_sort_marks) because it
+-- is the only thing a tick does that rearranges audio. With it on, the timeline
+-- is never out of step with the sheet: tick Sel and the take is on Selects,
+-- untick Keep and it goes back to the recording it was cut out of.
+--
+-- It MOVES and nothing else. Pull renames, mutes leftovers, reports what is not
+-- on the script; a tick is not a request for any of that, and a rename that
+-- lands on every click is a rename nobody asked for. Pressing Pull afterwards
+-- is still how names get settled -- these moves are exactly what Pull would
+-- have done to the same items, so it finds nothing left to move.
+--
+-- Queued rather than done on the spot: SetSelect writes to a demoted sibling
+-- and to this row, bulk verbs write to hundreds of rows inside a Batch, and
+-- each write rebuilds. Sorting per write would walk the track tree and open a
+-- transaction per row against rows the next rebuild replaces. The queue holds
+-- UIDs, not row tables, for that reason -- a uid survives the rebuild and a row
+-- table does not.
+function Dest.auto_sort(row)
+  if not row or not row.uid then return end
+  if not vo.LoadConfig().auto_sort_marks then return end
+  Dest.pending = Dest.pending or {}
+  Dest.pending[#Dest.pending + 1] = row.uid
+  if batch_depth == 0 then Dest.flush_auto_sort() end
+end
+
+function Dest.flush_auto_sort()
+  local queued = Dest.pending
+  Dest.pending = nil
+  if not queued or #queued == 0 then return end
+
+  -- The rows the rebuild has just produced, so the marks read here are the ones
+  -- the click left behind rather than the ones it found.
+  local by_uid, want = {}, {}
+  for _, row in ipairs(state.overview or {}) do by_uid[row.uid] = row end
+  local order = {}
+  for _, uid in ipairs(queued) do
+    if not want[uid] then want[uid] = true; order[#order + 1] = uid end
+  end
+
+  local base  = Dest.names()
+  local bases = { base.selects, base.alts, base.review }
+
+  local moved, stranded = 0, 0
+  core.Transaction("VO Overview: sort take onto its track", function()
+    for _, uid in ipairs(order) do
+      local row  = by_uid[uid]
+      -- LiveItemFor, never row.item: a rebuild that straddles a cut can hand
+      -- back a pointer REAPER has reused for a different clip, and moving the
+      -- wrong take to another track is not something the next click undoes.
+      local item = (row and row.status ~= "orphan") and LiveItemFor(row) or nil
+      if item then
+        local parent = Dest.recording_of(item, bases)
+        if parent then
+          -- nil means no decision, and the take goes back to the recording it
+          -- came out of rather than to Review. It lands over the uncut audio it
+          -- was sliced from, which is where it was before anything filed it.
+          local cat  = vo.TrackForMarks({ select = row.user_select,
+                                          keep   = row.user_keep })
+          local dest = cat and vo.EnsureChildTrack(parent, base[cat]) or parent
+          if dest and r.GetMediaItem_Track(item) ~= dest then
+            r.MoveMediaItemToTrack(item, dest)
+            moved = moved + 1
+          end
+        end
+      elseif row then
+        stranded = stranded + 1
+      end
+    end
+  end)
+
+  if moved > 0 then
+    r.UpdateArrange()
+    Reload()
+    state.message, state.message_kind = string.format(
+      "Sorted %d take%s onto the track its marks say.%s", moved,
+      moved == 1 and "" or "s",
+      stranded > 0 and string.format(
+        " %d had no audio in the timeline to move.", stranded) or ""), "ok"
+  elseif stranded > 0 then
+    state.message, state.message_kind = string.format(
+      "Nothing to sort: %d marked take%s has no audio in the timeline.",
+      stranded, stranded == 1 and "" or "s"), "warn"
+  end
 end
 
 local function Pull()
@@ -7562,6 +7679,23 @@ local function DrawPullPanel()
                          math.floor(cfg.alt_append_digits or 1))
   end
   im.TextDisabled(ctx, "  " .. table.concat(preview, ", "))
+  im.Spacing(ctx)
+
+  -- Auto-sort ------------------------------------------------------------
+  -- Lives beside Pull because it IS Pull's move, one take at a time, run off
+  -- the tick instead of off the button.
+  local ahit, awant = im.Checkbox(ctx, "Sort takes onto their tracks as I mark them",
+                                  cfg.auto_sort_marks == true)
+  if ahit then cfg.auto_sort_marks = awant; vo.SaveConfig(cfg) end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx,
+      "Ticking Sel moves the take to Selects; ticking Keep moves it to Alts;\n" ..
+      "clearing both hands it back to the recording track it was cut out of,\n" ..
+      "where it sits over the audio it came from.\n\n" ..
+      "Moving Sel to another take leaves the old one a Keep, so it lands on\n" ..
+      "Alts rather than going anywhere unmarked.\n\n" ..
+      "It only MOVES. Names are still Pull's job.")
+  end
   im.Spacing(ctx)
 
   -- Pull ----------------------------------------------------------------
@@ -9406,7 +9540,11 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
     if khit then
       local targets = MarkTargets()
       pending_action = function()
-        for _, r2 in ipairs(targets) do SetKeep(r2, know) end
+        -- Batched: one rebuild for the whole highlighted block, and -- with
+        -- auto-sort on -- one transaction moving every take it touched.
+        Batch(function()
+          for _, r2 in ipairs(targets) do SetKeep(r2, know) end
+        end)
       end
     end
     if im.IsItemHovered(ctx) then
@@ -9448,7 +9586,9 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
     if hit then
       local targets = MarkTargets()
       pending_action = function()
-        for _, r2 in ipairs(targets) do SetSelect(r2, now) end
+        Batch(function()
+          for _, r2 in ipairs(targets) do SetSelect(r2, now) end
+        end)
       end
     end
     if im.IsItemHovered(ctx) then

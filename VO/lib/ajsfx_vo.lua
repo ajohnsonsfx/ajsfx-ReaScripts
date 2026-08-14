@@ -1814,6 +1814,27 @@ function vo.MarkFromTrack(track_name, cfg)
   return nil
 end
 
+-- THE OTHER DIRECTION: which destination a take's marks say it belongs on.
+-- The exact inverse of vo.MarkFromTrack, and its neighbour on purpose -- a tick
+-- that moves an item and an item whose track speaks for its tick have to agree,
+-- or the sheet would fight itself on the next rebuild.
+--
+-- Sel wins over Keep, the same precedence vo.PlanPull uses: a take that is both
+-- is THE delivery, and a take that is only Keep ships beside it as an alt.
+--
+-- Returns nil for "no decision", and nil is deliberately NOT Review here. Pull
+-- parks undecided takes on Review because a first pass has to put everything
+-- somewhere before anyone has listened. Auto-sort answers a click that just
+-- REMOVED a decision, and the honest place for a take nobody is keeping is the
+-- recording it was cut out of -- the caller reads nil as "hand it back to its
+-- parent".
+function vo.TrackForMarks(marks)
+  marks = marks or {}
+  if marks.select then return "selects" end
+  if marks.keep   then return "alts"    end
+  return nil
+end
+
 -- What a take's Sel and Keep actually are, given what the user stored and where
 -- the item sits. ONE function, so the rule cannot drift between the sheet, Pull
 -- and the repair pass.
@@ -3217,6 +3238,11 @@ vo.DEFAULTS = {
 
   -- Which take "Select takes" marks when a line was read more than once.
   auto_select_take = "last",  -- "last" | "first"
+
+  -- Tick a mark and the item MOVES to the track that mark means, without
+  -- waiting for a Pull. Off by default: everything else a tick does is
+  -- reversible bookkeeping, and this one rearranges audio.
+  auto_sort_marks = false,
 
   -- Sequence. A session is read roughly in script order, and that is the only
   -- evidence there is for placing a line too short to identify itself.
@@ -7707,6 +7733,7 @@ vo.CONFIG_SCHEMA = {
   { key = "margin_threshold",   kind = "number", default = vo.DEFAULTS.margin_threshold },
   { key = "anchor_count",       kind = "number", default = vo.DEFAULTS.anchor_count },
   { key = "auto_select_take",    kind = "string", default = vo.DEFAULTS.auto_select_take },
+  { key = "auto_sort_marks",     kind = "bool",   default = vo.DEFAULTS.auto_sort_marks },
   { key = "order_weight",        kind = "number", default = vo.DEFAULTS.order_weight },
   { key = "backbone_min_tokens", kind = "number", default = vo.DEFAULTS.backbone_min_tokens },
   { key = "pre_pad",            kind = "number", default = vo.DEFAULTS.pre_pad },

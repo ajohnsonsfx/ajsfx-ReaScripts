@@ -672,6 +672,44 @@ second Pull would nest a track inside the Review track it made on the first. An
 item already on its destination is left alone rather than moved to where it
 already is.
 
+#### 4a.4a Auto-sort — the item follows the mark
+
+`cfg.auto_sort_marks`, a checkbox in the Pull panel, off by default: it is the
+only thing a tick does that rearranges audio. With it on, changing Sel or Keep
+moves that take immediately.
+
+| after the tick | goes to |
+|---|---|
+| **Sel** | **Selects** |
+| **Keep**, not Sel | **Alts** |
+| neither | **the recording track itself** |
+
+`vo.TrackForMarks` is the rule, and it is the exact inverse of
+`vo.MarkFromTrack` — an auto-sorted item has to read back off its new track as
+the mark that put it there, or the sheet would fight itself on the next rebuild.
+Sel wins over Keep, the same precedence `vo.PlanPull` uses.
+
+Unmarked goes to the **recording**, not to Review — the deliberate difference
+from Pull. Pull parks undecided takes on Review because a first pass has to put
+everything somewhere before anyone has listened; auto-sort is answering a click
+that just *removed* a decision, and hands the take back where it was cut from.
+It lands over the uncut audio it was sliced out of.
+
+It **moves and nothing else**. Renaming, muting leftovers and reporting what is
+not on the script stay Pull's, and Pull afterwards finds nothing left to move.
+
+Moves are queued by row **uid** and flushed at `batch_depth == 0`, so a bulk
+verb inside `Batch()` is one transaction rather than one per row, and the marks
+read are the ones the rebuild left rather than the ones the click found.
+Resolution is through `LiveItemFor`, never a cached `row.item`.
+
+**A take that loses Sel is still a Keep.** `SetSelect` writes `e.keep = true` on
+every sibling it demotes rather than leaving the track to speak: a sibling whose
+Sel came from sitting on Selects has no stored keep, so an explicit "not Sel"
+plus a Selects track resolves as `keep = false` (`vo.EffectiveMarks` decides each
+mark independently) and the take you merely stopped delivering would go dark.
+Moving the select between takes never costs the alt — with or without auto-sort.
+
 **Name alts** gives every alt that has none a delivered name of its own, from a
 pattern the user defines (`{n}` marks the number, plus a start value and zero
 padding), built on the line's delivered name — so an alt of a line that already
