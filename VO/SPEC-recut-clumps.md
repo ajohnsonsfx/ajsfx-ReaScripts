@@ -294,6 +294,37 @@ The Overview chunk sits at Lua's 200-local ceiling
 
 ---
 
+## 6.1 Known gap: the window is grown from RAW span bounds
+
+**Found 2026-08-14 on the Grumbar session. Not fixed — deliberately parked.**
+
+`vo.PlanReCut` grows the reclaim window to the bounds of any span the clump only
+partly holds. But those are the span's *raw* bounds, and the cut does not cut
+there: `vo.ApplyPadding` / `vo.SnapBoundary` move each edge outward to the
+nearest silence, bounded by `pre_pad` / `post_pad`. So the cut can place an edge
+outside the very clip the window opened, and the cut then reports
+
+```
+1 problem(s) while cutting: <line>: no item at <t>s
+```
+
+and that span is skipped. The heal is not undone and nothing is damaged — the
+clip simply gets re-split to what it already was.
+
+The obvious fix is to grow the window by the pad ceilings as well as the span
+bounds, still clamped by neighbours: those ceilings are documented as hard
+limits on edge travel, so any edge the cut can produce would then lie inside the
+clip.
+
+**Do not apply that fix on the strength of this note alone.** The case that
+exposed it did not add up: `pre_pad` was 0.635s and the edge had travelled
+1.225s, so padding alone does not explain the number, and widening by the
+ceilings would have papered over whatever else was moving it. The session also
+had real damage upstream — a clip on the Selects track named for one line while
+holding another line's marker plus a duplicate of a third's, and eight lines
+carrying two selects — which is the more likely source of the edge. Measure
+what actually moves the edge before changing the planner.
+
 ## 7. Out of scope
 
 - Choosing between two lines that both claim one range — that is
