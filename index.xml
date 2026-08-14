@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ajsfx-ReaScripts" commit="8992057c6581a97ebea99aabda5b8a41387de3e8">
+<index version="1" name="ajsfx-ReaScripts" commit="a80116b46356aee747c32f1b1b5812c39c2a04bb">
   <category name="Items">
     <reapack name="ajsfx_GentleNormalizer.lua" type="script" desc="Gentle Normalizer">
       <metadata>
@@ -528,6 +528,33 @@ Row 2 stays view-only: search (first), character, filters, folding, follow. Upda
         <source file="lib/ajsfx_vo.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/179f0eb03492cb04aaf43a67ed2fa8f44182b0e5/VO/lib/ajsfx_vo.lua</source>
         <source file="lib/ajsfx_vo_view.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/179f0eb03492cb04aaf43a67ed2fa8f44182b0e5/VO/lib/ajsfx_vo_view.lua</source>
         <source file="lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/179f0eb03492cb04aaf43a67ed2fa8f44182b0e5/lib/ajsfx_core.lua</source>
+      </version>
+      <version name="0.15beta18" author="ajsfx" time="2026-08-14T17:45:22Z">
+        <changelog><![CDATA[PRE-RELEASE: DRAG A TAKE ONTO THE LINE IT BELONGS TO. A take under the wrong line could only be moved by retyping a filename, and that never took it OFF the line it was on -- the marker names the line, and a rename does not touch the marker. Now drag the take onto the right card: the marker is retargeted, the item takes the next free alt name and lands on the Review track, undecided. Drag an orphan onto a card to identify it, or a take onto "Not on the script" to take it off. Drag several at once by selecting them first. An uncut clip holding several takes is still moved, but its item is not renamed or relocated -- one item, one name -- and the drop says so; Cut splits it out. Locked takes refuse to move. Also: the Text filter box is now TWO boxes, Script and Transcript, so "the script says X but the take says Y" is finally a question you can ask.]]></changelog>
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/96f15db5d357592b2e900732947b96b127a963c6/VO/ajsfx_VO_Overview.lua</source>
+        <source main="main" file="ajsfx_VO_Sources.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/96f15db5d357592b2e900732947b96b127a963c6/VO/ajsfx_VO_Sources.lua</source>
+        <source main="main" file="ajsfx_VO_Settings.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/96f15db5d357592b2e900732947b96b127a963c6/VO/ajsfx_VO_Settings.lua</source>
+        <source file="lib/ajsfx_vo.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/96f15db5d357592b2e900732947b96b127a963c6/VO/lib/ajsfx_vo.lua</source>
+        <source file="lib/ajsfx_vo_view.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/96f15db5d357592b2e900732947b96b127a963c6/VO/lib/ajsfx_vo_view.lua</source>
+        <source file="lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/96f15db5d357592b2e900732947b96b127a963c6/lib/ajsfx_core.lua</source>
+      </version>
+      <version name="0.15beta19" author="ajsfx" time="2026-08-14T19:30:13Z">
+        <changelog><![CDATA[PRE-RELEASE: THE ITEM FOLLOWS THE MARK. New checkbox in the Pull panel, "Sort takes onto their tracks as I mark them": with it on, ticking Sel moves the take to Selects there and then, ticking Keep moves it to Alts, and clearing both hands it back to the recording track it was cut out of -- no waiting for a Pull, and the timeline never disagrees with the sheet. It only MOVES; names are still Pull's job. Off by default, because it is the one thing a tick does that rearranges audio. Also fixed, with or without the checkbox: making a DIFFERENT take the Sel used to be able to clear the old one's Keep as well -- a take whose marks came from sitting on the Selects track had no stored Keep to fall back on, so the take you merely stopped delivering went dark instead of becoming an alt. Moving the Sel around now never costs you the alt. Ticking a mark across a block of highlighted rows is also one undo step instead of one per row.]]></changelog>
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/6b7f21232cb5848cfde9757ec8f4950064f8dd7a/VO/ajsfx_VO_Overview.lua</source>
+        <source main="main" file="ajsfx_VO_Sources.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/6b7f21232cb5848cfde9757ec8f4950064f8dd7a/VO/ajsfx_VO_Sources.lua</source>
+        <source main="main" file="ajsfx_VO_Settings.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/6b7f21232cb5848cfde9757ec8f4950064f8dd7a/VO/ajsfx_VO_Settings.lua</source>
+        <source file="lib/ajsfx_vo.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/6b7f21232cb5848cfde9757ec8f4950064f8dd7a/VO/lib/ajsfx_vo.lua</source>
+        <source file="lib/ajsfx_vo_view.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/6b7f21232cb5848cfde9757ec8f4950064f8dd7a/VO/lib/ajsfx_vo_view.lua</source>
+        <source file="lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/6b7f21232cb5848cfde9757ec8f4950064f8dd7a/lib/ajsfx_core.lua</source>
+      </version>
+      <version name="0.15beta20" author="ajsfx" time="2026-08-14T21:37:00Z">
+        <changelog><![CDATA[PRE-RELEASE: PUT THE LINE BACK TOGETHER. New button in the Edit row, "Re-cut selected takes", for the case where ONE spoken line arrived as several clips carrying markers that contradict each other. It looks for CLUMPS -- runs of selected clips that touch on the timeline AND come from touching parts of the recording, which is what a clip that got split looks like and what a clip you assembled from two places does not. For each clump it heals the splits back into one clip (no render), grows it outward if a matched line only partly fits inside it, stopping at the next clip on the track, throws its take markers away, then matches and cuts -- exactly the two buttons above it. The markers have to go: "Match takes to script" updates rather than re-marks, so a wrong marker left in place would be kept and the re-cut would faithfully rebuild the bad cut. One Ctrl+Z puts everything back. It refuses a clump whose clips disagree about playrate or pitch, since healing those changes how the audio sounds; Settings has an override, and it leaves a REVIEW note on the clip when used. "Match takes to script" now also counts the clumps it can see and points at the new button rather than quietly re-cutting anything itself.]]></changelog>
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/2f89607439a33ed644f2d6fc7b0c47a25f07ca3f/VO/ajsfx_VO_Overview.lua</source>
+        <source main="main" file="ajsfx_VO_Sources.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/2f89607439a33ed644f2d6fc7b0c47a25f07ca3f/VO/ajsfx_VO_Sources.lua</source>
+        <source main="main" file="ajsfx_VO_Settings.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/2f89607439a33ed644f2d6fc7b0c47a25f07ca3f/VO/ajsfx_VO_Settings.lua</source>
+        <source file="lib/ajsfx_vo.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/2f89607439a33ed644f2d6fc7b0c47a25f07ca3f/VO/lib/ajsfx_vo.lua</source>
+        <source file="lib/ajsfx_vo_view.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/2f89607439a33ed644f2d6fc7b0c47a25f07ca3f/VO/lib/ajsfx_vo_view.lua</source>
+        <source file="lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/2f89607439a33ed644f2d6fc7b0c47a25f07ca3f/lib/ajsfx_core.lua</source>
       </version>
     </reapack>
   </category>
