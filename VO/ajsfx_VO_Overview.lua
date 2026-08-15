@@ -10,7 +10,6 @@
 --        backend in "ajsfx VO Settings". See VO/SPEC.md.
 -- @provides
 --   [main] .
---   [main] ajsfx_VO_Sources.lua
 --   [main] ajsfx_VO_Settings.lua
 --   lib/ajsfx_vo.lua
 --   lib/ajsfx_vo_view.lua
@@ -35,6 +34,7 @@ package.path = script_path .. "?.lua;" .. script_path .. "../?.lua;" .. package.
 local core = require("lib.ajsfx_core")
 local vo   = require("lib.ajsfx_vo")
 local view = require("lib.ajsfx_vo_view")
+local sources_ui = require("lib.ajsfx_vo_sources_ui")
 
 local success, im = pcall(function()
   package.path = r.ImGui_GetBuiltinPath() .. '/?.lua;' .. package.path
@@ -51,6 +51,10 @@ end
 -- `im.Maybe and im.Maybe(ctx)` is not a guard — it is a crash on the bindings
 -- that lack the field. Every optional entry point has to come through here.
 local function Api(name) return rawget(im, name) end
+
+-- The embedded Sources surface (the pipeline's first stage) needs the
+-- ReaImGui table before it can resolve its own optional entry points.
+sources_ui.attach(im)
 
 -- Modifier state, read live. GetKeyMods is not in every 0.9.x binding; where it
 -- is missing the individual modifier keys still answer.
@@ -246,14 +250,10 @@ for i, c in ipairs(COLUMNS) do COLUMNS.keys[i] = c.key end
 -- reports goes to the log, and reading a run's report is a whole activity --
 -- scrolling, comparing against the last one, copying it out -- not a glance at
 -- a line under the table. Activities get a tab; glances get a line.
-local TOOLBAR_TABS = {
-  { key = "setup", label = "Setup" },
-  { key = "edit",  label = "Main" },
-}
-
 -- THE PIPELINE STRIP's namespace (redesign spec, phase 2). Declared this
 -- early -- an empty table only -- because ApplyFilters consults
--- Strip.RowPasses; the methods live beside the Inbox further down.
+-- Strip.RowPasses; the methods live beside the Inbox further down. The
+-- strip IS the toolbar: the tab bar retired when Sources became a stage.
 local Strip = {}
 
 local LAYOUT_ORDERS = {
@@ -276,10 +276,6 @@ local state = {
   -- in the same space above the table, and two at once would push it off the
   -- window. "script" opens itself when a script fails to load.
   panel         = nil,        -- "script" | "cut" | "pull" | "sort"
-  -- Which toolbar tab's buttons are showing. Items is the default because it
-  -- is where the work happens; Setup is a once-per-project errand.
-  tab           = "edit",     -- see TOOLBAR_TABS
-  tab_sync      = 4,          -- frames left to push state.tab into the tab bar
   cut_summary   = {},         -- what the last Cut and Name run did
   -- The Cut panel's stage counts, memoised. Worked out from the same code the
   -- run uses, so what it says and what it does cannot drift apart.
@@ -489,7 +485,7 @@ local function LoadScripts()
 
   for _, sc in ipairs(state.loaded.scripts) do
     if sc.error and sc.error ~= "" then
-      state.tab, state.panel, state.tab_sync = "setup", "script", 4
+      state.panel = "script"
     end
   end
 
@@ -9467,7 +9463,7 @@ function Inbox.RowVerbs(f)
         end,
         tip = "Set this take's Keep/Sel to match the track its item is on." },
       { label = "Adopt sheet", fn = function()
-          state.tab, state.panel, state.tab_sync = "edit", "pull", 4
+          state.panel = "pull"
           state.message, state.message_kind =
             "The marks are right -- run Pull to move the items to match them.", "info"
         end,
@@ -9719,29 +9715,28 @@ Strip.TIPS = {
 }
 
 function Strip.Assemble()
+  -- The Sources meter reads the embedded module's rows, which rescan on
+  -- their own throttle -- their identity is part of the staleness test,
+  -- and a running batch redraws the meter every frame.
+  local src_rows = sources_ui.state.rows
   if state.stages
+     and not sources_ui.state.running
      and state.strip_seen_over  == state.overview
      and state.strip_seen_check == state.check
-     and state.strip_seen_marks == state.take_markers then
+     and state.strip_seen_marks == state.take_markers
+     and state.strip_seen_srcs  == src_rows then
     return
   end
   state.strip_seen_over, state.strip_seen_check, state.strip_seen_marks =
     state.overview, state.check, state.take_markers
+  state.strip_seen_srcs = src_rows
 
   local n = state.summary or {}
   local c = state.check or {}
 
-  -- Sources: recordings in the project vs transcripts already on disk.
-  local total_paths, done_paths = 0, 0
-  local have, seenp = {}, {}
-  for _, t in ipairs(state.transcripts or {}) do have[t.path] = true end
-  for _, info in ipairs(state.items or {}) do
-    if info.path and info.path ~= "" and not info.skip and not seenp[info.path] then
-      seenp[info.path] = true
-      total_paths = total_paths + 1
-      if have[info.path] then done_paths = done_paths + 1 end
-    end
-  end
+  -- Sources: recordings in the project vs transcripts already on disk,
+  -- as the Sources surface itself counts them.
+  local done_paths, total_paths, src_running = sources_ui.Progress()
 
   -- Cut: a counting marker alone on its clip is a cut take; markers
   -- sharing a clip are a recording still to split. Read from the
@@ -9801,7 +9796,7 @@ function Strip.Assemble()
 
   state.stages = vo.PipelineStages({
     sources_done    = done_paths,      sources_total   = total_paths,
-    sources_running = Strip.sources_running == true,
+    sources_running = src_running == true,
     matched_done    = n.delivered or 0, matched_total  = n.lines or 0,
     cut_done        = cut_done,         cut_total      = cut_total,
     decided_done    = decided_done,     decided_total  = #groups,
@@ -9834,8 +9829,41 @@ function Strip.RowPasses(row)
 end
 
 function Strip.Draw()
-  for i, s in ipairs(state.stages or {}) do
-    if i > 1 then im.SameLine(ctx) end
+  -- THE HERO leads the strip: the strip says where the session is, and
+  -- this is the button that advances all of it (redesign spec, Req-11).
+  local acts_off = not Trim.has_selection()
+  im.PushStyleColor(ctx, im.Col_Button,        0x3E6FA3FF)
+  im.PushStyleColor(ctx, im.Col_ButtonHovered, 0x4E86C0FF)
+  if acts_off then im.BeginDisabled(ctx, true) end
+  if im.Button(ctx, "Run the whole pass") then pending_action = GoldenPath end
+  if acts_off then im.EndDisabled(ctx) end
+  im.PopStyleColor(ctx, 2)
+  -- Inline rather than TooltipEvenWhenDisabled: that helper is declared
+  -- further down the file, past this function's closure.
+  if im.IsItemHovered(ctx, Api('HoveredFlags_AllowWhenDisabled') or 0) then
+    im.SetTooltip(ctx,
+    "Select a recording and press this. It takes the session from raw\n" ..
+    "audio to something you can review, in one undo step:\n\n" ..
+    "  1. match the transcript to the script, and mark the takes\n" ..
+    "  2. clean the markers -- duplicates decided by the words\n" ..
+    "  3. split at those markers, and trim single-take clips onto theirs\n" ..
+    "  4. name every clip for its line, and fade the cut edges\n" ..
+    "  5. pick a take for each line\n" ..
+    "  6. build Selects / Alts / Review, and pull the items there\n\n" ..
+    "What is left is the judgement: check the selects and alts, check\n" ..
+    "the edits, then deliver. The stages beside this button are the\n" ..
+    "path -- each is a meter, and clicking one shows what it still owes.\n\n" ..
+    "This CHANGES ITEMS: it cuts, names and moves audio. Acts on the\n" ..
+    "selection; the amber line below says what that is right now.\n\n" ..
+    "Step 5 picks each line's " ..
+    ((state.auto_select_take == "first") and "FIRST" or "LAST") ..
+    " take -- whichever of the two\nAuto-pick buttons you used last.\n\n" ..
+    "Needs a selection: select rows here, or items in REAPER.")
+  end
+  im.SameLine(ctx)
+  im.TextDisabled(ctx, "\226\148\130")
+  for _, s in ipairs(state.stages or {}) do
+    im.SameLine(ctx)
     local active = (state.stage_filter == s.id)
     local pushed = false
     if active then
@@ -9859,6 +9887,20 @@ function Strip.Draw()
   if state.stage_filter then
     im.SameLine(ctx)
     im.TextDisabled(ctx, "\226\128\148 showing what this stage still owes")
+  end
+  -- The strip is the whole toolbar now: Settings and the rail's count
+  -- close the row. Clicking the count points the walk at the top finding
+  -- -- the rail is already open, permanently.
+  im.SameLine(ctx)
+  im.TextDisabled(ctx, "\226\148\130")
+  im.SameLine(ctx)
+  if im.Button(ctx, "Settings") then state.settings_open = true end
+  local inb = state.inbox_counts
+  if inb and inb.total > 0 then
+    im.SameLine(ctx)
+    if im.SmallButton(ctx, string.format("Needs you (%d)", inb.total)) then
+      state.inbox_sel = 1
+    end
   end
 end
 
@@ -10417,16 +10459,14 @@ local function DrawTakeRowMenu(row)
                  row.source_path ~= nil) then
     local captured = row.source_path
     pending_action = function()
-      -- Written BEFORE the launch and read every frame by Sources, so an
-      -- already-open Sources window picks the handoff up too, rather than
-      -- only a freshly launched one.
+      -- Written first and read every Tick by the embedded Sources surface,
+      -- so the handoff lands whether or not the stage was already showing.
       r.SetExtState(vo.EXT_SECTION, "focus_source", captured, false)
-      local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
-      if not ok then state.message, state.message_kind = tostring(why), "error" end
+      state.stage_filter = "sources"
     end
   end
   if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Open the Sources window on this take's recording and\n" ..
+    im.SetTooltip(ctx, "Open the Sources stage on this take's recording and\n" ..
                        "its transcript.")
   end
 
@@ -11600,7 +11640,7 @@ local function DrawCardsBody(avail_w)
       im.TextDisabled(ctx, "A script -- " .. vo.Basename(state.scripts[1].path or ""))
     else
       if im.Button(ctx, "Choose script\226\128\166##empty") then
-        state.tab, state.panel, state.tab_sync = "setup", "script", 4
+        state.panel = "script"
       end
       im.SameLine(ctx)
       im.TextDisabled(ctx, "a CSV of filenames and lines: what was meant to be read.")
@@ -11609,8 +11649,7 @@ local function DrawCardsBody(avail_w)
     im.Text(ctx, "    2.")
     im.SameLine(ctx)
     if im.Button(ctx, "Transcribe\226\128\166##empty") then
-      local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
-      if not ok then state.message, state.message_kind = tostring(why), "error" end
+      state.stage_filter = "sources"
     end
     im.SameLine(ctx)
     im.TextDisabled(ctx, "the recordings in this project: what was actually read.")
@@ -12654,6 +12693,11 @@ local function loop()
   -- MaybeRescan is throttled internally; keep drawing every frame regardless.
   MaybeRescan()
 
+  -- The embedded Sources surface's own throttled work: backend checks, row
+  -- rescans, and the Overview->Sources focus handoff. Every frame whether
+  -- or not the stage is showing, so a running batch keeps landing files.
+  sources_ui.Tick()
+
   -- After the rescan, so a remote command always acts on current rows.
   PollRemote()
 
@@ -12705,75 +12749,12 @@ local function loop()
       return table.concat(out, "\n")
     end
 
-    -- The toolbar is a TAB BAR over an ACTION ROW, and the split is the whole
-    -- point (SPEC-toolbar.md section 1): a tab never does anything, it only
-    -- decides which buttons you are looking at; a button always does
-    -- something. The old row mixed the two -- "Sort" opened a panel while
-    -- "Place" beside it moved audio on the press -- and that is what made it
-    -- unreadable. Names are long on purpose: the button says what it does so
-    -- the tooltip does not have to.
     local n_scripts = #state.scripts
 
-    -- The Check and Log tabs retired when the rail arrived; a remembered
-    -- ExtState tab from an older build must not strand the bar on a key
-    -- without a body.
-    if state.tab ~= "setup" and state.tab ~= "edit" then
-      state.tab = "edit"
-    end
-
-    if im.BeginTabBar(ctx, "##toolbar") then
-      -- ImGui selects the FIRST tab until told otherwise, which on frame one
-      -- silently moved the tool to Setup. state.tab_sync is a frame budget,
-      -- set whenever the TOOL decides which tab you should be on -- window
-      -- open, a script that failed to load, "Adopt sheet" sending you to
-      -- Pull -- and it pushes that decision into the bar.
-      --
-      -- `want` is read ONCE, before the loop: during a sync the bar reports
-      -- the outgoing tab as selected too, and writing state.tab from inside
-      -- the loop overwrote the very target the later tabs compare against.
-      -- So while syncing, what the bar reports is ignored entirely.
-      local want = (state.tab_sync or 0) > 0 and state.tab or nil
-      local reported = nil
-      for _, t in ipairs(TOOLBAR_TABS) do
-        local flags = (want == t.key) and im.TabItemFlags_SetSelected or 0
-        if im.BeginTabItem(ctx, t.label, nil, flags) then
-          reported = t.key
-          if not want and state.tab ~= t.key then
-            -- A panel belongs to the tab that opened it; leaving the tab
-            -- closes it rather than leaving it hanging under a bar that
-            -- cannot close it.
-            state.panel = nil
-            state.tab = t.key
-          end
-          im.EndTabItem(ctx)
-        end
-      end
-      if want then
-        -- Done as soon as the bar agrees, and in any case bounded, so a
-        -- flag the bar never honours cannot freeze the tabs.
-        state.tab_sync = (reported == want) and 0 or (state.tab_sync - 1)
-      end
-      -- Settings is a window, not a group of buttons, so it is a tab-SHAPED
-      -- button parked on the right rather than a tab.
-      if im.TabItemButton(ctx, "Settings", im.TabItemFlags_Trailing) then
-        state.settings_open = true
-      end
-      -- The rail's count, always in reach: clicking it points the walk at
-      -- the top finding rather than opening anything -- the rail is
-      -- already open, permanently.
-      local inb = state.inbox_counts
-      if inb and inb.total > 0 then
-        if im.TabItemButton(ctx, string.format("Needs you (%d)", inb.total),
-                            im.TabItemFlags_Trailing) then
-          state.inbox_sel = 1
-        end
-      end
-      im.EndTabBar(ctx)
-    end
-
-    -- THE PIPELINE STRIP: where the session is, always visible, each
-    -- stage a meter and a filter. It will BECOME the toolbar when the
-    -- tab bar retires; for now it rides directly under it.
+    -- THE PIPELINE STRIP IS THE TOOLBAR (redesign spec, Req-11): the hero,
+    -- six stage meters that are also filters, Settings, and the rail's
+    -- count. The tab bar retired here -- there is nothing left for tabs
+    -- to choose between: Sources is a stage, Check and Log are the rail.
     Strip.Draw()
     im.Separator(ctx)
 
@@ -12816,7 +12797,7 @@ local function loop()
     -- nothing visible and "Edit:" went missing from it unnoticed. Kept honest
     -- now because "Fix:" is the row every repair verb was gathered into, and a
     -- list that does not name it will drift again the next time one moves.
-    local GROUPS = { "Match:", "Cut:", "Fix:", "Pick:", "Pull:", "Check:" }
+    local GROUPS = { "Match:", "Fix:", "Pick:", "Pull:", "Verify:", "Setup:" }
     local gutter = 0
     for _, g in ipairs(GROUPS) do
       local w = im.CalcTextSize(ctx, g)
@@ -12905,125 +12886,11 @@ local function loop()
     local NEEDS_SEL = "\n\nNeeds a selection: select rows here, or items in " ..
       "REAPER.\nThe amber line under the blue button says what is in scope."
 
-    if state.tab == "setup" then
-      PanelButton("script", "Choose script…",
-        "The script CSVs this project reads, and which column of each\n" ..
-        "holds the filename, the line and the character.")
-
-      if im.Button(ctx, "Sources and transcripts…") then
-        local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
-        if not ok then state.message, state.message_kind = tostring(why), "error" end
-      end
-      Tip("The recordings this project reads, and their transcripts.")
-
-      -- The leftovers band: a readout, not a verb. It used to sit AFTER Start
-      -- over, which put the row's only destructive button in the middle and
-      -- left the far right -- where the eye stops -- on a line of grey text.
-      local script_label
-      if n_scripts == 0 then
-        script_label = "(none chosen)"
-      else
-        script_label = vo.Basename(state.scripts[1].path or "")
-        if n_scripts > 1 then
-          script_label = script_label .. string.format(" +%d more", n_scripts - 1)
-        end
-      end
-      Sep("  Script: " .. script_label)
-      im.TextDisabled(ctx, "  Script: ")
-      im.SameLine(ctx, 0, 0)
-      im.TextDisabled(ctx, script_label)
-      if n_scripts > 0 and im.IsItemHovered(ctx) then
-        local all = {}
-        for _, sc in ipairs(state.scripts) do all[#all + 1] = sc.path end
-        im.SetTooltip(ctx, table.concat(all, "\n"))
-      end
-
-      -- Parked at the end of the Setup row, red, behind a confirm that names
-      -- the files: it is the only button in the tool that destroys work.
-      Sep("Start over…")
-      im.PushStyleColor(ctx, im.Col_Button,        0x8C3A3AFF)
-      im.PushStyleColor(ctx, im.Col_ButtonHovered, 0xA84A4AFF)
-      if im.Button(ctx, "Start over…") then im.OpenPopup(ctx, "##reset_confirm") end
-      im.PopStyleColor(ctx, 2)
-      TooltipEvenWhenDisabled(
-          "Delete this project's VO data so the session can be processed\n" ..
-          "again from scratch. Audio is never touched.")
-
-      if im.BeginPopup(ctx, "##reset_confirm") then
-        im.Text(ctx, "Delete this project's VO data?")
-        im.Spacing(ctx)
-        im.TextDisabled(ctx, "Goes:")
-        im.TextWrapped(ctx, "  " .. (state.project_path
-          and vo.Basename(state.project_path) or "(no project file yet)") ..
-          "  -- every Lock, Keep, Sel, rename, Append, pin, and the script list.")
-        im.TextDisabled(ctx, "Stays:")
-        im.TextWrapped(ctx, "  Every item, take name and take marker in the " ..
-          "project. This deletes the tool's notes, not your audio -- and Cut " ..
-          "is undone with undo, not with this.")
-        im.Spacing(ctx)
-        local hit, v = im.Checkbox(ctx, "Also delete the transcripts (whisper must run again)",
-                                   state.reset_transcripts == true)
-        if hit then state.reset_transcripts = v or nil end
-        im.Spacing(ctx)
-        im.PushStyleColor(ctx, im.Col_Button, 0x8C3A3AFF)
-        if im.Button(ctx, "Delete") then
-          local also = state.reset_transcripts == true
-          pending_action = function() ResetProject(also) end
-          im.CloseCurrentPopup(ctx)
-        end
-        im.PopStyleColor(ctx)
-        im.SameLine(ctx)
-        if im.Button(ctx, "Cancel") then im.CloseCurrentPopup(ctx) end
-        im.EndPopup(ctx)
-      end
-
-    elseif state.tab == "edit" then
-      -- The hero, on its own row above the parts it is made of: a new session
-      -- runs these four in this order every time, and the row below shows
-      -- exactly which four, so the button teaches the path instead of hiding
-      -- it.
-      im.SetCursorPosX(ctx, row_left)
-      im.PushStyleColor(ctx, im.Col_Button,        0x3E6FA3FF)
-      im.PushStyleColor(ctx, im.Col_ButtonHovered, 0x4E86C0FF)
-      ActsOn()
-      if im.Button(ctx, "Run the whole pass") then pending_action = GoldenPath end
-      ActsEnd()
-      im.PopStyleColor(ctx, 2)
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx,
-          "Select a recording and press this. It takes the session from raw\n" ..
-          "audio to something you can review, in one undo step:\n\n" ..
-          "  1. match the transcript to the script, and mark the takes\n" ..
-          "  2. clean the markers -- duplicates decided by the words\n" ..
-          "  3. split at those markers, and trim single-take clips onto\n" ..
-          "     theirs\n" ..
-          "  4. name every clip for its line, and fade the cut edges\n" ..
-          "  5. pick a take for each line\n" ..
-          "  6. build Selects / Alts / Review, and pull the items there\n\n" ..
-          "What is left is the judgement: check the selects and alts, check\n" ..
-          "the edits, then deliver.\n\n" ..
-          "Each step is a button in the rows below, for when you want just\n" ..
-          "one. This CHANGES ITEMS: it cuts, names and moves audio.\n\n" ..
-          "It does NOT lay the items out in script order -- every take stays\n" ..
-          "at the time it was recorded, so what you verify is where you\n" ..
-          "heard it. \"Lay items out in script order\" is there when you want\n" ..
-          "it. It does not run \"Auto-adjust head and tail\" either: the cut\n" ..
-          "edges come from the markers, and auto-adjust is the per-item\n" ..
-          "verb for when one looks wrong.\n\n" ..
-          "Acts on the selection, like every button below: the line under\n" ..
-          "this one says what that is right now.\n\n" ..
-          "Step 5 picks each line's " ..
-          ((state.auto_select_take == "first") and "FIRST" or "LAST") ..
-          " take -- whichever of the two\nAuto-pick buttons you used last." .. NEEDS_SEL)
-      end
-      im.SameLine(ctx)
-      im.TextDisabled(ctx,
-        "  match \226\134\146 clean \226\134\146 cut \226\134\146 name \226\134\146 pick \226\134\146 pull")
-
-      -- Directly under the hero and above every row: the scope is the one
-      -- thing that changes what all of these do, so it is never more than a
-      -- glance away from the button being pressed.
-      im.NewLine(ctx)
+    do
+      -- The scope line leads the ribbon: the selection is the one thing
+      -- that changes what every verb below does, so it is never more than
+      -- a glance from the button being pressed. (The hero lives in the
+      -- strip above -- the strip is the path, the hero advances it.)
       im.SetCursorPosX(ctx, row_left)
       DrawScopeLine()
       started = true
@@ -13449,6 +13316,72 @@ local function loop()
           "model reloads per item; roughly 20s each) but it is the only\n" ..
           "check that HEARS anything the transcript missed.")
 
+      -- Setup: the once-per-project errands, folded down from the retired
+      -- Setup tab. Sources live in the strip's first stage now; what is
+      -- left is the script list and the one destructive button.
+      Group("Setup:")
+      PanelButton("script", "Choose script…",
+        "The script CSVs this project reads, and which column of each\n" ..
+        "holds the filename, the line and the character.")
+
+      local script_label
+      if n_scripts == 0 then
+        script_label = "(none chosen)"
+      else
+        script_label = vo.Basename(state.scripts[1].path or "")
+        if n_scripts > 1 then
+          script_label = script_label .. string.format(" +%d more", n_scripts - 1)
+        end
+      end
+      Sep("  Script: " .. script_label)
+      im.TextDisabled(ctx, "  Script: ")
+      im.SameLine(ctx, 0, 0)
+      im.TextDisabled(ctx, script_label)
+      if n_scripts > 0 and im.IsItemHovered(ctx) then
+        local all = {}
+        for _, sc in ipairs(state.scripts) do all[#all + 1] = sc.path end
+        im.SetTooltip(ctx, table.concat(all, "\n"))
+      end
+
+      -- Parked at the end, red, behind a confirm that names the files: it
+      -- is the only button in the tool that destroys work.
+      Sep("Start over…")
+      im.PushStyleColor(ctx, im.Col_Button,        0x8C3A3AFF)
+      im.PushStyleColor(ctx, im.Col_ButtonHovered, 0xA84A4AFF)
+      if im.Button(ctx, "Start over…") then im.OpenPopup(ctx, "##reset_confirm") end
+      im.PopStyleColor(ctx, 2)
+      TooltipEvenWhenDisabled(
+          "Delete this project's VO data so the session can be processed\n" ..
+          "again from scratch. Audio is never touched.")
+
+      if im.BeginPopup(ctx, "##reset_confirm") then
+        im.Text(ctx, "Delete this project's VO data?")
+        im.Spacing(ctx)
+        im.TextDisabled(ctx, "Goes:")
+        im.TextWrapped(ctx, "  " .. (state.project_path
+          and vo.Basename(state.project_path) or "(no project file yet)") ..
+          "  -- every Lock, Keep, Sel, rename, Append, pin, and the script list.")
+        im.TextDisabled(ctx, "Stays:")
+        im.TextWrapped(ctx, "  Every item, take name and take marker in the " ..
+          "project. This deletes the tool's notes, not your audio -- and Cut " ..
+          "is undone with undo, not with this.")
+        im.Spacing(ctx)
+        local hit, v = im.Checkbox(ctx, "Also delete the transcripts (whisper must run again)",
+                                   state.reset_transcripts == true)
+        if hit then state.reset_transcripts = v or nil end
+        im.Spacing(ctx)
+        im.PushStyleColor(ctx, im.Col_Button, 0x8C3A3AFF)
+        if im.Button(ctx, "Delete") then
+          local also = state.reset_transcripts == true
+          pending_action = function() ResetProject(also) end
+          im.CloseCurrentPopup(ctx)
+        end
+        im.PopStyleColor(ctx)
+        im.SameLine(ctx)
+        if im.Button(ctx, "Cancel") then im.CloseCurrentPopup(ctx) end
+        im.EndPopup(ctx)
+      end
+
     end
 
     im.EndGroup(ctx)
@@ -13468,7 +13401,7 @@ local function loop()
         bad, n_scripts, n_scripts == 1 and "" or "s"))
       im.SameLine(ctx)
       if im.Button(ctx, "Choose script…##warn") then
-        state.tab, state.panel, state.tab_sync = "setup", "script", 4
+        state.panel = "script"
       end
     end
 
@@ -13551,9 +13484,18 @@ local function loop()
     -- centerpiece (AJ's call on the redesign spec), the rail answers
     -- "what now", and THE LOG rides under the rail -- actions and their
     -- reports in one column, newest first. The Log tab retired with it.
+    -- The Sources STAGE swaps in for the sheet: same slot, same rail.
     local sheet_avail = select(1, im.GetContentRegionAvail(ctx))
     local rail_w = math.min(Inbox.WIDTH, math.floor(sheet_avail * 0.38))
-    DrawCards(body_h, sheet_avail - rail_w - item_gap)
+    if state.stage_filter == "sources" then
+      if im.BeginChild(ctx, "##vo_sources_stage",
+                       sheet_avail - rail_w - item_gap, body_h) then
+        sources_ui.Draw(ctx)
+        im.EndChild(ctx)
+      end
+    else
+      DrawCards(body_h, sheet_avail - rail_w - item_gap)
+    end
     im.SameLine(ctx)
     im.BeginGroup(ctx)
     local log_h = math.max(110, math.floor(body_h * 0.30))
@@ -13761,6 +13703,10 @@ local function loop()
     -- this is a window you sit in WHILE listening. Ticking OK is a click.
 
     im.End(ctx)
+
+    -- The embedded Sources surface's deferred clicks, after End for the
+    -- same reason as pending_action below.
+    sources_ui.RunPending()
 
     -- Drawn after the main window's End so they are siblings, not children.
     DrawSettingsWindow()
