@@ -1148,3 +1148,14 @@ one UNCUT recording holding several takes as markers in one item.
    the decode; withdraw it yourself if the decode changes your mind.
 8. Layout: the transcript column starts right of the OK box -- no overlap
    at any window width.
+
+## Fix from Transcript removes refuted markers (0.15beta25)
+
+1. A clip carrying its own marker plus a stale one (split residue, or a
+   second line's marker over audio the words say is one line): select it,
+   press "Fix from Transcript" -> the stale marker is gone, the survivor
+   and item name match the words, one undo step.
+2. The same from Out of sync's per-row "Fix from Transcript".
+3. A genuine uncut recording (several DIFFERENT lines, words agreeing with
+   each marker) -> nothing is removed; duplicates only die when the words
+   refute them.
