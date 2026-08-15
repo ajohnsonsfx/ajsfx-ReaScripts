@@ -2066,7 +2066,7 @@ function vo.ParityAssemble(collected, rows, opts)
     end
   end
   local out = {}
-  for _, group in pairs(collected or {}) do
+  for path, group in pairs(collected or {}) do
     for _, entry in ipairs(group) do
       local item = entry.info and entry.info.item
       if item then
@@ -2081,6 +2081,7 @@ function vo.ParityAssemble(collected, rows, opts)
         local row = sheet_by_item[item]
         out[#out + 1] = {
           key = item,
+          path = path,
           marker = tool[1],
           marker_count = #tool,
           item = entry.coverage and {
@@ -6217,6 +6218,7 @@ function vo.ScanSuspects(rows, transcripts, lines, cfg, thresh)
       if span > 0 and covered / span < T.thin_cover then
         trig.thin = true
       end
+      local verdict, best = nil, nil
       if #words > 0 then
         -- Judged against the NAME's line, not the marker's: a misnamed take
         -- over a correct marker is exactly what this trigger exists to catch.
@@ -6229,14 +6231,30 @@ function vo.ScanSuspects(rows, transcripts, lines, cfg, thresh)
         -- and the trigger comes back.
         local v = vo.JudgeLine(words, lines,
           vo.NamedAssetOf(row.take_name, row.asset, lines, cfg), cfg, T)
+        verdict, best = v.verdict, v.best and v.best.asset or nil
         if v.verdict ~= "match" and row.confirmed_state ~= "ok" then
           trig.name_mismatch = true
         end
+      elseif row.marker_id and row.confirmed_state ~= "ok" then
+        -- Its own trigger, not folded into "thin": a take with NO anchored
+        -- words has never been checked by anything that reads paper, and a
+        -- delivered take in that state is the riskiest row on the sheet.
+        trig.no_words = true
       end
       if not row.marker_id then trig.unmarked = true end
       if row.vetted_state == "mismatch"
          or row.confirmed_state == "mismatch" then trig.stamp = true end
-      if next(trig) then out[#out + 1] = { row = row, triggers = trig } end
+      if next(trig) then
+        -- The EVIDENCE rides with the finding: the reviewed list taught
+        -- that a flag without the words is a hunt -- the reader had to go
+        -- find what the take actually says before they could judge the
+        -- judgment. Capped snippet; the sheet has the full text.
+        local said = {}
+        for i = 1, math.min(#words, 8) do said[i] = words[i].text or "?" end
+        out[#out + 1] = { row = row, triggers = trig,
+                          words = table.concat(said, " "),
+                          verdict = verdict, best = best }
+      end
     end
   end
   return out
