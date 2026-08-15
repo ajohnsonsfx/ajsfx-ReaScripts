@@ -52,7 +52,7 @@
   ```
 - Kind weights (spec §Req-2): `suspect_select=10, out_of_sync=20, no_audio=30, unidentified=40, undecided=50, suspect=60, unheard=70`; scan rows weigh the same as the kind they stand in for. Stable within a kind (source order preserved).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```lua
 -- tests/test_vo_inbox.lua  (header copied from tests/test_vo_parity.lua)
@@ -105,9 +105,9 @@ end)
 t.report()
 ```
 
-- [ ] **Step 2: Run to verify failure** — `./run_tests.sh`; expect "attempt to call a nil value (field 'InboxBuild')".
+- [x] **Step 2: Run to verify failure** — `./run_tests.sh`; expect "attempt to call a nil value (field 'InboxBuild')".
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```lua
 -- VO/lib/ajsfx_vo.lua, after vo.ScanSuspects
@@ -148,8 +148,8 @@ function vo.InboxBuild(src)
 end
 ```
 
-- [ ] **Step 4: Run to verify pass** — `./run_tests.sh` all green; `luac -p VO/lib/ajsfx_vo.lua && rm -f luac.out`.
-- [ ] **Step 5: Commit** — `VO: vo.InboxBuild merges every scanner's findings into one ranked list`
+- [x] **Step 4: Run to verify pass** — `./run_tests.sh` all green; `luac -p VO/lib/ajsfx_vo.lua && rm -f luac.out`.
+- [x] **Step 5: Commit** — `VO: vo.InboxBuild merges every scanner's findings into one ranked list`
 
 ---
 
@@ -162,7 +162,7 @@ end
 - Consumes: `vo.InboxBuild` (Task 1); existing verb functions — `Trim.sync_dispatch`, `Trim.fix_from_transcript`, `Repair.NoAudio`'s row actions, `Verify.KickSelection`, `Repair.ScanUnheard`, the suspects scan at ~9229, `JumpTo(item)`, `GoTo(row)`; existing panel bodies for reference: `DrawOutOfSyncPanel` 8454–8621, `Repair.*` 9227–9548.
 - Produces: `Inbox.Assemble()` (state → `vo.InboxBuild` src), `Inbox.Draw(ctx, width)`, `Inbox.RowVerbs(f) -> { {label, fn}, ... }`, `state.inbox` (findings), `state.inbox_sel` (walk cursor, Task 3). Later tasks rely on these exact names.
 
-- [ ] **Step 1: Add `Inbox.Assemble` + `Inbox.RowVerbs`**
+- [x] **Step 1: Add `Inbox.Assemble` + `Inbox.RowVerbs`**
 
 ```lua
 local Inbox = {}
@@ -190,7 +190,7 @@ end
 
 **Note on field names:** `row.recorded` / `row.select` above are illustrative — before coding, read `vo.SummarizeOverview` (lib ~7691) to see the real per-row flags it counts as `recorded`/`review`, and use those exact fields so the rail's "undecided" equals the summary's "to review".
 
-- [ ] **Step 2: Add `Inbox.Draw`** — right rail as a child region, evidence-row pattern lifted from `DrawOutOfSyncPanel`:
+- [x] **Step 2: Add `Inbox.Draw`** — right rail as a child region, evidence-row pattern lifted from `DrawOutOfSyncPanel`:
 
 ```lua
 function Inbox.Draw(ctx, width)
@@ -221,11 +221,11 @@ end
 
 `Inbox.Evidence(f)` formats per kind (out_of_sync → `payload.divergence.detail`; suspects → the judged words — reuse whatever `Repair.Suspects` prints; undecided → the line's asset + take count). `Inbox.Jump(f)` calls `JumpTo`/`GoTo` per payload shape, same as the panels do.
 
-- [ ] **Step 3: Wire into `loop()`** — split the content area into sheet + rail (`im.GetContentRegionAvail` → sheet gets `avail - RAIL_W`); call `Inbox.Assemble()` where `state.reconcile`/`state.summary` refresh (near line 980's `CheckCoverage` call — assemble AFTER all sources refresh, once per reload, not per frame); call `Inbox.Draw` after the sheet. Store `RAIL_W` on `Inbox` (e.g. `Inbox.WIDTH = 340`), not a new local.
-- [ ] **Step 4: Retire the Check tab** — remove `check` from `TOOLBAR_TABS` (249–252), the `elseif state.tab == "check" then` body (13085–13181), and the five `PanelButton`s' entries in the panel dispatch (13224–13232). KEEP the panel body functions that the rail's verbs still reference (`Repair.ScanUnheard`, `Verify.*`); delete only bodies nothing calls anymore (`DrawOutOfSyncPanel`, `Repair.NoAudio/Unidentified/Unheard/Suspects` list-rendering) once `Inbox.RowVerbs` has absorbed their per-row actions. Move the "Verify items (N)" button (13098) and "Keep the session in sync" checkbox (12976) to the toolbar for now (phase 3 re-homes them).
-- [ ] **Step 5: Parse + tests** — `luac -p VO/ajsfx_VO_Overview.lua && rm -f luac.out`; `./run_tests.sh`.
-- [ ] **Step 6: Live check** — MCP harness (per `vo-mcp-test-harness` memory): load the fixture project, open Overview, confirm the rail lists findings ranked Selects-first, a jump selects the item in REAPER, one verb round-trips, and the empty-project fixture shows "Nothing needs you."
-- [ ] **Step 7: Commit** — `VO: the inbox rail — every finding in one ranked list, Check tab retired`
+- [x] **Step 3: Wire into `loop()`** — split the content area into sheet + rail (`im.GetContentRegionAvail` → sheet gets `avail - RAIL_W`); call `Inbox.Assemble()` where `state.reconcile`/`state.summary` refresh (near line 980's `CheckCoverage` call — assemble AFTER all sources refresh, once per reload, not per frame); call `Inbox.Draw` after the sheet. Store `RAIL_W` on `Inbox` (e.g. `Inbox.WIDTH = 340`), not a new local.
+- [x] **Step 4: Retire the Check tab** — remove `check` from `TOOLBAR_TABS` (249–252), the `elseif state.tab == "check" then` body (13085–13181), and the five `PanelButton`s' entries in the panel dispatch (13224–13232). KEEP the panel body functions that the rail's verbs still reference (`Repair.ScanUnheard`, `Verify.*`); delete only bodies nothing calls anymore (`DrawOutOfSyncPanel`, `Repair.NoAudio/Unidentified/Unheard/Suspects` list-rendering) once `Inbox.RowVerbs` has absorbed their per-row actions. Move the "Verify items (N)" button (13098) and "Keep the session in sync" checkbox (12976) to the toolbar for now (phase 3 re-homes them).
+- [x] **Step 5: Parse + tests** — `luac -p VO/ajsfx_VO_Overview.lua && rm -f luac.out`; `./run_tests.sh`.
+- [x] **Step 6: Live check** — MCP harness (per `vo-mcp-test-harness` memory): load the fixture project, open Overview, confirm the rail lists findings ranked Selects-first, a jump selects the item in REAPER, one verb round-trips, and the empty-project fixture shows "Nothing needs you."
+- [x] **Step 7: Commit** — `VO: the inbox rail — every finding in one ranked list, Check tab retired`
 
 ---
 
@@ -241,7 +241,7 @@ end
 - Consumes: `state.inbox`, `state.inbox_sel`, `Inbox.RowVerbs`, `Inbox.Jump` (Task 2).
 - Produces: schema keys `key_inbox_next` ("J"), `key_inbox_prev` ("K"), `key_inbox_jump` ("Enter"), `key_inbox_verb1` ("1"), `key_inbox_verb2` ("2"); `vo.KeyBindingClashes(cfg) -> { {a, b}, ... }`; `Inbox.HandleKeys(ctx)`.
 
-- [ ] **Step 1: Failing test for clash detection**
+- [x] **Step 1: Failing test for clash detection**
 
 ```lua
 t.test("duplicate key bindings are reported as clashes", function()
@@ -254,7 +254,7 @@ t.test("distinct bindings report no clashes", function()
 end)
 ```
 
-- [ ] **Step 2: Run to verify failure**, then implement: add the five entries to `CONFIG_SCHEMA` (`kind = "string"` with the defaults above) and
+- [x] **Step 2: Run to verify failure**, then implement: add the five entries to `CONFIG_SCHEMA` (`kind = "string"` with the defaults above) and
 
 ```lua
 function vo.KeyBindingClashes(cfg)
@@ -271,7 +271,7 @@ function vo.KeyBindingClashes(cfg)
 end
 ```
 
-- [ ] **Step 3: `Inbox.HandleKeys`** — map binding names to ImGui keycodes with a table on `Inbox` (`Inbox.KEYS = { J = im.Key_J, K = im.Key_K, Enter = im.Key_Enter, ["1"] = im.Key_1, ... }` — cover A–Z, 0–9, Enter, Space); in `loop()` call it once per frame **only when no text input is active** (`not im.IsAnyItemActive(ctx)` guard, or typing "j" in search walks the rail):
+- [x] **Step 3: `Inbox.HandleKeys`** — map binding names to ImGui keycodes with a table on `Inbox` (`Inbox.KEYS = { J = im.Key_J, K = im.Key_K, Enter = im.Key_Enter, ["1"] = im.Key_1, ... }` — cover A–Z, 0–9, Enter, Space); in `loop()` call it once per frame **only when no text input is active** (`not im.IsAnyItemActive(ctx)` guard, or typing "j" in search walks the rail):
 
 ```lua
 function Inbox.HandleKeys(ctx)
@@ -290,10 +290,10 @@ function Inbox.HandleKeys(ctx)
 end
 ```
 
-- [ ] **Step 4: Settings section** — `DrawKeyboard` beside `DrawMatching` (Settings 371): one `im.InputText` per binding (single char or "Enter"/"Space"), a reset-to-defaults button, and a warning line listing `vo.KeyBindingClashes(cfg)` results in the warn color. Persist via the existing `vo.SaveConfig` path (schema entries make this automatic).
-- [ ] **Step 5: Tests + parse** — `./run_tests.sh`; `luac -p` on all three touched files.
-- [ ] **Step 6: Live check** — J/K moves the highlight, Enter jumps, 1 fires the first verb; remap next→"N" in Settings and confirm N walks; typing in the search box does NOT walk.
-- [ ] **Step 7: Commit** — `VO: inbox is keyboard-walkable — J/K/Enter/1/2, remappable in Settings`
+- [x] **Step 4: Settings section** — `DrawKeyboard` beside `DrawMatching` (Settings 371): one `im.InputText` per binding (single char or "Enter"/"Space"), a reset-to-defaults button, and a warning line listing `vo.KeyBindingClashes(cfg)` results in the warn color. Persist via the existing `vo.SaveConfig` path (schema entries make this automatic).
+- [x] **Step 5: Tests + parse** — `./run_tests.sh`; `luac -p` on all three touched files.
+- [x] **Step 6: Live check** — J/K moves the highlight, Enter jumps, 1 fires the first verb; remap next→"N" in Settings and confirm N walks; typing in the search box does NOT walk.
+- [x] **Step 7: Commit** — `VO: inbox is keyboard-walkable — J/K/Enter/1/2, remappable in Settings`
 
 ---
 
@@ -306,10 +306,10 @@ end
 - Consumes: `state.log` (rendered today by the log tab body, 13182–13216), `Inbox.Draw`.
 - Produces: `Inbox.DrawLog(ctx)`; the phase-1 release.
 
-- [ ] **Step 1: `Inbox.DrawLog`** — bottom section of the rail child (reserve ~30% of rail height with a second `BeginChild`): newest-first lines from `state.log`, plus the existing "Copy log" / "Clear" small-buttons lifted from the log tab body. Then remove `log` from `TOOLBAR_TABS`, delete the `elseif state.tab == "log"` body, and drop the `state.tab ~= "log"` guard on `DrawSummary` (13251).
-- [ ] **Step 2: Parse + tests + live check** — actions still write log lines and they appear in the strip, newest first.
-- [ ] **Step 3: Release** — `git fetch origin` and read the current `@version`; bump to the next beta (e.g. `0.15beta34`) with `@changelog: The inbox — one ranked "Needs you" rail replaces the five Check panels; J/K-walkable, keys remappable; the Log lives under it.` Run the adversarial-loop review, then push and **confirm CI green** + no reapack-index warnings.
-- [ ] **Step 4: Commit/merge** — feature branch → `main` per repo workflow.
+- [x] **Step 1: `Inbox.DrawLog`** — bottom section of the rail child (reserve ~30% of rail height with a second `BeginChild`): newest-first lines from `state.log`, plus the existing "Copy log" / "Clear" small-buttons lifted from the log tab body. Then remove `log` from `TOOLBAR_TABS`, delete the `elseif state.tab == "log"` body, and drop the `state.tab ~= "log"` guard on `DrawSummary` (13251).
+- [x] **Step 2: Parse + tests + live check** — actions still write log lines and they appear in the strip, newest first.
+- [x] **Step 3: Release** — `git fetch origin` and read the current `@version`; bump to the next beta (e.g. `0.15beta34`) with `@changelog: The inbox — one ranked "Needs you" rail replaces the five Check panels; J/K-walkable, keys remappable; the Log lives under it.` Run the adversarial-loop review, then push and **confirm CI green** + no reapack-index warnings.
+- [x] **Step 4: Commit/merge** — feature branch → `main` per repo workflow.
 
 ---
 
@@ -335,7 +335,7 @@ end
   --        sources_running=true forces "running" regardless of counts
   ```
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```lua
 -- tests/test_vo_pipeline.lua (same header as test_vo_inbox.lua)
@@ -368,7 +368,7 @@ t.test("always six stages in pipeline order", function()
 end)
 ```
 
-- [ ] **Step 2: Run to verify failure**, then implement:
+- [x] **Step 2: Run to verify failure**, then implement:
 
 ```lua
 local STAGE_DEFS = {
@@ -404,7 +404,7 @@ function vo.PipelineStages(s)
 end
 ```
 
-- [ ] **Step 3: Run to verify pass**; `luac -p`; commit — `VO: vo.PipelineStages — six honest meters from the counters we already keep`
+- [x] **Step 3: Run to verify pass**; `luac -p`; commit — `VO: vo.PipelineStages — six honest meters from the counters we already keep`
 
 ---
 
@@ -417,7 +417,7 @@ end
 - Consumes: `vo.PipelineStages`; `state.summary` (set ~850), `state.check` (~980), cut counts (derive from `state.take_markers`/rows: a line is "cut" when its takes carry markers — read `SummarizeOverview` for the field to reuse), transcription progress (Task 7's module exposes it; until then pass `sources_done/total` from the transcript list the Overview already reads).
 - Produces: `Strip.Assemble()` (state → `vo.PipelineStages` arg), `Strip.Draw(ctx)`, `Strip.RowPasses(row) -> bool`, `state.stage_filter` (stage id or nil). Task 8 relies on `Strip.Draw` hosting the hero; phase 3 relies on `state.stage_filter` for verb context.
 
-- [ ] **Step 1: `Strip.Assemble` + `Strip.Draw`** — assemble alongside `Inbox.Assemble()`. Draw: one horizontal row of `im.Button`s under the toolbar, active-filter highlighted (`Col_ButtonActive`), "done" stages in `TextDisabled` styling, click toggles:
+- [x] **Step 1: `Strip.Assemble` + `Strip.Draw`** — assemble alongside `Inbox.Assemble()`. Draw: one horizontal row of `im.Button`s under the toolbar, active-filter highlighted (`Col_ButtonActive`), "done" stages in `TextDisabled` styling, click toggles:
 
 ```lua
 function Strip.Draw(ctx)
@@ -433,9 +433,9 @@ function Strip.Draw(ctx)
 end
 ```
 
-- [ ] **Step 2: `Strip.RowPasses(row)`** — nil filter → true; `matched` → rows not yet matched; `cut` → matched rows whose takes lack markers; `decided` → recorded rows without a select; `verified` → rows with unverified takes; `delivered` → rows not yet delivered; `sources` → sheet unfiltered (the stage body is the Sources view, Task 8). Reuse the SAME per-row predicates `SummarizeOverview` counts with, so strip numbers and filtered row counts can never disagree. Gate the sheet's card loop with it.
-- [ ] **Step 3: Parse, tests, live check** — counts match the `DrawSummary` line for the same project; clicking "Decided 180/195" shows exactly 15 cards; clicking again clears.
-- [ ] **Step 4: Commit** — `VO: the pipeline strip — each stage a meter and a filter`
+- [x] **Step 2: `Strip.RowPasses(row)`** — nil filter → true; `matched` → rows not yet matched; `cut` → matched rows whose takes lack markers; `decided` → recorded rows without a select; `verified` → rows with unverified takes; `delivered` → rows not yet delivered; `sources` → sheet unfiltered (the stage body is the Sources view, Task 8). Reuse the SAME per-row predicates `SummarizeOverview` counts with, so strip numbers and filtered row counts can never disagree. Gate the sheet's card loop with it.
+- [x] **Step 3: Parse, tests, live check** — counts match the `DrawSummary` line for the same project; clicking "Decided 180/195" shows exactly 15 cards; clicking again clears.
+- [x] **Step 4: Commit** — `VO: the pipeline strip — each stage a meter and a filter`
 
 ---
 
@@ -456,11 +456,11 @@ end
   sources_ui.Progress(st) -> done, total, running   -- feeds the Sources stage meter
   ```
 
-- [ ] **Step 1: Move, don't rewrite** — cut the body of `ajsfx_VO_Sources.lua` (everything between the header and `loop()`) into the new module wholesale; convert file-locals it needs per-instance into fields on `st`; module-level constants stay module-locals (a fresh file has its own 200 budget). The `im` handle and `cfg` are passed in, not re-required.
-- [ ] **Step 2: Thin host** — `ajsfx_VO_Sources.lua` keeps only its header, `require`, `NewState`, and a `loop()` of `Begin → sources_ui.Tick → sources_ui.Draw → End`. **Behavior identical** — this release changes nothing user-visible.
-- [ ] **Step 3: Update `@provides`** — the Overview package's `@provides` must ship `VO/lib/ajsfx_vo_sources_ui.lua` (follow how `ajsfx_vo_view.lua` is provided today — copy that stanza's shape exactly).
-- [ ] **Step 4: Parse both files + tests + live check** — standalone Sources window still scans and transcribes.
-- [ ] **Step 5: Commit** — `VO: Sources UI extracted to a module — same window, movable innards`
+- [x] **Step 1: Move, don't rewrite** — cut the body of `ajsfx_VO_Sources.lua` (everything between the header and `loop()`) into the new module wholesale; convert file-locals it needs per-instance into fields on `st`; module-level constants stay module-locals (a fresh file has its own 200 budget). The `im` handle and `cfg` are passed in, not re-required.
+- [x] **Step 2: Thin host** — `ajsfx_VO_Sources.lua` keeps only its header, `require`, `NewState`, and a `loop()` of `Begin → sources_ui.Tick → sources_ui.Draw → End`. **Behavior identical** — this release changes nothing user-visible.
+- [x] **Step 3: Update `@provides`** — the Overview package's `@provides` must ship `VO/lib/ajsfx_vo_sources_ui.lua` (follow how `ajsfx_vo_view.lua` is provided today — copy that stanza's shape exactly).
+- [x] **Step 4: Parse both files + tests + live check** — standalone Sources window still scans and transcribes.
+- [x] **Step 5: Commit** — `VO: Sources UI extracted to a module — same window, movable innards`
 
 ---
 
@@ -474,12 +474,12 @@ end
 - Consumes: `sources_ui` (Task 7), `Strip.Draw` (Task 6), `GoldenPath` (8225), Setup-tab pieces (script picker `DrawScriptPanel` 5624, "Start over…" 12598).
 - Produces: the tab-less window: strip on top (hero leftmost inside it), sheet + rail below; `state.stage_filter == "sources"` renders `sources_ui.Draw` in place of the sheet.
 
-- [ ] **Step 1: Embed** — Overview requires `ajsfx_vo_sources_ui`, keeps `st = sources_ui.NewState()` on `Strip` (`Strip.sources = ...`); call `sources_ui.Tick` each frame; when `state.stage_filter == "sources"`, draw `sources_ui.Draw` where the sheet goes (rail stays). Feed `sources_ui.Progress` into `Strip.Assemble`.
-- [ ] **Step 2: Fold Setup in** — "Choose script…" and "Sources and transcripts" live at the top of the Sources stage body; "Start over…" (destructive, with its confirm popup 12607–12632) moves beside Settings in the toolbar. Remove the `setup` tab body (12563–12633).
-- [ ] **Step 3: Kill the tab bar** — remove `TOOLBAR_TABS`, the `BeginTabBar` block (12395–12432), and `state.tab` branches; the Settings tab-button becomes a toolbar button. The hero (12636–12676) moves into `Strip.Draw` as the leftmost element, same `GoldenPath` dispatch, same blue.
-- [ ] **Step 4: Delete `VO/ajsfx_VO_Sources.lua`** — also remove its launch button ("Sources and transcripts…" now IS the stage) and any `vo.LaunchSibling` reference to it. ReaPack treats this as a removed package; CI's `reapack-index` handles it (recent history shows prior removals) — still skim the build log line for it.
-- [ ] **Step 5: Parse + tests + live check** — full workflow in one window: pick script, scan sources, transcribe (meter shows running), match, and the strip advances as stages complete.
-- [ ] **Step 6: Release** — bump `@version` (fetch first), `@changelog: The pipeline strip is the window — six stages, each a meter and a filter; Sources lives inside; the tab bar is gone.` Adversarial-loop, push, CI green, log skimmed.
+- [x] **Step 1: Embed** — Overview requires `ajsfx_vo_sources_ui`, keeps `st = sources_ui.NewState()` on `Strip` (`Strip.sources = ...`); call `sources_ui.Tick` each frame; when `state.stage_filter == "sources"`, draw `sources_ui.Draw` where the sheet goes (rail stays). Feed `sources_ui.Progress` into `Strip.Assemble`.
+- [x] **Step 2: Fold Setup in** — "Choose script…" and "Sources and transcripts" live at the top of the Sources stage body; "Start over…" (destructive, with its confirm popup 12607–12632) moves beside Settings in the toolbar. Remove the `setup` tab body (12563–12633).
+- [x] **Step 3: Kill the tab bar** — remove `TOOLBAR_TABS`, the `BeginTabBar` block (12395–12432), and `state.tab` branches; the Settings tab-button becomes a toolbar button. The hero (12636–12676) moves into `Strip.Draw` as the leftmost element, same `GoldenPath` dispatch, same blue.
+- [x] **Step 4: Delete `VO/ajsfx_VO_Sources.lua`** — also remove its launch button ("Sources and transcripts…" now IS the stage) and any `vo.LaunchSibling` reference to it. ReaPack treats this as a removed package; CI's `reapack-index` handles it (recent history shows prior removals) — still skim the build log line for it.
+- [x] **Step 5: Parse + tests + live check** — full workflow in one window: pick script, scan sources, transcribe (meter shows running), match, and the strip advances as stages complete.
+- [x] **Step 6: Release** — bump `@version` (fetch first), `@changelog: The pipeline strip is the window — six stages, each a meter and a filter; Sources lives inside; the tab bar is gone.` Adversarial-loop, push, CI green, log skimmed.
 
 ---
 
@@ -503,7 +503,7 @@ end
   -- nothing         → {} (caller draws the hint line)
   ```
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```lua
 t.test("recordings get match and cut", function()
@@ -523,7 +523,7 @@ t.test("empty selection is empty", function()
 end)
 ```
 
-- [ ] **Step 2: Verify failure**, implement:
+- [x] **Step 2: Verify failure**, implement:
 
 ```lua
 local CONTEXT_VERBS = {
@@ -553,7 +553,7 @@ function vo.ContextVerbs(sel)
 end
 ```
 
-- [ ] **Step 3: Verify pass, `luac -p`, commit** — `VO: vo.ContextVerbs — the selection decides the verbs`
+- [x] **Step 3: Verify pass, `luac -p`, commit** — `VO: vo.ContextVerbs — the selection decides the verbs`
 
 ---
 
@@ -566,8 +566,8 @@ end
 - Consumes: `vo.ContextVerbs`; the verb inventory of the four Group rows (12692–13083) and their exact dispatch targets: `match → MatchTakes({mark=true})` 7886, `cut → RunCut` 6647, `untrack → Trim.untrack` 1764 (confirm popup preserved), `fix_from → Trim.sync_dispatch` authorities, `verify → Verify.KickSelection` 9117, `ok →` the OK/vet verb the suspects panel used, `recut → Trim.recut` 8008, `pick_first/pick_last → AutoSelectTakes` 4516, `name_alts → ApplyAltNames` 7693; pull-side verbs (`Dest.pull_all` 7657, `Dest.build` 7273, `DrawPullPanel` 8330, `DrawLayoutBar` 9724) home on the **Delivered stage**, not the selection bar.
 - Produces: `Verbs.Selection()` (REAPER selection + sheet selection → `vo.ContextVerbs` arg), `Verbs.Draw(ctx)` — the fixed bar between strip and sheet.
 
-- [ ] **Step 1: `Verbs.Selection`** — count selected items by classification the tool already has (recording = multi-marker item, take = single-marker/cut item — reuse the same distinction `Trim.update`/parity use via `state.take_markers`) and selected sheet line cards (`state` selection fields used by `ClickRow` 4157).
-- [ ] **Step 2: `Verbs.Draw`** — fixed bar, always present:
+- [x] **Step 1: `Verbs.Selection`** — count selected items by classification the tool already has (recording = multi-marker item, take = single-marker/cut item — reuse the same distinction `Trim.update`/parity use via `state.take_markers`) and selected sheet line cards (`state` selection fields used by `ClickRow` 4157).
+- [x] **Step 2: `Verbs.Draw`** — fixed bar, always present:
 
 ```lua
 Verbs.DEFS = {
@@ -589,11 +589,11 @@ function Verbs.Draw(ctx)
 end
 ```
 
-- [ ] **Step 3: Stage verbs** — when `state.stage_filter` is set, append that stage's stage-level verbs after a separator (Delivered → Pull / Build tracks / Lay out; Verified → Verify items; Decided → the auto-pick pair). This is where the Pull row's macros land.
-- [ ] **Step 4: Retire the rows** — delete the four `Group` rows (12692–13083) and the `Group` helper if unused; verify with the **verb inventory checklist**: list every button in today's Main tab from the explore map, and check each has a home (selection bar / stage verbs / strip hero / toolbar / Settings). Zero orphans before the delete lands.
-- [ ] **Step 5: Parse + tests + live check** — select a recording → Match/Cut appear; a cut take → Fix from…/Verify/OK/Re-cut; a line card → pick verbs; nothing → hint line; mixed recording+take → Untrack only. Full golden-path session end-to-end in the fixture project.
-- [ ] **Step 6: Release** — bump `@version` (fetch first), `@changelog: Verbs live on the selection now — the four button rows retire; the window is strip, sheet, rail.` Adversarial-loop, push, CI green, log skimmed.
-- [ ] **Step 7: Update docs** — mark `2026-08-15-vo-ux-fresh-take.md` Status as "Implemented via 2026-08-15-vo-ux-redesign"; refresh the VO notes in SoundDesignDocs if the workflow write-ups reference tabs/panels.
+- [x] **Step 3: Stage verbs** — when `state.stage_filter` is set, append that stage's stage-level verbs after a separator (Delivered → Pull / Build tracks / Lay out; Verified → Verify items; Decided → the auto-pick pair). This is where the Pull row's macros land.
+- [x] **Step 4: Retire the rows** — delete the four `Group` rows (12692–13083) and the `Group` helper if unused; verify with the **verb inventory checklist**: list every button in today's Main tab from the explore map, and check each has a home (selection bar / stage verbs / strip hero / toolbar / Settings). Zero orphans before the delete lands.
+- [x] **Step 5: Parse + tests + live check** — select a recording → Match/Cut appear; a cut take → Fix from…/Verify/OK/Re-cut; a line card → pick verbs; nothing → hint line; mixed recording+take → Untrack only. Full golden-path session end-to-end in the fixture project.
+- [x] **Step 6: Release** — bump `@version` (fetch first), `@changelog: Verbs live on the selection now — the four button rows retire; the window is strip, sheet, rail.` Adversarial-loop, push, CI green, log skimmed.
+- [x] **Step 7: Update docs** — mark `2026-08-15-vo-ux-fresh-take.md` Status as "Implemented via 2026-08-15-vo-ux-redesign"; refresh the VO notes in SoundDesignDocs if the workflow write-ups reference tabs/panels.
 
 ---
 

@@ -1,6 +1,7 @@
 # VO Overview — a fresh UX take
 
-**Status:** Exploration, nothing approved · **Date:** 2026-08-15
+**Status:** Implemented — shipped as 0.15beta34/35/36 via
+`2026-08-15-vo-ux-redesign-design.md` + its plan · **Date:** 2026-08-15
 
 AJ's brief: the features are good, the UX was *converged on* rather than
 designed, and it is cluttered with debris. A fresh take may be completely

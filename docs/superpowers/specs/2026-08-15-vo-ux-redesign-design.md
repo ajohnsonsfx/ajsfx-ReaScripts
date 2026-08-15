@@ -1,6 +1,6 @@
 # Spec: VO Overview UX redesign — strip, rail, contextual verbs
 
-**Status:** Approved direction (AJ answered the fresh-take's open questions 2026-08-15)
+**Status:** Implemented 2026-08-15 — phase 1 = 0.15beta34, phase 2 = 0.15beta35, phase 3 = 0.15beta36
 **Source:** `docs/superpowers/specs/2026-08-15-vo-ux-fresh-take.md` (§4 recommendation)
 **Plan:** `docs/superpowers/plans/2026-08-15-vo-ux-redesign.md`
 
