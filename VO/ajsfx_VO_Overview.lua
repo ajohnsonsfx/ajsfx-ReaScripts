@@ -14,6 +14,7 @@
 --   [main] ajsfx_VO_Settings.lua
 --   lib/ajsfx_vo.lua
 --   lib/ajsfx_vo_view.lua
+--   lib/ajsfx_vo_sources_ui.lua
 --   ../lib/ajsfx_core.lua > lib/ajsfx_core.lua
 --
 -- ajsfx VO Overview — a project-wide picture of the dialogue in a session.
