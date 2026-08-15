@@ -9204,9 +9204,16 @@ function Inbox.MaybeAssemble()
 
   local cfg = vo.LoadConfig()
   local rec = state.reconcile or {}
+  -- Two different remedies share the Relink verb, but the WHY differs --
+  -- a marker whose audio vanished vs marks with nothing to attach to --
+  -- so each entry carries its why for the evidence line and the tooltip.
   local no_audio = {}
-  for _, e in ipairs(rec.unbacked_markers or {}) do no_audio[#no_audio + 1] = e end
-  for _, e in ipairs(rec.orphan_marks or {})     do no_audio[#no_audio + 1] = e end
+  for _, e in ipairs(rec.unbacked_markers or {}) do
+    no_audio[#no_audio + 1] = { row = e.row, why = "unbacked" }
+  end
+  for _, e in ipairs(rec.orphan_marks or {}) do
+    no_audio[#no_audio + 1] = { row = e.row, why = "orphan" }
+  end
 
   -- Undecided LINES: takes exist, none picked, nobody settled it by hand.
   -- Same eligibility AutoSelectTakes uses, so the rail never nags about a
@@ -9286,6 +9293,12 @@ end
 -- a remap in Settings goes live without a restart.
 function Inbox.HandleKeys()
   if im.IsAnyItemActive(ctx) then return end
+  -- A popup being browsed owns the keyboard: firing the highlighted row's
+  -- verb while a "Fix from" menu is open would act behind the menu.
+  local pop_open = Api('IsPopupOpen')
+  local pop_flags = (Api('PopupFlags_AnyPopupId') or 0)
+                  | (Api('PopupFlags_AnyPopupLevel') or 0)
+  if pop_open and pop_flags ~= 0 and pop_open(ctx, "", pop_flags) then return end
   local n = #(state.inbox or {})
   if n == 0 then return end
   Inbox.keys_tick = (Inbox.keys_tick or 0) - 1
@@ -9296,14 +9309,17 @@ function Inbox.HandleKeys()
   local cfg = Inbox.keys_cfg
   local isp = Api('IsKeyPressed')
   if not isp then return end
-  local function pressed(binding)
+  -- Walk keys may repeat while held; ACTION keys fire once per press --
+  -- Reload reshuffles the list between fires, so a repeating verb key
+  -- could act on a different finding than the one that was selected.
+  local function pressed(binding, allow_repeat)
     local code = Inbox.KeyCode(cfg[binding])
-    return code ~= nil and isp(ctx, code)
+    return code ~= nil and isp(ctx, code, allow_repeat == true)
   end
-  if pressed("key_inbox_next") then
+  if pressed("key_inbox_next", true) then
     state.inbox_sel = math.min((state.inbox_sel or 0) + 1, n)
   end
-  if pressed("key_inbox_prev") then
+  if pressed("key_inbox_prev", true) then
     state.inbox_sel = math.max((state.inbox_sel or 2) - 1, 1)
   end
   local f = state.inbox[state.inbox_sel or 0]
@@ -9338,8 +9354,11 @@ function Inbox.Evidence(f)
       p.row and (p.row.deliver or p.row.asset) or "(unnamed)",
       p.detail or "disagrees with its track")
   elseif k == "no_audio" then
-    return string.format("%s -- marks with no audio",
-      p.row and (p.row.deliver or p.row.asset) or "(unnamed)")
+    local who = p.row and (p.row.deliver or p.row.asset) or "(unnamed)"
+    if p.why == "unbacked" then
+      return who .. " -- marker with no audio under it"
+    end
+    return who .. " -- marks but no audio in the project"
   elseif k == "unidentified" then
     return string.format("%s %s -- heard, not tracked",
       vo.Basename(p.source_path or ""), vo.FormatTime(p.start or 0))
@@ -9379,6 +9398,43 @@ function Inbox.Jump(f)
   end
 end
 
+-- The four authorities, acting on a picked set -- one row's item or the
+-- whole queue's. Same waterfalls the watcher runs, with you naming the
+-- authority; one function so the row verb and the batch verb can never
+-- disagree about what a fix does.
+function Inbox.FixVerbs(picked)
+  local function fix(mode)
+    return function()
+      pending_action = function()
+        if mode == "transcript" then
+          Trim.fix_from_transcript({ picked = picked })
+        elseif mode == "sheet" then
+          Trim.fix_names_from_sheet({ picked = picked })
+        else
+          local m = {}
+          for it in pairs(picked) do m[it] = mode end
+          Trim.sync_dispatch(m)
+        end
+        if state.parity_queue_manual then
+          for it in pairs(picked) do state.parity_queue_manual[it] = nil end
+        end
+        Reload()
+      end
+    end
+  end
+  return {
+    { label = "Transcript", fn = fix("transcript"),
+      tip = "The words win: drop the markers they refute, rename the\n" ..
+            "survivors from the transcript, prune same-line duplicates." },
+    { label = "Marker", fn = fix("marker"),
+      tip = "The marker wins: trim the item onto it and name it for its line." },
+    { label = "Item", fn = fix("item"),
+      tip = "The item wins: snap the marker to its edges, fill the fades." },
+    { label = "Sheet", fn = fix("sheet"),
+      tip = "The sheet wins: rename the delivery from the Keep/Sel marks." },
+  }
+end
+
 -- The verbs a finding can take. Every fn dispatches the same function the
 -- retired panel dispatched. Second return: a fold label -- four "Fix
 -- from" authorities do not fit a rail row, so they fold behind one button.
@@ -9386,33 +9442,7 @@ function Inbox.RowVerbs(f)
   local p = f.payload or {}
   local k = f.kind
   if k == "out_of_sync" and p.divergence then
-    local it = p.item
-    local function fix(mode)
-      return function()
-        pending_action = function()
-          if mode == "transcript" then
-            Trim.fix_from_transcript({ picked = { [it] = true } })
-          elseif mode == "sheet" then
-            Trim.fix_names_from_sheet({ picked = { [it] = true } })
-          else
-            Trim.sync_dispatch({ [it] = mode })
-          end
-          if state.parity_queue_manual then state.parity_queue_manual[it] = nil end
-          Reload()
-        end
-      end
-    end
-    return {
-      { label = "Transcript", fn = fix("transcript"),
-        tip = "The words win: drop the markers they refute, rename the\n" ..
-              "survivors from the transcript, prune same-line duplicates." },
-      { label = "Marker", fn = fix("marker"),
-        tip = "The marker wins: trim the item onto it and name it for its line." },
-      { label = "Item", fn = fix("item"),
-        tip = "The item wins: snap the marker to its edges, fill the fades." },
-      { label = "Sheet", fn = fix("sheet"),
-        tip = "The sheet wins: rename the delivery from the Keep/Sel marks." },
-    }, "Fix from\226\128\166"
+    return Inbox.FixVerbs({ [p.item] = true }), "Fix from\226\128\166"
   elseif k == "out_of_sync" then
     local row = p.row
     return {
@@ -9436,10 +9466,15 @@ function Inbox.RowVerbs(f)
     }
   elseif k == "no_audio" then
     local row = p.row
+    local why = (p.why == "unbacked")
+      and ("The item this marker lived in was deleted or trimmed past\n" ..
+           "it; a sync or a re-cut drops the leftovers.")
+      or  ("Usually a deleted take marker, or marks from before markers\n" ..
+           "existed -- or clear its marks on the row itself.")
     return { { label = "Relink", fn = function()
         pending_action = function() AddTakeMarkerFromSelection(row) end
       end,
-      tip = "Write this take's marker onto the item selected in REAPER." } }
+      tip = "Write this take's marker onto the item selected in REAPER.\n" .. why } }
   elseif k == "undecided" then
     local asset = p.asset
     return {
@@ -9542,6 +9577,113 @@ function Inbox.Draw(width, height)
     end
     im.Spacing(ctx)
   end
+
+  -- THE BATCH VERBS the panels had, kept: more than one finding of a kind
+  -- takes its verb once, for all of them.
+  local batch_drawn = false
+  local function BatchHeader()
+    if batch_drawn then return end
+    batch_drawn = true
+    im.Separator(ctx)
+    im.TextDisabled(ctx, "All of them:")
+  end
+  local queue = state.parity_queue or {}
+  if #queue > 1 then
+    BatchHeader()
+    if im.SmallButton(ctx, string.format("Fix %d out of sync\226\128\166##inbboos",
+                                         #queue)) then
+      im.OpenPopup(ctx, "##inbpopoos")
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "One authority for every queued take at once.")
+    end
+    if im.BeginPopup(ctx, "##inbpopoos") then
+      local all = {}
+      for _, q in ipairs(queue) do all[q.item] = true end
+      for _, v in ipairs(Inbox.FixVerbs(all)) do
+        if im.Selectable(ctx, "Fix from " .. v.label) then v.fn() end
+        if im.IsItemHovered(ctx) then im.SetTooltip(ctx, v.tip) end
+      end
+      im.EndPopup(ctx)
+    end
+  end
+  local dis = (state.reconcile or {}).disagree or {}
+  if #dis > 1 then
+    BatchHeader()
+    if im.SmallButton(ctx, string.format("Adopt timeline for %d##inbbadopt",
+                                         #dis)) then
+      local findings = dis
+      pending_action = function()
+        -- The tracks win: write the mark each item's placement implies as
+        -- an EXPLICIT decision, so the result is stable, not re-inferred.
+        local bcfg = vo.LoadConfig()
+        for _, f2 in ipairs(findings) do
+          local want = vo.MarkFromTrack(f2.row.track_name, bcfg)
+          Mutate(f2.row, function(e)
+            e.select = (want == "select") or nil
+            e.keep   = (want == "keep")   or nil
+          end)
+        end
+        state.message, state.message_kind = string.format(
+          "Adopted the timeline for %d take(s).", #findings), "ok"
+      end
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx,
+        "Set every disagreeing take's Keep/Sel to match the track its\n" ..
+        "item is on. If the marks are right instead, run Pull -- that is\n" ..
+        "what moves the items.")
+    end
+  end
+  local sus = state.suspects or {}
+  if #sus > 1 then
+    BatchHeader()
+    if im.SmallButton(ctx, string.format("Re-listen to %d suspects##inbbsus",
+                                         #sus)) then
+      local rows = {}
+      for _, s in ipairs(sus) do rows[#rows + 1] = s.row end
+      pending_action = function() Verify.Enqueue(rows) end
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx,
+        "Fresh whisper decodes, one per suspect, whatever the Re-listen\n" ..
+        "toggle says. The model reloads per item -- budget roughly " ..
+        (#sus * 20) .. "s;\ncancel any time.")
+    end
+  end
+
+  -- Rescan lives here once a scan EXISTS: the scan rows above only appear
+  -- while a scanner has never run, but the audio keeps changing under a
+  -- result that is held until the next press.
+  if state.suspects ~= nil or state.unheard ~= nil then
+    im.Separator(ctx)
+    im.TextDisabled(ctx, "Rescan:")
+    if state.suspects ~= nil then
+      im.SameLine(ctx)
+      if im.SmallButton(ctx, "Suspects##inbrescansus") then
+        pending_action = function()
+          state.suspects = vo.ScanSuspects(state.overview or {},
+            state.transcripts or {}, state.lines or {}, vo.LoadConfig(),
+            vo.VERIFY_THRESH)
+        end
+      end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Re-run the free hunt over the stored data.")
+      end
+    end
+    if state.unheard ~= nil then
+      im.SameLine(ctx)
+      if im.SmallButton(ctx, "Unheard audio##inbrescanunh") then
+        pending_action = Repair.ScanUnheard
+      end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Sweep the session's audio against the silence gate\n" ..
+          "again. Seconds of AudioAccessor work.\n\n" ..
+          (state.unheard_note or ""))
+      end
+    end
+  end
+
   im.EndChild(ctx)
 end
 
