@@ -7816,9 +7816,15 @@ end
 -- No "ok" here on purpose: OK is the human's per-take judgment and lives
 -- on the take row's own box, beside the words it judges -- a bar verb
 -- would detach the confirmation from the evidence.
+-- The PICK verbs ride the takes context: the sheet's selectable unit is
+-- the take row, so a line is selected BY selecting its takes -- exactly
+-- the scope the old Pick row acted on. The lines context stays for a
+-- surface that can select a line as one thing.
 vo.CONTEXT_VERBS = {
   { key = "recordings", verbs = { "match", "cut", "untrack" } },
-  { key = "takes",      verbs = { "fix_from", "verify", "recut", "untrack" } },
+  { key = "takes",      verbs = { "fix_from", "verify", "recut",
+                                  "pick_first", "pick_last", "name_alts",
+                                  "untrack" } },
   { key = "lines",      verbs = { "pick_first", "pick_last", "name_alts" } },
 }
 

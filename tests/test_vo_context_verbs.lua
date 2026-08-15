@@ -33,9 +33,15 @@ test("recordings get match, cut and untrack, in order", function()
     "got: " .. ids({ recordings = 1 }))
 end)
 
-test("takes get the fix and judge verbs", function()
-  assert(ids({ takes = 3 }) == "fix_from,verify,recut,untrack",
+test("takes get the fix, judge and pick verbs", function()
+  assert(ids({ takes = 3 })
+           == "fix_from,verify,recut,pick_first,pick_last,name_alts,untrack",
     "got: " .. ids({ takes = 3 }))
+end)
+
+test("takes and lines share the pick verbs", function()
+  assert(ids({ takes = 1, lines = 1 }) == "pick_first,pick_last,name_alts",
+    "got: " .. ids({ takes = 1, lines = 1 }))
 end)
 
 test("ok is deliberately NOT a bar verb -- it lives on the take row's box", function()
@@ -54,11 +60,6 @@ test("mixed recording and takes intersect to untrack", function()
     "got: " .. ids({ recordings = 1, takes = 2 }))
 end)
 
-test("mixed takes and lines share nothing", function()
-  assert(ids({ takes = 1, lines = 1 }) == "",
-    "got: " .. ids({ takes = 1, lines = 1 }))
-end)
-
 test("empty selection is empty", function()
   assert(#vo.ContextVerbs({}) == 0, "empty selection produced verbs")
 end)
@@ -68,7 +69,8 @@ test("nil selection is empty, not an error", function()
 end)
 
 test("zero counts are not a context", function()
-  assert(ids({ recordings = 0, takes = 2 }) == "fix_from,verify,recut,untrack",
+  assert(ids({ recordings = 0, takes = 2 })
+           == "fix_from,verify,recut,pick_first,pick_last,name_alts,untrack",
     "a zero count changed the verbs: " .. ids({ recordings = 0, takes = 2 }))
 end)
 

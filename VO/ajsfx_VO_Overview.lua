@@ -10022,12 +10022,41 @@ Verbs.DEFS = {
   },
   verify = {
     label = "Verify",
+    -- Gated on the ARRANGE selection: Verify's scope is REAPER's items,
+    -- so a sheet-only selection must grey it rather than offer a button
+    -- that would silently find nothing.
+    needs_items = true,
     fn = function() pending_action = Verify.KickSelection end,
     tip = "Checks every selected item in the arrange view -- tracked in the\n" ..
           "sheet or not. Quick check reads the stored transcript against\n" ..
           "each item's name; the Re-listen toggle (Verified stage) decodes\n" ..
           "the audio fresh instead. Verdicts land in the report below;\n" ..
-          "nothing moves unless you say so.",
+          "nothing moves unless you say so.\n\n" ..
+          "Greyed means nothing is selected in REAPER: that selection is\n" ..
+          "the scope.",
+  },
+  pick_first = {
+    label = "Pick first takes",
+    fn = function() AutoSelectTakes(AffectedRows(), "first") end,
+    tip = "Mark each selected line's FIRST take as the select. Locked\n" ..
+          "lines are left alone, and any Sel you ticked by hand stands.\n" ..
+          "Whichever pick rule was pressed last is the one the hero's\n" ..
+          "batch run uses.",
+  },
+  pick_last = {
+    label = "Pick last takes",
+    fn = function() AutoSelectTakes(AffectedRows(), "last") end,
+    tip = "Mark each selected line's LAST take as the select -- the reader\n" ..
+          "kept going until they had it. Locked lines are left alone, and\n" ..
+          "any Sel you ticked by hand stands.",
+  },
+  name_alts = {
+    label = "Auto-name the alts",
+    fn = function() pending_action = ApplyAltNames end,
+    tip = "Give every take marked Keep its own numbered alt name (the\n" ..
+          "pattern in Settings), so it can ship beside the select. The\n" ..
+          "select keeps the plain name; a take that already has its own\n" ..
+          "name is left alone.",
   },
   recut = {
     label = "Re-cut selected takes",
@@ -10102,22 +10131,12 @@ Verbs.STAGE = {
             "custom fades are how a hand-trimmed item is recognised and\n" ..
             "left alone. Acts on the REAPER selection." },
   },
+  -- One definition each: the stage shows the same pick verbs the takes
+  -- context shows, so the two surfaces can never drift apart.
   decided = {
-    { label = "Auto-pick selects: last take",
-      fn = function() AutoSelectTakes(AffectedRows(), "last") end,
-      tip = "Mark each line's LAST take as the select -- the reader kept\n" ..
-            "going until they had it. Locked lines are left alone, and any\n" ..
-            "Sel you ticked by hand stands. Whichever pick rule was pressed\n" ..
-            "last is the one the hero's batch run uses." },
-    { label = "Auto-pick selects: first take",
-      fn = function() AutoSelectTakes(AffectedRows(), "first") end,
-      tip = "The same pass, picking each line's FIRST take instead." },
-    { label = "Auto-name the alts",
-      fn = function() pending_action = ApplyAltNames end,
-      tip = "Give every take marked Keep its own numbered alt name (the\n" ..
-            "pattern in Settings), so it can ship beside the select. The\n" ..
-            "select keeps the plain name; a take that already has its own\n" ..
-            "name is left alone." },
+    { verb = "pick_last" },
+    { verb = "pick_first" },
+    { verb = "name_alts" },
   },
   verified = {
     { label = function()
@@ -10204,6 +10223,13 @@ function Verbs.DrawEntry(e, idx)
 end
 
 function Verbs.Draw()
+  -- The Re-listen preference is read by Verify wherever it is kicked
+  -- from, so it loads here -- once, before any verb can run -- rather
+  -- than inside the one checkbox that happens to display it.
+  if state.verify_relisten == nil then
+    state.verify_relisten =
+      r.GetExtState(vo.EXT_SECTION, "verify_relisten") == "true"
+  end
   local ids = vo.ContextVerbs(Verbs.Selection())
   local drawn = 0
   for _, id in ipairs(ids) do
@@ -13170,7 +13196,7 @@ local function loop()
     -- nothing visible and "Edit:" went missing from it unnoticed. Kept honest
     -- now because "Fix:" is the row every repair verb was gathered into, and a
     -- list that does not name it will drift again the next time one moves.
-    local GROUPS = { "Match:", "Fix:", "Pick:", "Pull:", "Verify:", "Setup:" }
+    local GROUPS = { "Setup:" }
     local gutter = 0
     for _, g in ipairs(GROUPS) do
       local w = im.CalcTextSize(ctx, g)

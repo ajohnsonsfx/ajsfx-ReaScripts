@@ -75,9 +75,15 @@ panels, four Main button rows, and the separate Sources window.
 12. A fixed verb bar above the sheet (always visible — NOT a floating
     popup; discoverability is the named weakness of concept C) shows the
     verbs for the current selection context:
-    recording selected → Match / Cut; take(s) → Fix from… / Verify / OK /
-    Re-cut; line card → pick verbs; nothing → a hint line naming the
-    contexts.
+    recording selected → Match / Cut; take(s) → Fix from… / Verify /
+    Re-cut / pick verbs; nothing → a hint line naming the contexts.
+    *(As built, two deliberate deviations from the first draft of this
+    requirement: OK is NOT a bar verb — it is the human's per-take
+    judgment and stays on the take row's own box beside the words it
+    judges; and the pick verbs ride the takes context, because the
+    sheet's selectable unit is the take row — a line is selected by
+    selecting its takes, which is exactly the scope the old Pick row
+    acted on. A stage click on Decided offers the same pick verbs.)*
 13. Mixed selections show only the verbs shared by every selected context.
 14. The Match/Fix/Pick/Pull rows are removed. Globals reduce to: hero
     (in strip), search, Settings, "Keep the session in sync", and
