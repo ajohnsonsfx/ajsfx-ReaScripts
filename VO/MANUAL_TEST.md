@@ -1186,3 +1186,12 @@ one UNCUT recording holding several takes as markers in one item.
    fix from the words in the same press.
 2. After the press, the clip counts as ONE marker to every shape test
    (edit-authority fixes no longer refuse it as a recording).
+
+## Judges read anchored words (0.15beta29)
+
+1. A take whose SHEET transcript disagrees with its name (the sheet reads
+   by anchor): "Fix from Transcript" renames marker + item to the line the
+   sheet's words say -- even when whisper's t0/t1 window is displaced.
+   (Live case: window said "I think it mean", anchors said "because God".)
+2. Quick check on the same take gives the same verdict the sheet implies.
+3. Suspects flags/clears takes consistently with what their rows display.
