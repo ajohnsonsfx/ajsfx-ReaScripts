@@ -6019,6 +6019,12 @@ end
 -- djb2 over the words whose midpoint falls inside [from, to]. The hash keys
 -- the vetted fingerprint to the transcript content under one item, so a
 -- gap-repair merge elsewhere in the file cannot invalidate this item.
+--
+-- DELIBERATELY the midpoint rule, not the anchor rule the judges use
+-- (2026-08-14 sweep): a fingerprint only needs to be SELF-consistent --
+-- stamp-write and recompute agree -- and switching the rule would falsify
+-- every stamp in every project at once, unchecking every Vet and OK for no
+-- gain in honesty. Do not "fix" this to WordsInRange casually.
 function vo.WordsHash(words, from, to)
   local h = 5381
   for _, w in ipairs(words or {}) do
