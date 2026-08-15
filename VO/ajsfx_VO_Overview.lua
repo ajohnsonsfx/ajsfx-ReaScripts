@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.15beta33
--- @changelog PRE-RELEASE: EVERY FLAG SHOWS ITS EVIDENCE. Auditing the whole verify list by hand taught one lesson: a flag without the words is a hunt -- you had to go find what the take actually says before you could judge the judgment. Now the evidence rides with every finding. Out of sync rows append the anchored words under the marker ('marker says X, item says Y -- words: "..."'). Suspects rows grow an evidence line (the words, and the judge's best guess when it would not swear), list Selects FIRST with an ON SELECTS tag -- a flagged deliverable is the risk -- and "no anchored words at all" becomes its own named trigger instead of hiding inside thin coverage: a delivered take nothing has ever checked on paper is the riskiest row on the sheet. (beta32, same day: no phantom divergence when asset and deliver names differ.) A line's marker ASSET and its DELIVER filename can legitimately differ (asset "DBP_Grumbar_Grumbar_", delivering as "DBP_Grumbar_Grumbar"), and items wear the deliver name -- but the parity engine compared item names against the asset alone, so every correctly-named take of such a line sat in "Out of sync" as a phantom divergence with nothing actually wrong. A name now counts as agreement when it is the marker's asset, the line's deliver name, or a conventional alt of either. Found live on the one-word line "You". (beta31, same day: drags between delivery tracks re-role the name.) Swap a select and an alt by dragging them between Selects and Alts and the names now follow the ROLE: the take arriving on Selects drops its _altN for the plain deliver name, the one arriving on Alts picks a number up. The watcher used to adopt the marks and then run the fill-blanks alt namer, which never overwrites -- so a role swap swapped the ticks and left both names describing the old roles. The sync waterfall now runs the overwriting namer (the old "Fix names from the sheet") scoped to the moved items: tool-generated names re-role, a name you typed is kept, as everywhere. (beta30, same day: the anchor sweep.) Following beta29's find, every consumer of stored transcript words was checked for the retired midpoint/window rules. Two more judges were on them and are now on the sheet's anchor rule: the re-listen STALENESS check (it clipped the stored side by midpoint, so a displaced window read as "sidecar stale" about a take whose displayed transcript matched the audio exactly) and the remote seam's verify verb. Confirmed correct and deliberately left alone: gap repair and word merging (the stamps ARE the object there), fresh-decode clipping (no anchors exist yet), cut boundary planning (edges come from the envelope by design), the unheard scan (approximate coverage is its nature), word-to-project display mapping, and the vetted fingerprint's word hash -- self-consistent by design, now with a comment forbidding a casual "fix" that would uncheck every Vet and OK in every project. (beta29, same day: Fix from Transcript, quick check and Suspects moved to the anchor rule.) Fix from Transcript, quick check and the Suspects scan judged stored words by the MIDPOINT of whisper's t0/t1 window -- the rule the anchor work (SPEC-word-anchors.md) proved wrong, because a displaced window puts a word's stamps seconds away from its audio. The sheet has displayed words by their DTW ANCHOR all along, so a take could show "because God," on screen while every judge quietly read "I think it mean" off the displaced stamps and reported that the marker agrees with the transcript. All three now use the sheet's own anchor rule (vo.WordsInRange): one rule everywhere, so a verdict is always about evidence you can see. WordsWithin keeps its one legitimate job, clipping FRESH decode output, where anchors do not exist. Found live on a real clip whose displaced window was 2.5 seconds late. (beta28, same day: hidden markers die first.) A clip can carry tool markers OUTSIDE the audio it can play -- split residue parked before or after the visible window. They are invisible in the take list, they can survive the leftover pass when no neighbouring clip claims them, they make every shape test read the clip as "several markers", and the first of them in chunk order is what names the item. "Fix from Transcript" now drops them outright as its step 0 -- the clip only owns what it can play -- before removing duplicates, judging the words, and pruning; the report counts them ("Dropped N hidden markers"). The rename step also refuses to let an out-of-coverage marker be judged or claim the item's name on the automatic path, where nothing drops it. (0.15beta27, same day: Fix from Transcript judges the words under each marker.) The rename step judged each marker by overlap against the MATCHER's spans, so where the matcher had assigned that audio to the same wrong line -- or to nothing -- it found no disagreement and reported "all markers already agree with the transcript" about a marker the words plainly refute. It now reads the words under each marker and judges them with the same judge Verify trusts (vo.JudgeLine): a marker whose words clearly say another line is renamed to it, and a range the judge cannot place is COUNTED AND REPORTED as unplaced -- never silently read as agreement. The report says "the words", and means them. (0.15beta26, same day: drag-to-line renames the item again.) The drop retargeted the marker but could silently skip the rename: "is this clip shared?" was answered by counting SHEET ROWS pointing at the item, and a stale duplicate row or an orphan mark aimed at the same clip made a one-take clip read as shared -- marker moved, name kept, the exact split-brain the tool exists to prevent. The question is now asked of the clip's own markers, after the retarget: only a marker still naming a DIFFERENT line blocks the rename (renaming would misname that neighbour -- a real uncut recording still refuses, correctly). Un-assigning a take clears the clip's name by the same rule: only when no other marker still claims it. It shipped as only the rename step, so a clip carrying a stale second marker -- split residue, or a line the words contradict -- kept it, and the one authority entitled to delete a marker was refusing to. One press, one undo step: drop duplicate markers (decided by the words spoken there) and leftover markers whose audio lives in a neighbouring clip, rename the survivors from the transcript, then prune markers left naming the same line twice on one clip (the copy covering more audio wins). The edit-authority fixes still refuse multi-marker clips -- they cannot know which marker is right; the words can, which is why this is transcript authority's job. Same waterfall from the Out of sync panel's "Fix from Transcript". (0.15beta24, same day: the OK box.) A fifth box on every take row (Lock Keep Sel Vet OK): tick OK to say "I checked -- this read IS this line", for the reads whisper mishears (a name like Bolvd heard as BOLVED) that are nonetheless correct. Vet stays the MACHINE's box, exactly as before; OK is YOURS -- two different facts, two boxes, two keys, never mixed. The transcript stays exactly as heard -- nothing is rewritten -- but with OK ticked, Suspects stops flagging the name-vs-words disagreement and quick check reports "OK'd by you" instead of re-judging it. The mark is a fingerprint like the machine's stamp, so any edit to the item, marker, name or words withdraws it by itself -- it can never silently outlive the state you actually looked at. Click again to withdraw it yourself; an explicit re-listen still runs and its verdict still stands. Works on a highlighted batch like every mark. (Replaces beta23's right-click-the-Vet-box design minutes into review: overloading the machine's box with the human's verdict hid whose judgment the tick was.) Click a finding in the "Out of sync" panel and you are looking at it: the clip selects in REAPER and the edit cursor moves to it -- and the sheet's line selects, unfolds and scrolls on its own, because the sheet already mirrors the arrange selection every frame. The marks-vs-tracks rows in the same panel do the trip too (they used to select the sheet row only). Checking a finding now costs one click instead of a hunt across three views. (0.15beta21, same day: the parity watcher itself -- edit one thing and the rest catches up, one "Keep the session in sync" switch, "Fix from Transcript / Marker / Item / Sheet" on everything queued.) Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.
+-- @version 0.15beta34
+-- @changelog PRE-RELEASE: THE INBOX. The five Check panels asked one question five ways -- "what needs me?" -- split by which scanner happened to fire. They are now ONE ranked rail, always on screen to the right of the sheet: Selects-track suspects first (a flagged deliverable is the risk), then everything the watcher refused to guess, then takes without audio, unidentified reads, undecided lines, other suspects, unheard stretches. Every row keeps the evidence-first contract: the words ARE the jump, and the verbs on the row are the same verbs the panels dispatched -- Fix from Transcript/Marker/Item/Sheet, Relink, Pick first/last, Re-listen. A scanner that has not run appears as a Scan row at its rank, never silently clean. The rail is keyboard-walkable: J/K walk the findings, Enter jumps, 1 and 2 press the row's verbs -- all five keys remappable in the Settings window's new Keyboard section, which warns when two bindings share a key. The Log left its tab for a strip under the rail, newest first, so an action and its report sit in one column; Copy and Clear came with it. The Check and Log tabs retired with their contents -- Verify moved to the Main tab -- and the tab bar now reads Setup / Main / Settings plus a "Needs you (N)" count that points the walk at the top finding. Nothing changed meaning: every verb dispatches the function it always did; this release only moves where they live. (beta33: EVERY FLAG SHOWS ITS EVIDENCE.) Auditing the whole verify list by hand taught one lesson: a flag without the words is a hunt -- you had to go find what the take actually says before you could judge the judgment. Now the evidence rides with every finding. Out of sync rows append the anchored words under the marker ('marker says X, item says Y -- words: "..."'). Suspects rows grow an evidence line (the words, and the judge's best guess when it would not swear), list Selects FIRST with an ON SELECTS tag -- a flagged deliverable is the risk -- and "no anchored words at all" becomes its own named trigger instead of hiding inside thin coverage: a delivered take nothing has ever checked on paper is the riskiest row on the sheet. (beta32, same day: no phantom divergence when asset and deliver names differ.) A line's marker ASSET and its DELIVER filename can legitimately differ (asset "DBP_Grumbar_Grumbar_", delivering as "DBP_Grumbar_Grumbar"), and items wear the deliver name -- but the parity engine compared item names against the asset alone, so every correctly-named take of such a line sat in "Out of sync" as a phantom divergence with nothing actually wrong. A name now counts as agreement when it is the marker's asset, the line's deliver name, or a conventional alt of either. Found live on the one-word line "You". (beta31, same day: drags between delivery tracks re-role the name.) Swap a select and an alt by dragging them between Selects and Alts and the names now follow the ROLE: the take arriving on Selects drops its _altN for the plain deliver name, the one arriving on Alts picks a number up. The watcher used to adopt the marks and then run the fill-blanks alt namer, which never overwrites -- so a role swap swapped the ticks and left both names describing the old roles. The sync waterfall now runs the overwriting namer (the old "Fix names from the sheet") scoped to the moved items: tool-generated names re-role, a name you typed is kept, as everywhere. (beta30, same day: the anchor sweep.) Following beta29's find, every consumer of stored transcript words was checked for the retired midpoint/window rules. Two more judges were on them and are now on the sheet's anchor rule: the re-listen STALENESS check (it clipped the stored side by midpoint, so a displaced window read as "sidecar stale" about a take whose displayed transcript matched the audio exactly) and the remote seam's verify verb. Confirmed correct and deliberately left alone: gap repair and word merging (the stamps ARE the object there), fresh-decode clipping (no anchors exist yet), cut boundary planning (edges come from the envelope by design), the unheard scan (approximate coverage is its nature), word-to-project display mapping, and the vetted fingerprint's word hash -- self-consistent by design, now with a comment forbidding a casual "fix" that would uncheck every Vet and OK in every project. (beta29, same day: Fix from Transcript, quick check and Suspects moved to the anchor rule.) Fix from Transcript, quick check and the Suspects scan judged stored words by the MIDPOINT of whisper's t0/t1 window -- the rule the anchor work (SPEC-word-anchors.md) proved wrong, because a displaced window puts a word's stamps seconds away from its audio. The sheet has displayed words by their DTW ANCHOR all along, so a take could show "because God," on screen while every judge quietly read "I think it mean" off the displaced stamps and reported that the marker agrees with the transcript. All three now use the sheet's own anchor rule (vo.WordsInRange): one rule everywhere, so a verdict is always about evidence you can see. WordsWithin keeps its one legitimate job, clipping FRESH decode output, where anchors do not exist. Found live on a real clip whose displaced window was 2.5 seconds late. (beta28, same day: hidden markers die first.) A clip can carry tool markers OUTSIDE the audio it can play -- split residue parked before or after the visible window. They are invisible in the take list, they can survive the leftover pass when no neighbouring clip claims them, they make every shape test read the clip as "several markers", and the first of them in chunk order is what names the item. "Fix from Transcript" now drops them outright as its step 0 -- the clip only owns what it can play -- before removing duplicates, judging the words, and pruning; the report counts them ("Dropped N hidden markers"). The rename step also refuses to let an out-of-coverage marker be judged or claim the item's name on the automatic path, where nothing drops it. (0.15beta27, same day: Fix from Transcript judges the words under each marker.) The rename step judged each marker by overlap against the MATCHER's spans, so where the matcher had assigned that audio to the same wrong line -- or to nothing -- it found no disagreement and reported "all markers already agree with the transcript" about a marker the words plainly refute. It now reads the words under each marker and judges them with the same judge Verify trusts (vo.JudgeLine): a marker whose words clearly say another line is renamed to it, and a range the judge cannot place is COUNTED AND REPORTED as unplaced -- never silently read as agreement. The report says "the words", and means them. (0.15beta26, same day: drag-to-line renames the item again.) The drop retargeted the marker but could silently skip the rename: "is this clip shared?" was answered by counting SHEET ROWS pointing at the item, and a stale duplicate row or an orphan mark aimed at the same clip made a one-take clip read as shared -- marker moved, name kept, the exact split-brain the tool exists to prevent. The question is now asked of the clip's own markers, after the retarget: only a marker still naming a DIFFERENT line blocks the rename (renaming would misname that neighbour -- a real uncut recording still refuses, correctly). Un-assigning a take clears the clip's name by the same rule: only when no other marker still claims it. It shipped as only the rename step, so a clip carrying a stale second marker -- split residue, or a line the words contradict -- kept it, and the one authority entitled to delete a marker was refusing to. One press, one undo step: drop duplicate markers (decided by the words spoken there) and leftover markers whose audio lives in a neighbouring clip, rename the survivors from the transcript, then prune markers left naming the same line twice on one clip (the copy covering more audio wins). The edit-authority fixes still refuse multi-marker clips -- they cannot know which marker is right; the words can, which is why this is transcript authority's job. Same waterfall from the Out of sync panel's "Fix from Transcript". (0.15beta24, same day: the OK box.) A fifth box on every take row (Lock Keep Sel Vet OK): tick OK to say "I checked -- this read IS this line", for the reads whisper mishears (a name like Bolvd heard as BOLVED) that are nonetheless correct. Vet stays the MACHINE's box, exactly as before; OK is YOURS -- two different facts, two boxes, two keys, never mixed. The transcript stays exactly as heard -- nothing is rewritten -- but with OK ticked, Suspects stops flagging the name-vs-words disagreement and quick check reports "OK'd by you" instead of re-judging it. The mark is a fingerprint like the machine's stamp, so any edit to the item, marker, name or words withdraws it by itself -- it can never silently outlive the state you actually looked at. Click again to withdraw it yourself; an explicit re-listen still runs and its verdict still stands. Works on a highlighted batch like every mark. (Replaces beta23's right-click-the-Vet-box design minutes into review: overloading the machine's box with the human's verdict hid whose judgment the tick was.) Click a finding in the "Out of sync" panel and you are looking at it: the clip selects in REAPER and the edit cursor moves to it -- and the sheet's line selects, unfolds and scrolls on its own, because the sheet already mirrors the arrange selection every frame. The marks-vs-tracks rows in the same panel do the trip too (they used to select the sheet row only). Checking a finding now costs one click instead of a hunt across three views. (0.15beta21, same day: the parity watcher itself -- edit one thing and the rest catches up, one "Keep the session in sync" switch, "Fix from Transcript / Marker / Item / Sheet" on everything queued.) Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -248,7 +248,6 @@ for i, c in ipairs(COLUMNS) do COLUMNS.keys[i] = c.key end
 local TOOLBAR_TABS = {
   { key = "setup", label = "Setup" },
   { key = "edit",  label = "Main" },
-  { key = "log",   label = "Log" },
 }
 
 local LAYOUT_ORDERS = {
@@ -12396,10 +12395,10 @@ local function loop()
     -- the tooltip does not have to.
     local n_scripts = #state.scripts
 
-    -- The Check tab retired when the rail arrived; a remembered ExtState
-    -- tab from an older build must not strand the bar on a key without a
-    -- body.
-    if state.tab ~= "setup" and state.tab ~= "edit" and state.tab ~= "log" then
+    -- The Check and Log tabs retired when the rail arrived; a remembered
+    -- ExtState tab from an older build must not strand the bar on a key
+    -- without a body.
+    if state.tab ~= "setup" and state.tab ~= "edit" then
       state.tab = "edit"
     end
 
@@ -13125,41 +13124,6 @@ local function loop()
           "model reloads per item; roughly 20s each) but it is the only\n" ..
           "check that HEARS anything the transcript missed.")
 
-    elseif state.tab == "log" then
-      -- The Log tab's row is the only one that acts on the REPORTS rather than
-      -- on the audio, so nothing here is scoped by the selection and nothing is
-      -- greyed.
-      im.SetCursorPosX(ctx, row_left)
-      local log = state.log or {}
-      if im.Button(ctx, "Copy log") and #log > 0 then
-        -- Everything, folded or not: what you copy is the whole record, not
-        -- whichever entries happened to be open.
-        local out = {}
-        for _, e in ipairs(log) do out[#out + 1] = EntryText(e) end
-        ClipWrite(table.concat(out, "\n"))
-      end
-      Tip("Copy every entry below as text.\n\n" ..
-          "For just one, right-click it. ImGui text is drawn rather than\n" ..
-          "selectable, so dragging across it cannot work the way it does in a\n" ..
-          "browser -- hence buttons and a context menu.")
-
-      if im.Button(ctx, "Clear") then
-        state.log = {}
-        state.logged_message, state.logged_summary = nil, nil
-        Trim.log_save()
-      end
-      Tip("Empty the log. It does not touch your audio.\n\n" ..
-          "The log is stored WITH THE PROJECT, so it survives this window\n" ..
-          "closing, the script restarting, and a crash -- which is when you\n" ..
-          "most want to read what it last did. It goes when the project does.")
-
-      if (state.log_copied or 0) > 0 then
-        state.log_copied = state.log_copied - 1
-        im.TextColored(ctx, 0x66BB66FF, "copied")
-        im.SameLine(ctx)
-      end
-      im.TextDisabled(ctx, string.format("  %d entr%s this session",
-                                         #log, #log == 1 and "y" or "ies"))
     end
 
     im.EndGroup(ctx)
@@ -13184,16 +13148,10 @@ local function loop()
     end
 
     im.Separator(ctx)
-    -- The counts and the filters describe THE SHEET, so they belong to the tabs
-    -- that show it. On the Log tab they were furniture from another room: a
-    -- search box and a speaker filter sitting above a list of run reports, doing
-    -- nothing to it.
-    if state.tab ~= "log" then
-      DrawSummary()
-      im.Spacing(ctx)
-      DrawFilters()
-      im.Spacing(ctx)
-    end
+    DrawSummary()
+    im.Spacing(ctx)
+    DrawFilters()
+    im.Spacing(ctx)
 
     -- Everything a run reported, into the log, before anything is drawn.
     --
@@ -13264,78 +13222,106 @@ local function loop()
     local body_h = math.max(120,
       avail_h - im.GetFrameHeightWithSpacing(ctx) * rows)
 
-    if state.tab == "log" then
-      -- THE LOG, where the cards would be. A full tab rather than a strip along
-      -- the bottom: reading a run's report means scrolling it, comparing it
-      -- against the run before, and copying it out, and none of that fits in a
-      -- band you have to keep the table above.
-      if im.BeginChild(ctx, "##vo_log", 0, body_h) then
-        local log = state.log or {}
-        if #log == 0 then
-          im.TextDisabled(ctx,
-            "Nothing yet. Every run lands here as one entry -- unfold it for\n" ..
-            "that run's detail -- and the entries stay, so the run before this\n" ..
-            "one is still readable after the next press.")
-        end
-        for i, e in ipairs(log) do
-          local colour = e.kind == "error" and 0xDD6666FF
-                      or e.kind == "warn"  and 0xDDAA44FF or 0xCCCCCCFF
-          -- The header is a SUMMARY of the action, short enough to stay on one
-          -- line: a tree label cannot wrap, so the full text lives inside where
-          -- it can. Entries open closed, because the point of the list is to be
-          -- scannable.
-          local head = tostring(e.title or ""):gsub("%s+", " ")
-          if #head > 96 then head = head:sub(1, 95) .. "\226\128\166" end
-          im.PushStyleColor(ctx, im.Col_Text, colour)
-          local open = im.TreeNode(ctx, string.format("%s  %s##log%d",
-                                                      e.stamp or "", head, i))
-          im.PopStyleColor(ctx)
-
-          -- Right-click THIS entry. Checked immediately after the tree node, so
-          -- IsItemHovered still refers to it -- and folding state is irrelevant,
-          -- because the copy takes the entry's detail either way.
-          local menu = "##logentry" .. i
-          if im.IsItemHovered(ctx) and im.IsMouseClicked(ctx, 1) then
-            im.OpenPopup(ctx, menu)
-          end
-          if im.BeginPopup(ctx, menu) then
-            if im.Selectable(ctx, "Copy this entry") then ClipWrite(EntryText(e)) end
-            if im.Selectable(ctx, "Copy this entry's headline only") then
-              ClipWrite((e.stamp or "") .. "  " .. (e.title or ""))
-            end
-            im.EndPopup(ctx)
-          end
-
-          if open then
-            im.PushTextWrapPos(ctx, 0)
-            im.TextColored(ctx, colour, e.title or "")
-            for _, ln in ipairs(e.lines or {}) do
-              im.TextColored(ctx,
-                ln.kind == "warn" and 0xDDAA44FF or 0x999999FF, ln.text or "")
-            end
-            im.PopTextWrapPos(ctx)
-            im.TreePop(ctx)
-          end
-        end
-        -- Follow the tail only when something new arrived, so scrolling back
-        -- through a long run is not yanked to the bottom on every frame.
-        if state.log_scroll then
-          im.SetScrollHereY(ctx, 1.0)
-          state.log_scroll = nil
-        end
-        im.EndChild(ctx)
-      end
-    else
-      -- The sheet and the rail split the body: the sheet stays the
-      -- centerpiece (AJ's call on the redesign spec), the rail is always
-      -- there answering "what now".
-      local sheet_avail = select(1, im.GetContentRegionAvail(ctx))
-      local rail_w = math.min(Inbox.WIDTH, math.floor(sheet_avail * 0.38))
-      DrawCards(body_h, sheet_avail - rail_w - item_gap)
+    -- The sheet and the rail split the body: the sheet stays the
+    -- centerpiece (AJ's call on the redesign spec), the rail answers
+    -- "what now", and THE LOG rides under the rail -- actions and their
+    -- reports in one column, newest first. The Log tab retired with it.
+    local sheet_avail = select(1, im.GetContentRegionAvail(ctx))
+    local rail_w = math.min(Inbox.WIDTH, math.floor(sheet_avail * 0.38))
+    DrawCards(body_h, sheet_avail - rail_w - item_gap)
+    im.SameLine(ctx)
+    im.BeginGroup(ctx)
+    local log_h = math.max(110, math.floor(body_h * 0.30))
+    Inbox.Draw(rail_w, body_h - log_h - item_gap)
+    if im.BeginChild(ctx, "##vo_log", rail_w, log_h) then
+      local log = state.log or {}
+      im.TextDisabled(ctx, string.format("Log (%d)", #log))
       im.SameLine(ctx)
-      Inbox.Draw(rail_w, body_h)
-      Inbox.HandleKeys()
+      if im.SmallButton(ctx, "Copy") and #log > 0 then
+        -- Everything, folded or not: what you copy is the whole record,
+        -- not whichever entries happened to be open.
+        local out = {}
+        for _, e in ipairs(log) do out[#out + 1] = EntryText(e) end
+        ClipWrite(table.concat(out, "\n"))
+      end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Copy every entry as text. For just one, right-click it.\n" ..
+                           "ImGui text is drawn rather than selectable, hence\n" ..
+                           "buttons and a context menu.")
+      end
+      im.SameLine(ctx)
+      if im.SmallButton(ctx, "Clear") then
+        state.log = {}
+        state.logged_message, state.logged_summary = nil, nil
+        Trim.log_save()
+      end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Empty the log. It does not touch your audio.\n\n" ..
+                           "The log is stored WITH THE PROJECT, so it survives this\n" ..
+                           "window closing, the script restarting, and a crash. It\n" ..
+                           "goes when the project does.")
+      end
+      if (state.log_copied or 0) > 0 then
+        state.log_copied = state.log_copied - 1
+        im.SameLine(ctx)
+        im.TextColored(ctx, 0x66BB66FF, "copied")
+      end
+      im.Separator(ctx)
+      if #log == 0 then
+        im.TextDisabled(ctx,
+          "Nothing yet. Every run lands\nhere as one entry, newest\nfirst, and the entries stay.")
+      end
+      -- NEWEST FIRST: the strip sits under the rail, so the entry you
+      -- just caused is the one at the top, no scrolling to find it.
+      for i = #log, 1, -1 do
+        local e = log[i]
+        local colour = e.kind == "error" and 0xDD6666FF
+                    or e.kind == "warn"  and 0xDDAA44FF or 0xCCCCCCFF
+        -- The header is a SUMMARY of the action, short enough to stay on
+        -- one line: a tree label cannot wrap, so the full text lives
+        -- inside where it can. Entries open closed.
+        local head = tostring(e.title or ""):gsub("%s+", " ")
+        if #head > 44 then head = head:sub(1, 43) .. "\226\128\166" end
+        im.PushStyleColor(ctx, im.Col_Text, colour)
+        local topen = im.TreeNode(ctx, string.format("%s  %s##log%d",
+                                                     e.stamp or "", head, i))
+        im.PopStyleColor(ctx)
+
+        -- Right-click THIS entry. Checked immediately after the tree
+        -- node, so IsItemHovered still refers to it.
+        local menu = "##logentry" .. i
+        if im.IsItemHovered(ctx) and im.IsMouseClicked(ctx, 1) then
+          im.OpenPopup(ctx, menu)
+        end
+        if im.BeginPopup(ctx, menu) then
+          if im.Selectable(ctx, "Copy this entry") then ClipWrite(EntryText(e)) end
+          if im.Selectable(ctx, "Copy this entry's headline only") then
+            ClipWrite((e.stamp or "") .. "  " .. (e.title or ""))
+          end
+          im.EndPopup(ctx)
+        end
+
+        if topen then
+          im.PushTextWrapPos(ctx, 0)
+          im.TextColored(ctx, colour, e.title or "")
+          for _, ln in ipairs(e.lines or {}) do
+            im.TextColored(ctx,
+              ln.kind == "warn" and 0xDDAA44FF or 0x999999FF, ln.text or "")
+          end
+          im.PopTextWrapPos(ctx)
+          im.TreePop(ctx)
+        end
+      end
+      -- Newest-first puts a fresh entry at the top; snap there when one
+      -- arrives so it is visible without a hunt.
+      if state.log_scroll then
+        im.SetScrollY(ctx, 0)
+        state.log_scroll = nil
+      end
+      im.EndChild(ctx)
     end
+    im.EndGroup(ctx)
+    Inbox.HandleKeys()
 
     if not state.project_path then
       im.TextColored(ctx, 0xDDAA33FF,
