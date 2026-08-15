@@ -6260,6 +6260,50 @@ function vo.ScanSuspects(rows, transcripts, lines, cfg, thresh)
   return out
 end
 
+-- One ranked list of everything that needs the human. Merges every
+-- scanner's output; the WEIGHTS are the priority law (spec: the redesign
+-- design doc, Req-2): what the ears must settle on the Selects track
+-- first, then what the watcher refused to guess, then the rest. A scanner
+-- that has not run this session gets a "scan" row at its kind's slot --
+-- a stale scanner must never read as a clean one.
+vo.INBOX_WEIGHT = {
+  suspect_select = 10, out_of_sync = 20, no_audio = 30, unidentified = 40,
+  undecided = 50, suspect = 60, unheard = 70,
+  scan_suspects = 60, scan_unheard = 70,
+}
+
+function vo.InboxBuild(src)
+  src = src or {}
+  local findings, counts = {}, { total = 0, by_kind = {} }
+  local seq = 0
+  local function add(kind, payload)
+    seq = seq + 1
+    findings[#findings + 1] = {
+      kind = kind, weight = vo.INBOX_WEIGHT[kind], payload = payload, _seq = seq,
+    }
+    counts.total = counts.total + 1
+    counts.by_kind[kind] = (counts.by_kind[kind] or 0) + 1
+  end
+  local sel = src.selects_track
+  for _, s in ipairs(src.suspects or {}) do
+    add((sel and s.track == sel) and "suspect_select" or "suspect", s)
+  end
+  for _, q in ipairs(src.parity_queue or {}) do add("out_of_sync", q) end
+  for _, d in ipairs(src.disagree or {})     do add("out_of_sync", d) end
+  for _, e in ipairs(src.no_audio or {})     do add("no_audio", e) end
+  for _, e in ipairs(src.unidentified or {}) do add("unidentified", e) end
+  for _, e in ipairs(src.undecided or {})    do add("undecided", e) end
+  for _, e in ipairs(src.unheard or {})      do add("unheard", e) end
+  local scanned = src.scanned or {}
+  if scanned.suspects == false then add("scan_suspects", {}) end
+  if scanned.unheard  == false then add("scan_unheard", {}) end
+  table.sort(findings, function(a, b)
+    if a.weight ~= b.weight then return a.weight < b.weight end
+    return a._seq < b._seq
+  end)
+  return findings, counts
+end
+
 vo.VETTED_EXT = "P_EXT:ajsfx_vo_vetted"
 
 -- The HUMAN's mark, on its own key: "I checked, this read IS this line."
