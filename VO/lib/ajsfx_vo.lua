@@ -7807,6 +7807,49 @@ function vo.PipelineStages(s)
   return out
 end
 
+-- CONTEXTUAL VERBS (redesign spec, Req-12/13): the selection decides
+-- which verbs apply. Three contexts -- an uncut recording, cut takes, and
+-- sheet line cards -- each with its verb list in display order; a mixed
+-- selection gets the INTERSECTION (kept in the first context's order), so
+-- nothing on screen ever offers to do something to part of the selection.
+-- Empty selection returns {}, and the caller draws the hint line instead.
+-- No "ok" here on purpose: OK is the human's per-take judgment and lives
+-- on the take row's own box, beside the words it judges -- a bar verb
+-- would detach the confirmation from the evidence.
+-- The PICK verbs ride the takes context: the sheet's selectable unit is
+-- the take row, so a line is selected BY selecting its takes -- exactly
+-- the scope the old Pick row acted on. The lines context stays for a
+-- surface that can select a line as one thing.
+vo.CONTEXT_VERBS = {
+  { key = "recordings", verbs = { "match", "cut", "untrack" } },
+  { key = "takes",      verbs = { "fix_from", "verify", "recut",
+                                  "pick_first", "pick_last", "name_alts",
+                                  "untrack" } },
+  { key = "lines",      verbs = { "pick_first", "pick_last", "name_alts" } },
+}
+
+function vo.ContextVerbs(sel)
+  sel = sel or {}
+  local active = {}
+  for _, c in ipairs(vo.CONTEXT_VERBS) do
+    if (sel[c.key] or 0) > 0 then active[#active + 1] = c.verbs end
+  end
+  if #active == 0 then return {} end
+  local out = {}
+  for _, verb in ipairs(active[1]) do
+    local everywhere = true
+    for i = 2, #active do
+      local found = false
+      for _, v in ipairs(active[i]) do
+        if v == verb then found = true break end
+      end
+      if not found then everywhere = false break end
+    end
+    if everywhere then out[#out + 1] = verb end
+  end
+  return out
+end
+
 --------------------------------
 -- Pure layer: timeline layout
 --------------------------------
