@@ -823,6 +823,46 @@ local function DrawAdvanced()
   end
 end
 
+-- The inbox rail's keys (the Overview's "Needs you" walk). Stored as key
+-- NAMES: one letter or digit, or Enter / Space. A blank disables that
+-- binding; two bindings on one key means one silently never fires, so
+-- clashes are shown right here rather than discovered by pressing.
+local KEY_BINDINGS = {
+  { key = "key_inbox_next",  label = "Next finding" },
+  { key = "key_inbox_prev",  label = "Previous finding" },
+  { key = "key_inbox_jump",  label = "Jump to it" },
+  { key = "key_inbox_verb1", label = "First verb" },
+  { key = "key_inbox_verb2", label = "Second verb" },
+}
+
+local function DrawKeyboard()
+  im.TextDisabled(ctx, "The Overview's inbox rail: walk the findings and press their\n" ..
+                       "verbs without the mouse. One letter or digit, or Enter or\n" ..
+                       "Space. Blank disables a binding.")
+  im.Spacing(ctx)
+  for _, b in ipairs(KEY_BINDINGS) do
+    im.SetNextItemWidth(ctx, 120)
+    local changed, v = im.InputText(ctx, b.label, cfg[b.key] or "")
+    if changed then cfg[b.key] = v end
+  end
+  local clashes = vo.KeyBindingClashes(cfg)
+  if #clashes > 0 then
+    local names = {}
+    for _, lbl in ipairs(KEY_BINDINGS) do names[lbl.key] = lbl.label end
+    for _, c in ipairs(clashes) do
+      im.TextColored(ctx, 0xDDAA33FF, string.format(
+        '"%s" and "%s" share a key -- the second never fires.',
+        names[c[1]] or c[1], names[c[2]] or c[2]))
+    end
+  end
+  im.Spacing(ctx)
+  if im.Button(ctx, "Reset keys to defaults") then
+    for _, field in ipairs(vo.CONFIG_SCHEMA) do
+      if field.key:find("^key_inbox_") then cfg[field.key] = field.default end
+    end
+  end
+end
+
 local function loop()
   if not (ctx and im.ValidatePtr(ctx, 'ImGui_Context*')) then
     ctx = im.CreateContext('VO Settings')
@@ -839,6 +879,7 @@ local function loop()
     if im.CollapsingHeader(ctx, 'Boundaries') then DrawBoundaries() end
     if im.CollapsingHeader(ctx, 'Output')   then DrawOutput()   end
     if im.CollapsingHeader(ctx, 'Substitutions') then DrawScript()  end
+    if im.CollapsingHeader(ctx, 'Keyboard') then DrawKeyboard() end
     if im.CollapsingHeader(ctx, 'Advanced') then DrawAdvanced() end
 
     im.Spacing(ctx)

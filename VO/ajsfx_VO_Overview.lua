@@ -9257,6 +9257,64 @@ function Inbox.MaybeAssemble()
   end
 end
 
+-- Binding names the config stores ("J", "Enter") -> ImGui keycodes,
+-- resolved through Api() so a name an older binding lacks is inert
+-- rather than a crash. Cached; false remembers a failed lookup.
+function Inbox.KeyCode(name)
+  if not name or name == "" then return nil end
+  Inbox.keycodes = Inbox.keycodes or {}
+  local cached = Inbox.keycodes[name]
+  if cached ~= nil then return cached or nil end
+  local n, field = tostring(name), nil
+  if #n == 1 and n:match("%a") then
+    field = "Key_" .. n:upper()
+  elseif #n == 1 and n:match("%d") then
+    field = "Key_" .. n
+  elseif n:lower() == "enter" then
+    field = "Key_Enter"
+  elseif n:lower() == "space" then
+    field = "Key_Space"
+  end
+  local code = field and Api(field) or nil
+  Inbox.keycodes[name] = code or false
+  return code
+end
+
+-- The walk: next/prev move the highlight, jump goes to it, the verb keys
+-- press its buttons -- triage without the mouse (redesign spec, Req-6).
+-- Guarded off any active widget, or typing "j" in the search box would
+-- walk the rail. Bindings come from the config, re-read on a slow tick so
+-- a remap in Settings goes live without a restart.
+function Inbox.HandleKeys()
+  if im.IsAnyItemActive(ctx) then return end
+  local n = #(state.inbox or {})
+  if n == 0 then return end
+  Inbox.keys_tick = (Inbox.keys_tick or 0) - 1
+  if Inbox.keys_tick <= 0 or not Inbox.keys_cfg then
+    Inbox.keys_cfg = vo.LoadConfig()
+    Inbox.keys_tick = 60
+  end
+  local cfg = Inbox.keys_cfg
+  local isp = Api('IsKeyPressed')
+  if not isp then return end
+  local function pressed(binding)
+    local code = Inbox.KeyCode(cfg[binding])
+    return code ~= nil and isp(ctx, code)
+  end
+  if pressed("key_inbox_next") then
+    state.inbox_sel = math.min((state.inbox_sel or 0) + 1, n)
+  end
+  if pressed("key_inbox_prev") then
+    state.inbox_sel = math.max((state.inbox_sel or 2) - 1, 1)
+  end
+  local f = state.inbox[state.inbox_sel or 0]
+  if not f then return end
+  if pressed("key_inbox_jump") then Inbox.Jump(f) end
+  local verbs = Inbox.RowVerbs(f)
+  if pressed("key_inbox_verb1") and verbs[1] then verbs[1].fn() end
+  if pressed("key_inbox_verb2") and verbs[2] then verbs[2].fn() end
+end
+
 -- A rail row is narrow; the full text lives in the tooltip.
 function Inbox.Clip(s, cap)
   s = tostring(s or "")
@@ -13276,6 +13334,7 @@ local function loop()
       DrawCards(body_h, sheet_avail - rail_w - item_gap)
       im.SameLine(ctx)
       Inbox.Draw(rail_w, body_h)
+      Inbox.HandleKeys()
     end
 
     if not state.project_path then

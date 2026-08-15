@@ -8206,7 +8206,38 @@ vo.CONFIG_SCHEMA = {
 
   { key = "review_prefix",      kind = "string", default = vo.DEFAULTS.review_prefix },
   { key = "unmatched_prefix",   kind = "string", default = vo.DEFAULTS.unmatched_prefix },
+
+  -- The inbox rail's keys (redesign spec, Req-6). Stored as key NAMES
+  -- ("J", "Enter") rather than keycodes: the Overview owns the name ->
+  -- ImGui-keycode map, and a name a build does not know is simply inert.
+  { key = "key_inbox_next",     kind = "string", default = "J" },
+  { key = "key_inbox_prev",     kind = "string", default = "K" },
+  { key = "key_inbox_jump",     kind = "string", default = "Enter" },
+  { key = "key_inbox_verb1",    kind = "string", default = "1" },
+  { key = "key_inbox_verb2",    kind = "string", default = "2" },
 }
+
+-- Two bindings on one physical key means one of them silently never fires;
+-- the Settings window shows what this returns. Case-folded: "j" and "J"
+-- are the same key.
+vo.KEY_BINDING_NAMES = { "key_inbox_next", "key_inbox_prev", "key_inbox_jump",
+                         "key_inbox_verb1", "key_inbox_verb2" }
+
+function vo.KeyBindingClashes(cfg)
+  local seen, clashes = {}, {}
+  for _, k in ipairs(vo.KEY_BINDING_NAMES) do
+    local v = cfg and cfg[k]
+    if v and v ~= "" then
+      local folded = tostring(v):upper()
+      if seen[folded] then
+        clashes[#clashes + 1] = { seen[folded], k }
+      else
+        seen[folded] = k
+      end
+    end
+  end
+  return clashes
+end
 
 -- Load settings from ExtState, falling back to documented defaults.
 -- The PROJECT's substitutions, when a project has them.

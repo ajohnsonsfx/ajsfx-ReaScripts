@@ -121,5 +121,47 @@ test("payloads pass through untouched", function()
 end)
 
 --------------------------------
+print("Key bindings:")
+
+test("the five inbox bindings are in the config schema with defaults", function()
+  local want = { key_inbox_next = "J", key_inbox_prev = "K",
+                 key_inbox_jump = "Enter", key_inbox_verb1 = "1",
+                 key_inbox_verb2 = "2" }
+  local seen = {}
+  for _, e in ipairs(vo.CONFIG_SCHEMA) do
+    if want[e.key] then
+      assert(e.kind == "string", e.key .. " is not a string setting")
+      assert(e.default == want[e.key],
+        e.key .. " default is " .. tostring(e.default))
+      seen[e.key] = true
+    end
+  end
+  for k in pairs(want) do assert(seen[k], k .. " missing from schema") end
+end)
+
+test("duplicate key bindings are reported as clashes", function()
+  local clashes = vo.KeyBindingClashes({ key_inbox_next = "J", key_inbox_prev = "J" })
+  assert(#clashes == 1, "expected one clash, got " .. #clashes)
+  assert(clashes[1][1] == "key_inbox_next" and clashes[1][2] == "key_inbox_prev",
+    "clash names wrong: " .. tostring(clashes[1][1]) .. ", " .. tostring(clashes[1][2]))
+end)
+
+test("distinct bindings report no clashes", function()
+  assert(#vo.KeyBindingClashes({ key_inbox_next = "J", key_inbox_prev = "K",
+                                 key_inbox_jump = "Enter" }) == 0,
+    "distinct keys reported as clashing")
+end)
+
+test("case does not hide a clash", function()
+  assert(#vo.KeyBindingClashes({ key_inbox_next = "j", key_inbox_prev = "J" }) == 1,
+    "j vs J should clash -- there is one physical key")
+end)
+
+test("blank bindings never clash", function()
+  assert(#vo.KeyBindingClashes({ key_inbox_next = "", key_inbox_prev = "" }) == 0,
+    "two disabled bindings reported as clashing")
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
