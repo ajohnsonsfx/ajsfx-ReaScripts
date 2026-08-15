@@ -1203,3 +1203,12 @@ one UNCUT recording holding several takes as markers in one item.
    numbered alt on Alts.
 2. An item with a HAND-TYPED name moved between the tracks -> marks
    follow, the typed name is kept.
+
+## Every flag shows its evidence (0.15beta33)
+
+1. Out of sync rows read: marker says X, item says Y -- words: "..." (or
+   "(none under the marker)").
+2. Suspects: Selects listed first with an ON SELECTS tag; each row has an
+   indented evidence line with the words and, when unsure, a best guess.
+3. A cut take whose marker covers no anchored words shows the
+   "NO WORDS AT ALL" trigger.

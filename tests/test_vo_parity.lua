@@ -223,6 +223,52 @@ test("a live hand confirmation silences the name-mismatch trigger", function()
   end
 end)
 
+test("suspects carry their evidence: words, verdict, best guess", function()
+  local lines = { { asset = "IWinBig_02", text = "I win big" } }
+  local row = {
+    status = "take", item = "ITEM1", source_path = "src.wav",
+    source_start = 0, source_stop = 2, marker_id = "abc",
+    take_name = "IWinBig_02", asset = "IWinBig_02",
+  }
+  local transcripts = { { path = "src.wav", words = {
+    { text = "frog", t0 = 0.0, t1 = 0.7 },
+    { text = "toad", t0 = 0.7, t1 = 1.4 },
+  } } }
+  local sus = vo.ScanSuspects({ row }, transcripts, lines, {}, nil)
+  assert(#sus >= 1, "nothing flagged")
+  assert(sus[1].words == "frog toad", "words snippet missing: " ..
+    tostring(sus[1].words))
+  assert(sus[1].verdict ~= nil, "verdict missing")
+end)
+
+test("a marked take with NO anchored words gets its own trigger", function()
+  local lines = { { asset = "IWinBig_02", text = "I win big" } }
+  local row = {
+    status = "take", item = "ITEM1", source_path = "src.wav",
+    source_start = 10, source_stop = 12, marker_id = "abc",
+    take_name = "IWinBig_02", asset = "IWinBig_02",
+  }
+  local transcripts = { { path = "src.wav", words = {
+    { text = "frog", t0 = 0.0, t1 = 0.7 },
+  } } }
+  local sus = vo.ScanSuspects({ row }, transcripts, lines, {}, nil)
+  local hit = false
+  for _, s in ipairs(sus) do
+    if s.triggers.no_words then hit = true end
+  end
+  assert(hit, "wordless marked take not flagged as no_words")
+end)
+
+test("ParityAssemble carries the source path", function()
+  local collected = { ["src.wav"] = { {
+    coverage = { from = 1.25, to = 3.50 },
+    markers  = { { pos = 1.25, length = 2.25, name = "IWinBig_02 ~abc" } },
+    info     = { item = "ITEM1" },
+  } } }
+  local takes = vo.ParityAssemble(collected, {})
+  assert(takes[1].path == "src.wav", "path lost in assembly")
+end)
+
 test("a STALE hand confirmation does not silence anything", function()
   local lines = { { asset = "IWinBig_02", text = "I win big" } }
   local row = {
