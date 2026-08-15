@@ -2013,9 +2013,20 @@ function vo.ParityDiff(takes, opts)
     if tk.marker and (tk.marker_count or 0) == 1 then
       local fields, detail = {}, nil
       local iname = tk.item and tk.item.name
-      if iname and iname ~= "" and iname ~= tk.marker.asset
-         and not vo.IsConventionalAltName(iname, tk.marker.asset,
-                                          opts.alt_pattern) then
+      -- An item wears the line's DELIVER name, which can differ from the
+      -- asset the marker uses (asset "..._Grumbar_" delivering as
+      -- "..._Grumbar"). A name is agreement when it is the asset, the
+      -- deliver name, or a conventional alt of either -- comparing against
+      -- the asset alone flagged every correctly-delivered take of a line
+      -- whose two names differ.
+      local deliver = tk.sheet and tk.sheet.deliver
+      local agrees = not (iname and iname ~= "")
+        or iname == tk.marker.asset
+        or vo.IsConventionalAltName(iname, tk.marker.asset, opts.alt_pattern)
+        or (deliver and deliver ~= "" and
+            (iname == deliver
+             or vo.IsConventionalAltName(iname, deliver, opts.alt_pattern)))
+      if not agrees then
         fields[#fields + 1] = "name"
         detail = string.format("marker says %s, item says %s",
                                tostring(tk.marker.asset), iname)
@@ -2050,7 +2061,8 @@ function vo.ParityAssemble(collected, rows, opts)
   local sheet_by_item = {}
   for _, row in ipairs(rows or {}) do
     if row.item and not sheet_by_item[row.item] then
-      sheet_by_item[row.item] = { asset = row.asset, name = row.take_name }
+      sheet_by_item[row.item] = { asset = row.asset, name = row.take_name,
+                                  deliver = row.deliver }
     end
   end
   local out = {}
@@ -2076,7 +2088,8 @@ function vo.ParityAssemble(collected, rows, opts)
             from = entry.coverage.from,
             to   = entry.coverage.to,
           } or nil,
-          sheet = (row and row.asset) and { asset = row.asset } or nil,
+          sheet = (row and row.asset) and
+            { asset = row.asset, deliver = row.deliver } or nil,
         }
       end
     end

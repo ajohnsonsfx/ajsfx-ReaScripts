@@ -77,6 +77,33 @@ test("no marker, no divergence -- that is Match's business", function()
     "an unmarked item was diffed")
 end)
 
+test("a deliver-named item over a differing asset is agreement", function()
+  local d = vo.ParityDiff({ take({
+    marker = { asset = "DBP_Grumbar_", start = 1.25, stop = 3.50 },
+    item   = { name = "DBP_Grumbar_alt1", from = 1.25, to = 3.50 },
+    sheet  = { asset = "DBP_Grumbar_", deliver = "DBP_Grumbar" },
+  }) }, { alt_pattern = "_alt{n}" })
+  assert(#d == 0, "deliver-based alt name flagged as divergent")
+end)
+
+test("the plain deliver name is agreement too", function()
+  local d = vo.ParityDiff({ take({
+    marker = { asset = "DBP_Grumbar_", start = 1.25, stop = 3.50 },
+    item   = { name = "DBP_Grumbar", from = 1.25, to = 3.50 },
+    sheet  = { asset = "DBP_Grumbar_", deliver = "DBP_Grumbar" },
+  }) }, { alt_pattern = "_alt{n}" })
+  assert(#d == 0, "plain deliver name flagged as divergent")
+end)
+
+test("a name matching neither asset nor deliver still diverges", function()
+  local d = vo.ParityDiff({ take({
+    marker = { asset = "DBP_Grumbar_", start = 1.25, stop = 3.50 },
+    item   = { name = "DBP_SomethingElse", from = 1.25, to = 3.50 },
+    sheet  = { asset = "DBP_Grumbar_", deliver = "DBP_Grumbar" },
+  }) }, { alt_pattern = "_alt{n}" })
+  assert(#d == 1 and d[1].fields[1] == "name", "true divergence missed")
+end)
+
 test("sheet disagreeing with marker is a name divergence", function()
   local d = vo.ParityDiff({ take({ sheet = { asset = "IWinLittle_01" } }) })
   assert(#d == 1 and d[1].fields[1] == "name",
