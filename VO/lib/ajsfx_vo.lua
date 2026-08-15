@@ -7763,6 +7763,50 @@ function vo.SummarizeOverview(rows)
   return n
 end
 
+-- THE PIPELINE STRIP's six meters (redesign spec, Req-8), computed from
+-- counters the tool already keeps -- SummarizeOverview, CheckCoverage,
+-- transcription progress -- never from a new scan. Pure formatting: the
+-- caller assembles <id>_done/<id>_total (plus sources_running) and this
+-- decides each stage's state and text. Honesty rules: total==0 is "todo"
+-- (a dash, not a lie of completion), done>=total>0 is "done" (overshoot
+-- clamps -- a meter must never read 7/5), and a running transcription
+-- overrides everything, because background work IS the state of that
+-- stage.
+vo.STAGE_DEFS = {
+  { id = "sources",   label = "Sources"   },
+  { id = "matched",   label = "Matched"   },
+  { id = "cut",       label = "Cut"       },
+  { id = "decided",   label = "Decided"   },
+  { id = "verified",  label = "Verified", pct = true },
+  { id = "delivered", label = "Delivered" },
+}
+
+function vo.PipelineStages(s)
+  s = s or {}
+  local out = {}
+  for _, d in ipairs(vo.STAGE_DEFS) do
+    local done  = s[d.id .. "_done"]  or 0
+    local total = s[d.id .. "_total"] or 0
+    local st, text
+    if d.id == "sources" and s.sources_running then
+      st   = "running"
+      text = ("%s %d/%d\226\128\166"):format(d.label, done, total)
+    elseif total == 0 then
+      st, text = "todo", d.label .. " \226\128\148"
+    elseif done >= total then
+      st, text = "done", d.label .. " \226\156\147"
+    elseif d.pct then
+      st   = "partial"
+      text = ("%s %d%%"):format(d.label, math.floor(done * 100 / total))
+    else
+      st, text = "partial", ("%s %d/%d"):format(d.label, done, total)
+    end
+    out[#out + 1] = { id = d.id, label = d.label, done = done, total = total,
+                      state = st, text = text }
+  end
+  return out
+end
+
 --------------------------------
 -- Pure layer: timeline layout
 --------------------------------

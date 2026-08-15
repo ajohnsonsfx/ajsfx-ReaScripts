@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.15beta34
--- @changelog PRE-RELEASE: THE INBOX. The five Check panels asked one question five ways -- "what needs me?" -- split by which scanner happened to fire. They are now ONE ranked rail, always on screen to the right of the sheet: Selects-track suspects first (a flagged deliverable is the risk), then everything the watcher refused to guess, then takes without audio, unidentified reads, undecided lines, other suspects, unheard stretches. Every row keeps the evidence-first contract: the words ARE the jump, and the verbs on the row are the same verbs the panels dispatched -- Fix from Transcript/Marker/Item/Sheet, Relink, Pick first/last, Re-listen. A scanner that has not run appears as a Scan row at its rank, never silently clean. The rail is keyboard-walkable: J/K walk the findings, Enter jumps, 1 and 2 press the row's verbs -- all five keys remappable in the Settings window's new Keyboard section, which warns when two bindings share a key. The Log left its tab for a strip under the rail, newest first, so an action and its report sit in one column; Copy and Clear came with it. The Check and Log tabs retired with their contents -- Verify moved to the Main tab -- and the tab bar now reads Setup / Main / Settings plus a "Needs you (N)" count that points the walk at the top finding. Nothing changed meaning: every verb dispatches the function it always did; this release only moves where they live. (beta33: EVERY FLAG SHOWS ITS EVIDENCE.) Auditing the whole verify list by hand taught one lesson: a flag without the words is a hunt -- you had to go find what the take actually says before you could judge the judgment. Now the evidence rides with every finding. Out of sync rows append the anchored words under the marker ('marker says X, item says Y -- words: "..."'). Suspects rows grow an evidence line (the words, and the judge's best guess when it would not swear), list Selects FIRST with an ON SELECTS tag -- a flagged deliverable is the risk -- and "no anchored words at all" becomes its own named trigger instead of hiding inside thin coverage: a delivered take nothing has ever checked on paper is the riskiest row on the sheet. (beta32, same day: no phantom divergence when asset and deliver names differ.) A line's marker ASSET and its DELIVER filename can legitimately differ (asset "DBP_Grumbar_Grumbar_", delivering as "DBP_Grumbar_Grumbar"), and items wear the deliver name -- but the parity engine compared item names against the asset alone, so every correctly-named take of such a line sat in "Out of sync" as a phantom divergence with nothing actually wrong. A name now counts as agreement when it is the marker's asset, the line's deliver name, or a conventional alt of either. Found live on the one-word line "You". (beta31, same day: drags between delivery tracks re-role the name.) Swap a select and an alt by dragging them between Selects and Alts and the names now follow the ROLE: the take arriving on Selects drops its _altN for the plain deliver name, the one arriving on Alts picks a number up. The watcher used to adopt the marks and then run the fill-blanks alt namer, which never overwrites -- so a role swap swapped the ticks and left both names describing the old roles. The sync waterfall now runs the overwriting namer (the old "Fix names from the sheet") scoped to the moved items: tool-generated names re-role, a name you typed is kept, as everywhere. (beta30, same day: the anchor sweep.) Following beta29's find, every consumer of stored transcript words was checked for the retired midpoint/window rules. Two more judges were on them and are now on the sheet's anchor rule: the re-listen STALENESS check (it clipped the stored side by midpoint, so a displaced window read as "sidecar stale" about a take whose displayed transcript matched the audio exactly) and the remote seam's verify verb. Confirmed correct and deliberately left alone: gap repair and word merging (the stamps ARE the object there), fresh-decode clipping (no anchors exist yet), cut boundary planning (edges come from the envelope by design), the unheard scan (approximate coverage is its nature), word-to-project display mapping, and the vetted fingerprint's word hash -- self-consistent by design, now with a comment forbidding a casual "fix" that would uncheck every Vet and OK in every project. (beta29, same day: Fix from Transcript, quick check and Suspects moved to the anchor rule.) Fix from Transcript, quick check and the Suspects scan judged stored words by the MIDPOINT of whisper's t0/t1 window -- the rule the anchor work (SPEC-word-anchors.md) proved wrong, because a displaced window puts a word's stamps seconds away from its audio. The sheet has displayed words by their DTW ANCHOR all along, so a take could show "because God," on screen while every judge quietly read "I think it mean" off the displaced stamps and reported that the marker agrees with the transcript. All three now use the sheet's own anchor rule (vo.WordsInRange): one rule everywhere, so a verdict is always about evidence you can see. WordsWithin keeps its one legitimate job, clipping FRESH decode output, where anchors do not exist. Found live on a real clip whose displaced window was 2.5 seconds late. (beta28, same day: hidden markers die first.) A clip can carry tool markers OUTSIDE the audio it can play -- split residue parked before or after the visible window. They are invisible in the take list, they can survive the leftover pass when no neighbouring clip claims them, they make every shape test read the clip as "several markers", and the first of them in chunk order is what names the item. "Fix from Transcript" now drops them outright as its step 0 -- the clip only owns what it can play -- before removing duplicates, judging the words, and pruning; the report counts them ("Dropped N hidden markers"). The rename step also refuses to let an out-of-coverage marker be judged or claim the item's name on the automatic path, where nothing drops it. (0.15beta27, same day: Fix from Transcript judges the words under each marker.) The rename step judged each marker by overlap against the MATCHER's spans, so where the matcher had assigned that audio to the same wrong line -- or to nothing -- it found no disagreement and reported "all markers already agree with the transcript" about a marker the words plainly refute. It now reads the words under each marker and judges them with the same judge Verify trusts (vo.JudgeLine): a marker whose words clearly say another line is renamed to it, and a range the judge cannot place is COUNTED AND REPORTED as unplaced -- never silently read as agreement. The report says "the words", and means them. (0.15beta26, same day: drag-to-line renames the item again.) The drop retargeted the marker but could silently skip the rename: "is this clip shared?" was answered by counting SHEET ROWS pointing at the item, and a stale duplicate row or an orphan mark aimed at the same clip made a one-take clip read as shared -- marker moved, name kept, the exact split-brain the tool exists to prevent. The question is now asked of the clip's own markers, after the retarget: only a marker still naming a DIFFERENT line blocks the rename (renaming would misname that neighbour -- a real uncut recording still refuses, correctly). Un-assigning a take clears the clip's name by the same rule: only when no other marker still claims it. It shipped as only the rename step, so a clip carrying a stale second marker -- split residue, or a line the words contradict -- kept it, and the one authority entitled to delete a marker was refusing to. One press, one undo step: drop duplicate markers (decided by the words spoken there) and leftover markers whose audio lives in a neighbouring clip, rename the survivors from the transcript, then prune markers left naming the same line twice on one clip (the copy covering more audio wins). The edit-authority fixes still refuse multi-marker clips -- they cannot know which marker is right; the words can, which is why this is transcript authority's job. Same waterfall from the Out of sync panel's "Fix from Transcript". (0.15beta24, same day: the OK box.) A fifth box on every take row (Lock Keep Sel Vet OK): tick OK to say "I checked -- this read IS this line", for the reads whisper mishears (a name like Bolvd heard as BOLVED) that are nonetheless correct. Vet stays the MACHINE's box, exactly as before; OK is YOURS -- two different facts, two boxes, two keys, never mixed. The transcript stays exactly as heard -- nothing is rewritten -- but with OK ticked, Suspects stops flagging the name-vs-words disagreement and quick check reports "OK'd by you" instead of re-judging it. The mark is a fingerprint like the machine's stamp, so any edit to the item, marker, name or words withdraws it by itself -- it can never silently outlive the state you actually looked at. Click again to withdraw it yourself; an explicit re-listen still runs and its verdict still stands. Works on a highlighted batch like every mark. (Replaces beta23's right-click-the-Vet-box design minutes into review: overloading the machine's box with the human's verdict hid whose judgment the tick was.) Click a finding in the "Out of sync" panel and you are looking at it: the clip selects in REAPER and the edit cursor moves to it -- and the sheet's line selects, unfolds and scrolls on its own, because the sheet already mirrors the arrange selection every frame. The marks-vs-tracks rows in the same panel do the trip too (they used to select the sheet row only). Checking a finding now costs one click instead of a hunt across three views. (0.15beta21, same day: the parity watcher itself -- edit one thing and the rest catches up, one "Keep the session in sync" switch, "Fix from Transcript / Marker / Item / Sheet" on everything queued.) Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.
+-- @version 0.15beta35
+-- @changelog PRE-RELEASE: THE PIPELINE STRIP IS THE WINDOW. The top of the Overview is now six stage meters -- Sources, Matched, Cut, Decided, Verified, Delivered -- computed from the same counters the summary line reads, so where the session is needs no tab to answer. Every meter is also a FILTER: click "Decided 180/195" and the sheet shows exactly the fifteen undecided lines, composed with your own search and character filters; click again to clear. The hero leads the strip -- the strip is the path, the button advances it -- and Settings and the "Needs you" count close it. Sources became the strip's first stage: the whole transcription surface (scan, transcribe, per-file progress, transcript detail with clickable words) now draws where the sheet does, fed by the same module, and the separate Sources window is gone from the package. "Show source in Sources" on a take now opens the stage on that recording. Setup folded to a ribbon row (script list, Start over); the tab bar retired with nothing left to choose between. A "stage" verb joined the remote seam for the test harness. (beta34: THE INBOX.) The five Check panels asked one question five ways -- "what needs me?" -- split by which scanner happened to fire. They are now ONE ranked rail, always on screen to the right of the sheet: Selects-track suspects first (a flagged deliverable is the risk), then everything the watcher refused to guess, then takes without audio, unidentified reads, undecided lines, other suspects, unheard stretches. Every row keeps the evidence-first contract: the words ARE the jump, and the verbs on the row are the same verbs the panels dispatched -- Fix from Transcript/Marker/Item/Sheet, Relink, Pick first/last, Re-listen. A scanner that has not run appears as a Scan row at its rank, never silently clean. The rail is keyboard-walkable: J/K walk the findings, Enter jumps, 1 and 2 press the row's verbs -- all five keys remappable in the Settings window's new Keyboard section, which warns when two bindings share a key. The Log left its tab for a strip under the rail, newest first, so an action and its report sit in one column; Copy and Clear came with it. The Check and Log tabs retired with their contents -- Verify moved to the Main tab -- and the tab bar now reads Setup / Main / Settings plus a "Needs you (N)" count that points the walk at the top finding. Nothing changed meaning: every verb dispatches the function it always did; this release only moves where they live. (beta33: EVERY FLAG SHOWS ITS EVIDENCE.) Auditing the whole verify list by hand taught one lesson: a flag without the words is a hunt -- you had to go find what the take actually says before you could judge the judgment. Now the evidence rides with every finding. Out of sync rows append the anchored words under the marker ('marker says X, item says Y -- words: "..."'). Suspects rows grow an evidence line (the words, and the judge's best guess when it would not swear), list Selects FIRST with an ON SELECTS tag -- a flagged deliverable is the risk -- and "no anchored words at all" becomes its own named trigger instead of hiding inside thin coverage: a delivered take nothing has ever checked on paper is the riskiest row on the sheet. (beta32, same day: no phantom divergence when asset and deliver names differ.) A line's marker ASSET and its DELIVER filename can legitimately differ (asset "DBP_Grumbar_Grumbar_", delivering as "DBP_Grumbar_Grumbar"), and items wear the deliver name -- but the parity engine compared item names against the asset alone, so every correctly-named take of such a line sat in "Out of sync" as a phantom divergence with nothing actually wrong. A name now counts as agreement when it is the marker's asset, the line's deliver name, or a conventional alt of either. Found live on the one-word line "You". (beta31, same day: drags between delivery tracks re-role the name.) Swap a select and an alt by dragging them between Selects and Alts and the names now follow the ROLE: the take arriving on Selects drops its _altN for the plain deliver name, the one arriving on Alts picks a number up. The watcher used to adopt the marks and then run the fill-blanks alt namer, which never overwrites -- so a role swap swapped the ticks and left both names describing the old roles. The sync waterfall now runs the overwriting namer (the old "Fix names from the sheet") scoped to the moved items: tool-generated names re-role, a name you typed is kept, as everywhere. (beta30, same day: the anchor sweep.) Following beta29's find, every consumer of stored transcript words was checked for the retired midpoint/window rules. Two more judges were on them and are now on the sheet's anchor rule: the re-listen STALENESS check (it clipped the stored side by midpoint, so a displaced window read as "sidecar stale" about a take whose displayed transcript matched the audio exactly) and the remote seam's verify verb. Confirmed correct and deliberately left alone: gap repair and word merging (the stamps ARE the object there), fresh-decode clipping (no anchors exist yet), cut boundary planning (edges come from the envelope by design), the unheard scan (approximate coverage is its nature), word-to-project display mapping, and the vetted fingerprint's word hash -- self-consistent by design, now with a comment forbidding a casual "fix" that would uncheck every Vet and OK in every project. (beta29, same day: Fix from Transcript, quick check and Suspects moved to the anchor rule.) Fix from Transcript, quick check and the Suspects scan judged stored words by the MIDPOINT of whisper's t0/t1 window -- the rule the anchor work (SPEC-word-anchors.md) proved wrong, because a displaced window puts a word's stamps seconds away from its audio. The sheet has displayed words by their DTW ANCHOR all along, so a take could show "because God," on screen while every judge quietly read "I think it mean" off the displaced stamps and reported that the marker agrees with the transcript. All three now use the sheet's own anchor rule (vo.WordsInRange): one rule everywhere, so a verdict is always about evidence you can see. WordsWithin keeps its one legitimate job, clipping FRESH decode output, where anchors do not exist. Found live on a real clip whose displaced window was 2.5 seconds late. (beta28, same day: hidden markers die first.) A clip can carry tool markers OUTSIDE the audio it can play -- split residue parked before or after the visible window. They are invisible in the take list, they can survive the leftover pass when no neighbouring clip claims them, they make every shape test read the clip as "several markers", and the first of them in chunk order is what names the item. "Fix from Transcript" now drops them outright as its step 0 -- the clip only owns what it can play -- before removing duplicates, judging the words, and pruning; the report counts them ("Dropped N hidden markers"). The rename step also refuses to let an out-of-coverage marker be judged or claim the item's name on the automatic path, where nothing drops it. (0.15beta27, same day: Fix from Transcript judges the words under each marker.) The rename step judged each marker by overlap against the MATCHER's spans, so where the matcher had assigned that audio to the same wrong line -- or to nothing -- it found no disagreement and reported "all markers already agree with the transcript" about a marker the words plainly refute. It now reads the words under each marker and judges them with the same judge Verify trusts (vo.JudgeLine): a marker whose words clearly say another line is renamed to it, and a range the judge cannot place is COUNTED AND REPORTED as unplaced -- never silently read as agreement. The report says "the words", and means them. (0.15beta26, same day: drag-to-line renames the item again.) The drop retargeted the marker but could silently skip the rename: "is this clip shared?" was answered by counting SHEET ROWS pointing at the item, and a stale duplicate row or an orphan mark aimed at the same clip made a one-take clip read as shared -- marker moved, name kept, the exact split-brain the tool exists to prevent. The question is now asked of the clip's own markers, after the retarget: only a marker still naming a DIFFERENT line blocks the rename (renaming would misname that neighbour -- a real uncut recording still refuses, correctly). Un-assigning a take clears the clip's name by the same rule: only when no other marker still claims it. It shipped as only the rename step, so a clip carrying a stale second marker -- split residue, or a line the words contradict -- kept it, and the one authority entitled to delete a marker was refusing to. One press, one undo step: drop duplicate markers (decided by the words spoken there) and leftover markers whose audio lives in a neighbouring clip, rename the survivors from the transcript, then prune markers left naming the same line twice on one clip (the copy covering more audio wins). The edit-authority fixes still refuse multi-marker clips -- they cannot know which marker is right; the words can, which is why this is transcript authority's job. Same waterfall from the Out of sync panel's "Fix from Transcript". (0.15beta24, same day: the OK box.) A fifth box on every take row (Lock Keep Sel Vet OK): tick OK to say "I checked -- this read IS this line", for the reads whisper mishears (a name like Bolvd heard as BOLVED) that are nonetheless correct. Vet stays the MACHINE's box, exactly as before; OK is YOURS -- two different facts, two boxes, two keys, never mixed. The transcript stays exactly as heard -- nothing is rewritten -- but with OK ticked, Suspects stops flagging the name-vs-words disagreement and quick check reports "OK'd by you" instead of re-judging it. The mark is a fingerprint like the machine's stamp, so any edit to the item, marker, name or words withdraws it by itself -- it can never silently outlive the state you actually looked at. Click again to withdraw it yourself; an explicit re-listen still runs and its verdict still stands. Works on a highlighted batch like every mark. (Replaces beta23's right-click-the-Vet-box design minutes into review: overloading the machine's box with the human's verdict hid whose judgment the tick was.) Click a finding in the "Out of sync" panel and you are looking at it: the clip selects in REAPER and the edit cursor moves to it -- and the sheet's line selects, unfolds and scrolls on its own, because the sheet already mirrors the arrange selection every frame. The marks-vs-tracks rows in the same panel do the trip too (they used to select the sheet row only). Checking a finding now costs one click instead of a hunt across three views. (0.15beta21, same day: the parity watcher itself -- edit one thing and the rest catches up, one "Keep the session in sync" switch, "Fix from Transcript / Marker / Item / Sheet" on everything queued.) Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -10,10 +10,10 @@
 --        backend in "ajsfx VO Settings". See VO/SPEC.md.
 -- @provides
 --   [main] .
---   [main] ajsfx_VO_Sources.lua
 --   [main] ajsfx_VO_Settings.lua
 --   lib/ajsfx_vo.lua
 --   lib/ajsfx_vo_view.lua
+--   lib/ajsfx_vo_sources_ui.lua
 --   ../lib/ajsfx_core.lua > lib/ajsfx_core.lua
 --
 -- ajsfx VO Overview — a project-wide picture of the dialogue in a session.
@@ -34,6 +34,7 @@ package.path = script_path .. "?.lua;" .. script_path .. "../?.lua;" .. package.
 local core = require("lib.ajsfx_core")
 local vo   = require("lib.ajsfx_vo")
 local view = require("lib.ajsfx_vo_view")
+local sources_ui = require("lib.ajsfx_vo_sources_ui")
 
 local success, im = pcall(function()
   package.path = r.ImGui_GetBuiltinPath() .. '/?.lua;' .. package.path
@@ -50,6 +51,10 @@ end
 -- `im.Maybe and im.Maybe(ctx)` is not a guard — it is a crash on the bindings
 -- that lack the field. Every optional entry point has to come through here.
 local function Api(name) return rawget(im, name) end
+
+-- The embedded Sources surface (the pipeline's first stage) needs the
+-- ReaImGui table before it can resolve its own optional entry points.
+sources_ui.attach(im)
 
 -- Modifier state, read live. GetKeyMods is not in every 0.9.x binding; where it
 -- is missing the individual modifier keys still answer.
@@ -245,10 +250,11 @@ for i, c in ipairs(COLUMNS) do COLUMNS.keys[i] = c.key end
 -- reports goes to the log, and reading a run's report is a whole activity --
 -- scrolling, comparing against the last one, copying it out -- not a glance at
 -- a line under the table. Activities get a tab; glances get a line.
-local TOOLBAR_TABS = {
-  { key = "setup", label = "Setup" },
-  { key = "edit",  label = "Main" },
-}
+-- THE PIPELINE STRIP's namespace (redesign spec, phase 2). Declared this
+-- early -- an empty table only -- because ApplyFilters consults
+-- Strip.RowPasses; the methods live beside the Inbox further down. The
+-- strip IS the toolbar: the tab bar retired when Sources became a stage.
+local Strip = {}
 
 local LAYOUT_ORDERS = {
   { key = "script", label = "Script order" },
@@ -270,10 +276,6 @@ local state = {
   -- in the same space above the table, and two at once would push it off the
   -- window. "script" opens itself when a script fails to load.
   panel         = nil,        -- "script" | "cut" | "pull" | "sort"
-  -- Which toolbar tab's buttons are showing. Items is the default because it
-  -- is where the work happens; Setup is a once-per-project errand.
-  tab           = "edit",     -- see TOOLBAR_TABS
-  tab_sync      = 4,          -- frames left to push state.tab into the tab bar
   cut_summary   = {},         -- what the last Cut and Name run did
   -- The Cut panel's stage counts, memoised. Worked out from the same code the
   -- run uses, so what it says and what it does cannot drift apart.
@@ -483,7 +485,7 @@ local function LoadScripts()
 
   for _, sc in ipairs(state.loaded.scripts) do
     if sc.error and sc.error ~= "" then
-      state.tab, state.panel, state.tab_sync = "setup", "script", 4
+      state.panel = "script"
     end
   end
 
@@ -4267,7 +4269,11 @@ local function ApplyFilters()
   CheckRestoredCharacter()
   for i, row in ipairs(state.overview) do row.order = i end
 
-  state.nodes = vo.FilterGroups(vo.GroupOverview(state.overview), Matches)
+  -- The stage filter composes with the user's filters: a clicked stage
+  -- shows its remainder WITHIN whatever search/character view is up.
+  state.nodes = vo.FilterGroups(vo.GroupOverview(state.overview), function(row)
+    return Matches(row) and Strip.RowPasses(row)
+  end)
 
   -- Two flat take lists, deliberately distinct:
   --   state.filtered  every take of every line the FILTERS admit. Tool scope
@@ -9457,7 +9463,7 @@ function Inbox.RowVerbs(f)
         end,
         tip = "Set this take's Keep/Sel to match the track its item is on." },
       { label = "Adopt sheet", fn = function()
-          state.tab, state.panel, state.tab_sync = "edit", "pull", 4
+          state.panel = "pull"
           state.message, state.message_kind =
             "The marks are right -- run Pull to move the items to match them.", "info"
         end,
@@ -9685,6 +9691,217 @@ function Inbox.Draw(width, height)
   end
 
   im.EndChild(ctx)
+end
+
+-- THE PIPELINE STRIP's methods (redesign spec, phase 2): six meters over
+-- the sheet, each stage a FILTER -- click "Decided 180/195" and the sheet
+-- shows exactly the fifteen undecided lines. Counts come from the same
+-- predicates the summary line reads, so the strip and the summary can
+-- never disagree. Assembled only when a feed changed, like the rail.
+Strip.TIPS = {
+  sources   = "The recordings in this project and their transcripts.\n" ..
+              "The meter runs while whisper is decoding.",
+  matched   = "Script lines the transcript match found audio for.\n" ..
+              "Click: show only the lines still missing audio.",
+  cut       = "Take markers standing alone on their own clip. Markers\n" ..
+              "sharing a clip are a recording still to split.\n" ..
+              "Click: show only the takes still inside recordings.",
+  decided   = "Lines with takes where a select is picked (or the line\n" ..
+              "was settled by hand). Click: show only the undecided.",
+  verified  = "Takes locked in place -- the machine's stamp or yours.\n" ..
+              "Click: show only the unverified takes.",
+  delivered = "Script lines with an item named for them, counted from\n" ..
+              "the item names. Click: show only the lines without one.",
+}
+
+function Strip.Assemble()
+  -- The Sources meter reads the embedded module's rows, which rescan on
+  -- their own throttle -- their identity is part of the staleness test,
+  -- and a running batch redraws the meter every frame.
+  local src_rows = sources_ui.state.rows
+  if state.stages
+     and not sources_ui.state.running
+     and state.strip_seen_over  == state.overview
+     and state.strip_seen_check == state.check
+     and state.strip_seen_marks == state.take_markers
+     and state.strip_seen_srcs  == src_rows then
+    return
+  end
+  state.strip_seen_over, state.strip_seen_check, state.strip_seen_marks =
+    state.overview, state.check, state.take_markers
+  state.strip_seen_srcs = src_rows
+
+  local n = state.summary or {}
+  local c = state.check or {}
+
+  -- Sources: recordings in the project vs transcripts already on disk,
+  -- as the Sources surface itself counts them.
+  local done_paths, total_paths, src_running = sources_ui.Progress()
+
+  -- Cut: a counting marker alone on its clip is a cut take; markers
+  -- sharing a clip are a recording still to split. Read from the
+  -- collections Reload already paid for -- no chunk reads here.
+  local cut_done, cut_total = 0, 0
+  local uncut = {}
+  for _, group in pairs(state.take_markers or {}) do
+    local mks = vo.CountingMarkers(group)
+    local per_item = {}
+    for _, mk in ipairs(mks) do
+      per_item[mk.item_index] = (per_item[mk.item_index] or 0) + 1
+    end
+    for _, mk in ipairs(mks) do
+      cut_total = cut_total + 1
+      if per_item[mk.item_index] == 1 then
+        cut_done = cut_done + 1
+      else
+        local info = group[mk.item_index] and group[mk.item_index].info
+        if info and info.item then uncut[info.item] = true end
+      end
+    end
+  end
+  Strip.uncut = uncut
+
+  -- Decided: the same line-grouping the rail's undecided rows use, so
+  -- the meter and the rail can never quarrel about what is open.
+  local groups, seen = {}, {}
+  for _, row in ipairs(state.overview or {}) do
+    local a = row.asset
+    if a and row.status ~= "missing" and row.status ~= "orphan"
+       and (row.take_index or 0) > 0 then
+      local g = seen[a]
+      if not g then
+        g = { asset = a }
+        seen[a] = g
+        groups[#groups + 1] = g
+      end
+      if row.user_select then g.picked = true end
+      if row.user_status == "verified" then g.locked = true end
+    end
+  end
+  local undecided, decided_done = {}, 0
+  for _, g in ipairs(groups) do
+    if g.picked or g.locked then decided_done = decided_done + 1
+    else undecided[g.asset] = true end
+  end
+  Strip.undecided = undecided
+
+  -- Delivered: lines with an item named for them -- the summary's own
+  -- "N of M lines in the project", per asset for the filter.
+  local covered = {}
+  for i in pairs(c.by_line or {}) do
+    local line = (state.lines or {})[i]
+    if line and line.asset then covered[line.asset] = true end
+  end
+  Strip.covered = covered
+
+  state.stages = vo.PipelineStages({
+    sources_done    = done_paths,      sources_total   = total_paths,
+    sources_running = src_running == true,
+    matched_done    = n.delivered or 0, matched_total  = n.lines or 0,
+    cut_done        = cut_done,         cut_total      = cut_total,
+    decided_done    = decided_done,     decided_total  = #groups,
+    verified_done   = n.verified or 0,
+    verified_total  = (n.recorded or 0) + (n.review or 0),
+    delivered_done  = c.delivered or 0,
+    delivered_total = #(state.lines or {}),
+  })
+end
+
+-- Which rows a clicked stage leaves on the sheet: its REMAINDER -- the
+-- work that stage still owes -- never its finished part.
+function Strip.RowPasses(row)
+  local f = state.stage_filter
+  if not f or f == "sources" then return true end
+  if f == "matched" then
+    return row.status == "missing"
+  elseif f == "cut" then
+    return row.item ~= nil and (Strip.uncut or {})[row.item] == true
+  elseif f == "decided" then
+    return row.asset ~= nil and (Strip.undecided or {})[row.asset] == true
+  elseif f == "verified" then
+    return (row.status == "recorded" or row.status == "review")
+       and row.user_status ~= "verified"
+  elseif f == "delivered" then
+    return row.status ~= "orphan" and row.asset ~= nil
+       and not (Strip.covered or {})[row.asset]
+  end
+  return true
+end
+
+function Strip.Draw()
+  -- THE HERO leads the strip: the strip says where the session is, and
+  -- this is the button that advances all of it (redesign spec, Req-11).
+  local acts_off = not Trim.has_selection()
+  im.PushStyleColor(ctx, im.Col_Button,        0x3E6FA3FF)
+  im.PushStyleColor(ctx, im.Col_ButtonHovered, 0x4E86C0FF)
+  if acts_off then im.BeginDisabled(ctx, true) end
+  if im.Button(ctx, "Run the whole pass") then pending_action = GoldenPath end
+  if acts_off then im.EndDisabled(ctx) end
+  im.PopStyleColor(ctx, 2)
+  -- Inline rather than TooltipEvenWhenDisabled: that helper is declared
+  -- further down the file, past this function's closure.
+  if im.IsItemHovered(ctx, Api('HoveredFlags_AllowWhenDisabled') or 0) then
+    im.SetTooltip(ctx,
+    "Select a recording and press this. It takes the session from raw\n" ..
+    "audio to something you can review, in one undo step:\n\n" ..
+    "  1. match the transcript to the script, and mark the takes\n" ..
+    "  2. clean the markers -- duplicates decided by the words\n" ..
+    "  3. split at those markers, and trim single-take clips onto theirs\n" ..
+    "  4. name every clip for its line, and fade the cut edges\n" ..
+    "  5. pick a take for each line\n" ..
+    "  6. build Selects / Alts / Review, and pull the items there\n\n" ..
+    "What is left is the judgement: check the selects and alts, check\n" ..
+    "the edits, then deliver. The stages beside this button are the\n" ..
+    "path -- each is a meter, and clicking one shows what it still owes.\n\n" ..
+    "This CHANGES ITEMS: it cuts, names and moves audio. Acts on the\n" ..
+    "selection; the amber line below says what that is right now.\n\n" ..
+    "Step 5 picks each line's " ..
+    ((state.auto_select_take == "first") and "FIRST" or "LAST") ..
+    " take -- whichever of the two\nAuto-pick buttons you used last.\n\n" ..
+    "Needs a selection: select rows here, or items in REAPER.")
+  end
+  im.SameLine(ctx)
+  im.TextDisabled(ctx, "\226\148\130")
+  for _, s in ipairs(state.stages or {}) do
+    im.SameLine(ctx)
+    local active = (state.stage_filter == s.id)
+    local pushed = false
+    if active then
+      im.PushStyleColor(ctx, im.Col_Button, 0x3E6FA3FF)
+      pushed = true
+    elseif s.state == "done" then
+      im.PushStyleColor(ctx, im.Col_Text, 0x66BB66FF)
+      pushed = true
+    elseif s.state == "todo" then
+      im.PushStyleColor(ctx, im.Col_Text, 0x777777FF)
+      pushed = true
+    end
+    if im.Button(ctx, s.text .. "##stage_" .. s.id) then
+      state.stage_filter = (not active) and s.id or nil
+    end
+    if pushed then im.PopStyleColor(ctx) end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, Strip.TIPS[s.id] or s.label)
+    end
+  end
+  if state.stage_filter then
+    im.SameLine(ctx)
+    im.TextDisabled(ctx, "\226\128\148 showing what this stage still owes")
+  end
+  -- The strip is the whole toolbar now: Settings and the rail's count
+  -- close the row. Clicking the count points the walk at the top finding
+  -- -- the rail is already open, permanently.
+  im.SameLine(ctx)
+  im.TextDisabled(ctx, "\226\148\130")
+  im.SameLine(ctx)
+  if im.Button(ctx, "Settings") then state.settings_open = true end
+  local inb = state.inbox_counts
+  if inb and inb.total > 0 then
+    im.SameLine(ctx)
+    if im.SmallButton(ctx, string.format("Needs you (%d)", inb.total)) then
+      state.inbox_sel = 1
+    end
+  end
 end
 
 local function DrawFilters()
@@ -10242,16 +10459,14 @@ local function DrawTakeRowMenu(row)
                  row.source_path ~= nil) then
     local captured = row.source_path
     pending_action = function()
-      -- Written BEFORE the launch and read every frame by Sources, so an
-      -- already-open Sources window picks the handoff up too, rather than
-      -- only a freshly launched one.
+      -- Written first and read every Tick by the embedded Sources surface,
+      -- so the handoff lands whether or not the stage was already showing.
       r.SetExtState(vo.EXT_SECTION, "focus_source", captured, false)
-      local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
-      if not ok then state.message, state.message_kind = tostring(why), "error" end
+      state.stage_filter = "sources"
     end
   end
   if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Open the Sources window on this take's recording and\n" ..
+    im.SetTooltip(ctx, "Open the Sources stage on this take's recording and\n" ..
                        "its transcript.")
   end
 
@@ -11425,7 +11640,7 @@ local function DrawCardsBody(avail_w)
       im.TextDisabled(ctx, "A script -- " .. vo.Basename(state.scripts[1].path or ""))
     else
       if im.Button(ctx, "Choose script\226\128\166##empty") then
-        state.tab, state.panel, state.tab_sync = "setup", "script", 4
+        state.panel = "script"
       end
       im.SameLine(ctx)
       im.TextDisabled(ctx, "a CSV of filenames and lines: what was meant to be read.")
@@ -11434,8 +11649,7 @@ local function DrawCardsBody(avail_w)
     im.Text(ctx, "    2.")
     im.SameLine(ctx)
     if im.Button(ctx, "Transcribe\226\128\166##empty") then
-      local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
-      if not ok then state.message, state.message_kind = tostring(why), "error" end
+      state.stage_filter = "sources"
     end
     im.SameLine(ctx)
     im.TextDisabled(ctx, "the recordings in this project: what was actually read.")
@@ -11811,6 +12025,11 @@ local function RunRemoteCommand(command)
 
   if verb == "status" then
     return RemoteStatus()
+  elseif verb == "stage" then
+    -- Test seam for the pipeline strip: "stage sources" shows a stage's
+    -- view exactly as a click on its meter would; "stage clear" clears.
+    state.stage_filter = (rest ~= "" and rest ~= "clear") and rest or nil
+    return "stage=" .. tostring(state.stage_filter)
   elseif verb == "rematch" then
     Rematch()
     return "rematched: " .. RemoteStatus()
@@ -12479,15 +12698,22 @@ local function loop()
   -- MaybeRescan is throttled internally; keep drawing every frame regardless.
   MaybeRescan()
 
+  -- The embedded Sources surface's own throttled work: backend checks, row
+  -- rescans, and the Overview->Sources focus handoff. Every frame whether
+  -- or not the stage is showing, so a running batch keeps landing files.
+  sources_ui.Tick()
+
   -- After the rescan, so a remote command always acts on current rows.
   PollRemote()
 
   FlushProjectFile(false)
   ApplyFilters()
 
-  -- The rail's list, refreshed only when a feed changed; before Begin so
-  -- the toolbar count and the rail draw the same frame's answer.
+  -- The rail's list and the strip's meters, refreshed only when a feed
+  -- changed; before Begin so the toolbar count, the strip and the rail
+  -- all draw the same frame's answer.
   Inbox.MaybeAssemble()
+  Strip.Assemble()
 
   -- After the filters, so the follow lights rows the table is actually
   -- showing this frame.
@@ -12528,71 +12754,14 @@ local function loop()
       return table.concat(out, "\n")
     end
 
-    -- The toolbar is a TAB BAR over an ACTION ROW, and the split is the whole
-    -- point (SPEC-toolbar.md section 1): a tab never does anything, it only
-    -- decides which buttons you are looking at; a button always does
-    -- something. The old row mixed the two -- "Sort" opened a panel while
-    -- "Place" beside it moved audio on the press -- and that is what made it
-    -- unreadable. Names are long on purpose: the button says what it does so
-    -- the tooltip does not have to.
     local n_scripts = #state.scripts
 
-    -- The Check and Log tabs retired when the rail arrived; a remembered
-    -- ExtState tab from an older build must not strand the bar on a key
-    -- without a body.
-    if state.tab ~= "setup" and state.tab ~= "edit" then
-      state.tab = "edit"
-    end
-
-    if im.BeginTabBar(ctx, "##toolbar") then
-      -- ImGui selects the FIRST tab until told otherwise, which on frame one
-      -- silently moved the tool to Setup. state.tab_sync is a frame budget,
-      -- set whenever the TOOL decides which tab you should be on -- window
-      -- open, a script that failed to load, "Adopt sheet" sending you to
-      -- Pull -- and it pushes that decision into the bar.
-      --
-      -- `want` is read ONCE, before the loop: during a sync the bar reports
-      -- the outgoing tab as selected too, and writing state.tab from inside
-      -- the loop overwrote the very target the later tabs compare against.
-      -- So while syncing, what the bar reports is ignored entirely.
-      local want = (state.tab_sync or 0) > 0 and state.tab or nil
-      local reported = nil
-      for _, t in ipairs(TOOLBAR_TABS) do
-        local flags = (want == t.key) and im.TabItemFlags_SetSelected or 0
-        if im.BeginTabItem(ctx, t.label, nil, flags) then
-          reported = t.key
-          if not want and state.tab ~= t.key then
-            -- A panel belongs to the tab that opened it; leaving the tab
-            -- closes it rather than leaving it hanging under a bar that
-            -- cannot close it.
-            state.panel = nil
-            state.tab = t.key
-          end
-          im.EndTabItem(ctx)
-        end
-      end
-      if want then
-        -- Done as soon as the bar agrees, and in any case bounded, so a
-        -- flag the bar never honours cannot freeze the tabs.
-        state.tab_sync = (reported == want) and 0 or (state.tab_sync - 1)
-      end
-      -- Settings is a window, not a group of buttons, so it is a tab-SHAPED
-      -- button parked on the right rather than a tab.
-      if im.TabItemButton(ctx, "Settings", im.TabItemFlags_Trailing) then
-        state.settings_open = true
-      end
-      -- The rail's count, always in reach: clicking it points the walk at
-      -- the top finding rather than opening anything -- the rail is
-      -- already open, permanently.
-      local inb = state.inbox_counts
-      if inb and inb.total > 0 then
-        if im.TabItemButton(ctx, string.format("Needs you (%d)", inb.total),
-                            im.TabItemFlags_Trailing) then
-          state.inbox_sel = 1
-        end
-      end
-      im.EndTabBar(ctx)
-    end
+    -- THE PIPELINE STRIP IS THE TOOLBAR (redesign spec, Req-11): the hero,
+    -- six stage meters that are also filters, Settings, and the rail's
+    -- count. The tab bar retired here -- there is nothing left for tabs
+    -- to choose between: Sources is a stage, Check and Log are the rail.
+    Strip.Draw()
+    im.Separator(ctx)
 
     -- The ribbon holds ONE height: the tallest a tab has been at this width.
     --
@@ -12633,7 +12802,7 @@ local function loop()
     -- nothing visible and "Edit:" went missing from it unnoticed. Kept honest
     -- now because "Fix:" is the row every repair verb was gathered into, and a
     -- list that does not name it will drift again the next time one moves.
-    local GROUPS = { "Match:", "Cut:", "Fix:", "Pick:", "Pull:", "Check:" }
+    local GROUPS = { "Match:", "Fix:", "Pick:", "Pull:", "Verify:", "Setup:" }
     local gutter = 0
     for _, g in ipairs(GROUPS) do
       local w = im.CalcTextSize(ctx, g)
@@ -12722,125 +12891,11 @@ local function loop()
     local NEEDS_SEL = "\n\nNeeds a selection: select rows here, or items in " ..
       "REAPER.\nThe amber line under the blue button says what is in scope."
 
-    if state.tab == "setup" then
-      PanelButton("script", "Choose script…",
-        "The script CSVs this project reads, and which column of each\n" ..
-        "holds the filename, the line and the character.")
-
-      if im.Button(ctx, "Sources and transcripts…") then
-        local ok, why = vo.LaunchSibling("ajsfx_VO_Sources.lua")
-        if not ok then state.message, state.message_kind = tostring(why), "error" end
-      end
-      Tip("The recordings this project reads, and their transcripts.")
-
-      -- The leftovers band: a readout, not a verb. It used to sit AFTER Start
-      -- over, which put the row's only destructive button in the middle and
-      -- left the far right -- where the eye stops -- on a line of grey text.
-      local script_label
-      if n_scripts == 0 then
-        script_label = "(none chosen)"
-      else
-        script_label = vo.Basename(state.scripts[1].path or "")
-        if n_scripts > 1 then
-          script_label = script_label .. string.format(" +%d more", n_scripts - 1)
-        end
-      end
-      Sep("  Script: " .. script_label)
-      im.TextDisabled(ctx, "  Script: ")
-      im.SameLine(ctx, 0, 0)
-      im.TextDisabled(ctx, script_label)
-      if n_scripts > 0 and im.IsItemHovered(ctx) then
-        local all = {}
-        for _, sc in ipairs(state.scripts) do all[#all + 1] = sc.path end
-        im.SetTooltip(ctx, table.concat(all, "\n"))
-      end
-
-      -- Parked at the end of the Setup row, red, behind a confirm that names
-      -- the files: it is the only button in the tool that destroys work.
-      Sep("Start over…")
-      im.PushStyleColor(ctx, im.Col_Button,        0x8C3A3AFF)
-      im.PushStyleColor(ctx, im.Col_ButtonHovered, 0xA84A4AFF)
-      if im.Button(ctx, "Start over…") then im.OpenPopup(ctx, "##reset_confirm") end
-      im.PopStyleColor(ctx, 2)
-      TooltipEvenWhenDisabled(
-          "Delete this project's VO data so the session can be processed\n" ..
-          "again from scratch. Audio is never touched.")
-
-      if im.BeginPopup(ctx, "##reset_confirm") then
-        im.Text(ctx, "Delete this project's VO data?")
-        im.Spacing(ctx)
-        im.TextDisabled(ctx, "Goes:")
-        im.TextWrapped(ctx, "  " .. (state.project_path
-          and vo.Basename(state.project_path) or "(no project file yet)") ..
-          "  -- every Lock, Keep, Sel, rename, Append, pin, and the script list.")
-        im.TextDisabled(ctx, "Stays:")
-        im.TextWrapped(ctx, "  Every item, take name and take marker in the " ..
-          "project. This deletes the tool's notes, not your audio -- and Cut " ..
-          "is undone with undo, not with this.")
-        im.Spacing(ctx)
-        local hit, v = im.Checkbox(ctx, "Also delete the transcripts (whisper must run again)",
-                                   state.reset_transcripts == true)
-        if hit then state.reset_transcripts = v or nil end
-        im.Spacing(ctx)
-        im.PushStyleColor(ctx, im.Col_Button, 0x8C3A3AFF)
-        if im.Button(ctx, "Delete") then
-          local also = state.reset_transcripts == true
-          pending_action = function() ResetProject(also) end
-          im.CloseCurrentPopup(ctx)
-        end
-        im.PopStyleColor(ctx)
-        im.SameLine(ctx)
-        if im.Button(ctx, "Cancel") then im.CloseCurrentPopup(ctx) end
-        im.EndPopup(ctx)
-      end
-
-    elseif state.tab == "edit" then
-      -- The hero, on its own row above the parts it is made of: a new session
-      -- runs these four in this order every time, and the row below shows
-      -- exactly which four, so the button teaches the path instead of hiding
-      -- it.
-      im.SetCursorPosX(ctx, row_left)
-      im.PushStyleColor(ctx, im.Col_Button,        0x3E6FA3FF)
-      im.PushStyleColor(ctx, im.Col_ButtonHovered, 0x4E86C0FF)
-      ActsOn()
-      if im.Button(ctx, "Run the whole pass") then pending_action = GoldenPath end
-      ActsEnd()
-      im.PopStyleColor(ctx, 2)
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx,
-          "Select a recording and press this. It takes the session from raw\n" ..
-          "audio to something you can review, in one undo step:\n\n" ..
-          "  1. match the transcript to the script, and mark the takes\n" ..
-          "  2. clean the markers -- duplicates decided by the words\n" ..
-          "  3. split at those markers, and trim single-take clips onto\n" ..
-          "     theirs\n" ..
-          "  4. name every clip for its line, and fade the cut edges\n" ..
-          "  5. pick a take for each line\n" ..
-          "  6. build Selects / Alts / Review, and pull the items there\n\n" ..
-          "What is left is the judgement: check the selects and alts, check\n" ..
-          "the edits, then deliver.\n\n" ..
-          "Each step is a button in the rows below, for when you want just\n" ..
-          "one. This CHANGES ITEMS: it cuts, names and moves audio.\n\n" ..
-          "It does NOT lay the items out in script order -- every take stays\n" ..
-          "at the time it was recorded, so what you verify is where you\n" ..
-          "heard it. \"Lay items out in script order\" is there when you want\n" ..
-          "it. It does not run \"Auto-adjust head and tail\" either: the cut\n" ..
-          "edges come from the markers, and auto-adjust is the per-item\n" ..
-          "verb for when one looks wrong.\n\n" ..
-          "Acts on the selection, like every button below: the line under\n" ..
-          "this one says what that is right now.\n\n" ..
-          "Step 5 picks each line's " ..
-          ((state.auto_select_take == "first") and "FIRST" or "LAST") ..
-          " take -- whichever of the two\nAuto-pick buttons you used last." .. NEEDS_SEL)
-      end
-      im.SameLine(ctx)
-      im.TextDisabled(ctx,
-        "  match \226\134\146 clean \226\134\146 cut \226\134\146 name \226\134\146 pick \226\134\146 pull")
-
-      -- Directly under the hero and above every row: the scope is the one
-      -- thing that changes what all of these do, so it is never more than a
-      -- glance away from the button being pressed.
-      im.NewLine(ctx)
+    do
+      -- The scope line leads the ribbon: the selection is the one thing
+      -- that changes what every verb below does, so it is never more than
+      -- a glance from the button being pressed. (The hero lives in the
+      -- strip above -- the strip is the path, the hero advances it.)
       im.SetCursorPosX(ctx, row_left)
       DrawScopeLine()
       started = true
@@ -13266,6 +13321,72 @@ local function loop()
           "model reloads per item; roughly 20s each) but it is the only\n" ..
           "check that HEARS anything the transcript missed.")
 
+      -- Setup: the once-per-project errands, folded down from the retired
+      -- Setup tab. Sources live in the strip's first stage now; what is
+      -- left is the script list and the one destructive button.
+      Group("Setup:")
+      PanelButton("script", "Choose script…",
+        "The script CSVs this project reads, and which column of each\n" ..
+        "holds the filename, the line and the character.")
+
+      local script_label
+      if n_scripts == 0 then
+        script_label = "(none chosen)"
+      else
+        script_label = vo.Basename(state.scripts[1].path or "")
+        if n_scripts > 1 then
+          script_label = script_label .. string.format(" +%d more", n_scripts - 1)
+        end
+      end
+      Sep("  Script: " .. script_label)
+      im.TextDisabled(ctx, "  Script: ")
+      im.SameLine(ctx, 0, 0)
+      im.TextDisabled(ctx, script_label)
+      if n_scripts > 0 and im.IsItemHovered(ctx) then
+        local all = {}
+        for _, sc in ipairs(state.scripts) do all[#all + 1] = sc.path end
+        im.SetTooltip(ctx, table.concat(all, "\n"))
+      end
+
+      -- Parked at the end, red, behind a confirm that names the files: it
+      -- is the only button in the tool that destroys work.
+      Sep("Start over…")
+      im.PushStyleColor(ctx, im.Col_Button,        0x8C3A3AFF)
+      im.PushStyleColor(ctx, im.Col_ButtonHovered, 0xA84A4AFF)
+      if im.Button(ctx, "Start over…") then im.OpenPopup(ctx, "##reset_confirm") end
+      im.PopStyleColor(ctx, 2)
+      TooltipEvenWhenDisabled(
+          "Delete this project's VO data so the session can be processed\n" ..
+          "again from scratch. Audio is never touched.")
+
+      if im.BeginPopup(ctx, "##reset_confirm") then
+        im.Text(ctx, "Delete this project's VO data?")
+        im.Spacing(ctx)
+        im.TextDisabled(ctx, "Goes:")
+        im.TextWrapped(ctx, "  " .. (state.project_path
+          and vo.Basename(state.project_path) or "(no project file yet)") ..
+          "  -- every Lock, Keep, Sel, rename, Append, pin, and the script list.")
+        im.TextDisabled(ctx, "Stays:")
+        im.TextWrapped(ctx, "  Every item, take name and take marker in the " ..
+          "project. This deletes the tool's notes, not your audio -- and Cut " ..
+          "is undone with undo, not with this.")
+        im.Spacing(ctx)
+        local hit, v = im.Checkbox(ctx, "Also delete the transcripts (whisper must run again)",
+                                   state.reset_transcripts == true)
+        if hit then state.reset_transcripts = v or nil end
+        im.Spacing(ctx)
+        im.PushStyleColor(ctx, im.Col_Button, 0x8C3A3AFF)
+        if im.Button(ctx, "Delete") then
+          local also = state.reset_transcripts == true
+          pending_action = function() ResetProject(also) end
+          im.CloseCurrentPopup(ctx)
+        end
+        im.PopStyleColor(ctx)
+        im.SameLine(ctx)
+        if im.Button(ctx, "Cancel") then im.CloseCurrentPopup(ctx) end
+        im.EndPopup(ctx)
+      end
+
     end
 
     im.EndGroup(ctx)
@@ -13285,7 +13406,7 @@ local function loop()
         bad, n_scripts, n_scripts == 1 and "" or "s"))
       im.SameLine(ctx)
       if im.Button(ctx, "Choose script…##warn") then
-        state.tab, state.panel, state.tab_sync = "setup", "script", 4
+        state.panel = "script"
       end
     end
 
@@ -13368,9 +13489,18 @@ local function loop()
     -- centerpiece (AJ's call on the redesign spec), the rail answers
     -- "what now", and THE LOG rides under the rail -- actions and their
     -- reports in one column, newest first. The Log tab retired with it.
+    -- The Sources STAGE swaps in for the sheet: same slot, same rail.
     local sheet_avail = select(1, im.GetContentRegionAvail(ctx))
     local rail_w = math.min(Inbox.WIDTH, math.floor(sheet_avail * 0.38))
-    DrawCards(body_h, sheet_avail - rail_w - item_gap)
+    if state.stage_filter == "sources" then
+      if im.BeginChild(ctx, "##vo_sources_stage",
+                       sheet_avail - rail_w - item_gap, body_h) then
+        sources_ui.Draw(ctx)
+        im.EndChild(ctx)
+      end
+    else
+      DrawCards(body_h, sheet_avail - rail_w - item_gap)
+    end
     im.SameLine(ctx)
     im.BeginGroup(ctx)
     local log_h = math.max(110, math.floor(body_h * 0.30))
@@ -13578,6 +13708,10 @@ local function loop()
     -- this is a window you sit in WHILE listening. Ticking OK is a click.
 
     im.End(ctx)
+
+    -- The embedded Sources surface's deferred clicks, after End for the
+    -- same reason as pending_action below.
+    sources_ui.RunPending()
 
     -- Drawn after the main window's End so they are siblings, not children.
     DrawSettingsWindow()

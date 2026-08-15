@@ -1,54 +1,64 @@
 -- @noindex
 -- Provided by the ajsfx VO package; see ajsfx_VO_Overview.lua's @provides.
 --
--- ajsfx VO Sources — one row per recorded source file in the project, and
--- whether it has been transcribed.
+-- The Sources UI as a MODULE: one row per recorded source file in the
+-- project, and whether it has been transcribed. Extracted from
+-- ajsfx_VO_Sources.lua verbatim (redesign spec, phase 2) so the same
+-- surface can draw inside the standalone window today and inside the
+-- Overview's Sources stage tomorrow -- without spending any of the
+-- Overview's top-level locals.
 --
--- This script owns transcription and nothing else. It does not read the script
--- CSV, does not match, and does not cut: a transcript is a fact about a wav
--- file, and this is the window where that fact gets made.
+-- This code owns transcription and nothing else. It does not read the
+-- script CSV, does not match, and does not cut: a transcript is a fact
+-- about a wav file, and this is the surface where that fact gets made.
 -- See VO/SPEC-sources.md.
+--
+-- Contract with the host:
+--   local sources_ui = require("lib.ajsfx_vo_sources_ui")
+--   sources_ui.attach(im)      -- once, after requiring ReaImGui
+--   sources_ui.Tick()          -- every frame, before Begin (throttled work)
+--   sources_ui.Draw(ctx)       -- the full body, inside a window or child
+--   sources_ui.RunPending()    -- after End: deferred click actions
+--   sources_ui.Progress()      -- -> done, total, running (strip meter)
+--
+-- Module-level state is safe here: each ReaScript runs in its own Lua VM,
+-- so the standalone window and an embedding Overview can never share one
+-- copy of this module.
 
-local r = reaper
+local M = {}
 
-local script_path = debug.getinfo(1, "S").source:match("@?(.*[\\/])")
-if not script_path then script_path = "" end
-package.path = script_path .. "?.lua;" .. script_path .. "../?.lua;" .. package.path
-local core = require("lib.ajsfx_core")
-local vo   = require("lib.ajsfx_vo")
-local view = require("lib.ajsfx_vo_view")
+local r  = reaper
+local vo = require("lib.ajsfx_vo")
 
-local success, im = pcall(function()
-  package.path = r.ImGui_GetBuiltinPath() .. '/?.lua;' .. package.path
-  return require('imgui')('0.9.3')
-end)
-if not success then
-  r.MB("This script requires the 'imgui' library.\n\n" ..
-       "Install ReaImGui: ReaScript binding for Dear ImGui via ReaPack.",
-       "Library not found", 0)
-  return
-end
+-- Set by attach()/Draw(): the host's ReaImGui table and current context.
+local im, ctx
 
--- ReaImGui's shim raises on ANY unknown field rather than returning nil, so
--- `im.Maybe and im.Maybe(ctx)` is not a guard — it is a crash on the bindings
--- that lack the field. Every optional entry point has to come through here.
+-- ReaImGui's shim raises on ANY unknown field rather than returning nil,
+-- so every optional entry point comes through here (same note as the
+-- Overview's Api()).
 local function Api(name) return rawget(im, name) end
 
--- Modifier state, read live. GetKeyMods is not in every 0.9.x binding; where it
--- is missing the individual modifier keys still answer.
-local GET_KEY_MODS   = Api('GetKeyMods')
-local MOD_SHORTCUT   = Api('Mod_Shortcut') or Api('Mod_Ctrl')
-local MOD_SHIFT      = Api('Mod_Shift')
-local KEY_LSHIFT     = Api('Key_LeftShift')
-local KEY_RSHIFT     = Api('Key_RightShift')
-local KEY_LCTRL      = Api('Key_LeftCtrl')
-local KEY_RCTRL      = Api('Key_RightCtrl')
-local KEY_LSUPER     = Api('Key_LeftSuper')
-local KEY_RSUPER     = Api('Key_RightSuper')
+-- Filled in by attach(), once im exists.
+local GET_KEY_MODS, MOD_SHORTCUT, MOD_SHIFT
+local KEY_LSHIFT, KEY_RSHIFT, KEY_LCTRL, KEY_RCTRL, KEY_LSUPER, KEY_RSUPER
+local HEADER_ROW_FLAGS
 
--- Needed to draw the header row by hand; without it the table falls back to
--- TableHeadersRow and simply has no header tooltips.
-local HEADER_ROW_FLAGS = Api('TableRowFlags_Headers')
+function M.attach(im_)
+  if im == im_ then return end
+  im = im_
+  GET_KEY_MODS   = Api('GetKeyMods')
+  MOD_SHORTCUT   = Api('Mod_Shortcut') or Api('Mod_Ctrl')
+  MOD_SHIFT      = Api('Mod_Shift')
+  KEY_LSHIFT     = Api('Key_LeftShift')
+  KEY_RSHIFT     = Api('Key_RightShift')
+  KEY_LCTRL      = Api('Key_LeftCtrl')
+  KEY_RCTRL      = Api('Key_RightCtrl')
+  KEY_LSUPER     = Api('Key_LeftSuper')
+  KEY_RSUPER     = Api('Key_RightSuper')
+  -- Needed to draw the header row by hand; without it the table falls
+  -- back to TableHeadersRow and simply has no header tooltips.
+  HEADER_ROW_FLAGS = Api('TableRowFlags_Headers')
+end
 
 -- vo.TranscriptState and vo.IsBackendReady both stat the filesystem, so both
 -- are gated behind a throttle rather than run every frame (CLAUDE.md: use
@@ -84,12 +94,13 @@ local state = {
   run_started = nil,
   write_fails = {},
   scroll_to = nil,     -- path Overview asked us to bring into view, once
-  detail    = nil,     -- path of the row whose detail panel is open (Task 9)
+  detail    = nil,     -- path of the row whose detail panel is open
   detail_paragraph = 1, -- index into that transcript's paragraphs whose words are shown
   cfg       = vo.LoadConfig(),
   backend   = nil,     -- { ready = bool, reason = string }
   backend_check_t = 0,
 }
+M.state = state
 
 -- -----------------------------------------------------------------------
 -- Rows
@@ -364,12 +375,9 @@ end
 -- -----------------------------------------------------------------------
 -- Drawing
 --
--- Everything below uses ctx, which is why it sits here rather than with the
--- logic above: a function written above this local would bind the GLOBAL ctx,
--- which is nil (see ajsfx_VO_Overview.lua for the same note).
+-- Everything below reads the module-local ctx, which M.Draw sets from its
+-- argument each call -- the host owns the ImGui context and the window.
 -- -----------------------------------------------------------------------
-
-local ctx = im.CreateContext('VO Sources')
 
 local function KeyDown(key)
   return key ~= nil and im.IsKeyDown(ctx, key) or false
@@ -593,11 +601,11 @@ local function DrawMessage()
 end
 
 -- -----------------------------------------------------------------------
--- Detail panel (Task 9)
+-- Detail panel
 --
 -- The list screen's second screen: everything known about ONE source file,
--- reached by double-clicking its row. It owns no state of its own beyond
--- which row is open and which paragraph's words are currently interactive —
+-- reached by clicking its row. It owns no state of its own beyond which
+-- row is open and which paragraph's words are currently interactive —
 -- everything else it draws comes straight off row.transcript.
 -- -----------------------------------------------------------------------
 
@@ -954,11 +962,11 @@ local function DrawDetailPanel()
 end
 
 -- -----------------------------------------------------------------------
--- Main loop
+-- The module's public face
 -- -----------------------------------------------------------------------
 
 -- Overview hands a file over by writing it to ExtState. Read every frame rather
--- than once at startup: the window Overview hands off to is usually one that is
+-- than once at startup: the surface Overview hands off to is usually one that is
 -- already open, and only the reader knows when it has rows to match against.
 local function ConsumeFocusRequest()
   local focus = r.GetExtState(vo.EXT_SECTION, "focus_source")
@@ -980,65 +988,71 @@ local function ConsumeFocusRequest()
   end
 end
 
-local function loop()
+-- Throttled per-frame work, safe to call whether or not Draw follows.
+function M.Tick()
   -- RefreshBackend is throttled internally, so this call is cheap every frame.
   RefreshBackend()
-
-  -- MaybeRescan is throttled internally too; keep drawing while a batch runs
-  -- so the per-file progress line and row highlight update every frame, the
-  -- same way every window here stays alive through a long run.
+  -- MaybeRescan is throttled internally too; keep ticking while a batch runs
+  -- so the per-file progress and row flips land as each file finishes.
   MaybeRescan()
   -- After the rescan, so a file that has only just appeared in the project can
   -- still be focused on the frame it arrives.
   ConsumeFocusRequest()
+end
 
-  im.SetNextWindowSize(ctx, 900, 560, im.Cond_FirstUseEver)
-  local visible_win, open = im.Begin(ctx, 'ajsfx VO Sources', true)
+-- The whole surface: toolbar, table, count line, progress, message, detail.
+-- Draws into whatever window or child the host has open.
+function M.Draw(ctx_)
+  ctx = ctx_
+  pending_action = nil
 
-  if visible_win then
+  DrawToolbar()
+  DrawBackendLine()
+  im.Spacing(ctx)
+
+  local rows = VisibleRows()
+
+  -- Reserve room for whatever notices are showing; the table takes the rest.
+  local reserve_rows = 1  -- the row-count line below
+  if state.progress then reserve_rows = reserve_rows + 1 end
+  if state.message  then reserve_rows = reserve_rows + vo.CountLines(state.message.text, 8) end
+
+  local _, avail_h = im.GetContentRegionAvail(ctx)
+  local table_h = avail_h - im.GetFrameHeightWithSpacing(ctx) * reserve_rows
+  -- With the detail panel open, give it most of what's left rather than
+  -- letting the table claim it all: the panel fills whatever remains below
+  -- the row-count/progress/message lines (im.BeginChild's 0-height autosizes
+  -- to that), so the table only needs enough room to stay usable.
+  if state.detail then table_h = math.min(table_h, avail_h * 0.4) end
+  DrawTable(math.max(120, table_h), rows)
+
+  im.TextDisabled(ctx, string.format("%d of %d file%s shown.",
+    #rows, #state.rows, #state.rows == 1 and "" or "s"))
+
+  DrawProgress()
+  DrawMessage()
+  DrawDetailPanel()
+end
+
+-- Deferred click actions; the host calls this after im.End so ImGui's frame
+-- is closed before anything mutates state. One action per frame is enough:
+-- they are all user clicks.
+function M.RunPending()
+  if pending_action then
+    local action = pending_action
     pending_action = nil
-
-    DrawToolbar()
-    DrawBackendLine()
-    im.Spacing(ctx)
-
-    local rows = VisibleRows()
-
-    -- Reserve room for whatever notices are showing; the table takes the rest.
-    local reserve_rows = 1  -- the row-count line below
-    if state.progress then reserve_rows = reserve_rows + 1 end
-    if state.message  then reserve_rows = reserve_rows + vo.CountLines(state.message.text, 8) end
-
-    local _, avail_h = im.GetContentRegionAvail(ctx)
-    local table_h = avail_h - im.GetFrameHeightWithSpacing(ctx) * reserve_rows
-    -- With the detail panel open, give it most of what's left rather than
-    -- letting the table claim it all: the panel fills whatever remains below
-    -- the row-count/progress/message lines (im.BeginChild's 0-height autosizes
-    -- to that), so the table only needs enough room to stay usable.
-    if state.detail then table_h = math.min(table_h, avail_h * 0.4) end
-    DrawTable(math.max(120, table_h), rows)
-
-    im.TextDisabled(ctx, string.format("%d of %d file%s shown.",
-      #rows, #state.rows, #state.rows == 1 and "" or "s"))
-
-    DrawProgress()
-    DrawMessage()
-    DrawDetailPanel()
-
-    im.End(ctx)
-
-    -- Run after End so ImGui's frame is closed before anything mutates state.
-    -- One action per frame is enough: they are all user clicks.
-    if pending_action then
-      local action = pending_action
-      pending_action = nil
-      action()
-    end
-  end
-
-  if open then
-    r.defer(loop)
+    action()
   end
 end
 
-r.defer(loop)
+-- The Sources stage meter: transcribed count, total, and whether a batch is
+-- decoding right now.
+function M.Progress()
+  local total, done = #state.rows, 0
+  for _, row in ipairs(state.rows) do
+    if row.status == "yes" then done = done + 1 end
+  end
+  return done, total, state.running == true
+end
+
+return M
