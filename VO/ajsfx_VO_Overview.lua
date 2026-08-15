@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.15beta22
--- @changelog PRE-RELEASE: EVERY OUT-OF-SYNC ROW IS A SHORTCUT. Click a finding in the "Out of sync" panel and you are looking at it: the clip selects in REAPER and the edit cursor moves to it -- and the sheet's line selects, unfolds and scrolls on its own, because the sheet already mirrors the arrange selection every frame. The marks-vs-tracks rows in the same panel do the trip too (they used to select the sheet row only). Checking a finding now costs one click instead of a hunt across three views. (0.15beta21, same day: the parity watcher itself -- edit one thing and the rest catches up, one "Keep the session in sync" switch, "Fix from Transcript / Marker / Item / Sheet" on everything queued.) Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.
+-- @version 0.15beta23
+-- @changelog PRE-RELEASE: CONFIRM A READ BY HAND. Right-click a take's Vet box to say "I checked -- this read IS this line", for the reads whisper mishears (a name like Bolvd heard as BOLVED) that are nonetheless correct. The transcript stays exactly as heard -- nothing is rewritten or laundered -- but the tick shows as confirmed by YOU, Suspects stops flagging the name-vs-words disagreement, and quick check reports "confirmed by you" instead of re-judging it. The confirmation is a fingerprint like the machine's own stamp, so any edit to the item, marker, name or words withdraws it by itself -- it can never silently outlive the state you actually looked at. Right-click again to withdraw it yourself; an explicit re-listen still runs and its verdict still stands. Works on a highlighted batch like every mark. (0.15beta22, same day: every Out of sync row is a click-to-jump shortcut.) Click a finding in the "Out of sync" panel and you are looking at it: the clip selects in REAPER and the edit cursor moves to it -- and the sheet's line selects, unfolds and scrolls on its own, because the sheet already mirrors the arrange selection every frame. The marks-vs-tracks rows in the same panel do the trip too (they used to select the sheet row only). Checking a finding now costs one click instead of a hunt across three views. (0.15beta21, same day: the parity watcher itself -- edit one thing and the rest catches up, one "Keep the session in sync" switch, "Fix from Transcript / Marker / Item / Sheet" on everything queued.) Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -921,8 +921,11 @@ local function Rebuild()
     else
       row.marker_pos, row.marker_len = nil, nil
     end
-    local stamp = row.item and vo.ReadVetted(row.item)
-    if stamp then
+    local raw = row.item and vo.ReadVetted(row.item)
+    if raw then
+      -- A hand stamp is the same fingerprint wearing a prefix: the user, not
+      -- the machine, judged it. Same recompute, same self-clearing rule.
+      local stamp, by_hand = vo.SplitVetted(raw)
       local take = r.GetActiveTake(row.item)
       local now = take and vo.VettedFingerprint{
         source_path = row.source_path,
@@ -934,6 +937,7 @@ local function Rebuild()
         words       = words_by_path[row.source_path],
       }
       row.vetted_state = (stamp == now) and "ok" or "mismatch"
+      row.vetted_hand  = by_hand or nil
     end
   end
 
@@ -8428,6 +8432,65 @@ function Verify.SnapFP(e)
   }
 end
 
+-- The HUMAN's stamp: "I checked, this read IS this line." Same fingerprint
+-- the machine writes, wearing the hand| prefix -- so it self-clears on any
+-- edit exactly like a machine stamp, and can never silently outlive the
+-- state the user actually looked at. The words are left as heard: this
+-- confirms the ASSIGNMENT, it does not launder the transcript.
+function Verify.HandStamp(rows)
+  local words_by_path = {}
+  for _, t in ipairs(state.transcripts or {}) do
+    words_by_path[t.path] = t.words
+  end
+  local n = 0
+  for _, row in ipairs(rows or {}) do
+    if row.item and r.ValidatePtr(row.item, "MediaItem*") then
+      local take = r.GetActiveTake(row.item)
+      if take then
+        local mk_pos, mk_len
+        if row.marker_id and row.source_start and row.source_stop then
+          mk_pos, mk_len = row.source_start, row.source_stop - row.source_start
+        end
+        vo.WriteVetted(row.item, vo.HAND_VET_PREFIX .. vo.VettedFingerprint{
+          source_path = row.source_path,
+          start_offs  = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS"),
+          length      = r.GetMediaItemInfo_Value(row.item, "D_LENGTH"),
+          playrate    = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE"),
+          take_name   = row.take_name or "",
+          mk_pos      = mk_pos, mk_len = mk_len,
+          words       = words_by_path[row.source_path],
+        })
+        n = n + 1
+      end
+    end
+  end
+  if n > 0 then
+    state.message, state.message_kind = string.format(
+      "Confirmed %d take(s) by hand -- the words stay as heard; any edit " ..
+      "withdraws the confirmation.", n), "ok"
+    state.dirty = true
+  end
+  return n
+end
+
+-- Withdraw the stamp -- hand or machine -- from each row's item.
+function Verify.HandClear(rows)
+  local n = 0
+  for _, row in ipairs(rows or {}) do
+    if row.item and r.ValidatePtr(row.item, "MediaItem*")
+       and vo.ReadVetted(row.item) then
+      vo.WriteVetted(row.item, "")
+      n = n + 1
+    end
+  end
+  if n > 0 then
+    state.message, state.message_kind = string.format(
+      "Withdrew the stamp from %d take(s).", n), "ok"
+    state.dirty = true
+  end
+  return n
+end
+
 -- Feed rows into the queue, de-duplicated against what is already waiting or
 -- decoding. A click is a request: enqueueing twice must not decode twice.
 function Verify.Enqueue(rows)
@@ -8743,7 +8806,23 @@ function Verify.QuickCheck(rows, notes)
   local by_path = {}
   for _, t in ipairs(state.transcripts or {}) do by_path[t.path] = t.words end
   Verify.report, Verify.done = {}, 0
-  for _, e in ipairs(vo.PlanVerify(rows)) do
+  -- The human outranks the paper. A hand confirmation whose fingerprint is
+  -- still live is the user having judged this exact state; re-judging it
+  -- against the words would flag -- and strip -- precisely what they
+  -- confirmed. Only rows the human has not settled go to the judge.
+  -- (Re-listen is different: an explicit request for the machine to HEAR it
+  -- still runs, and its verdict still stands.)
+  local unjudged = {}
+  for _, row in ipairs(rows or {}) do
+    if row.vetted_hand and row.vetted_state == "ok" then
+      Verify.report[#Verify.report + 1] = {
+        asset = row.take_name or row.asset, verdict = "confirmed",
+        note = "confirmed by you -- right-click the Vet box to withdraw" }
+    else
+      unjudged[#unjudged + 1] = row
+    end
+  end
+  for _, e in ipairs(vo.PlanVerify(unjudged)) do
     local words = vo.WordsWithin(by_path[e.source_path], e.span.from, e.span.to)
     if #words == 0 then
       if e.item and r.ValidatePtr(e.item, "MediaItem*") then
@@ -10198,25 +10277,43 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
             "Queued for verify (%d waiting).", #Verify.queue))
         end
       else
-        local vet = row.vetted_state == "ok"
+        local vet  = row.vetted_state == "ok"
+        local hand = row.vetted_hand and vet
         local vhit = im.Checkbox(ctx, "##vetted", vet)
         if im.IsItemHovered(ctx) then
-          im.SetTooltip(ctx, vet
+          im.SetTooltip(ctx, hand
+            and ("Confirmed by YOU: you checked that this read is this\n" ..
+                 "line, whatever the words look like. Any edit to the item,\n" ..
+                 "marker, name or words withdraws it. Right-click to\n" ..
+                 "withdraw by hand; click to have the machine re-verify.")
+            or vet
             and ("Vetted: transcript and line name agreed when the machine\n" ..
                  "last checked. Any edit to the item, marker, name or words\n" ..
                  "clears this. Click to re-verify.")
-            or  (state.verify_relisten
+            or  ((state.verify_relisten
                  and ("Not vetted. Click: the machine re-listens to this take\n" ..
                       "and checks the transcript and the line name against the\n" ..
                       "audio. On a highlighted row, every highlighted row follows.")
                  or  ("Not vetted. Click: quick check -- the stored words under\n" ..
                       "this take against the line its name claims; agreement\n" ..
                       "stamps this box. Re-listen (Check tab) checks the audio\n" ..
-                      "itself. On a highlighted row, every highlighted row follows.")))
+                      "itself. On a highlighted row, every highlighted row follows."))
+                 .. "\n\nRight-click: confirm by hand -- YOU have checked\n" ..
+                    "that this read IS this line. The words stay exactly as\n" ..
+                    "whisper heard them; only the verdict is yours. Suspects\n" ..
+                    "and quick check then leave it alone until something\n" ..
+                    "about the take actually changes."))
         end
         if vhit then
           local targets = MarkTargets()
           pending_action = function() Verify.Kick(targets) end
+        elseif im.IsItemClicked(ctx, im.MouseButton_Right) then
+          local targets = MarkTargets()
+          if hand then
+            pending_action = function() Verify.HandClear(targets) Reload() end
+          else
+            pending_action = function() Verify.HandStamp(targets) Reload() end
+          end
         end
       end
     end

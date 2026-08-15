@@ -174,5 +174,58 @@ test("an item the sheet does not know has no sheet element", function()
 end)
 
 --------------------------------
+print("Hand-vetted stamps:")
+
+test("SplitVetted round-trips both forms", function()
+  local body, hand = vo.SplitVetted("hand|v1|a|b")
+  assert(body == "v1|a|b" and hand == true, "hand form mangled")
+  body, hand = vo.SplitVetted("v1|a|b")
+  assert(body == "v1|a|b" and hand == false, "machine form mangled")
+  body, hand = vo.SplitVetted(nil)
+  assert(body == nil and hand == false, "nil errored")
+end)
+
+test("a live hand confirmation silences the name-mismatch trigger", function()
+  local lines = { { asset = "IWinBig_02", text = "I win big" } }
+  local row = {
+    status = "take", item = "ITEM1", source_path = "src.wav",
+    source_start = 0, source_stop = 2, marker_id = "abc",
+    take_name = "IWinBig_02", asset = "IWinBig_02",
+    vetted_hand = true, vetted_state = "ok",
+  }
+  local transcripts = { { path = "src.wav", words = {
+    { text = "frog", t0 = 0.0, t1 = 0.7 },
+    { text = "toad", t0 = 0.7, t1 = 1.4 },
+    { text = "bolved", t0 = 1.4, t1 = 2.0 },
+  } } }
+  local sus = vo.ScanSuspects({ row }, transcripts, lines, {}, nil)
+  for _, s in ipairs(sus) do
+    assert(not s.triggers.name_mismatch,
+      "hand-confirmed row still flagged for name mismatch")
+  end
+end)
+
+test("a STALE hand confirmation does not silence anything", function()
+  local lines = { { asset = "IWinBig_02", text = "I win big" } }
+  local row = {
+    status = "take", item = "ITEM1", source_path = "src.wav",
+    source_start = 0, source_stop = 2, marker_id = "abc",
+    take_name = "IWinBig_02", asset = "IWinBig_02",
+    vetted_hand = true, vetted_state = "mismatch",
+  }
+  local transcripts = { { path = "src.wav", words = {
+    { text = "frog", t0 = 0.0, t1 = 0.7 },
+    { text = "toad", t0 = 0.7, t1 = 1.4 },
+    { text = "bolved", t0 = 1.4, t1 = 2.0 },
+  } } }
+  local sus = vo.ScanSuspects({ row }, transcripts, lines, {}, nil)
+  local hit = false
+  for _, s in ipairs(sus) do
+    if s.triggers.name_mismatch then hit = true end
+  end
+  assert(hit, "stale confirmation still trusted")
+end)
+
+--------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
