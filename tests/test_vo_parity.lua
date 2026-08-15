@@ -174,16 +174,7 @@ test("an item the sheet does not know has no sheet element", function()
 end)
 
 --------------------------------
-print("Hand-vetted stamps:")
-
-test("SplitVetted round-trips both forms", function()
-  local body, hand = vo.SplitVetted("hand|v1|a|b")
-  assert(body == "v1|a|b" and hand == true, "hand form mangled")
-  body, hand = vo.SplitVetted("v1|a|b")
-  assert(body == "v1|a|b" and hand == false, "machine form mangled")
-  body, hand = vo.SplitVetted(nil)
-  assert(body == nil and hand == false, "nil errored")
-end)
+print("The OK mark (human confirmation):")
 
 test("a live hand confirmation silences the name-mismatch trigger", function()
   local lines = { { asset = "IWinBig_02", text = "I win big" } }
@@ -191,7 +182,7 @@ test("a live hand confirmation silences the name-mismatch trigger", function()
     status = "take", item = "ITEM1", source_path = "src.wav",
     source_start = 0, source_stop = 2, marker_id = "abc",
     take_name = "IWinBig_02", asset = "IWinBig_02",
-    vetted_hand = true, vetted_state = "ok",
+    confirmed_state = "ok",
   }
   local transcripts = { { path = "src.wav", words = {
     { text = "frog", t0 = 0.0, t1 = 0.7 },
@@ -211,7 +202,7 @@ test("a STALE hand confirmation does not silence anything", function()
     status = "take", item = "ITEM1", source_path = "src.wav",
     source_start = 0, source_stop = 2, marker_id = "abc",
     take_name = "IWinBig_02", asset = "IWinBig_02",
-    vetted_hand = true, vetted_state = "mismatch",
+    confirmed_state = "mismatch",
   }
   local transcripts = { { path = "src.wav", words = {
     { text = "frog", t0 = 0.0, t1 = 0.7 },

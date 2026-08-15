@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.15beta23
--- @changelog PRE-RELEASE: CONFIRM A READ BY HAND. Right-click a take's Vet box to say "I checked -- this read IS this line", for the reads whisper mishears (a name like Bolvd heard as BOLVED) that are nonetheless correct. The transcript stays exactly as heard -- nothing is rewritten or laundered -- but the tick shows as confirmed by YOU, Suspects stops flagging the name-vs-words disagreement, and quick check reports "confirmed by you" instead of re-judging it. The confirmation is a fingerprint like the machine's own stamp, so any edit to the item, marker, name or words withdraws it by itself -- it can never silently outlive the state you actually looked at. Right-click again to withdraw it yourself; an explicit re-listen still runs and its verdict still stands. Works on a highlighted batch like every mark. (0.15beta22, same day: every Out of sync row is a click-to-jump shortcut.) Click a finding in the "Out of sync" panel and you are looking at it: the clip selects in REAPER and the edit cursor moves to it -- and the sheet's line selects, unfolds and scrolls on its own, because the sheet already mirrors the arrange selection every frame. The marks-vs-tracks rows in the same panel do the trip too (they used to select the sheet row only). Checking a finding now costs one click instead of a hunt across three views. (0.15beta21, same day: the parity watcher itself -- edit one thing and the rest catches up, one "Keep the session in sync" switch, "Fix from Transcript / Marker / Item / Sheet" on everything queued.) Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.
+-- @version 0.15beta24
+-- @changelog PRE-RELEASE: THE OK BOX -- YOUR VERDICT GETS ITS OWN CHECKMARK. A fifth box on every take row (Lock Keep Sel Vet OK): tick OK to say "I checked -- this read IS this line", for the reads whisper mishears (a name like Bolvd heard as BOLVED) that are nonetheless correct. Vet stays the MACHINE's box, exactly as before; OK is YOURS -- two different facts, two boxes, two keys, never mixed. The transcript stays exactly as heard -- nothing is rewritten -- but with OK ticked, Suspects stops flagging the name-vs-words disagreement and quick check reports "OK'd by you" instead of re-judging it. The mark is a fingerprint like the machine's stamp, so any edit to the item, marker, name or words withdraws it by itself -- it can never silently outlive the state you actually looked at. Click again to withdraw it yourself; an explicit re-listen still runs and its verdict still stands. Works on a highlighted batch like every mark. (Replaces beta23's right-click-the-Vet-box design minutes into review: overloading the machine's box with the human's verdict hid whose judgment the tick was.) Click a finding in the "Out of sync" panel and you are looking at it: the clip selects in REAPER and the edit cursor moves to it -- and the sheet's line selects, unfolds and scrolls on its own, because the sheet already mirrors the arrange selection every frame. The marks-vs-tracks rows in the same panel do the trip too (they used to select the sheet row only). Checking a finding now costs one click instead of a hunt across three views. (0.15beta21, same day: the parity watcher itself -- edit one thing and the rest catches up, one "Keep the session in sync" switch, "Fix from Transcript / Marker / Item / Sheet" on everything queued.) Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -921,11 +921,13 @@ local function Rebuild()
     else
       row.marker_pos, row.marker_len = nil, nil
     end
-    local raw = row.item and vo.ReadVetted(row.item)
-    if raw then
-      -- A hand stamp is the same fingerprint wearing a prefix: the user, not
-      -- the machine, judged it. Same recompute, same self-clearing rule.
-      local stamp, by_hand = vo.SplitVetted(raw)
+    row.confirmed_state = nil
+    local vet_stamp = row.item and vo.ReadVetted(row.item)
+    local ok_stamp  = row.item and vo.ReadConfirmed(row.item)
+    if vet_stamp or ok_stamp then
+      -- One recompute serves both stamps: Vet (the machine's verdict) and
+      -- OK (the human's) are different facts on different keys, but they
+      -- self-clear by the same fingerprint rule.
       local take = r.GetActiveTake(row.item)
       local now = take and vo.VettedFingerprint{
         source_path = row.source_path,
@@ -936,8 +938,12 @@ local function Rebuild()
         mk_pos      = row.marker_pos, mk_len = row.marker_len,
         words       = words_by_path[row.source_path],
       }
-      row.vetted_state = (stamp == now) and "ok" or "mismatch"
-      row.vetted_hand  = by_hand or nil
+      if vet_stamp then
+        row.vetted_state = (vet_stamp == now) and "ok" or "mismatch"
+      end
+      if ok_stamp then
+        row.confirmed_state = (ok_stamp == now) and "ok" or "mismatch"
+      end
     end
   end
 
@@ -8432,12 +8438,12 @@ function Verify.SnapFP(e)
   }
 end
 
--- The HUMAN's stamp: "I checked, this read IS this line." Same fingerprint
--- the machine writes, wearing the hand| prefix -- so it self-clears on any
--- edit exactly like a machine stamp, and can never silently outlive the
--- state the user actually looked at. The words are left as heard: this
--- confirms the ASSIGNMENT, it does not launder the transcript.
-function Verify.HandStamp(rows)
+-- The HUMAN's mark: "I checked, this read IS this line." Its own box (OK)
+-- and its own key -- the Vet box stays the machine's. The stamp is a
+-- fingerprint, so it self-clears on any edit and can never silently
+-- outlive the state the user actually looked at. The words are left as
+-- heard: this confirms the ASSIGNMENT, it does not launder the transcript.
+function Verify.Confirm(rows)
   local words_by_path = {}
   for _, t in ipairs(state.transcripts or {}) do
     words_by_path[t.path] = t.words
@@ -8451,7 +8457,7 @@ function Verify.HandStamp(rows)
         if row.marker_id and row.source_start and row.source_stop then
           mk_pos, mk_len = row.source_start, row.source_stop - row.source_start
         end
-        vo.WriteVetted(row.item, vo.HAND_VET_PREFIX .. vo.VettedFingerprint{
+        vo.WriteConfirmed(row.item, vo.VettedFingerprint{
           source_path = row.source_path,
           start_offs  = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS"),
           length      = r.GetMediaItemInfo_Value(row.item, "D_LENGTH"),
@@ -8466,26 +8472,27 @@ function Verify.HandStamp(rows)
   end
   if n > 0 then
     state.message, state.message_kind = string.format(
-      "Confirmed %d take(s) by hand -- the words stay as heard; any edit " ..
-      "withdraws the confirmation.", n), "ok"
+      "OK'd %d take(s) -- the words stay as heard; any edit withdraws " ..
+      "the mark.", n), "ok"
     state.dirty = true
   end
   return n
 end
 
--- Withdraw the stamp -- hand or machine -- from each row's item.
-function Verify.HandClear(rows)
+-- Withdraw the human's OK from each row's item. The Vet stamp is not
+-- touched: un-OK'ing a take does not un-verify what the machine checked.
+function Verify.Unconfirm(rows)
   local n = 0
   for _, row in ipairs(rows or {}) do
     if row.item and r.ValidatePtr(row.item, "MediaItem*")
-       and vo.ReadVetted(row.item) then
-      vo.WriteVetted(row.item, "")
+       and vo.ReadConfirmed(row.item) then
+      vo.WriteConfirmed(row.item, "")
       n = n + 1
     end
   end
   if n > 0 then
     state.message, state.message_kind = string.format(
-      "Withdrew the stamp from %d take(s).", n), "ok"
+      "Withdrew the OK from %d take(s).", n), "ok"
     state.dirty = true
   end
   return n
@@ -8814,10 +8821,10 @@ function Verify.QuickCheck(rows, notes)
   -- still runs, and its verdict still stands.)
   local unjudged = {}
   for _, row in ipairs(rows or {}) do
-    if row.vetted_hand and row.vetted_state == "ok" then
+    if row.confirmed_state == "ok" then
       Verify.report[#Verify.report + 1] = {
         asset = row.take_name or row.asset, verdict = "confirmed",
-        note = "confirmed by you -- right-click the Vet box to withdraw" }
+        note = "OK'd by you -- untick the OK box to withdraw" }
     else
       unjudged[#unjudged + 1] = row
     end
@@ -10006,10 +10013,11 @@ end
 -- zone is used by band and take rows alike, which is what keeps the two
 -- levels correlated without a table's grid.
 local function CardZones(w)
-  -- marks holds FOUR boxes at 34px pitch (Lock/Keep/Sel/Vetted, last at
-  -- marks+102): text must clear 78+102+box before it starts. 186 was the
-  -- three-box value and the Vetted box drew under the transcript.
-  local z = { lead = 0, marks = 78, text = 220 }
+  -- marks holds FIVE boxes at 34px pitch (Lock/Keep/Sel/Vet/OK, last at
+  -- marks+136): text must clear 78+136+box before it starts. 220 was the
+  -- four-box value and the OK box drew under the transcript, exactly as
+  -- 186 once made the Vetted box do.
+  local z = { lead = 0, marks = 78, text = 254 }
   -- Two zones carry the whole card now, and both are things the user acts on:
   -- the text being read, and the name it will be exported under. What went:
   --   Notes -- a free-text box the tool cannot act on, a third of the width.
@@ -10277,43 +10285,57 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
             "Queued for verify (%d waiting).", #Verify.queue))
         end
       else
-        local vet  = row.vetted_state == "ok"
-        local hand = row.vetted_hand and vet
+        local vet = row.vetted_state == "ok"
         local vhit = im.Checkbox(ctx, "##vetted", vet)
         if im.IsItemHovered(ctx) then
-          im.SetTooltip(ctx, hand
-            and ("Confirmed by YOU: you checked that this read is this\n" ..
-                 "line, whatever the words look like. Any edit to the item,\n" ..
-                 "marker, name or words withdraws it. Right-click to\n" ..
-                 "withdraw by hand; click to have the machine re-verify.")
-            or vet
+          im.SetTooltip(ctx, vet
             and ("Vetted: transcript and line name agreed when the machine\n" ..
                  "last checked. Any edit to the item, marker, name or words\n" ..
                  "clears this. Click to re-verify.")
-            or  ((state.verify_relisten
+            or  (state.verify_relisten
                  and ("Not vetted. Click: the machine re-listens to this take\n" ..
                       "and checks the transcript and the line name against the\n" ..
                       "audio. On a highlighted row, every highlighted row follows.")
                  or  ("Not vetted. Click: quick check -- the stored words under\n" ..
                       "this take against the line its name claims; agreement\n" ..
                       "stamps this box. Re-listen (Check tab) checks the audio\n" ..
-                      "itself. On a highlighted row, every highlighted row follows."))
-                 .. "\n\nRight-click: confirm by hand -- YOU have checked\n" ..
-                    "that this read IS this line. The words stay exactly as\n" ..
-                    "whisper heard them; only the verdict is yours. Suspects\n" ..
-                    "and quick check then leave it alone until something\n" ..
-                    "about the take actually changes."))
+                      "itself. On a highlighted row, every highlighted row follows.")))
         end
         if vhit then
           local targets = MarkTargets()
           pending_action = function() Verify.Kick(targets) end
-        elseif im.IsItemClicked(ctx, im.MouseButton_Right) then
-          local targets = MarkTargets()
-          if hand then
-            pending_action = function() Verify.HandClear(targets) Reload() end
-          else
-            pending_action = function() Verify.HandStamp(targets) Reload() end
-          end
+        end
+      end
+
+      -- The OK box: the HUMAN's verdict, beside the machine's and never
+      -- shared with it. "I checked -- this read IS this line", for the
+      -- reads whisper mishears that are nonetheless correct. User-owned
+      -- like Lock/Keep/Sel: a click sets it, a click clears it. The stamp
+      -- is a fingerprint, so any edit to the take withdraws it by itself.
+      im.SameLine(ctx)
+      im.SetCursorScreenPos(ctx, rx + z.marks + 136, ry)
+      local okd = row.confirmed_state == "ok"
+      local ohit = im.Checkbox(ctx, "##okd", okd)
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, okd
+          and ("OK: YOU checked that this read is this line, whatever the\n" ..
+               "words look like. Suspects and quick check leave it alone.\n" ..
+               "Any edit to the item, marker, name or words withdraws it.\n" ..
+               "Click to withdraw it yourself.")
+          or  ("OK: tick to say YOU have checked that this read IS this\n" ..
+               "line -- for reads whisper mishears that are still correct.\n" ..
+               "The transcript stays exactly as heard; only the verdict is\n" ..
+               "yours. Suspects and quick check then leave the take alone\n" ..
+               "until something about it actually changes. An explicit\n" ..
+               "re-listen still runs and its verdict still stands.\n" ..
+               "On a highlighted row, every highlighted row follows."))
+      end
+      if ohit then
+        local targets = MarkTargets()
+        if okd then
+          pending_action = function() Verify.Unconfirm(targets) Reload() end
+        else
+          pending_action = function() Verify.Confirm(targets) Reload() end
         end
       end
     end
@@ -10772,10 +10794,11 @@ end
 local function DrawTakeHeaderRow(z, rx)
   local _, y = im.GetCursorScreenPos(ctx)
   local sf = PushCellFont("state")
-  -- Lock, Keep, Sel, Vet -- broad to specific, left to right. See
+  -- Lock, Keep, Sel, Vet, OK -- broad to specific, left to right. See
   -- DrawCardTakeRow for why Keep is not called "Alt". Vet is the
-  -- machine-owned Vetted box.
-  for i, l in ipairs({ "Lock", "Keep", "Sel", "Vet" }) do
+  -- machine-owned Vetted box; OK is the human's own verdict, deliberately
+  -- a separate box on a separate key.
+  for i, l in ipairs({ "Lock", "Keep", "Sel", "Vet", "OK" }) do
     im.SetCursorScreenPos(ctx, rx + z.marks + (i - 1) * 34 - 2, y)
     im.TextDisabled(ctx, l)
   end

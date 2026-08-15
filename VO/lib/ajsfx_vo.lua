@@ -6199,21 +6199,21 @@ function vo.ScanSuspects(rows, transcripts, lines, cfg, thresh)
         -- Judged against the NAME's line, not the marker's: a misnamed take
         -- over a correct marker is exactly what this trigger exists to catch.
         --
-        -- UNLESS the human already judged it. A hand confirmation with a
-        -- LIVE fingerprint (vetted_state "ok") is the user having looked at
-        -- this exact state and said "this read IS this line" -- re-flagging
-        -- it every scan would make the confirmation meaningless. The words
-        -- are left as heard; only the verdict is overridden. Any edit
-        -- falsifies the fingerprint and the trigger comes back.
+        -- UNLESS the human already judged it. A live OK (confirmed_state
+        -- "ok") is the user having looked at this exact state and said
+        -- "this read IS this line" -- re-flagging it every scan would make
+        -- the confirmation meaningless. The words are left as heard; only
+        -- the verdict is overridden. Any edit falsifies the fingerprint
+        -- and the trigger comes back.
         local v = vo.JudgeLine(words, lines,
           vo.NamedAssetOf(row.take_name, row.asset, lines, cfg), cfg, T)
-        if v.verdict ~= "match"
-           and not (row.vetted_hand and row.vetted_state == "ok") then
+        if v.verdict ~= "match" and row.confirmed_state ~= "ok" then
           trig.name_mismatch = true
         end
       end
       if not row.marker_id then trig.unmarked = true end
-      if row.vetted_state == "mismatch" then trig.stamp = true end
+      if row.vetted_state == "mismatch"
+         or row.confirmed_state == "mismatch" then trig.stamp = true end
       if next(trig) then out[#out + 1] = { row = row, triggers = trig } end
     end
   end
@@ -6222,19 +6222,13 @@ end
 
 vo.VETTED_EXT = "P_EXT:ajsfx_vo_vetted"
 
--- A vetted stamp is a fingerprint; a HAND-vetted stamp is the same
--- fingerprint wearing this prefix -- the user, not the machine, is the one
--- who judged it. One format, one comparison, one self-clearing rule: any
--- edit falsifies the fingerprint whoever wrote it.
-vo.HAND_VET_PREFIX = "hand|"
-
--- Split a stored stamp into (fingerprint, by_hand).
-function vo.SplitVetted(stamp)
-  if not stamp then return nil, false end
-  local p = vo.HAND_VET_PREFIX
-  if stamp:sub(1, #p) == p then return stamp:sub(#p + 1), true end
-  return stamp, false
-end
+-- The HUMAN's mark, on its own key: "I checked, this read IS this line."
+-- Deliberately NOT a flavour of the Vet stamp -- Vet is the machine's
+-- verdict and OK is the user's, two different facts that can disagree, so
+-- they are two boxes and two keys. Same fingerprint format though: an OK
+-- self-clears on any edit exactly like a Vet, because a confirmation that
+-- outlives the state the user actually looked at is a lie.
+vo.CONFIRMED_EXT = "P_EXT:ajsfx_vo_confirmed"
 
 function vo.ReadVetted(item)
   local ok, v = r.GetSetMediaItemInfo_String(item, vo.VETTED_EXT, "", false)
@@ -6244,6 +6238,16 @@ end
 
 function vo.WriteVetted(item, fp_string)
   r.GetSetMediaItemInfo_String(item, vo.VETTED_EXT, fp_string or "", true)
+end
+
+function vo.ReadConfirmed(item)
+  local ok, v = r.GetSetMediaItemInfo_String(item, vo.CONFIRMED_EXT, "", false)
+  if ok and v ~= "" then return v end
+  return nil
+end
+
+function vo.WriteConfirmed(item, fp_string)
+  r.GetSetMediaItemInfo_String(item, vo.CONFIRMED_EXT, fp_string or "", true)
 end
 
 -- Merge overlapping/touching source ranges into the fewest that cover the same
