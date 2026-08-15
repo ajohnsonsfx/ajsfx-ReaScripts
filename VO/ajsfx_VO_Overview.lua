@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.15beta26
--- @changelog PRE-RELEASE: DRAGGING A TAKE TO A LINE RENAMES THE ITEM AGAIN. The drop retargeted the marker but could silently skip the rename: "is this clip shared?" was answered by counting SHEET ROWS pointing at the item, and a stale duplicate row or an orphan mark aimed at the same clip made a one-take clip read as shared -- marker moved, name kept, the exact split-brain the tool exists to prevent. The question is now asked of the clip's own markers, after the retarget: only a marker still naming a DIFFERENT line blocks the rename (renaming would misname that neighbour -- a real uncut recording still refuses, correctly). Un-assigning a take clears the clip's name by the same rule: only when no other marker still claims it. It shipped as only the rename step, so a clip carrying a stale second marker -- split residue, or a line the words contradict -- kept it, and the one authority entitled to delete a marker was refusing to. One press, one undo step: drop duplicate markers (decided by the words spoken there) and leftover markers whose audio lives in a neighbouring clip, rename the survivors from the transcript, then prune markers left naming the same line twice on one clip (the copy covering more audio wins). The edit-authority fixes still refuse multi-marker clips -- they cannot know which marker is right; the words can, which is why this is transcript authority's job. Same waterfall from the Out of sync panel's "Fix from Transcript". (0.15beta24, same day: the OK box.) A fifth box on every take row (Lock Keep Sel Vet OK): tick OK to say "I checked -- this read IS this line", for the reads whisper mishears (a name like Bolvd heard as BOLVED) that are nonetheless correct. Vet stays the MACHINE's box, exactly as before; OK is YOURS -- two different facts, two boxes, two keys, never mixed. The transcript stays exactly as heard -- nothing is rewritten -- but with OK ticked, Suspects stops flagging the name-vs-words disagreement and quick check reports "OK'd by you" instead of re-judging it. The mark is a fingerprint like the machine's stamp, so any edit to the item, marker, name or words withdraws it by itself -- it can never silently outlive the state you actually looked at. Click again to withdraw it yourself; an explicit re-listen still runs and its verdict still stands. Works on a highlighted batch like every mark. (Replaces beta23's right-click-the-Vet-box design minutes into review: overloading the machine's box with the human's verdict hid whose judgment the tick was.) Click a finding in the "Out of sync" panel and you are looking at it: the clip selects in REAPER and the edit cursor moves to it -- and the sheet's line selects, unfolds and scrolls on its own, because the sheet already mirrors the arrange selection every frame. The marks-vs-tracks rows in the same panel do the trip too (they used to select the sheet row only). Checking a finding now costs one click instead of a hunt across three views. (0.15beta21, same day: the parity watcher itself -- edit one thing and the rest catches up, one "Keep the session in sync" switch, "Fix from Transcript / Marker / Item / Sheet" on everything queued.) Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.
+-- @version 0.15beta27
+-- @changelog PRE-RELEASE: FIX FROM TRANSCRIPT NOW ACTUALLY ASKS THE TRANSCRIPT. The rename step judged each marker by overlap against the MATCHER's spans, so where the matcher had assigned that audio to the same wrong line -- or to nothing -- it found no disagreement and reported "all markers already agree with the transcript" about a marker the words plainly refute. It now reads the words under each marker and judges them with the same judge Verify trusts (vo.JudgeLine): a marker whose words clearly say another line is renamed to it, and a range the judge cannot place is COUNTED AND REPORTED as unplaced -- never silently read as agreement. The report says "the words", and means them. (0.15beta26, same day: drag-to-line renames the item again.) The drop retargeted the marker but could silently skip the rename: "is this clip shared?" was answered by counting SHEET ROWS pointing at the item, and a stale duplicate row or an orphan mark aimed at the same clip made a one-take clip read as shared -- marker moved, name kept, the exact split-brain the tool exists to prevent. The question is now asked of the clip's own markers, after the retarget: only a marker still naming a DIFFERENT line blocks the rename (renaming would misname that neighbour -- a real uncut recording still refuses, correctly). Un-assigning a take clears the clip's name by the same rule: only when no other marker still claims it. It shipped as only the rename step, so a clip carrying a stale second marker -- split residue, or a line the words contradict -- kept it, and the one authority entitled to delete a marker was refusing to. One press, one undo step: drop duplicate markers (decided by the words spoken there) and leftover markers whose audio lives in a neighbouring clip, rename the survivors from the transcript, then prune markers left naming the same line twice on one clip (the copy covering more audio wins). The edit-authority fixes still refuse multi-marker clips -- they cannot know which marker is right; the words can, which is why this is transcript authority's job. Same waterfall from the Out of sync panel's "Fix from Transcript". (0.15beta24, same day: the OK box.) A fifth box on every take row (Lock Keep Sel Vet OK): tick OK to say "I checked -- this read IS this line", for the reads whisper mishears (a name like Bolvd heard as BOLVED) that are nonetheless correct. Vet stays the MACHINE's box, exactly as before; OK is YOURS -- two different facts, two boxes, two keys, never mixed. The transcript stays exactly as heard -- nothing is rewritten -- but with OK ticked, Suspects stops flagging the name-vs-words disagreement and quick check reports "OK'd by you" instead of re-judging it. The mark is a fingerprint like the machine's stamp, so any edit to the item, marker, name or words withdraws it by itself -- it can never silently outlive the state you actually looked at. Click again to withdraw it yourself; an explicit re-listen still runs and its verdict still stands. Works on a highlighted batch like every mark. (Replaces beta23's right-click-the-Vet-box design minutes into review: overloading the machine's box with the human's verdict hid whose judgment the tick was.) Click a finding in the "Out of sync" panel and you are looking at it: the clip selects in REAPER and the edit cursor moves to it -- and the sheet's line selects, unfolds and scrolls on its own, because the sheet already mirrors the arrange selection every frame. The marks-vs-tracks rows in the same panel do the trip too (they used to select the sheet row only). Checking a finding now costs one click instead of a hunt across three views. (0.15beta21, same day: the parity watcher itself -- edit one thing and the rest catches up, one "Keep the session in sync" switch, "Fix from Transcript / Marker / Item / Sheet" on everything queued.) Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -6822,12 +6822,18 @@ end
 -- screen distinguishes the one that is right. The audio never lies about what
 -- was said in it, so this asks the audio.
 --
--- The matcher is the thing with that knowledge, not this verb: the candidates
--- are its own spans, already scored against the script. All this does is find
--- the span that best overlaps each marker and, when it names a different line,
--- rewrite the marker to agree with it -- keeping the marker's ID, because the
--- id is what the sheet's marks are keyed to and a rename must not cost a take
--- its Keep and Sel.
+-- Judged by vo.JudgeLine over the WORDS UNDER THE MARKER -- the same judge
+-- Verify trusts -- not by overlap against the matcher's spans, which is what
+-- this used to do. The spans are the matcher's opinion of the whole session,
+-- and where the matcher had assigned this audio to the same wrong line (or
+-- to nothing), the overlap test found no disagreement and reported "all
+-- markers agree with the transcript" about a marker the words plainly
+-- refute. The words themselves are the authority the button names.
+--
+-- A rename keeps the marker's ID, because the id is what the sheet's marks
+-- are keyed to and a rename must not cost a take its Keep and Sel. A range
+-- the judge cannot place ("unsure", or no words at all) is COUNTED AND
+-- REPORTED, never silently read as agreement.
 --
 -- The whole marker list is read and written back together. Writing one marker
 -- alone replaces the tool's entire set for that item, which on an uncut
@@ -6843,10 +6849,14 @@ function Trim.fix_names_from_transcript(opts)
   opts = opts or {}
   if not opts.no_reload then Reload() end
   local picked = opts.picked or Trim.scope()
-  local by_source = {}
-  for _, sc in ipairs(state.matches or {}) do by_source[sc.path] = sc.spans or {} end
+  local cfg = vo.LoadConfig()
+  local T = vo.VERIFY_THRESH
+  local words_by_path = {}
+  for _, t in ipairs(state.transcripts or {}) do
+    words_by_path[t.path] = t.words
+  end
 
-  local fixed, looked, changes = 0, 0, {}
+  local fixed, looked, undecided, changes = 0, 0, 0, {}
   ;(opts.no_transaction and Trim.bare or core.Transaction)(
       "VO Overview: fix names from transcript", function()
     for _, info in ipairs(state.items or {}) do
@@ -6868,24 +6878,32 @@ function Trim.fix_names_from_transcript(opts)
           if id and not vo.IsNoteMarker(mk.name or "") then
             looked = looked + 1
             local m0, m1 = mk.pos or 0, (mk.pos or 0) + (mk.length or 0)
-            local best, most = nil, 0
-            for _, s in ipairs(by_source[info.path] or {}) do
-              local o = math.min(s.stop or 0, m1) - math.max(s.start or 0, m0)
-              if s.asset and o > most then best, most = s, o end
-            end
             local now = asset
-            if best and best.asset ~= asset then
-              now = best.asset
-              dirty, fixed = true, fixed + 1
-              if #changes < 5 then
-                changes[#changes + 1] = tostring(asset) .. " -> " .. best.asset
+            local words = vo.WordsWithin(words_by_path[info.path], m0, m1)
+            if #words == 0 then
+              undecided = undecided + 1
+            else
+              local named = vo.NamedAssetOf(asset, asset, state.lines or {}, cfg)
+              local v = vo.JudgeLine(words, state.lines or {}, named, cfg, T)
+              if v.verdict == "wrong" and v.best and v.best.asset
+                 and v.best.asset ~= asset then
+                now = v.best.asset
+                dirty, fixed = true, fixed + 1
+                if #changes < 5 then
+                  changes[#changes + 1] = tostring(asset) .. " -> " .. now
+                end
+              elseif v.verdict ~= "match" then
+                -- "unsure": the words fit neither the named line nor a clear
+                -- rival. Counted and reported -- calling this agreement is
+                -- how a wrong marker got a clean bill.
+                undecided = undecided + 1
               end
             end
             out[#out + 1] = { start = m0, stop = m1, asset = now, id = id }
             -- The item name follows the FIRST marker, matching how a cut names
             -- the piece it makes. An item holding two takes has no one right
             -- name, and the markers are the truth either way.
-            lead = lead or (best and best.asset) or asset
+            lead = lead or now
           end
         end
         if dirty then
@@ -6900,17 +6918,23 @@ function Trim.fix_names_from_transcript(opts)
     r.UpdateArrange()
   end)
   if not opts.no_reload then Reload() end
-  if opts.quiet then return fixed, looked end
+  if opts.quiet then return fixed, looked, undecided end
 
   state.message, state.message_kind =
     (looked == 0) and ("No take markers in the selection to check. Select the " ..
                        "items whose names look wrong.") or
-    (fixed == 0)  and string.format(
-      "All %d marker(s) already agree with the transcript.", looked) or
-    string.format("Renamed %d of %d marker(s) from the transcript: %s%s.",
+    (fixed == 0 and undecided == 0) and string.format(
+      "All %d marker(s) agree with the words under them.", looked) or
+    (fixed == 0) and string.format(
+      "Renamed none of %d marker(s): the words under %d could not be " ..
+      "placed on a line. Re-listen, or check the transcript covers them.",
+      looked, undecided) or
+    string.format("Renamed %d of %d marker(s) from the words: %s%s.%s",
       fixed, looked, table.concat(changes, ", "),
-      (fixed > #changes) and string.format(" and %d more", fixed - #changes) or ""),
-    (fixed > 0) and "ok" or (looked == 0) and "warn" or "ok"
+      (fixed > #changes) and string.format(" and %d more", fixed - #changes) or "",
+      undecided > 0 and string.format(
+        " %d could not be placed and were left alone.", undecided) or ""),
+    (fixed > 0) and "ok" or (looked == 0 or undecided > 0) and "warn" or "ok"
 end
 
 -- The TRANSCRIPT-authority macro: the words are the truth, and everything a
@@ -6936,11 +6960,11 @@ function Trim.fix_from_transcript(opts)
   Reload()
   local picked = opts.picked or Trim.scope()
   local removed, dropped, plan
-  local fixed, looked = 0, 0
+  local fixed, looked, undecided = 0, 0, 0
   local pruned = 0
   core.Transaction("VO Overview: fix from transcript", function()
     removed, dropped, plan = Trim.extras(picked)
-    fixed, looked = Trim.fix_names_from_transcript({
+    fixed, looked, undecided = Trim.fix_names_from_transcript({
       picked = picked, no_transaction = true, no_reload = true, quiet = true })
     for _, info in ipairs(state.items or {}) do
       local item = info.item
@@ -6969,22 +6993,28 @@ function Trim.fix_from_transcript(opts)
   end
   if fixed > 0 then
     parts[#parts + 1] = string.format(
-      "Renamed %d of %d marker(s) from the transcript.", fixed, looked)
+      "Renamed %d of %d marker(s) from the words.", fixed, looked)
   end
   if pruned > 0 then
     parts[#parts + 1] = string.format(
       "Pruned %d marker(s) claiming a line another marker on the same " ..
       "clip already covers.", pruned)
   end
+  if undecided > 0 then
+    parts[#parts + 1] = string.format(
+      "%d marker(s) sit over words the judge could not place on a line -- " ..
+      "left alone, not agreed with. Re-listen, or check the transcript.",
+      undecided)
+  end
   if #parts == 0 then
     parts[1] = (looked > 0)
       and string.format(
-        "All %d marker(s) already agree with the transcript.", looked)
+        "All %d marker(s) agree with the words under them.", looked)
       or "No take markers in the selection to check."
   end
   local refused = plan and #plan.skipped or 0
   state.message, state.message_kind = table.concat(parts, " "),
-    (refused > 0 or looked == 0) and "warn" or "ok"
+    (refused > 0 or looked == 0 or undecided > 0) and "warn" or "ok"
 end
 
 -- "Fix names from the sheet": the other authority. fix_names_from_transcript

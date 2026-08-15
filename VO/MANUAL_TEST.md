@@ -1168,3 +1168,12 @@ one UNCUT recording holding several takes as markers in one item.
 2. Drag a take out of a genuine uncut recording (markers for several
    different lines) -> marker retargets, clip name and position untouched,
    report counts it as sharing a clip.
+
+## Fix from Transcript judges the words (0.15beta27)
+
+1. A clip whose marker AND name say the wrong line, transcript correct:
+   select it, "Fix from Transcript" -> marker and name rename to the line
+   the words say, report names the change. (This exact case previously
+   reported "all 1 markers already agree".)
+2. A marker over words that fit no line clearly -> report says N could not
+   be placed, warn kind -- never "agree".
