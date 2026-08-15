@@ -12805,19 +12805,8 @@ local function loop()
           "Markers of your own -- anything without the tool's ~id suffix --\n" ..
           "are never touched." .. NEEDS_SEL)
 
-      -- The queue, beside the macro: the same "who is right?" question,
-      -- asked per take, for everything the watcher refused to guess about.
-      Flow("Out of sync")
-      do
-        local n_oos = #(state.parity_queue or {})
-                      + #((state.reconcile or {}).disagree or {})
-        PanelButton("outofsync", string.format("Out of sync (%d)", n_oos),
-          "Takes whose marker, item name, sheet row or edges no longer\n" ..
-          "tell one story, plus anything the watcher refused to guess\n" ..
-          "about. Each row says what disagrees and takes a \"Fix from\n" ..
-          "...\" with you naming the authority. (0) means the session\n" ..
-          "agrees with itself.")
-      end
+      -- The queue -- everything the watcher refused to guess about -- lives
+      -- in the rail now, per take, with its "Fix from ..." verbs on the row.
 
       ActsOn()
       Flow("Cut from markers")
