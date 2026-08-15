@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.15beta25
--- @changelog PRE-RELEASE: FIX FROM TRANSCRIPT NOW REMOVES WHAT THE WORDS REFUTE. It shipped as only the rename step, so a clip carrying a stale second marker -- split residue, or a line the words contradict -- kept it, and the one authority entitled to delete a marker was refusing to. One press, one undo step: drop duplicate markers (decided by the words spoken there) and leftover markers whose audio lives in a neighbouring clip, rename the survivors from the transcript, then prune markers left naming the same line twice on one clip (the copy covering more audio wins). The edit-authority fixes still refuse multi-marker clips -- they cannot know which marker is right; the words can, which is why this is transcript authority's job. Same waterfall from the Out of sync panel's "Fix from Transcript". (0.15beta24, same day: the OK box.) A fifth box on every take row (Lock Keep Sel Vet OK): tick OK to say "I checked -- this read IS this line", for the reads whisper mishears (a name like Bolvd heard as BOLVED) that are nonetheless correct. Vet stays the MACHINE's box, exactly as before; OK is YOURS -- two different facts, two boxes, two keys, never mixed. The transcript stays exactly as heard -- nothing is rewritten -- but with OK ticked, Suspects stops flagging the name-vs-words disagreement and quick check reports "OK'd by you" instead of re-judging it. The mark is a fingerprint like the machine's stamp, so any edit to the item, marker, name or words withdraws it by itself -- it can never silently outlive the state you actually looked at. Click again to withdraw it yourself; an explicit re-listen still runs and its verdict still stands. Works on a highlighted batch like every mark. (Replaces beta23's right-click-the-Vet-box design minutes into review: overloading the machine's box with the human's verdict hid whose judgment the tick was.) Click a finding in the "Out of sync" panel and you are looking at it: the clip selects in REAPER and the edit cursor moves to it -- and the sheet's line selects, unfolds and scrolls on its own, because the sheet already mirrors the arrange selection every frame. The marks-vs-tracks rows in the same panel do the trip too (they used to select the sheet row only). Checking a finding now costs one click instead of a hunt across three views. (0.15beta21, same day: the parity watcher itself -- edit one thing and the rest catches up, one "Keep the session in sync" switch, "Fix from Transcript / Marker / Item / Sheet" on everything queued.) Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.
+-- @version 0.15beta26
+-- @changelog PRE-RELEASE: DRAGGING A TAKE TO A LINE RENAMES THE ITEM AGAIN. The drop retargeted the marker but could silently skip the rename: "is this clip shared?" was answered by counting SHEET ROWS pointing at the item, and a stale duplicate row or an orphan mark aimed at the same clip made a one-take clip read as shared -- marker moved, name kept, the exact split-brain the tool exists to prevent. The question is now asked of the clip's own markers, after the retarget: only a marker still naming a DIFFERENT line blocks the rename (renaming would misname that neighbour -- a real uncut recording still refuses, correctly). Un-assigning a take clears the clip's name by the same rule: only when no other marker still claims it. It shipped as only the rename step, so a clip carrying a stale second marker -- split residue, or a line the words contradict -- kept it, and the one authority entitled to delete a marker was refusing to. One press, one undo step: drop duplicate markers (decided by the words spoken there) and leftover markers whose audio lives in a neighbouring clip, rename the survivors from the transcript, then prune markers left naming the same line twice on one clip (the copy covering more audio wins). The edit-authority fixes still refuse multi-marker clips -- they cannot know which marker is right; the words can, which is why this is transcript authority's job. Same waterfall from the Out of sync panel's "Fix from Transcript". (0.15beta24, same day: the OK box.) A fifth box on every take row (Lock Keep Sel Vet OK): tick OK to say "I checked -- this read IS this line", for the reads whisper mishears (a name like Bolvd heard as BOLVED) that are nonetheless correct. Vet stays the MACHINE's box, exactly as before; OK is YOURS -- two different facts, two boxes, two keys, never mixed. The transcript stays exactly as heard -- nothing is rewritten -- but with OK ticked, Suspects stops flagging the name-vs-words disagreement and quick check reports "OK'd by you" instead of re-judging it. The mark is a fingerprint like the machine's stamp, so any edit to the item, marker, name or words withdraws it by itself -- it can never silently outlive the state you actually looked at. Click again to withdraw it yourself; an explicit re-listen still runs and its verdict still stands. Works on a highlighted batch like every mark. (Replaces beta23's right-click-the-Vet-box design minutes into review: overloading the machine's box with the human's verdict hid whose judgment the tick was.) Click a finding in the "Out of sync" panel and you are looking at it: the clip selects in REAPER and the edit cursor moves to it -- and the sheet's line selects, unfolds and scrolls on its own, because the sheet already mirrors the arrange selection every frame. The marks-vs-tracks rows in the same panel do the trip too (they used to select the sheet row only). Checking a finding now costs one click instead of a hunt across three views. (0.15beta21, same day: the parity watcher itself -- edit one thing and the rest catches up, one "Keep the session in sync" switch, "Fix from Transcript / Marker / Item / Sheet" on everything queued.) Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -4812,15 +4812,29 @@ function DND.NextAltName(line, used, cfg)
     cfg.alt_append_pattern, n, math.floor(cfg.alt_append_digits or 1)))
 end
 
--- How many takes live in this item. Take markers exist SO one item can hold
--- many -- an uncut recording carries the whole session -- so this is the normal
--- case, not the exotic one, and it is what makes steps 2 and 3 conditional.
-function DND.SharesItem(item)
-  local n = 0
-  for _, row in ipairs(state.overview or {}) do
-    if row.item == item then n = n + 1 end
+-- How many take markers live in this item -- coverage-filtered, notes and
+-- user markers excluded. This used to count sheet ROWS pointing at the
+-- item, which over-counted: a stale duplicate row or an orphan mark aimed
+-- at the same clip made a one-take clip read as shared, and its rename was
+-- silently skipped -- the marker moved to the new line and the item kept
+-- the old name. The item's own markers are the fact, and after the caller
+-- has just written them, the chunk is the only source that is current.
+--
+-- `except` (optional) leaves markers naming that asset out of the count,
+-- so a caller can ask "does anything OTHER than this line still claim the
+-- clip?" -- which is the exact question that decides whether renaming the
+-- item would misname a neighbour.
+function DND.MarkersOn(item, except)
+  for _, info in ipairs(state.items or {}) do
+    if info.item == item then
+      local n = 0
+      for _, mk in ipairs(Trim.markers_in(info)) do
+        if mk.asset ~= except then n = n + 1 end
+      end
+      return n
+    end
   end
-  return n
+  return 0
 end
 
 -- The Review track, made if it is not there.
@@ -4890,12 +4904,14 @@ function DND.MoveTo(rows, line)
         else
           moved = moved + 1
           landed[#landed + 1] = row
-          -- 2 and 3. ONE ITEM, ONE NAME. A clip holding several takes cannot
-          -- take this one's line as its name without misnaming the neighbours,
-          -- and moving it to Review would drag them along -- the same refusal
-          -- Verify.AcceptSuggestion and "Fix names from the sheet" give. The
-          -- marker has already moved the take; Cut catches the item up.
-          if DND.SharesItem(item) > 1 then
+          -- 2 and 3. ONE ITEM, ONE NAME. A clip still carrying a marker for
+          -- a DIFFERENT line cannot take this one's line as its name without
+          -- misnaming that neighbour, and moving it to Review would drag the
+          -- neighbour along -- the same refusal Verify.AcceptSuggestion and
+          -- "Fix names from the sheet" give. The marker has already moved
+          -- the take; Cut catches the item up. Asked of the item's own
+          -- markers, post-retarget, not of the sheet's rows.
+          if DND.MarkersOn(item, line.asset) > 0 then
             shared = shared + 1
           else
             local take = r.GetActiveTake(item)
@@ -4980,9 +4996,11 @@ function DND.Unassign(rows)
         off = off + 1
         gone[row.key] = true
         -- A name for a line this take no longer belongs to is exactly the
-        -- mismatch un-assigning exists to remove. Cleared rather than left, and
-        -- only when this take is the item's only one -- see DND.MoveTo.
-        if DND.SharesItem(item) <= 1 then
+        -- mismatch un-assigning exists to remove. Cleared rather than left,
+        -- and only when no OTHER take still claims the clip -- its marker
+        -- was just removed, so any marker still on the item is a neighbour
+        -- whose name the clip may be wearing.
+        if DND.MarkersOn(item) == 0 then
           local take = r.GetActiveTake(item)
           if take then r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", true) end
         end

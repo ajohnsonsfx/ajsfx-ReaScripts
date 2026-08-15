@@ -1159,3 +1159,12 @@ one UNCUT recording holding several takes as markers in one item.
 3. A genuine uncut recording (several DIFFERENT lines, words agreeing with
    each marker) -> nothing is removed; duplicates only die when the words
    refute them.
+
+## Drag-to-line renames the item (0.15beta26)
+
+1. Drag a take (one marker on its clip) onto another line -> the marker
+   retargets AND the item renames to that line's next alt name, and the
+   clip moves to Review. One undo step.
+2. Drag a take out of a genuine uncut recording (markers for several
+   different lines) -> marker retargets, clip name and position untouched,
+   report counts it as sharing a clip.
