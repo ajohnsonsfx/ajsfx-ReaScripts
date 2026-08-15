@@ -444,8 +444,9 @@ section("Sibling scripts are registered, not hardcoded")
 
 test("every sibling script resolves to a real action id", function()
   local here = script_path .. "../../VO/"
-  for _, name in ipairs({ "ajsfx_VO_Overview.lua", "ajsfx_VO_Sources.lua",
-                          "ajsfx_VO_Cut.lua", "ajsfx_VO_Settings.lua" }) do
+  -- Sources retired into the Overview's pipeline strip (0.15beta35); Cut
+  -- folded into the Overview long before that. Two windows remain.
+  for _, name in ipairs({ "ajsfx_VO_Overview.lua", "ajsfx_VO_Settings.lua" }) do
     if not vo.FileExists(here .. name) then error("missing script: " .. name) end
     -- Registers without running. Idempotent: an already-registered script
     -- returns its existing id rather than a duplicate.
