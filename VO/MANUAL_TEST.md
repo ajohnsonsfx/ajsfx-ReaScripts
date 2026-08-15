@@ -1125,3 +1125,6 @@ one UNCUT recording holding several takes as markers in one item.
    names onto its marker, and the row leaves the queue on the next diff.
 7. One press, one undo: every automatic sync and every "Fix from ..." is a
    single undo step.
+8. Click an Out of sync row's text -> the clip selects in REAPER, the edit
+   cursor lands on it, and the sheet's line selects/unfolds/scrolls by
+   itself. Same for a marks-vs-tracks row.

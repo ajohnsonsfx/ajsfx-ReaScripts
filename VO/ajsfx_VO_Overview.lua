@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.15beta21
--- @changelog PRE-RELEASE: THE SESSION KEEPS ITSELF IN SYNC. Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.
+-- @version 0.15beta22
+-- @changelog PRE-RELEASE: EVERY OUT-OF-SYNC ROW IS A SHORTCUT. Click a finding in the "Out of sync" panel and you are looking at it: the clip selects in REAPER and the edit cursor moves to it -- and the sheet's line selects, unfolds and scrolls on its own, because the sheet already mirrors the arrange selection every frame. The marks-vs-tracks rows in the same panel do the trip too (they used to select the sheet row only). Checking a finding now costs one click instead of a hunt across three views. (0.15beta21, same day: the parity watcher itself -- edit one thing and the rest catches up, one "Keep the session in sync" switch, "Fix from Transcript / Marker / Item / Sheet" on everything queued.) Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -8247,6 +8247,19 @@ local function DrawOutOfSyncPanel()
     state.scroll_to_frames = 2
   end
 
+  -- One click is the whole trip: select the clip in REAPER and put the edit
+  -- cursor on it. The SHEET is not touched here -- it mirrors the arrange
+  -- selection every frame already (the Follow behaviour), so the line
+  -- selects, unfolds and scrolls on its own. Parity, not a second selection
+  -- maintained by hand.
+  local function JumpTo(item)
+    if not Trim.item_alive(item) then return end
+    r.SelectAllMediaItems(0, false)
+    r.SetMediaItemSelected(item, true)
+    r.SetEditCurPos(r.GetMediaItemInfo_Value(item, "D_POSITION"), true, false)
+    r.UpdateArrange()
+  end
+
   -- PARITY: marker, item name, sheet row or edges telling different
   -- stories, plus anything the watcher refused to guess about. Each "Fix
   -- from" routes through Trim.sync_dispatch with a one-item map, so a
@@ -8300,7 +8313,18 @@ local function DrawOutOfSyncPanel()
       end
       im.Bullet(ctx)
       im.SameLine(ctx)
-      im.Text(ctx, q.divergence.detail or "out of sync")
+      -- The row IS the shortcut: what it says is where clicking it takes
+      -- you, so checking a finding costs one click, not a hunt.
+      if im.SmallButton(ctx, string.format("%s##oosgo%d",
+          q.divergence.detail or "out of sync", i)) then
+        local it = q.item
+        pending_action = function() JumpTo(it) end
+      end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Select this clip in REAPER and move the edit\n" ..
+                           "cursor to it. The sheet follows the selection\n" ..
+                           "by itself.")
+      end
       FixButtons(string.format("oos%d", i), { [q.item] = true })
     end
     if #queue > 1 then
@@ -8326,7 +8350,17 @@ local function DrawOutOfSyncPanel()
       if im.SmallButton(ctx, string.format("%s -- %s##dis%d",
           f.row.deliver or f.row.asset or "(unnamed)", f.detail, i)) then
         local captured = f.row
-        pending_action = function() GoTo(captured) end
+        pending_action = function()
+          -- Sheet first (these rows always have a uid), then the timeline:
+          -- selecting the item makes the follow re-assert the same row, so
+          -- the two arrive agreeing rather than fighting.
+          GoTo(captured)
+          if captured.item then JumpTo(captured.item) end
+        end
+      end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, "Select this take's line in the sheet AND its\n" ..
+                           "clip in REAPER, and move the edit cursor to it.")
       end
     end
     if im.Button(ctx, "Adopt timeline") then
