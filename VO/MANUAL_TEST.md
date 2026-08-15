@@ -1195,3 +1195,11 @@ one UNCUT recording holding several takes as markers in one item.
    (Live case: window said "I think it mean", anchors said "because God".)
 2. Quick check on the same take gives the same verdict the sheet implies.
 3. Suspects flags/clears takes consistently with what their rows display.
+
+## Drag between delivery tracks re-roles the name (0.15beta31)
+
+1. Swap a select and an alt (drag each to the other's track) -> after the
+   settle, Sel/Keep swap AND the names swap roles: plain name on Selects,
+   numbered alt on Alts.
+2. An item with a HAND-TYPED name moved between the tracks -> marks
+   follow, the typed name is kept.
