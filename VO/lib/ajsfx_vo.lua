@@ -6185,8 +6185,11 @@ function vo.ScanSuspects(rows, transcripts, lines, cfg, thresh)
     if row.status ~= "orphan" and row.item and row.source_path
        and row.source_start and row.source_stop then
       local trig = {}
-      local words = words_within(by_path[row.source_path],
-                                 row.source_start, row.source_stop)
+      -- Anchor rule, the same one the sheet displays by -- ScanSuspects
+      -- judges STORED words, and the midpoint rule flagged (or cleared)
+      -- takes on a displaced window's text the sheet never showed.
+      local words = vo.WordsInRange(by_path[row.source_path],
+                                    row.source_start, row.source_stop)
       local span = row.source_stop - row.source_start
       local covered = 0
       for _, w in ipairs(words) do covered = covered + ((w.t1 or 0) - (w.t0 or 0)) end
