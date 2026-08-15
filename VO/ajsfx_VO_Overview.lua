@@ -250,6 +250,11 @@ local TOOLBAR_TABS = {
   { key = "edit",  label = "Main" },
 }
 
+-- THE PIPELINE STRIP's namespace (redesign spec, phase 2). Declared this
+-- early -- an empty table only -- because ApplyFilters consults
+-- Strip.RowPasses; the methods live beside the Inbox further down.
+local Strip = {}
+
 local LAYOUT_ORDERS = {
   { key = "script", label = "Script order" },
   { key = "record", label = "Record order" },
@@ -4267,7 +4272,11 @@ local function ApplyFilters()
   CheckRestoredCharacter()
   for i, row in ipairs(state.overview) do row.order = i end
 
-  state.nodes = vo.FilterGroups(vo.GroupOverview(state.overview), Matches)
+  -- The stage filter composes with the user's filters: a clicked stage
+  -- shows its remainder WITHIN whatever search/character view is up.
+  state.nodes = vo.FilterGroups(vo.GroupOverview(state.overview), function(row)
+    return Matches(row) and Strip.RowPasses(row)
+  end)
 
   -- Two flat take lists, deliberately distinct:
   --   state.filtered  every take of every line the FILTERS admit. Tool scope
@@ -9687,6 +9696,171 @@ function Inbox.Draw(width, height)
   im.EndChild(ctx)
 end
 
+-- THE PIPELINE STRIP's methods (redesign spec, phase 2): six meters over
+-- the sheet, each stage a FILTER -- click "Decided 180/195" and the sheet
+-- shows exactly the fifteen undecided lines. Counts come from the same
+-- predicates the summary line reads, so the strip and the summary can
+-- never disagree. Assembled only when a feed changed, like the rail.
+Strip.TIPS = {
+  sources   = "The recordings in this project and their transcripts.\n" ..
+              "The meter runs while whisper is decoding.",
+  matched   = "Script lines the transcript match found audio for.\n" ..
+              "Click: show only the lines still missing audio.",
+  cut       = "Take markers standing alone on their own clip. Markers\n" ..
+              "sharing a clip are a recording still to split.\n" ..
+              "Click: show only the takes still inside recordings.",
+  decided   = "Lines with takes where a select is picked (or the line\n" ..
+              "was settled by hand). Click: show only the undecided.",
+  verified  = "Takes locked in place -- the machine's stamp or yours.\n" ..
+              "Click: show only the unverified takes.",
+  delivered = "Script lines with an item named for them, counted from\n" ..
+              "the item names. Click: show only the lines without one.",
+}
+
+function Strip.Assemble()
+  if state.stages
+     and state.strip_seen_over  == state.overview
+     and state.strip_seen_check == state.check
+     and state.strip_seen_marks == state.take_markers then
+    return
+  end
+  state.strip_seen_over, state.strip_seen_check, state.strip_seen_marks =
+    state.overview, state.check, state.take_markers
+
+  local n = state.summary or {}
+  local c = state.check or {}
+
+  -- Sources: recordings in the project vs transcripts already on disk.
+  local total_paths, done_paths = 0, 0
+  local have, seenp = {}, {}
+  for _, t in ipairs(state.transcripts or {}) do have[t.path] = true end
+  for _, info in ipairs(state.items or {}) do
+    if info.path and info.path ~= "" and not info.skip and not seenp[info.path] then
+      seenp[info.path] = true
+      total_paths = total_paths + 1
+      if have[info.path] then done_paths = done_paths + 1 end
+    end
+  end
+
+  -- Cut: a counting marker alone on its clip is a cut take; markers
+  -- sharing a clip are a recording still to split. Read from the
+  -- collections Reload already paid for -- no chunk reads here.
+  local cut_done, cut_total = 0, 0
+  local uncut = {}
+  for _, group in pairs(state.take_markers or {}) do
+    local mks = vo.CountingMarkers(group)
+    local per_item = {}
+    for _, mk in ipairs(mks) do
+      per_item[mk.item_index] = (per_item[mk.item_index] or 0) + 1
+    end
+    for _, mk in ipairs(mks) do
+      cut_total = cut_total + 1
+      if per_item[mk.item_index] == 1 then
+        cut_done = cut_done + 1
+      else
+        local info = group[mk.item_index] and group[mk.item_index].info
+        if info and info.item then uncut[info.item] = true end
+      end
+    end
+  end
+  Strip.uncut = uncut
+
+  -- Decided: the same line-grouping the rail's undecided rows use, so
+  -- the meter and the rail can never quarrel about what is open.
+  local groups, seen = {}, {}
+  for _, row in ipairs(state.overview or {}) do
+    local a = row.asset
+    if a and row.status ~= "missing" and row.status ~= "orphan"
+       and (row.take_index or 0) > 0 then
+      local g = seen[a]
+      if not g then
+        g = { asset = a }
+        seen[a] = g
+        groups[#groups + 1] = g
+      end
+      if row.user_select then g.picked = true end
+      if row.user_status == "verified" then g.locked = true end
+    end
+  end
+  local undecided, decided_done = {}, 0
+  for _, g in ipairs(groups) do
+    if g.picked or g.locked then decided_done = decided_done + 1
+    else undecided[g.asset] = true end
+  end
+  Strip.undecided = undecided
+
+  -- Delivered: lines with an item named for them -- the summary's own
+  -- "N of M lines in the project", per asset for the filter.
+  local covered = {}
+  for i in pairs(c.by_line or {}) do
+    local line = (state.lines or {})[i]
+    if line and line.asset then covered[line.asset] = true end
+  end
+  Strip.covered = covered
+
+  state.stages = vo.PipelineStages({
+    sources_done    = done_paths,      sources_total   = total_paths,
+    sources_running = Strip.sources_running == true,
+    matched_done    = n.delivered or 0, matched_total  = n.lines or 0,
+    cut_done        = cut_done,         cut_total      = cut_total,
+    decided_done    = decided_done,     decided_total  = #groups,
+    verified_done   = n.verified or 0,
+    verified_total  = (n.recorded or 0) + (n.review or 0),
+    delivered_done  = c.delivered or 0,
+    delivered_total = #(state.lines or {}),
+  })
+end
+
+-- Which rows a clicked stage leaves on the sheet: its REMAINDER -- the
+-- work that stage still owes -- never its finished part.
+function Strip.RowPasses(row)
+  local f = state.stage_filter
+  if not f or f == "sources" then return true end
+  if f == "matched" then
+    return row.status == "missing"
+  elseif f == "cut" then
+    return row.item ~= nil and (Strip.uncut or {})[row.item] == true
+  elseif f == "decided" then
+    return row.asset ~= nil and (Strip.undecided or {})[row.asset] == true
+  elseif f == "verified" then
+    return (row.status == "recorded" or row.status == "review")
+       and row.user_status ~= "verified"
+  elseif f == "delivered" then
+    return row.status ~= "orphan" and row.asset ~= nil
+       and not (Strip.covered or {})[row.asset]
+  end
+  return true
+end
+
+function Strip.Draw()
+  for i, s in ipairs(state.stages or {}) do
+    if i > 1 then im.SameLine(ctx) end
+    local active = (state.stage_filter == s.id)
+    local pushed = false
+    if active then
+      im.PushStyleColor(ctx, im.Col_Button, 0x3E6FA3FF)
+      pushed = true
+    elseif s.state == "done" then
+      im.PushStyleColor(ctx, im.Col_Text, 0x66BB66FF)
+      pushed = true
+    elseif s.state == "todo" then
+      im.PushStyleColor(ctx, im.Col_Text, 0x777777FF)
+      pushed = true
+    end
+    if im.Button(ctx, s.text .. "##stage_" .. s.id) then
+      state.stage_filter = (not active) and s.id or nil
+    end
+    if pushed then im.PopStyleColor(ctx) end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, Strip.TIPS[s.id] or s.label)
+    end
+  end
+  if state.stage_filter then
+    im.SameLine(ctx)
+    im.TextDisabled(ctx, "\226\128\148 showing what this stage still owes")
+  end
+end
+
 local function DrawFilters()
   -- Every control here writes state.dirty: the filters are stored in the project
   -- file so the table opens the way it was left. The flush is throttled, so a
@@ -12485,9 +12659,11 @@ local function loop()
   FlushProjectFile(false)
   ApplyFilters()
 
-  -- The rail's list, refreshed only when a feed changed; before Begin so
-  -- the toolbar count and the rail draw the same frame's answer.
+  -- The rail's list and the strip's meters, refreshed only when a feed
+  -- changed; before Begin so the toolbar count, the strip and the rail
+  -- all draw the same frame's answer.
   Inbox.MaybeAssemble()
+  Strip.Assemble()
 
   -- After the filters, so the follow lights rows the table is actually
   -- showing this frame.
@@ -12593,6 +12769,12 @@ local function loop()
       end
       im.EndTabBar(ctx)
     end
+
+    -- THE PIPELINE STRIP: where the session is, always visible, each
+    -- stage a meter and a filter. It will BECOME the toolbar when the
+    -- tab bar retires; for now it rides directly under it.
+    Strip.Draw()
+    im.Separator(ctx)
 
     -- The ribbon holds ONE height: the tallest a tab has been at this width.
     --
