@@ -1128,3 +1128,20 @@ one UNCUT recording holding several takes as markers in one item.
 8. Click an Out of sync row's text -> the clip selects in REAPER, the edit
    cursor lands on it, and the sheet's line selects/unfolds/scrolls by
    itself. Same for a marks-vs-tracks row.
+
+## Hand confirmation (0.15beta23)
+
+1. On a take whose transcript disagrees with its name (yellow words),
+   right-click the Vet box -> tick appears; tooltip says confirmed by YOU.
+   The transcript text is unchanged.
+2. Open Suspects -> that take is no longer listed for name mismatch.
+3. Run Verify (quick check) over it -> report says "confirmed by you",
+   stamp survives.
+4. Trim the item's edge -> the tick clears itself on the next rebuild
+   (fingerprint falsified). Re-confirm, rename the item -> same.
+5. Right-click a confirmed take's Vet box -> confirmation withdrawn.
+6. Highlight several rows, right-click one Vet box -> all highlighted rows
+   confirm in one press.
+7. Re-listen ON, click (left) the Vet box of a confirmed take -> whisper
+   decodes and its verdict stands, including stripping the stamp on
+   disagreement.

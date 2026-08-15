@@ -6198,9 +6198,19 @@ function vo.ScanSuspects(rows, transcripts, lines, cfg, thresh)
       if #words > 0 then
         -- Judged against the NAME's line, not the marker's: a misnamed take
         -- over a correct marker is exactly what this trigger exists to catch.
+        --
+        -- UNLESS the human already judged it. A hand confirmation with a
+        -- LIVE fingerprint (vetted_state "ok") is the user having looked at
+        -- this exact state and said "this read IS this line" -- re-flagging
+        -- it every scan would make the confirmation meaningless. The words
+        -- are left as heard; only the verdict is overridden. Any edit
+        -- falsifies the fingerprint and the trigger comes back.
         local v = vo.JudgeLine(words, lines,
           vo.NamedAssetOf(row.take_name, row.asset, lines, cfg), cfg, T)
-        if v.verdict ~= "match" then trig.name_mismatch = true end
+        if v.verdict ~= "match"
+           and not (row.vetted_hand and row.vetted_state == "ok") then
+          trig.name_mismatch = true
+        end
       end
       if not row.marker_id then trig.unmarked = true end
       if row.vetted_state == "mismatch" then trig.stamp = true end
@@ -6211,6 +6221,20 @@ function vo.ScanSuspects(rows, transcripts, lines, cfg, thresh)
 end
 
 vo.VETTED_EXT = "P_EXT:ajsfx_vo_vetted"
+
+-- A vetted stamp is a fingerprint; a HAND-vetted stamp is the same
+-- fingerprint wearing this prefix -- the user, not the machine, is the one
+-- who judged it. One format, one comparison, one self-clearing rule: any
+-- edit falsifies the fingerprint whoever wrote it.
+vo.HAND_VET_PREFIX = "hand|"
+
+-- Split a stored stamp into (fingerprint, by_hand).
+function vo.SplitVetted(stamp)
+  if not stamp then return nil, false end
+  local p = vo.HAND_VET_PREFIX
+  if stamp:sub(1, #p) == p then return stamp:sub(#p + 1), true end
+  return stamp, false
+end
 
 function vo.ReadVetted(item)
   local ok, v = r.GetSetMediaItemInfo_String(item, vo.VETTED_EXT, "", false)
