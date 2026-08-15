@@ -248,7 +248,6 @@ for i, c in ipairs(COLUMNS) do COLUMNS.keys[i] = c.key end
 local TOOLBAR_TABS = {
   { key = "setup", label = "Setup" },
   { key = "edit",  label = "Main" },
-  { key = "check", label = "Check" },
   { key = "log",   label = "Log" },
 }
 
@@ -8438,187 +8437,6 @@ local function DrawPullPanel()
   im.Separator(ctx)
 end
 
--- Reconciliation, not repair-by-magic: two sources of truth for what a take is
--- and where it belongs, and a button for each direction. Nothing here acts
--- without a press, and every finding can be clicked to go and look at it.
-local REPAIR_LIST_CAP = 12
-
--- "Fix a line" was one panel holding three different problems, and the button
--- name said none of them. It is now two panels, split by REMEDY rather than by
--- diagnosis: disagreements have batch fixes (adopt one side or the other),
--- while a take whose audio is gone can only be relinked or cleared by hand --
--- two lists that were three sections, since unbacked markers and orphaned
--- marks always shared the same Relink. Each button wears its count, so the
--- Check row reads as state, not as navigation.
-
-local function DrawOutOfSyncPanel()
-  local cfg  = vo.LoadConfig()
-  local plan = state.reconcile or vo.PlanReconcile(state.overview, cfg)
-  local queue = state.parity_queue or {}
-
-  if #queue == 0 and #plan.disagree == 0 then
-    im.TextColored(ctx, 0x66BB66FF,
-      "(0) -- the session agrees with itself.")
-    im.Separator(ctx)
-    return
-  end
-
-  -- Bring a finding's row into view and select it.
-  local function GoTo(row)
-    state.selection        = { [row.uid] = true }
-    state.focus_key        = row.uid
-    state.scroll_to_uid    = row.uid
-    state.scroll_to_frames = 2
-  end
-
-  -- One click is the whole trip: select the clip in REAPER and put the edit
-  -- cursor on it. The SHEET is not touched here -- it mirrors the arrange
-  -- selection every frame already (the Follow behaviour), so the line
-  -- selects, unfolds and scrolls on its own. Parity, not a second selection
-  -- maintained by hand.
-  local function JumpTo(item)
-    if not Trim.item_alive(item) then return end
-    r.SelectAllMediaItems(0, false)
-    r.SetMediaItemSelected(item, true)
-    r.SetEditCurPos(r.GetMediaItemInfo_Value(item, "D_POSITION"), true, false)
-    r.UpdateArrange()
-  end
-
-  -- PARITY: marker, item name, sheet row or edges telling different
-  -- stories, plus anything the watcher refused to guess about. Each "Fix
-  -- from" routes through Trim.sync_dispatch with a one-item map, so a
-  -- hand-picked fix and an automatic one are the same code path -- except
-  -- Transcript, which is not an edit-authority but the external evidence,
-  -- and Sheet, which renames from the marks.
-  if #queue > 0 then
-    im.TextColored(ctx, 0xDDAA33FF, string.format(
-      "%d take(s) out of sync:", #queue))
-    local function FixButtons(suffix, picked)
-      local acts = {
-        { "Transcript", function()
-            Trim.fix_from_transcript({ picked = picked }) end,
-          "The words win: drop the markers they refute, rename the\n" ..
-          "survivors from the transcript, prune same-line duplicates." },
-        { "Marker", function()
-            local m = {}
-            for it in pairs(picked) do m[it] = "marker" end
-            Trim.sync_dispatch(m) end,
-          "The marker wins: trim the item onto it and name it for its line." },
-        { "Item", function()
-            local m = {}
-            for it in pairs(picked) do m[it] = "item" end
-            Trim.sync_dispatch(m) end,
-          "The item wins: snap the marker to its edges, fill the fades." },
-        { "Sheet", function()
-            Trim.fix_names_from_sheet({ picked = picked }) end,
-          "The sheet wins: rename the delivery from the Keep/Sel marks." },
-      }
-      for _, a in ipairs(acts) do
-        im.SameLine(ctx)
-        if im.SmallButton(ctx, string.format("Fix from %s##%s", a[1], suffix)) then
-          local run, set = a[2], picked
-          pending_action = function()
-            run()
-            if state.parity_queue_manual then
-              for it in pairs(set) do state.parity_queue_manual[it] = nil end
-            end
-            Reload()
-          end
-        end
-        if im.IsItemHovered(ctx) then im.SetTooltip(ctx, a[3]) end
-      end
-    end
-
-    for i, q in ipairs(queue) do
-      if i > REPAIR_LIST_CAP then
-        im.TextDisabled(ctx, string.format("   ...and %d more",
-          #queue - REPAIR_LIST_CAP))
-        break
-      end
-      im.Bullet(ctx)
-      im.SameLine(ctx)
-      -- The row IS the shortcut: what it says is where clicking it takes
-      -- you, so checking a finding costs one click, not a hunt.
-      if im.SmallButton(ctx, string.format("%s##oosgo%d",
-          q.divergence.detail or "out of sync", i)) then
-        local it = q.item
-        pending_action = function() JumpTo(it) end
-      end
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, "Select this clip in REAPER and move the edit\n" ..
-                           "cursor to it. The sheet follows the selection\n" ..
-                           "by itself.")
-      end
-      FixButtons(string.format("oos%d", i), { [q.item] = true })
-    end
-    if #queue > 1 then
-      im.Text(ctx, "All of them:")
-      local all = {}
-      for _, q in ipairs(queue) do all[q.item] = true end
-      FixButtons("oosall", all)
-    end
-    im.Separator(ctx)
-  end
-
-  if #plan.disagree > 0 then
-    im.TextColored(ctx, 0xDDAA33FF, string.format(
-      "%d take(s) disagree with where their item sits:", #plan.disagree))
-    for i, f in ipairs(plan.disagree) do
-      if i > REPAIR_LIST_CAP then
-        im.TextDisabled(ctx, string.format("   ...and %d more",
-          #plan.disagree - REPAIR_LIST_CAP))
-        break
-      end
-      im.Bullet(ctx)
-      im.SameLine(ctx)
-      if im.SmallButton(ctx, string.format("%s -- %s##dis%d",
-          f.row.deliver or f.row.asset or "(unnamed)", f.detail, i)) then
-        local captured = f.row
-        pending_action = function()
-          -- Sheet first (these rows always have a uid), then the timeline:
-          -- selecting the item makes the follow re-assert the same row, so
-          -- the two arrive agreeing rather than fighting.
-          GoTo(captured)
-          if captured.item then JumpTo(captured.item) end
-        end
-      end
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, "Select this take's line in the sheet AND its\n" ..
-                           "clip in REAPER, and move the edit cursor to it.")
-      end
-    end
-    if im.Button(ctx, "Adopt timeline") then
-      local findings = plan.disagree
-      pending_action = function()
-        -- The tracks win: write the mark each item's placement implies as an
-        -- EXPLICIT decision, so the result is stable and not re-inferred.
-        for _, f in ipairs(findings) do
-          local want = vo.MarkFromTrack(f.row.track_name, cfg)
-          Mutate(f.row, function(e)
-            e.select = (want == "select") or nil
-            e.keep   = (want == "keep")   or nil
-          end)
-        end
-        state.message, state.message_kind = string.format(
-          "Adopted the timeline for %d take(s).", #findings), "ok"
-      end
-    end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, "Set each take's Keep/Sel to match the track its item is on.")
-    end
-    im.SameLine(ctx)
-    if im.Button(ctx, "Adopt sheet") then
-      state.tab, state.panel, state.tab_sync = "edit", "pull", 4
-      state.message, state.message_kind =
-        "The marks are right -- run Pull to move the items to match them.", "info"
-    end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, "The marks are right; the items are in the wrong place.\n" ..
-                         "Opens the Pull panel, which is what moves them.")
-    end
-    im.Separator(ctx)
-  end
-end
 
 -- The two halves of "does the sheet agree with the audio": markers with no
 -- audio under them, and audio with no marker on it. One table, because this
@@ -9221,187 +9039,6 @@ function Verify.Abort()
   Verify.queue, Verify.queued = {}, {}
 end
 
--- The Suspects panel body. Report-only below the header button, same contract
--- as the other Check panels; the one action lives in the header and only
--- fills the Verify queue.
-function Repair.Suspects()
-  if not state.suspects then
-    state.suspects = vo.ScanSuspects(state.overview or {}, state.transcripts or {},
-                                     state.lines or {}, vo.LoadConfig(),
-                                     vo.VERIFY_THRESH)
-  end
-  local list = state.suspects
-  if #list == 0 then
-    im.TextDisabled(ctx, "No suspects. The sheet and the audio agree.")
-    return
-  end
-  -- Always the DECODING judge, never quick check, and the label says so:
-  -- every suspect was found from stored data, so re-reading the stored data
-  -- would only re-report this panel to itself. Re-listening is the one thing
-  -- that can move a suspect forward -- and the one verify button allowed to
-  -- cost whisper time regardless of the Re-listen toggle (SPEC-verify.md).
-  if im.Button(ctx, string.format("Re-listen to %d suspects", #list)) then
-    local rows = {}
-    for _, s in ipairs(list) do rows[#rows + 1] = s.row end
-    pending_action = function() Verify.Enqueue(rows) end
-  end
-  if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Fresh whisper decodes, one per suspect, whatever the\n" ..
-                       "Re-listen toggle says: these were found from stored\n" ..
-                       "data, so only the audio can settle them. The model\n" ..
-                       "reloads per item -- budget roughly 20s each.")
-  end
-  im.SameLine(ctx)
-  im.TextDisabled(ctx, string.format("~%ds of decoding; cancel any time", #list * 20))
-  im.Spacing(ctx)
-  local NAMES = { name_mismatch = "name vs words", thin = "thin coverage",
-                  unmarked = "no marker", stamp = "was vetted, changed since",
-                  no_words = "NO WORDS AT ALL" }
-  -- Selects first, then Alts, then the rest: a flagged DELIVERABLE is the
-  -- risk, and it used to sit wherever the sheet happened to order it.
-  local S = vo.LoadConfig().track_selects or "Selects"
-  local A = vo.LoadConfig().track_alts or "Alts"
-  local function rank(s2)
-    local tn = s2.row.track_name or ""
-    return (tn == S) and 1 or (tn == A) and 2 or 3
-  end
-  local sorted = {}
-  for i, s in ipairs(list) do sorted[i] = s end
-  table.sort(sorted, function(a, b)
-    local ra, rb = rank(a), rank(b)
-    if ra ~= rb then return ra < rb end
-    return (a.row.asset or "") < (b.row.asset or "")
-  end)
-  for _, s in ipairs(sorted) do
-    local why = {}
-    for k in pairs(s.triggers) do why[#why + 1] = NAMES[k] or k end
-    table.sort(why)
-    im.Text(ctx, string.format("%-34s %s%s",
-      s.row.deliver or s.row.asset or "?", table.concat(why, ", "),
-      (rank(s) == 1) and "   << ON SELECTS" or ""))
-    -- The evidence line: what the take actually says, and where the judge
-    -- leaned when it would not swear.
-    if (s.words and s.words ~= "") or s.best then
-      im.TextDisabled(ctx, string.format('   words: %s%s',
-        (s.words and s.words ~= "") and ('"' .. s.words .. '"') or "(none)",
-        s.best and (s.verdict ~= "match")
-          and ("   best guess: " .. tostring(s.best)) or ""))
-    end
-  end
-end
-
-function Repair.NoAudio()
-  local plan = state.reconcile
-               or vo.PlanReconcile(state.overview, vo.LoadConfig())
-
-  if #plan.unbacked_markers + #plan.orphan_marks == 0 then
-    im.TextColored(ctx, 0x66BB66FF,
-      "Every marker and every mark has audio under it.")
-    im.Separator(ctx)
-    return
-  end
-
-  -- Markers whose audio is gone.
-  if #plan.unbacked_markers > 0 then
-    im.TextColored(ctx, 0xDD6666FF, string.format(
-      "%d take marker(s) with no audio under them:", #plan.unbacked_markers))
-    for i, f in ipairs(plan.unbacked_markers) do
-      if i > REPAIR_LIST_CAP then
-        im.TextDisabled(ctx, string.format("   ...and %d more",
-          #plan.unbacked_markers - REPAIR_LIST_CAP))
-        break
-      end
-      im.Bullet(ctx)
-      im.SameLine(ctx)
-      im.TextDisabled(ctx, f.row.deliver or f.row.asset or "(unnamed)")
-      im.SameLine(ctx)
-      if im.SmallButton(ctx, "Relink##unb" .. i) then
-        local captured = f.row
-        pending_action = function() AddTakeMarkerFromSelection(captured) end
-      end
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, "Write this take's marker onto the item selected in REAPER.")
-      end
-    end
-    im.TextDisabled(ctx,
-      "The item this marker lived in was deleted or trimmed past it. Relink\n" ..
-      "to the right item; a sync or a re-cut drops the leftovers.")
-    im.Separator(ctx)
-  end
-
-  -- Marks with nothing to attach to.
-  if #plan.orphan_marks > 0 then
-    im.TextColored(ctx, 0xDDAA33FF, string.format(
-      "%d take(s) carry marks but have no audio in this project:",
-      #plan.orphan_marks))
-    for i, f in ipairs(plan.orphan_marks) do
-      if i > REPAIR_LIST_CAP then
-        im.TextDisabled(ctx, string.format("   ...and %d more",
-          #plan.orphan_marks - REPAIR_LIST_CAP))
-        break
-      end
-      im.Bullet(ctx)
-      im.SameLine(ctx)
-      im.TextDisabled(ctx, f.row.deliver or f.row.asset or "(unnamed)")
-      im.SameLine(ctx)
-      if im.SmallButton(ctx, "Relink##orph" .. i) then
-        local captured = f.row
-        pending_action = function() AddTakeMarkerFromSelection(captured) end
-      end
-    end
-    im.TextDisabled(ctx,
-      "These are usually a deleted take marker, or marks from before markers\n" ..
-      "existed. Relink one to the item it belongs to, or clear its marks on\n" ..
-      "the row itself.")
-    im.Separator(ctx)
-  end
-
-  im.Separator(ctx)
-end
-
--- Audio the matcher recognised that no marker claims. A take exists in this
--- sheet only where a marker says it does, so these reads are heard but not
--- tracked -- and the verb that acts on a row here is Identify, not a mark.
-function Repair.Unidentified()
-  local list = state.unidentified or {}
-  if #list == 0 then
-    im.TextColored(ctx, 0x66BB66FF,
-      "Every read the matcher found has a take marker on it.")
-    im.Separator(ctx)
-    return
-  end
-
-  im.TextColored(ctx, 0xDDAA33FF, string.format(
-    "%d read(s) matched a script line but have no take marker:", #list))
-  for i, s in ipairs(list) do
-    if i > REPAIR_LIST_CAP then
-      im.TextDisabled(ctx, string.format("   ...and %d more", #list - REPAIR_LIST_CAP))
-      break
-    end
-    im.Bullet(ctx)
-    im.SameLine(ctx)
-    im.TextDisabled(ctx, vo.Basename(s.source_path or "") )
-    im.SameLine(ctx)
-    if im.SmallButton(ctx, string.format("%s##uid%d", vo.FormatTime(s.start or 0), i)) then
-      local at = s.start or 0
-      pending_action = function()
-        reaper.SetEditCurPos(at, true, false)
-      end
-    end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, "Move the edit cursor to this read.")
-    end
-    im.SameLine(ctx)
-    im.TextDisabled(ctx, string.format("%s  %.0f%%  %s",
-      s.deliver or s.asset or "(unnamed)", (s.score or 0) * 100,
-      s.transcript or ""))
-  end
-  im.TextDisabled(ctx,
-    "These reads scored against a script line, but nothing has marked them as\n" ..
-    "takes -- so no verb will act on them and they are not in the sheet. Run\n" ..
-    "Identify, or mark them by hand.")
-  im.Separator(ctx)
-end
 
 -- Sound the transcript never heard: the amplitude-only sweep behind the
 -- "Unheard audio" Check panel. Every other queue starts from the transcript
@@ -9496,54 +9133,359 @@ function Repair.ScanUnheard()
       or "")
 end
 
--- Audible sound that nothing covers -- no take marker, no transcribed word.
--- The last net: a read whisper skipped can only be found this way.
-function Repair.Unheard()
-  local list = state.unheard
-  if list == nil then
-    im.TextDisabled(ctx,
-      "Not scanned yet. This reads the whole session's audio against the\n" ..
-      "silence gate looking for sound the transcript never heard, so it\n" ..
-      "runs when you ask rather than on every change.")
-    if im.Button(ctx, "Scan the audio") then pending_action = Repair.ScanUnheard end
-    im.Separator(ctx)
+-- THE INBOX: every actionable finding, one ranked rail (the redesign spec,
+-- phase 1). The five Check panels asked one question five ways -- "what
+-- needs me?" -- split by which scanner happened to fire. The rail merges
+-- them, ranked by risk (vo.InboxBuild owns the order), and keeps the
+-- beta33 contract: every row carries its evidence, its jump, and its
+-- verbs -- the SAME verbs the panels dispatched, re-housed rather than
+-- reinterpreted. One table, same reason as Repair: the main chunk is at
+-- Lua's 200-local ceiling.
+local Inbox = {}
+
+Inbox.WIDTH = 340
+
+-- What a suspect's trigger keys mean, in words a row can wear.
+Inbox.TRIGGERS = { name_mismatch = "name vs words", thin = "thin coverage",
+                   unmarked = "no marker", stamp = "was vetted, changed since",
+                   no_words = "NO WORDS AT ALL" }
+
+-- Bring a finding's sheet row into view and select it.
+function Inbox.GoTo(row)
+  if not row or not row.uid then return end
+  state.selection        = { [row.uid] = true }
+  state.focus_key        = row.uid
+  state.scroll_to_uid    = row.uid
+  state.scroll_to_frames = 2
+end
+
+-- One click is the whole trip: select the clip in REAPER and put the edit
+-- cursor on it. The sheet mirrors the arrange selection every frame (the
+-- Follow behaviour), so the line selects, unfolds and scrolls on its own.
+function Inbox.JumpTo(item)
+  if not Trim.item_alive(item) then return end
+  r.SelectAllMediaItems(0, false)
+  r.SetMediaItemSelected(item, true)
+  r.SetEditCurPos(r.GetMediaItemInfo_Value(item, "D_POSITION"), true, false)
+  r.UpdateArrange()
+end
+
+-- Exactly one take of a line may be the select; SetSelect owns that law,
+-- so the rail's pick verbs go through it like the sheet's boxes do.
+function Inbox.PickTake(asset, which)
+  local best
+  for _, row in ipairs(state.overview or {}) do
+    if row.asset == asset and row.status ~= "missing" and row.status ~= "orphan"
+       and (row.take_index or 0) > 0 then
+      if which == "first" then
+        if not best or row.take_index < best.take_index then best = row end
+      else
+        if not best or row.take_index > best.take_index then best = row end
+      end
+    end
+  end
+  if best then SetSelect(best, true) end
+end
+
+-- Rebuild the rail only when a feed actually changed. Every feed is a
+-- fresh table when its producer runs (Rebuild, or a scan), so identity is
+-- the cheap and honest staleness test -- no per-frame reassembly.
+function Inbox.MaybeAssemble()
+  if state.inbox
+     and state.inbox_seen_rec   == state.reconcile
+     and state.inbox_seen_queue == state.parity_queue
+     and state.inbox_seen_sus   == state.suspects
+     and state.inbox_seen_heard == state.unheard
+     and state.inbox_seen_over  == state.overview then
     return
   end
+  state.inbox_seen_rec,   state.inbox_seen_queue = state.reconcile, state.parity_queue
+  state.inbox_seen_sus,   state.inbox_seen_heard = state.suspects, state.unheard
+  state.inbox_seen_over = state.overview
 
-  if #list == 0 then
-    im.TextColored(ctx, 0x66BB66FF,
-      "Every audible burst is covered by a take marker or a transcribed word.")
-  else
-    im.TextColored(ctx, 0xDDAA33FF, string.format(
-      "%d burst(s) of sound the transcript never heard, unmarked:", #list))
-    for i, s in ipairs(list) do
-      if i > REPAIR_LIST_CAP then
-        im.TextDisabled(ctx, string.format("   ...and %d more", #list - REPAIR_LIST_CAP))
-        break
+  local cfg = vo.LoadConfig()
+  local rec = state.reconcile or {}
+  local no_audio = {}
+  for _, e in ipairs(rec.unbacked_markers or {}) do no_audio[#no_audio + 1] = e end
+  for _, e in ipairs(rec.orphan_marks or {})     do no_audio[#no_audio + 1] = e end
+
+  -- Undecided LINES: takes exist, none picked, nobody settled it by hand.
+  -- Same eligibility AutoSelectTakes uses, so the rail never nags about a
+  -- line the pick verbs would refuse to touch.
+  local groups, seen = {}, {}
+  for _, row in ipairs(state.overview or {}) do
+    local a = row.asset
+    if a and row.status ~= "missing" and row.status ~= "orphan"
+       and (row.take_index or 0) > 0 then
+      local g = seen[a]
+      if not g then
+        g = { asset = a, row = row, takes = 0 }
+        seen[a] = g
+        groups[#groups + 1] = g
       end
-      im.Bullet(ctx)
-      im.SameLine(ctx)
-      im.TextDisabled(ctx, vo.Basename(s.source_path or ""))
-      im.SameLine(ctx)
-      if im.SmallButton(ctx, string.format("%s##unh%d", vo.FormatTime(s.start or 0), i)) then
-        local at = s.proj or 0
-        pending_action = function() reaper.SetEditCurPos(at, true, false) end
-      end
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, "Move the edit cursor to this sound.")
-      end
-      im.SameLine(ctx)
-      im.TextDisabled(ctx, string.format("%.1fs", (s.stop or 0) - (s.start or 0)))
+      g.takes = g.takes + 1
+      if row.user_select then g.picked = true end
+      if row.user_status == "verified" then g.locked = true end
     end
-    im.TextDisabled(ctx,
-      "Listen to each: a read whisper skipped can be marked by hand (select\n" ..
-      "the range and use the take menu's add-marker), a cough can be ignored.\n" ..
-      "Re-transcribing the file usually hears a skipped read the second time.")
   end
-  im.TextDisabled(ctx, state.unheard_note or "")
-  im.SameLine(ctx)
-  if im.SmallButton(ctx, "Rescan") then pending_action = Repair.ScanUnheard end
+  local undecided = {}
+  for _, g in ipairs(groups) do
+    if not g.picked and not g.locked then undecided[#undecided + 1] = g end
+  end
+
+  -- The ranker promotes a Selects-track suspect above everything, but the
+  -- scan entry only knows its row -- copy the track up where it can see it.
+  for _, s in ipairs(state.suspects or {}) do
+    s.track = s.row and s.row.track_name or nil
+  end
+
+  state.inbox, state.inbox_counts = vo.InboxBuild({
+    parity_queue = state.parity_queue,
+    disagree     = rec.disagree,
+    no_audio     = no_audio,
+    unidentified = state.unidentified,
+    undecided    = undecided,
+    suspects     = state.suspects,
+    unheard      = state.unheard,
+    scanned      = { suspects = state.suspects ~= nil,
+                     unheard  = state.unheard  ~= nil },
+    selects_track = cfg.track_selects or "Selects",
+  })
+  local n = #state.inbox
+  if state.inbox_sel and state.inbox_sel > n then
+    state.inbox_sel = n > 0 and n or nil
+  end
+end
+
+-- A rail row is narrow; the full text lives in the tooltip.
+function Inbox.Clip(s, cap)
+  s = tostring(s or "")
+  cap = cap or 44
+  if #s > cap then return s:sub(1, cap - 1) .. "\226\128\166" end
+  return s
+end
+
+-- The evidence line IS the row: what it says is what clicking it goes to.
+function Inbox.Evidence(f)
+  local p = f.payload or {}
+  local k = f.kind
+  if k == "suspect" or k == "suspect_select" then
+    local why = {}
+    for t in pairs(p.triggers or {}) do why[#why + 1] = Inbox.TRIGGERS[t] or t end
+    table.sort(why)
+    return string.format("%s -- %s",
+      p.row and (p.row.deliver or p.row.asset) or "?", table.concat(why, ", "))
+  elseif k == "out_of_sync" then
+    if p.divergence then return p.divergence.detail or "out of sync" end
+    return string.format("%s -- %s",
+      p.row and (p.row.deliver or p.row.asset) or "(unnamed)",
+      p.detail or "disagrees with its track")
+  elseif k == "no_audio" then
+    return string.format("%s -- marks with no audio",
+      p.row and (p.row.deliver or p.row.asset) or "(unnamed)")
+  elseif k == "unidentified" then
+    return string.format("%s %s -- heard, not tracked",
+      vo.Basename(p.source_path or ""), vo.FormatTime(p.start or 0))
+  elseif k == "undecided" then
+    return string.format("%s -- %d take%s, none picked", p.asset or "?",
+      p.takes or 0, (p.takes or 0) == 1 and "" or "s")
+  elseif k == "unheard" then
+    return string.format("%s %s -- %.1fs nothing heard",
+      vo.Basename(p.source_path or ""), vo.FormatTime(p.start or 0),
+      (p.stop or 0) - (p.start or 0))
+  elseif k == "scan_suspects" then
+    return "Suspects not scanned yet"
+  elseif k == "scan_unheard" then
+    return "Audio not swept for unheard sound"
+  end
+  return k
+end
+
+function Inbox.Jump(f)
+  local p = f.payload or {}
+  local k = f.kind
+  if k == "out_of_sync" and p.divergence then
+    local it = p.item
+    pending_action = function() Inbox.JumpTo(it) end
+  elseif p.row then
+    local row = p.row
+    pending_action = function()
+      Inbox.GoTo(row)
+      if row.item then Inbox.JumpTo(row.item) end
+    end
+  elseif k == "unidentified" then
+    local at = p.start or 0
+    pending_action = function() r.SetEditCurPos(at, true, false) end
+  elseif k == "unheard" then
+    local at = p.proj or 0
+    pending_action = function() r.SetEditCurPos(at, true, false) end
+  end
+end
+
+-- The verbs a finding can take. Every fn dispatches the same function the
+-- retired panel dispatched. Second return: a fold label -- four "Fix
+-- from" authorities do not fit a rail row, so they fold behind one button.
+function Inbox.RowVerbs(f)
+  local p = f.payload or {}
+  local k = f.kind
+  if k == "out_of_sync" and p.divergence then
+    local it = p.item
+    local function fix(mode)
+      return function()
+        pending_action = function()
+          if mode == "transcript" then
+            Trim.fix_from_transcript({ picked = { [it] = true } })
+          elseif mode == "sheet" then
+            Trim.fix_names_from_sheet({ picked = { [it] = true } })
+          else
+            Trim.sync_dispatch({ [it] = mode })
+          end
+          if state.parity_queue_manual then state.parity_queue_manual[it] = nil end
+          Reload()
+        end
+      end
+    end
+    return {
+      { label = "Transcript", fn = fix("transcript"),
+        tip = "The words win: drop the markers they refute, rename the\n" ..
+              "survivors from the transcript, prune same-line duplicates." },
+      { label = "Marker", fn = fix("marker"),
+        tip = "The marker wins: trim the item onto it and name it for its line." },
+      { label = "Item", fn = fix("item"),
+        tip = "The item wins: snap the marker to its edges, fill the fades." },
+      { label = "Sheet", fn = fix("sheet"),
+        tip = "The sheet wins: rename the delivery from the Keep/Sel marks." },
+    }, "Fix from\226\128\166"
+  elseif k == "out_of_sync" then
+    local row = p.row
+    return {
+      { label = "Adopt timeline", fn = function()
+          pending_action = function()
+            local want = vo.MarkFromTrack(row.track_name, vo.LoadConfig())
+            Mutate(row, function(e)
+              e.select = (want == "select") or nil
+              e.keep   = (want == "keep")   or nil
+            end)
+          end
+        end,
+        tip = "Set this take's Keep/Sel to match the track its item is on." },
+      { label = "Adopt sheet", fn = function()
+          state.tab, state.panel, state.tab_sync = "edit", "pull", 4
+          state.message, state.message_kind =
+            "The marks are right -- run Pull to move the items to match them.", "info"
+        end,
+        tip = "The marks are right; the item is in the wrong place.\n" ..
+              "Opens the Pull panel, which is what moves them." },
+    }
+  elseif k == "no_audio" then
+    local row = p.row
+    return { { label = "Relink", fn = function()
+        pending_action = function() AddTakeMarkerFromSelection(row) end
+      end,
+      tip = "Write this take's marker onto the item selected in REAPER." } }
+  elseif k == "undecided" then
+    local asset = p.asset
+    return {
+      { label = "Pick last", fn = function()
+          pending_action = function() Inbox.PickTake(asset, "last") end
+        end, tip = "Mark this line's last take as the select." },
+      { label = "Pick first", fn = function()
+          pending_action = function() Inbox.PickTake(asset, "first") end
+        end, tip = "Mark this line's first take as the select." },
+    }
+  elseif k == "suspect" or k == "suspect_select" then
+    local row = p.row
+    return { { label = "Re-listen", fn = function()
+        pending_action = function() Verify.Enqueue({ row }) end
+      end,
+      tip = "A fresh whisper decode of this take, whatever the Re-listen\n" ..
+            "toggle says: it was flagged from stored data, so only the\n" ..
+            "audio can settle it. The model reloads per item -- budget\n" ..
+            "roughly 20s." } }
+  elseif k == "scan_suspects" then
+    return { { label = "Scan", fn = function()
+        pending_action = function()
+          state.suspects = vo.ScanSuspects(state.overview or {},
+            state.transcripts or {}, state.lines or {}, vo.LoadConfig(),
+            vo.VERIFY_THRESH)
+        end
+      end,
+      tip = "The free hunt: everything worth verifying, found from stored\n" ..
+            "data alone. A press, not a frame." } }
+  elseif k == "scan_unheard" then
+    return { { label = "Scan", fn = function()
+        pending_action = Repair.ScanUnheard
+      end,
+      tip = "Sweep the session's audio against the silence gate for sound\n" ..
+            "the transcript never heard. Seconds of AudioAccessor work, so\n" ..
+            "it runs when you ask rather than on every change." } }
+  end
+  return {}
+end
+
+function Inbox.Draw(width, height)
+  if not im.BeginChild(ctx, "##vo_inbox", width, height) then return end
+  local c = state.inbox_counts or { total = 0 }
+  im.TextDisabled(ctx, string.format("Needs you (%d)", c.total))
   im.Separator(ctx)
+  if c.total == 0 then
+    im.TextColored(ctx, 0x66BB66FF, "Nothing needs you.")
+    im.TextDisabled(ctx,
+      "Every finding lands here, ranked.\n" ..
+      "Empty means the session agrees\nwith itself.")
+  end
+  for i, f in ipairs(state.inbox or {}) do
+    if state.inbox_sel == i then
+      im.TextColored(ctx, 0x3E6FA3FF, "\226\150\184")
+    else
+      im.Bullet(ctx)
+    end
+    im.SameLine(ctx)
+    local label = Inbox.Evidence(f)
+    if im.SmallButton(ctx, Inbox.Clip(label) .. "##inbevi" .. i) then
+      state.inbox_sel = i
+      Inbox.Jump(f)
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, label ..
+        "\n\nClick: select it in REAPER / the sheet and move\nthe edit cursor to it.")
+    end
+    -- A suspect wears its words: the evidence is the point (beta33).
+    local p = f.payload or {}
+    if (f.kind == "suspect" or f.kind == "suspect_select")
+       and ((p.words and p.words ~= "") or p.best) then
+      im.TextDisabled(ctx, Inbox.Clip(string.format('   "%s"%s',
+        (p.words and p.words ~= "") and p.words or "(none)",
+        (p.best and p.verdict ~= "match")
+          and ("  best: " .. tostring(p.best)) or ""), 52))
+    end
+    local verbs, fold = Inbox.RowVerbs(f)
+    if #verbs > 0 then
+      im.SetCursorPosX(ctx, im.GetCursorPosX(ctx) + 18)
+      if fold then
+        if im.SmallButton(ctx, fold .. "##inbfold" .. i) then
+          im.OpenPopup(ctx, "##inbpop" .. i)
+        end
+        if im.BeginPopup(ctx, "##inbpop" .. i) then
+          for _, v in ipairs(verbs) do
+            if im.Selectable(ctx, "Fix from " .. v.label) then v.fn() end
+            if im.IsItemHovered(ctx) then im.SetTooltip(ctx, v.tip) end
+          end
+          im.EndPopup(ctx)
+        end
+      else
+        for vi, v in ipairs(verbs) do
+          if vi > 1 then im.SameLine(ctx) end
+          if im.SmallButton(ctx, v.label .. "##inbverb" .. i .. "_" .. vi) then
+            v.fn()
+          end
+          if im.IsItemHovered(ctx) and v.tip then im.SetTooltip(ctx, v.tip) end
+        end
+      end
+    end
+    im.Spacing(ctx)
+  end
+  im.EndChild(ctx)
 end
 
 local function DrawFilters()
@@ -11321,8 +11263,8 @@ local function DrawCardsBody(avail_w)
   end
 end
 
-local function DrawCards(height)
-  if not im.BeginChild(ctx, "vo_cards", 0, height) then return end
+local function DrawCards(height, width)
+  if not im.BeginChild(ctx, "vo_cards", width or 0, height) then return end
   local avail_w = select(1, im.GetContentRegionAvail(ctx)) - 2
   local ok, err = pcall(DrawCardsBody, avail_w)
   while id_depth > 0 do
@@ -12344,6 +12286,10 @@ local function loop()
   FlushProjectFile(false)
   ApplyFilters()
 
+  -- The rail's list, refreshed only when a feed changed; before Begin so
+  -- the toolbar count and the rail draw the same frame's answer.
+  Inbox.MaybeAssemble()
+
   -- After the filters, so the follow lights rows the table is actually
   -- showing this frame.
   FollowTimelineSelection()
@@ -12392,6 +12338,13 @@ local function loop()
     -- the tooltip does not have to.
     local n_scripts = #state.scripts
 
+    -- The Check tab retired when the rail arrived; a remembered ExtState
+    -- tab from an older build must not strand the bar on a key without a
+    -- body.
+    if state.tab ~= "setup" and state.tab ~= "edit" and state.tab ~= "log" then
+      state.tab = "edit"
+    end
+
     if im.BeginTabBar(ctx, "##toolbar") then
       -- ImGui selects the FIRST tab until told otherwise, which on frame one
       -- silently moved the tool to Setup. state.tab_sync is a frame budget,
@@ -12428,6 +12381,16 @@ local function loop()
       -- button parked on the right rather than a tab.
       if im.TabItemButton(ctx, "Settings", im.TabItemFlags_Trailing) then
         state.settings_open = true
+      end
+      -- The rail's count, always in reach: clicking it points the walk at
+      -- the top finding rather than opening anything -- the rail is
+      -- already open, permanently.
+      local inb = state.inbox_counts
+      if inb and inb.total > 0 then
+        if im.TabItemButton(ctx, string.format("Needs you (%d)", inb.total),
+                            im.TabItemFlags_Trailing) then
+          state.inbox_sel = 1
+        end
       end
       im.EndTabBar(ctx)
     end
@@ -13082,12 +13045,10 @@ local function loop()
         "Lays the items out on the timeline in script order or record order,\n" ..
         "on fresh child tracks so nothing lands on anything.")
 
-    elseif state.tab == "check" then
-      -- Check: does the sheet agree with the timeline, and is the leftover
-      -- state accounted for. Its own tab now: verifying is a phase, not a
-      -- row squeezed after Sort -- and its scope is the ARRANGE selection,
-      -- which the sheet's right-click menu cannot reach for items the sheet
-      -- does not track.
+      -- Verify: the machine listens so you don't have to. Re-housed from
+      -- the retired Check tab (its five report panels became the rail);
+      -- the scope is the ARRANGE selection, which the sheet's right-click
+      -- menu cannot reach for items the sheet does not track.
       if state.verify_relisten == nil then
         state.verify_relisten =
           r.GetExtState(vo.EXT_SECTION, "verify_relisten") == "true"
@@ -13116,68 +13077,6 @@ local function loop()
           "On: every Verify decodes the audio fresh instead -- slow (the\n" ..
           "model reloads per item; roughly 20s each) but it is the only\n" ..
           "check that HEARS anything the transcript missed.")
-
-      -- The first two buttons wear their counts, so this row reads as state
-      -- before anything is clicked -- "(0)" everywhere means the session
-      -- agrees with itself.
-      Group("Check:")
-      local rec = state.reconcile
-                  or { disagree = {}, unbacked_markers = {}, orphan_marks = {} }
-      local n_dis  = #rec.disagree
-      local n_gone = #rec.unbacked_markers + #rec.orphan_marks
-
-      local n_oos = #(state.parity_queue or {}) + n_dis
-      PanelButton("outofsync", string.format("Out of sync (%d)", n_oos),
-        "Takes whose marker, item name, sheet row or edges no longer tell\n" ..
-        "one story, plus anything the watcher refused to guess about --\n" ..
-        "splits, pastes, two edits in one gesture -- and takes whose\n" ..
-        "Keep/Sel marks contradict the track their item sits on. Each row\n" ..
-        "says what disagrees and takes a \"Fix from ...\": the same\n" ..
-        "waterfalls the watcher runs, with you naming the authority.\n" ..
-        "(0) means the session agrees with itself.")
-
-      Flow(string.format("Takes without audio (%d)", n_gone))
-      PanelButton("noaudio", string.format("Takes without audio (%d)", n_gone),
-        "Markers and marks whose audio is no longer in the project -- the\n" ..
-        "item was deleted, or trimmed past them. Relink each to the item\n" ..
-        "it belongs to, or clear its marks on the row itself.")
-
-      -- The mirror of the one above: that one is markers with no audio, this
-      -- one is audio with no marker.
-      local n_uid = #(state.unidentified or {})
-      Flow(string.format("Not yet identified (%d)", n_uid))
-      PanelButton("unidentified", string.format("Not yet identified (%d)", n_uid),
-        "Audio the matcher recognised that no take marker claims. A take\n" ..
-        "exists in this sheet only where a marker says it does, so these\n" ..
-        "reads are heard but not tracked. (0) means every read is marked.")
-
-      -- And the net under THAT one: audio nothing ever heard. The two
-      -- panels above both start from the transcript; this one starts from
-      -- the waveform, because a read whisper skipped has no words at all.
-      local n_uh = state.unheard and tostring(#state.unheard) or "?"
-      Flow(string.format("Unheard audio (%s)", n_uh))
-      PanelButton("unheard", string.format("Unheard audio (%s)", n_uh),
-        "Audible sound covered by no take marker and no transcribed word --\n" ..
-        "a read whisper skipped leaves exactly this and is invisible to\n" ..
-        "every transcript-side check. Scans the audio on request; (?) means\n" ..
-        "it has not been scanned yet.")
-
-      -- The free hunt (SPEC-verify.md §3): everything worth verifying, found
-      -- from stored data alone. Scans on open, like Unheard -- it Levenshteins
-      -- every delivered row, which is a press, not a frame.
-      local n_sus = state.suspects and tostring(#state.suspects) or "?"
-      Flow(string.format("Suspects (%s)", n_sus))
-      PanelButton("suspects", string.format("Suspects (%s)", n_sus),
-        "Everything worth verifying, found for free from stored data:\n" ..
-        "names that disagree with the words under them, windows whisper\n" ..
-        "barely covered, takes no marker claims, and vetted stamps that\n" ..
-        "no longer match. One button feeds them all to Verify.")
-
-      -- Check ends HERE, with four panels that only report. Nothing on this row
-      -- changes the project any more: what it finds, you act on in Fix. The
-      -- trailing SameLine that used to sit here belonged to a checkbox that
-      -- moved, and a layout call with nothing left to place is how a row
-      -- silently grows a widget on the wrong line later.
 
     elseif state.tab == "log" then
       -- The Log tab's row is the only one that acts on the REPORTS rather than
@@ -13221,12 +13120,7 @@ local function loop()
     if ribbon_h > (state.ribbon_h or 0) then state.ribbon_h = ribbon_h end
     if ribbon_h < state.ribbon_h then im.Dummy(ctx, 1, state.ribbon_h - ribbon_h) end
 
-    if     state.panel == "outofsync" then DrawOutOfSyncPanel()
-    elseif state.panel == "noaudio"  then Repair.NoAudio()
-    elseif state.panel == "unidentified" then Repair.Unidentified()
-    elseif state.panel == "unheard" then Repair.Unheard()
-    elseif state.panel == "suspects" then Repair.Suspects()
-    elseif state.panel == "script" then DrawScriptPanel()
+    if     state.panel == "script" then DrawScriptPanel()
     elseif state.panel == "pull"   then DrawPullPanel()
     elseif state.panel == "sort"   then DrawLayoutBar()
     elseif state.panel == "subs"   then Line.DrawSubs() end
@@ -13385,7 +13279,14 @@ local function loop()
         im.EndChild(ctx)
       end
     else
-      DrawCards(body_h)
+      -- The sheet and the rail split the body: the sheet stays the
+      -- centerpiece (AJ's call on the redesign spec), the rail is always
+      -- there answering "what now".
+      local sheet_avail = select(1, im.GetContentRegionAvail(ctx))
+      local rail_w = math.min(Inbox.WIDTH, math.floor(sheet_avail * 0.38))
+      DrawCards(body_h, sheet_avail - rail_w - item_gap)
+      im.SameLine(ctx)
+      Inbox.Draw(rail_w, body_h)
     end
 
     if not state.project_path then
