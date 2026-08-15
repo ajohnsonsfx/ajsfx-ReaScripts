@@ -7813,9 +7813,12 @@ end
 -- selection gets the INTERSECTION (kept in the first context's order), so
 -- nothing on screen ever offers to do something to part of the selection.
 -- Empty selection returns {}, and the caller draws the hint line instead.
+-- No "ok" here on purpose: OK is the human's per-take judgment and lives
+-- on the take row's own box, beside the words it judges -- a bar verb
+-- would detach the confirmation from the evidence.
 vo.CONTEXT_VERBS = {
   { key = "recordings", verbs = { "match", "cut", "untrack" } },
-  { key = "takes",      verbs = { "fix_from", "verify", "ok", "recut", "untrack" } },
+  { key = "takes",      verbs = { "fix_from", "verify", "recut", "untrack" } },
   { key = "lines",      verbs = { "pick_first", "pick_last", "name_alts" } },
 }
 

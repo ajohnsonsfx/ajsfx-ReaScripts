@@ -34,8 +34,14 @@ test("recordings get match, cut and untrack, in order", function()
 end)
 
 test("takes get the fix and judge verbs", function()
-  assert(ids({ takes = 3 }) == "fix_from,verify,ok,recut,untrack",
+  assert(ids({ takes = 3 }) == "fix_from,verify,recut,untrack",
     "got: " .. ids({ takes = 3 }))
+end)
+
+test("ok is deliberately NOT a bar verb -- it lives on the take row's box", function()
+  for _, v in ipairs(vo.ContextVerbs({ takes = 1 })) do
+    assert(v ~= "ok", "ok crept back into the takes context")
+  end
 end)
 
 test("lines get the pick verbs", function()
@@ -62,7 +68,7 @@ test("nil selection is empty, not an error", function()
 end)
 
 test("zero counts are not a context", function()
-  assert(ids({ recordings = 0, takes = 2 }) == "fix_from,verify,ok,recut,untrack",
+  assert(ids({ recordings = 0, takes = 2 }) == "fix_from,verify,recut,untrack",
     "a zero count changed the verbs: " .. ids({ recordings = 0, takes = 2 }))
 end)
 
