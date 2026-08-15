@@ -1177,3 +1177,12 @@ one UNCUT recording holding several takes as markers in one item.
    reported "all 1 markers already agree".)
 2. A marker over words that fit no line clearly -> report says N could not
    be placed, warn kind -- never "agree".
+
+## Hidden markers die first (0.15beta28)
+
+1. A clip with a marker parked outside its playable audio (split residue;
+   invisible in the take list): "Fix from Transcript" -> report says
+   "Dropped N hidden marker(s)", and the remaining marker + item name then
+   fix from the words in the same press.
+2. After the press, the clip counts as ONE marker to every shape test
+   (edit-authority fixes no longer refuse it as a recording).
