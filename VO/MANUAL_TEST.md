@@ -1129,19 +1129,22 @@ one UNCUT recording holding several takes as markers in one item.
    cursor lands on it, and the sheet's line selects/unfolds/scrolls by
    itself. Same for a marks-vs-tracks row.
 
-## Hand confirmation (0.15beta23)
+## The OK box (0.15beta24)
 
-1. On a take whose transcript disagrees with its name (yellow words),
-   right-click the Vet box -> tick appears; tooltip says confirmed by YOU.
-   The transcript text is unchanged.
+1. On a take whose transcript disagrees with its name (yellow words), tick
+   the OK box (fifth box, after Vet) -> tick appears; tooltip says YOU
+   checked it. The transcript text is unchanged. The Vet box is unchanged.
 2. Open Suspects -> that take is no longer listed for name mismatch.
-3. Run Verify (quick check) over it -> report says "confirmed by you",
-   stamp survives.
-4. Trim the item's edge -> the tick clears itself on the next rebuild
-   (fingerprint falsified). Re-confirm, rename the item -> same.
-5. Right-click a confirmed take's Vet box -> confirmation withdrawn.
-6. Highlight several rows, right-click one Vet box -> all highlighted rows
-   confirm in one press.
-7. Re-listen ON, click (left) the Vet box of a confirmed take -> whisper
-   decodes and its verdict stands, including stripping the stamp on
-   disagreement.
+3. Run Verify (quick check) over it -> report says "OK'd by you", the OK
+   survives, and the Vet box is not stamped by it.
+4. Trim the item's edge -> the OK clears itself on the next rebuild
+   (fingerprint falsified). Re-tick, rename the item -> same.
+5. Click a ticked OK box -> the mark withdraws; the Vet stamp (if any)
+   stays.
+6. Highlight several rows, tick one OK box -> all highlighted rows OK in
+   one press.
+7. Re-listen ON, click the VET box of an OK'd take -> whisper decodes and
+   its verdict stands. The OK box is its own fact and is not stripped by
+   the decode; withdraw it yourself if the decode changes your mind.
+8. Layout: the transcript column starts right of the OK box -- no overlap
+   at any window width.
