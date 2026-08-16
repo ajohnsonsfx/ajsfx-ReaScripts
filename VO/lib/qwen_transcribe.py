@@ -33,6 +33,15 @@ import time
 
 import numpy as np
 
+# stdout is a cmd.exe-redirected FILE, so CPython would fall back to the
+# legacy ANSI codepage -- a path with one accented character would then
+# crash print() itself. Force UTF-8 and never die over a log line.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 SR = 16000
 FRAME_S = 0.05      # RMS frame
 FLOOR_DB = -45.0    # below this is silence (matches the tool's Tighten floor)
@@ -77,10 +86,19 @@ def log(msg):
 
 
 def read_audio_16k(path):
-    p = subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", path, "-ac", "1", "-ar", str(SR),
-         "-f", "f32le", "-"],
-        capture_output=True, check=True)
+    try:
+        p = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", path, "-ac", "1", "-ar", str(SR),
+             "-f", "f32le", "-"],
+            capture_output=True, check=True)
+    except FileNotFoundError:
+        log("error: ffmpeg is not on PATH -- it decodes the audio for this "
+            "runner; install it or add it to PATH")
+        sys.exit(2)
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or b"").decode("utf-8", "replace").strip()
+        log(f"error: ffmpeg could not decode {path}: {detail}")
+        sys.exit(2)
     return np.frombuffer(p.stdout, dtype=np.float32)
 
 
@@ -130,12 +148,18 @@ def find_bursts(x):
         else:
             merged.append((s, e))
 
+    # Padding is clamped to HALF the real gap to each neighbour: with a full
+    # 0.25s pad on both sides, two bursts separated by a 0.4-0.5s breath
+    # would overlap and the boundary word would be decoded twice.
     pad = int(PAD_S * SR)
     out = []
-    for s, e in merged:
+    for i, (s, e) in enumerate(merged):
         if (e - s) < MIN_BURST_S * SR:
             continue
-        split_long(x, max(0, s - pad), min(len(x), e + pad), db, hop, out)
+        lpad = pad if i == 0 else min(pad, (s - merged[i - 1][1]) // 2)
+        rpad = pad if i == len(merged) - 1 \
+                   else min(pad, (merged[i + 1][0] - e) // 2)
+        split_long(x, max(0, s - lpad), min(len(x), e + rpad), db, hop, out)
     return out
 
 
@@ -161,7 +185,8 @@ def load_model(device):
 def strip_smears(items, burst_dur):
     """items: [(t0, t1, text)] local to one burst, time-ordered.
     Returns (kept, n_dropped): spill past the burst and uniform-cadence
-    runs removed."""
+    runs removed -- BOTH counted, so no word leaves without a trace."""
+    n_in = len(items)
     items = [it for it in items
              if it[0] <= burst_dur + BURST_SLACK_S]
     items = [(t0, min(t1, burst_dur + BURST_SLACK_S), tx)
@@ -193,7 +218,7 @@ def strip_smears(items, burst_dur):
         i = max(j, i + 1)
 
     kept = [it for k, it in enumerate(items) if not bad[k]]
-    return kept, (n - len(kept))
+    return kept, (n_in - len(kept))
 
 
 def run(model, x, bursts, language, context):
@@ -252,8 +277,16 @@ def main():
 
     context = ""
     if args.context_file:
-        with open(args.context_file, encoding="utf-8") as f:
-            context = f.read().strip()
+        # utf-8-sig: tolerate a BOM. A missing file is survivable -- the Lua
+        # side checks existence, but a project-change Rebuild can rewrite or
+        # remove it between that check and this read; blind decode beats a
+        # dead run.
+        try:
+            with open(args.context_file, encoding="utf-8-sig") as f:
+                context = f.read().strip()
+        except OSError as e:
+            log(f"context file unreadable, decoding blind: {e}")
+            context = ""
         if len(context) > 12000:
             log(f"context trimmed from {len(context)} to 12000 chars")
             context = context[:12000]
