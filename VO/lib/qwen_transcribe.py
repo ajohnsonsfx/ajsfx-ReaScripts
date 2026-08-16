@@ -51,6 +51,26 @@ BATCH = 8           # bursts per transcribe() call; progress between batches
 MIN_WORD_S = 0.02   # a "word" narrower than the alignment grid is collapse
                     # residue, dropped and counted
 
+# SMEAR DEFENSE (found live on ChristianBrently_Grumbar, 2026-08-15, with
+# script context on): when the decode emits text the burst's audio does not
+# hold -- context hallucination is the usual source -- the aligner has no
+# acoustics to pin it to and falls back to distributing the words EVENLY,
+# sometimes past the burst's end into neighbouring takes' time ranges. Real
+# speech is never metronomic, so uniformity IS the fingerprint: runs of
+# words with near-identical durations or near-identical start gaps are
+# alignment fiction, and anything past the burst's real length is spill.
+SMEAR_TOL_S = 0.015     # "identical" duration/gap tolerance
+SMEAR_DUR_RUN = 3       # >= this many equal-duration words (each >= 0.7s)
+# Thresholds tuned against real Grumbar failures AND real Grumbar speech:
+# a repeating actor rides the aligner's grid (4 words at a uniform 0.32s is
+# a legitimate "That is my work"), and a SLOW read has uniform near-second
+# START gaps ("Master want stone" at 0.88/0.88) -- so start-gap uniformity
+# only convicts LONG runs. Equal DURATIONS are the strong signal: real
+# aligned words vary in length; three-plus words of identical >= 0.7s
+# duration ("want stone Old book" at 1.27s x4) are alignment fiction.
+SMEAR_GAP_RUN = 6       # >= this many equal-START-gap words (gap >= 0.24s)
+BURST_SLACK_S = 0.3     # words may overhang a burst by at most this
+
 
 def log(msg):
     print(msg, flush=True)
@@ -138,8 +158,46 @@ def load_model(device):
     return model
 
 
+def strip_smears(items, burst_dur):
+    """items: [(t0, t1, text)] local to one burst, time-ordered.
+    Returns (kept, n_dropped): spill past the burst and uniform-cadence
+    runs removed."""
+    items = [it for it in items
+             if it[0] <= burst_dur + BURST_SLACK_S]
+    items = [(t0, min(t1, burst_dur + BURST_SLACK_S), tx)
+             for t0, t1, tx in items]
+    n = len(items)
+    bad = [False] * n
+
+    i = 0
+    while i < n:                     # equal-duration runs of long words
+        j = i
+        d0 = items[i][1] - items[i][0]
+        while j + 1 < n and abs((items[j + 1][1] - items[j + 1][0]) - d0) < SMEAR_TOL_S:
+            j += 1
+        if (j - i + 1) >= SMEAR_DUR_RUN and d0 >= 0.7:
+            for k in range(i, j + 1):
+                bad[k] = True
+        i = j + 1
+
+    i = 0
+    while i + 1 < n:                 # equal-gap runs
+        g0 = items[i + 1][0] - items[i][0]
+        j = i
+        while j + 1 < n and abs((items[j + 1][0] - items[j][0]) - g0) < SMEAR_TOL_S:
+            j += 1
+        run = j - i + 1
+        if run >= SMEAR_GAP_RUN and g0 >= 0.24:
+            for k in range(i, j + 1):
+                bad[k] = True
+        i = max(j, i + 1)
+
+    kept = [it for k, it in enumerate(items) if not bad[k]]
+    return kept, (n - len(kept))
+
+
 def run(model, x, bursts, language, context):
-    words, dropped = [], 0
+    words, dropped, smeared = [], 0, 0
     done = 0
     for b0 in range(0, len(bursts), BATCH):
         batch = bursts[b0:b0 + BATCH]
@@ -147,8 +205,9 @@ def run(model, x, bursts, language, context):
         results = model.transcribe(
             audio=audio, language=language, context=context,
             return_time_stamps=True)
-        for (s, _e), res in zip(batch, results):
+        for (s, e), res in zip(batch, results):
             off = s / SR
+            items = []
             for it in res.time_stamps or []:
                 text = (it.text or "").strip()
                 t0 = float(it.start_time)
@@ -158,6 +217,11 @@ def run(model, x, bursts, language, context):
                 if (t1 - t0) < MIN_WORD_S:
                     dropped += 1
                     continue
+                items.append((t0, t1, text))
+            items.sort(key=lambda it: it[0])
+            kept, n_smear = strip_smears(items, (e - s) / SR)
+            smeared += n_smear
+            for t0, t1, text in kept:
                 words.append({
                     "t0": round(off + t0, 3),
                     "t1": round(off + t1, 3),
@@ -165,7 +229,7 @@ def run(model, x, bursts, language, context):
                 })
         done += len(batch)
         log(f"progress = {int(100 * done / max(1, len(bursts)))}%")
-    return words, dropped
+    return words, dropped, smeared
 
 
 def main():
@@ -215,9 +279,11 @@ def main():
         try:
             model = load_model(device)
             t0 = time.time()
-            words, dropped = run(model, x, bursts, args.language, context)
+            words, dropped, smeared = run(model, x, bursts, args.language,
+                                          context)
             log(f"decoded + aligned in {time.time() - t0:.1f}s on {device}"
-                + (f", dropped {dropped} zero-width word(s)" if dropped else ""))
+                + (f", dropped {dropped} zero-width word(s)" if dropped else "")
+                + (f", stripped {smeared} smeared word(s)" if smeared else ""))
             doc = {
                 "engine": "qwen3-asr-1.7b+forced-aligner-0.6b",
                 "device": device,
@@ -225,6 +291,7 @@ def main():
                 "context_chars": len(context),
                 "bursts": len(bursts),
                 "dropped_zero_width": dropped,
+                "stripped_smears": smeared,
                 "words": words,
             }
             tmp = args.out + ".tmp"
