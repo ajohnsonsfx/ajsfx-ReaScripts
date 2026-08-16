@@ -6717,7 +6717,7 @@ end
 function Trim.restore_missing()
   Reload()
   local base  = Dest.names()
-  local bases = { base.selects, base.alts, base.review }
+  local bases = { base.selects, base.alts, base.review, base.outs }
 
   -- Coverage is gathered from EVERY item referencing a source, wherever it now
   -- sits: a take pulled to Selects still holds its audio, and counting only the
@@ -7385,7 +7385,7 @@ function Dest.flush_auto_sort()
   end
 
   local base  = Dest.names()
-  local bases = { base.selects, base.alts, base.review }
+  local bases = { base.selects, base.alts, base.review, base.outs }
 
   local moved, stranded = 0, 0
   core.Transaction("VO Overview: sort take onto its track", function()
@@ -7919,8 +7919,15 @@ local function MatchTakes(opts)
   for _, f in ipairs(plan.disagree) do
     local want = vo.MarkFromTrack(f.row.track_name, cfg)
     Mutate(f.row, function(e)
-      e.select = (want == "select") or nil
-      e.keep   = (want == "keep")   or nil
+      if want == "out" then
+        -- Parked on Outs: an explicit no to both, the same write every
+        -- other adopt site makes -- a rebuild must never re-infer a mark
+        -- for a take the user rejected.
+        e.select, e.keep = false, false
+      else
+        e.select = (want == "select") or nil
+        e.keep   = (want == "keep")   or nil
+      end
     end)
   end
 
@@ -9018,7 +9025,7 @@ end
 function Verify.RecordingParent(track)
   if not track then return nil end
   local base = Dest.names()
-  local bases = { base.selects, base.alts, base.review }
+  local bases = { base.selects, base.alts, base.review, base.outs }
   local tn
   local _
   _, tn = r.GetSetMediaTrackInfo_String(track, "P_NAME", "", false)
@@ -9270,6 +9277,29 @@ function Inbox.MaybeAssemble()
     s.track = s.row and s.row.track_name or nil
   end
 
+  -- A VALID OK stamp silences that item's parity findings: the human
+  -- looked at exactly this state -- marker, edges, name, words -- and
+  -- said it is right. Any later edit clears the stamp by itself and the
+  -- finding returns. Suspects already honour OK; this is the same law
+  -- extended to the watcher's queue, so "Fix from..." never nags about a
+  -- disagreement the user has explicitly blessed.
+  local blessed = {}
+  for _, row in ipairs(state.overview or {}) do
+    if row.item and row.confirmed_state == "ok" then blessed[row.item] = true end
+  end
+  local queue = {}
+  for _, q in ipairs(state.parity_queue or {}) do
+    if not blessed[q.item] then queue[#queue + 1] = q end
+  end
+  local disagree = {}
+  for _, d in ipairs(rec.disagree or {}) do
+    if not (d.row and d.row.item and blessed[d.row.item]) then
+      disagree[#disagree + 1] = d
+    end
+  end
+  -- The batch verbs act on the same filtered sets the rail lists.
+  Inbox.queue, Inbox.disagree = queue, disagree
+
   -- "Heard, not tracked" (unidentified spans) is deliberately NOT fed to
   -- the Todo list. AJ, on the real Grumbar session: the spot it points
   -- at is usually already selected and pulled -- the matcher's span
@@ -9280,8 +9310,8 @@ function Inbox.MaybeAssemble()
   -- to do. The scan itself still runs (state.unidentified feeds the
   -- summary's own counts); it just no longer nags.
   state.inbox, state.inbox_counts = vo.InboxBuild({
-    parity_queue = state.parity_queue,
-    disagree     = rec.disagree,
+    parity_queue = queue,
+    disagree     = disagree,
     no_audio     = no_audio,
     undecided    = undecided,
     suspects     = state.suspects,
@@ -9290,6 +9320,26 @@ function Inbox.MaybeAssemble()
                      unheard  = state.unheard  ~= nil },
     selects_track = cfg.track_selects or "Selects",
   })
+  -- DISPLAY ORDER IS WALK ORDER: the rail draws grouped by line, so the
+  -- list is reordered here to match -- groups keep their first-seen rank
+  -- position, a line's other findings gather behind it -- and J/K can
+  -- never hop around the screen.
+  local buckets, by_key, ordered = {}, {}, {}
+  for _, f in ipairs(state.inbox) do
+    local gkey = Inbox.Parts(f).group
+    local b = by_key[gkey]
+    if not b then
+      b = {}
+      by_key[gkey] = b
+      buckets[#buckets + 1] = b
+    end
+    b[#b + 1] = f
+  end
+  for _, b in ipairs(buckets) do
+    for _, f in ipairs(b) do ordered[#ordered + 1] = f end
+  end
+  state.inbox = ordered
+
   local n = #state.inbox
   if state.inbox_sel and state.inbox_sel > n then
     state.inbox_sel = n > 0 and n or nil
@@ -9723,7 +9773,7 @@ function Inbox.Draw(width, height)
     im.Separator(ctx)
     im.TextDisabled(ctx, "All of them:")
   end
-  local queue = state.parity_queue or {}
+  local queue = Inbox.queue or {}
   if #queue > 1 then
     BatchHeader()
     if im.SmallButton(ctx, string.format("Fix %d out of sync\226\128\166##inbboos",
@@ -9743,7 +9793,7 @@ function Inbox.Draw(width, height)
       im.EndPopup(ctx)
     end
   end
-  local dis = (state.reconcile or {}).disagree or {}
+  local dis = Inbox.disagree or {}
   if #dis > 1 then
     BatchHeader()
     if im.SmallButton(ctx, string.format("Adopt timeline for %d##inbbadopt",
