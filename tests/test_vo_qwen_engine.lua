@@ -50,6 +50,9 @@ end)
 
 test("WriteQwenContext dedupes lines and round-trips; empty removes", function()
   local cfg = { scratch_dir = "tests" }
+  -- ResolveScratchDir puts each project in its own subfolder under the
+  -- configured root, and the mock has no RecursiveCreateDirectory to make it.
+  os.execute('mkdir -p "' .. vo.ResolveScratchDir(cfg) .. '"')
   local path = vo.WriteQwenContext(cfg, {
     { text = " Master want stone. " },
     { text = "Master want stone." },      -- duplicate after trim
@@ -132,6 +135,21 @@ test("engine defaults to whisper; qwen fields present", function()
   assert(d.qwen_device == "auto")
   assert(d.qwen_python == "")
   assert(d.qwen_context == "script", "context defaults to the script")
+end)
+
+print("ResolveScratchDir:")
+
+test("an explicit scratch_dir still isolates projects from each other", function()
+  -- The context file IS that session's script, so two projects sharing one
+  -- scratch folder would decode each other's context.
+  local d = vo.ResolveScratchDir({ scratch_dir = "C:/scratch" })
+  assert(d:find("^C:/scratch/"), "must sit under the configured root: " .. d)
+  assert(d ~= "C:/scratch", "must not be the bare root")
+end)
+
+test("no scratch_dir keeps the project-folder default", function()
+  local d = vo.ResolveScratchDir({})
+  assert(d:find("vo_scratch", 1, true), "expected a vo_scratch path: " .. d)
 end)
 
 print("TranscriptBackendMeta:")

@@ -9009,9 +9009,22 @@ end
 
 -- Scratch directory for transcripts and launcher files. Prefers the configured
 -- path, then a folder beside the project, then the system temp dir.
+-- Where decode caches, run logs and the Qwen context file live.
+--
+-- With `scratch_dir` set, each project gets its OWN subfolder under it. The
+-- context file is per-project by definition -- it is that session's script --
+-- and a shared folder would also have two projects' run logs overwriting each
+-- other. Setting scratch_dir is how you get this data OFF a cloud-synced
+-- project folder: a sync client holding a handle on the folder makes the
+-- runner's atomic rename fail, which costs the whole decode.
 function vo.ResolveScratchDir(cfg)
   if cfg and cfg.scratch_dir and cfg.scratch_dir ~= "" then
-    return cfg.scratch_dir
+    local ok, proj = pcall(function()
+      return select(2, r.EnumProjects(-1, ""))
+    end)
+    local name = ok and proj and proj ~= ""
+      and proj:match("([^/\\]+)%.[Rr][Pp][Pp]$")
+    return cfg.scratch_dir .. "/" .. (name or "unsaved")
   end
 
   local ok, proj_path = pcall(function()
