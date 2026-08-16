@@ -137,6 +137,42 @@ local function DrawBackend()
   local changed
   SyncCatalogChoices()
 
+  -- Which engine writes the transcript sidecars. Verify and the audit stay
+  -- whisper either way: Qwen's LLM decoder auto-corrects flubs toward
+  -- expected text, which is the one bias a verifier must not have.
+  local ENGINES = { "whisper", "qwen" }
+  local eng_idx = (cfg.transcribe_engine == "qwen") and 2 or 1
+  local ehit
+  ehit, eng_idx = im.Combo(ctx, "Transcription engine", eng_idx - 1,
+                           "whisper (whisper.cpp)\0qwen (Qwen3-ASR + forced aligner)\0")
+  if ehit then cfg.transcribe_engine = ENGINES[eng_idx + 1] end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx,
+      "whisper: the whisper.cpp binary below; word stamps corrected by DTW\n" ..
+      "anchors where the model has a preset.\n" ..
+      "qwen: Qwen3-ASR-1.7B with its forced aligner, run from a local\n" ..
+      "python venv -- true per-word start/end times, CPU or GPU. Verify\n" ..
+      "and re-listen keep using whisper regardless.")
+  end
+  if cfg.transcribe_engine == "qwen" then
+    local DEVICES = { "auto", "cuda", "cpu" }
+    local d_idx = 1
+    for i, d in ipairs(DEVICES) do
+      if cfg.qwen_device == d then d_idx = i end
+    end
+    local dhit
+    dhit, d_idx = im.Combo(ctx, "Qwen device", d_idx - 1,
+                           "auto (try GPU, fall back)\0cuda\0cpu\0")
+    if dhit then cfg.qwen_device = DEVICES[d_idx + 1] end
+    local qready, qwhy = vo.QwenReady(cfg)
+    if qready then
+      im.TextColored(ctx, 0x66DD66FF, "Qwen venv ready")
+    else
+      im.TextColored(ctx, 0xDD6666FF, qwhy)
+    end
+    im.Spacing(ctx)
+  end
+
   changed, cfg.whisper_bin = im.InputText(ctx, "whisper-cli path", cfg.whisper_bin)
   im.SameLine(ctx)
   if im.Button(ctx, "Browse##bin") then
