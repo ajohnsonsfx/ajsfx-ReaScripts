@@ -179,5 +179,73 @@ test("two lines are planned independently", function()
   assert(renamed(plan, rows[2]) == "Bar")
 end)
 
+print("Renumber (straighten) mode:")
+
+local RN = { renumber = true }
+
+test("gaps close: a lone alt4 becomes alt1", function()
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_alt4", track_name = "Alts",    pos = 10 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG, RN)
+  assert(renamed(plan, rows[2]) == "Foo_alt1",
+         "got " .. tostring(renamed(plan, rows[2])))
+end)
+
+test("alts renumber in timeline order, outs continue after", function()
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_alt7", track_name = "Alts",    pos = 30 },
+    { name = "Foo_alt2", track_name = "Alts",    pos = 10 },
+    { name = "Foo_alt9", track_name = "Outs",    pos = 5 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG, RN)
+  assert(renamed(plan, rows[3]) == "Foo_alt1", "earlier alt should be alt1")
+  assert(renamed(plan, rows[2]) == "Foo_alt2", "later alt should be alt2")
+  assert(renamed(plan, rows[4]) == "Foo_alt3", "out continues after alts")
+end)
+
+test("already-straight names plan zero renames (idempotent)", function()
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_alt1", track_name = "Alts",    pos = 10 },
+    { name = "Foo_alt2", track_name = "Alts",    pos = 20 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG, RN)
+  assert(#plan.renames == 0, "expected no renames, got " .. #plan.renames)
+end)
+
+test("a promoted select's vacated number IS reused when straightening", function()
+  local rows = {
+    { name = "Foo_alt1", track_name = "Selects", pos = 0 },   -- promoted
+    { name = "Foo_alt2", track_name = "Alts",    pos = 10 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG, RN)
+  assert(renamed(plan, rows[1]) == "Foo", "promotion missing")
+  assert(renamed(plan, rows[2]) == "Foo_alt1",
+         "straighten should reuse the vacated number")
+end)
+
+test("an off-track holder's number is skipped, not reassigned", function()
+  local rows = {
+    { name = "Foo_alt1", track_name = "Review", pos = 0 },  -- untouchable
+    { name = "Foo_alt5", track_name = "Alts",   pos = 10 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG, RN)
+  assert(renamed(plan, rows[2]) == "Foo_alt2",
+         "must skip the untouchable alt1")
+  assert(renamed(plan, rows[1]) == nil, "renamed an off-track item")
+end)
+
+test("straighten still refuses a conflicted line", function()
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_alt1", track_name = "Selects", pos = 10 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG, RN)
+  assert(#plan.renames == 0 and #plan.conflicts == 1)
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)
