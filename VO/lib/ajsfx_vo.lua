@@ -5481,6 +5481,12 @@ function vo.BuildWhisperArgv(cfg, audio, out_prefix, span)
   return argv
 end
 
+-- Bumped whenever lib/qwen_transcribe.py's OUTPUT rules change (word
+-- filtering, burst policy, time semantics) -- it keys the transcribe cache,
+-- so old-rule results age out instead of being served as fresh.
+-- v2: smear defense (uniform-cadence and burst-overhang words stripped).
+vo.QWEN_RUNNER_VERSION = 2
+
 -- The Qwen engine's launcher. `python` is resolved by vo.QwenPython and
 -- `context_file` by the caller (vo.QwenContextPath + a FileExists check) --
 -- kept out of this function so the argv builder stays pure and testable.
@@ -9775,7 +9781,11 @@ function vo.TranscribeSources(cfg, sources, cb)
       local chash = context_file
         and tostring(vo.FileFingerprint(context_file) or "c"):sub(1, 10)
         or "none"
-      local qwen_json = prefix .. ".qwen-" .. chash .. ".json"
+      -- vo.QWEN_RUNNER_VERSION rides the cache name: a runner whose OUTPUT
+      -- rules changed (v2 added the smear filter) must never serve a cache
+      -- the old rules wrote.
+      local qwen_json = prefix .. ".qwen-v" .. tostring(vo.QWEN_RUNNER_VERSION)
+                        .. "-" .. chash .. ".json"
       local function finish_qwen()
         local f = io.open(qwen_json, "r")
         if not f then
