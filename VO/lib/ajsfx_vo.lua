@@ -5446,14 +5446,19 @@ function vo.BuildWhisperArgv(cfg, audio, out_prefix, span)
   return argv
 end
 
--- The Qwen engine's launcher. `python` is resolved by vo.QwenPython -- kept
--- out of this function so the argv builder stays pure and testable.
-function vo.BuildQwenArgv(cfg, python, audio, out_json)
+-- The Qwen engine's launcher. `python` is resolved by vo.QwenPython and
+-- `context_file` by the caller (vo.QwenContextPath + a FileExists check) --
+-- kept out of this function so the argv builder stays pure and testable.
+function vo.BuildQwenArgv(cfg, python, audio, out_json, context_file)
   cfg = cfg or {}
   local here = debug.getinfo(1, "S").source:match("@?(.*[\\/])") or ""
   local argv = { python, here .. "qwen_transcribe.py",
                  "--audio", audio, "--out", out_json,
                  "--device", cfg.qwen_device or "auto" }
+  if context_file and context_file ~= "" then
+    argv[#argv + 1] = "--context-file"
+    argv[#argv + 1] = context_file
+  end
   if cfg.whisper_language and cfg.whisper_language ~= ""
      and cfg.whisper_language ~= "en" then
     -- qwen-asr wants full names ("English"), not codes; only pass through a
@@ -5478,6 +5483,56 @@ function vo.QwenPython(cfg)
     return root .. "Resources/asr-qwen/venv/Scripts/python.exe"
   end
   return root .. "Resources/asr-qwen/venv/bin/python"
+end
+
+-- THE SCRIPT AS DECODING CONTEXT. Qwen3-ASR accepts free text that biases
+-- the decode -- fed the session's script lines, it recovers invented words
+-- and the character's broken-English register that a blind decode
+-- fluency-corrects away (verified live: blind heard "Gun." on a take AJ's
+-- ears confirm says "Can."; with the script it heard "Can."). The cost is
+-- the same pull in the other direction: a genuine mis-read can be decoded
+-- as the scripted words -- which is why Verify, re-listen and the audit
+-- NEVER use this engine or this context. Assignment reads the script;
+-- verification stays script-blind. AJ chose full-script context 2026-08-15.
+--
+-- The file lives in the scratch dir; the Overview rewrites it whenever
+-- scripts load, and the transcribe cache keys on its content hash, so an
+-- edited script re-decodes rather than serving stale-context words.
+function vo.QwenContextPath(cfg)
+  return vo.ResolveScratchDir(cfg) .. "/qwen_context.txt"
+end
+
+-- Returns the path written, or nil when there is nothing to write (the
+-- file is removed then, so a stale script cannot keep biasing decodes).
+function vo.WriteQwenContext(cfg, lines)
+  local seen, texts = {}, {}
+  for _, l in ipairs(lines or {}) do
+    local t = tostring(l.text or ""):match("^%s*(.-)%s*$")
+    if t ~= "" and not seen[t] then
+      seen[t] = true
+      texts[#texts + 1] = t
+    end
+  end
+  local path = vo.QwenContextPath(cfg)
+  if #texts == 0 then
+    os.remove(path)
+    return nil
+  end
+  local body = table.concat(texts, "\n")
+  -- Called from Rebuild, which runs on every project change: skip the write
+  -- when nothing changed, so the file's mtime stays an honest edit marker.
+  local old = io.open(path, "r")
+  if old then
+    local had = old:read("a")
+    old:close()
+    if had == body then return path end
+  end
+  vo.EnsureDir(vo.ResolveScratchDir(cfg))
+  local f = io.open(path, "w")
+  if not f then return nil end
+  f:write(body)
+  f:close()
+  return path
 end
 
 -- Readiness, cheap enough for a Settings frame: the venv python exists. A
@@ -8451,6 +8506,9 @@ vo.CONFIG_SCHEMA = {
   { key = "transcribe_engine",  kind = "string", default = "whisper" },
   { key = "qwen_device",        kind = "string", default = "auto" },
   { key = "qwen_python",        kind = "string", default = "" },
+  -- "script" feeds the loaded lines to the decode (assignment reads the
+  -- script; Verify never does); "off" decodes blind.
+  { key = "qwen_context",       kind = "string", default = "script" },
   { key = "scratch_dir",        kind = "string", default = "" },
   { key = "timeout_s",          kind = "number", default = 1800 },
   { key = "force_retranscribe", kind = "bool",   default = false },
@@ -9670,7 +9728,19 @@ function vo.TranscribeSources(cfg, sources, cb)
     -- readiness gate that FAILS the source visibly when the venv is missing,
     -- rather than quietly running whisper for a user who asked for qwen.
     if (cfg.transcribe_engine or "whisper") == "qwen" then
-      local qwen_json = prefix .. ".qwen.json"
+      -- Script context, when the Overview has written one and the config
+      -- has not turned it off. The cache name carries the context's
+      -- content hash: an edited script must re-decode, and a run with no
+      -- context must never serve a with-context cache or vice versa.
+      local context_file = nil
+      if (cfg.qwen_context or "script") ~= "off" then
+        local p = vo.QwenContextPath(cfg)
+        if vo.FileExists(p) then context_file = p end
+      end
+      local chash = context_file
+        and tostring(vo.FileFingerprint(context_file) or "c"):sub(1, 10)
+        or "none"
+      local qwen_json = prefix .. ".qwen-" .. chash .. ".json"
       local function finish_qwen()
         local f = io.open(qwen_json, "r")
         if not f then
@@ -9700,7 +9770,8 @@ function vo.TranscribeSources(cfg, sources, cb)
       end
 
       local duration = source.duration or vo.SourceDuration(source.path)
-      local argv = vo.BuildQwenArgv(cfg, python, source.path, qwen_json)
+      local argv = vo.BuildQwenArgv(cfg, python, source.path, qwen_json,
+                                    context_file)
       vo.RunWhisperAsync(cfg, argv, scratch,
         function(code, log)
           if code ~= 0 then
