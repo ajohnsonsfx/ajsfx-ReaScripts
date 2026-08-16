@@ -758,6 +758,10 @@ local function DrawOutput()
   changed, cfg.track_selects = im.InputText(ctx, "Selects track", cfg.track_selects)
   changed, cfg.track_alts    = im.InputText(ctx, "Alts track",    cfg.track_alts)
   changed, cfg.track_review  = im.InputText(ctx, "Review track",  cfg.track_review)
+  changed, cfg.track_outs    = im.InputText(ctx, "Outs track",    cfg.track_outs)
+  im.TextDisabled(ctx, "Outs is where rejected takes are parked BY HAND. Pull\n" ..
+                       "leaves them there, the sheet keeps their transcript,\n" ..
+                       "and their marks read as an explicit no.")
   im.Spacing(ctx)
   changed, cfg.review_prefix    = im.InputText(ctx, "Review prefix",    cfg.review_prefix)
   changed, cfg.unmatched_prefix = im.InputText(ctx, "Unmatched prefix", cfg.unmatched_prefix)

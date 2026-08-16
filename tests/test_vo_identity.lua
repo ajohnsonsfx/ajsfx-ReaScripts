@@ -106,6 +106,20 @@ test("the Review track sets no mark", function()
   assert(vo.MarkFromTrack("Review", {}) == nil)
 end)
 
+test("the Outs track marks a take as out -- an explicit rejection", function()
+  -- Out is a DECISION, unlike Review: the user parked the take there.
+  assert(vo.MarkFromTrack("Outs", {}) == "out")
+  local cfg = { track_outs = "REJECTS" }
+  assert(vo.MarkFromTrack("REJECTS", cfg) == "out")
+  assert(vo.MarkFromTrack("Outs", cfg) == nil, "default name still matched")
+end)
+
+test("effective marks on the Outs track read as unticked, not re-ticked", function()
+  local m = vo.EffectiveMarks(nil, "Outs", {})
+  assert(m.select == false and m.keep == false,
+    "an out take must not inherit any mark from its track")
+end)
+
 test("an unrelated or missing track sets no mark", function()
   assert(vo.MarkFromTrack("Grumbar REC", {}) == nil)
   assert(vo.MarkFromTrack("", {}) == nil)
