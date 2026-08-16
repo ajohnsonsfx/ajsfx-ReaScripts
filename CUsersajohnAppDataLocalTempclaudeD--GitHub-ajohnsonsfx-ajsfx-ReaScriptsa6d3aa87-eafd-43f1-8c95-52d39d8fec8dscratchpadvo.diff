@@ -1,0 +1,469 @@
+diff --git a/VO/lib/ajsfx_vo.lua b/VO/lib/ajsfx_vo.lua
+index 079adc4..8961fde 100644
+--- a/VO/lib/ajsfx_vo.lua
++++ b/VO/lib/ajsfx_vo.lua
+@@ -1694,6 +1694,29 @@ function vo.ParseWhisperJSON(text)
+   return words
+ end
+ 
++-- Parse the JSON written by lib/qwen_transcribe.py (the Qwen3-ASR engine).
++--
++-- Same word shape as vo.ParseWhisperJSON, and the reason the rest of the
++-- tool never asks which engine made a sidecar: { t0, t1, text, anchor }.
++-- Qwen's forced aligner emits TRUE per-word times, so the anchor IS t0 --
++-- there is no displaced window to correct, which is the point of the engine
++-- (SPEC: docs/superpowers/specs/2026-08-15-qwen-transcription-engine.md).
++-- Returns the words plus the run's metadata (engine, device, language).
++function vo.ParseQwenJSON(text)
++  local doc = type(text) == "string" and json_decode(text) or nil
++  if type(doc) ~= "table" or type(doc.words) ~= "table" then return {} end
++  local words = {}
++  for _, w in ipairs(doc.words) do
++    local t0, t1 = tonumber(w.t0), tonumber(w.t1)
++    local word = trim(w.text or "")
++    if t0 and t1 and word ~= "" then
++      words[#words + 1] = { t0 = t0, t1 = t1, text = word, anchor = t0 }
++    end
++  end
++  return words, { engine = doc.engine, device = doc.device,
++                  language = doc.language }
++end
++
+ -- Longest stretch of `words` that is one short phrase repeated back to back.
+ --
+ -- This is the signature of a whisper decoder that has fallen into a repetition
+@@ -1811,6 +1834,10 @@ function vo.MarkFromTrack(track_name, cfg)
+   local name = fold(track_name)
+   if name == fold(cfg.track_selects or "Selects") then return "select" end
+   if name == fold(cfg.track_alts    or "Alts")    then return "keep"   end
++  -- Out is a DECISION, unlike Review: the user parked the take there.
++  -- Pull leaves it alone, the sheet keeps its row and transcript, and the
++  -- marks read as an explicit no to both Sel and Keep.
++  if name == fold(cfg.track_outs    or "Outs")    then return "out"    end
+   return nil
+ end
+ 
+@@ -3238,6 +3265,166 @@ function vo.PlanReconcile(rows, cfg)
+   return plan
+ end
+ 
++--------------------------------
++-- Pure layer: names follow the tracks
++--------------------------------
++
++-- THE TRACK DECIDES THE ROLE; THE BASE STILL NAMES THE LINE.
++--
++-- An amendment to "the name is the assignment", made when dragging items
++-- between the role tracks turned out to be how takes actually get re-decided:
++-- the BASE of a take's name still says which line it is (that part never
++-- follows a drag), but plain-versus-alt is a ROLE, and the role belongs to
++-- the track the item sits on. This plans the renames that make the names
++-- agree with the tracks -- the exact inverse of vo.PlanPull, which moves
++-- items to agree with their names.
++--
++-- Per base, among items on the role tracks (Selects/Alts/Outs):
++--   the one on Selects gets the plain base name; everything else gets a
++--   numbered alt name, keeping an alt number it already holds. Items OFF the
++--   role tracks (recording, Review) are never renamed, and the numbers they
++--   hold are never reassigned.
++--
++-- Two situations are conflicts, reported and left alone rather than guessed:
++--   two or more items on Selects claiming one base, and a promotion whose
++--   plain name is held by an item this planner is not allowed to touch.
++--
++-- `rows` are { name = <take name>, track_name = <track name> }; extra fields
++-- ride along untouched, so a caller can hand in richer rows and read its own
++-- fields back off plan.renames[i].row. `known_bases` is a set of delivered
++-- line names: a name whose base answers to no line is NOT renamed -- a stray
++-- item parked on Alts is not evidence it belongs to the session. nil plans
++-- nothing, so a caller that failed to load lines cannot mass-rename.
++--
++-- `opts.renumber` is the STRAIGHTEN pass, explicitly stronger: instead of
++-- keeping any unique alt number a take already holds, every line's alts are
++-- renumbered compactly from alt_append_start in `row.pos` order (Alts-track
++-- takes first, then Outs), so a session of swaps and demotions reads
++-- _alt1.._altN again with no gaps. Numbers held by rows off the role tracks
++-- are still skipped -- this pass may not rename those, so it may not hand
++-- their number to someone else either. The default (no renumber) stays
++-- conservative on purpose: it is what the drag-follow sweep runs, and a
++-- number you have seen must never quietly become a different take.
++function vo.PlanRoleNames(rows, known_bases, cfg, opts)
++  opts = opts or {}
++  cfg = cfg or {}
++  local pattern = cfg.alt_append_pattern or "_alt{n}"
++  local digits  = math.floor(cfg.alt_append_digits or 1)
++  local start   = math.floor(cfg.alt_append_start or 1)
++
++  -- The alt pattern as a number extractor: "_alt{n}" pulls 3 out of
++  -- "Foo_alt3". Same escaping as vo.StripAltSuffix, capturing the number.
++  local esc = pattern:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")
++  local num_matcher = "^.-" .. esc:gsub("{n}", "(%%d+)") .. "$"
++
++  local groups, order = {}, {}
++  for _, row in ipairs(rows or {}) do
++    local nm = row.name
++    if type(nm) == "string" and nm ~= "" then
++      local base = vo.StripAltSuffix(nm, pattern) or nm
++      local g = groups[base]
++      if not g then g = {}; groups[base] = g; order[#order + 1] = base end
++      g[#g + 1] = row
++    end
++  end
++  table.sort(order)
++
++  local plan = { renames = {}, conflicts = {} }
++  for _, base in ipairs(order) do
++    if known_bases and known_bases[base] then
++      local g = groups[base]
++      local sel, n_sel = nil, 0
++      local role_of = {}
++      for _, row in ipairs(g) do
++        local role = vo.MarkFromTrack(row.track_name, cfg)
++        role_of[row] = role
++        if role == "select" then
++          n_sel = n_sel + 1
++          sel = sel or row
++        end
++      end
++
++      if n_sel > 1 then
++        plan.conflicts[#plan.conflicts + 1] = { base = base,
++          detail = n_sel .. " items on the Selects track claim " .. base }
++      else
++        -- Claim numbers in two passes so an untouched row's number is never
++        -- handed to a renumbered one: first the rows this planner may not
++        -- rename, then the role rows that keep a uniquely-held alt name.
++        local used, needs, blocked = {}, {}, nil
++        -- A promoted select's OLD number stays claimed: handing a name that
++        -- existed a moment ago to a different take would quietly swap what
++        -- "Foo_alt1" means to anything outside this project. The straighten
++        -- pass drops this guard knowingly -- renumbering is what was asked.
++        if sel and not opts.renumber then
++          local n = tonumber(sel.name:match(num_matcher) or "")
++          if n then used[n] = true end
++        end
++        for _, row in ipairs(g) do
++          if row ~= sel and role_of[row] == nil then
++            if row.name == base then blocked = true end
++            local n = tonumber(row.name:match(num_matcher) or "")
++            if n then used[n] = true end
++          end
++        end
++        if opts.renumber then
++          -- Straighten: every keep/out row gets renumbered, in pos order,
++          -- keeps before outs -- only off-track holders keep their numbers.
++          local order_rows = {}
++          for _, row in ipairs(g) do
++            if row ~= sel
++               and (role_of[row] == "keep" or role_of[row] == "out") then
++              order_rows[#order_rows + 1] = row
++            end
++          end
++          table.sort(order_rows, function(a, b)
++            local ka = (role_of[a] == "out") and 1 or 0
++            local kb = (role_of[b] == "out") and 1 or 0
++            if ka ~= kb then return ka < kb end
++            return (a.pos or 0) < (b.pos or 0)
++          end)
++          needs = order_rows
++        else
++          for _, row in ipairs(g) do
++            if row ~= sel
++               and (role_of[row] == "keep" or role_of[row] == "out") then
++              if row.name == base then
++                needs[#needs + 1] = row     -- demoted: the plain name is the select's
++              else
++                local n = tonumber(row.name:match(num_matcher) or "")
++                if n and not used[n] then used[n] = true
++                else needs[#needs + 1] = row end  -- duplicate alt number
++              end
++            end
++          end
++        end
++
++        if sel and sel.name ~= base and blocked then
++          plan.conflicts[#plan.conflicts + 1] = { base = base,
++            detail = base .. " is already held by an item off the role tracks" }
++        else
++          local n = start
++          for _, row in ipairs(needs) do
++            while used[n] do n = n + 1 end
++            used[n] = true
++            local want = vo.SanitizeName(base ..
++              vo.FormatAltAppend(pattern, n, digits))
++            -- A row already wearing its target name is not a rename; the
++            -- straighten pass hands most rows the name they hold.
++            if want ~= row.name then
++              plan.renames[#plan.renames + 1] = { row = row, name = want }
++            end
++          end
++          if sel and sel.name ~= base then
++            plan.renames[#plan.renames + 1] = { row = sel, name = base }
++          end
++        end
++      end
++    end
++  end
++  return plan
++end
++
+ --------------------------------
+ -- Pure layer: transcript gap repair
+ --------------------------------
+@@ -3375,6 +3562,13 @@ vo.DEFAULTS = {
+   -- reversible bookkeeping, and this one rearranges audio.
+   auto_sort_marks = false,
+ 
++  -- The other direction: drag an item onto Selects/Alts/Outs and its NAME
++  -- follows the drop -- promoted to the plain delivered name, demoted to a
++  -- numbered alt (vo.PlanRoleNames). On by default because a drag the tool
++  -- ignores is how names and tracks drift apart. It only renames: edges,
++  -- positions and trims are never touched.
++  names_follow_tracks = true,
++
+   -- Sequence. A session is read roughly in script order, and that is the only
+   -- evidence there is for placing a line too short to identify itself.
+   order_weight         = 0.15,  -- score moved by reading in, or out of, order
+@@ -5287,6 +5481,114 @@ function vo.BuildWhisperArgv(cfg, audio, out_prefix, span)
+   return argv
+ end
+ 
++-- Bumped whenever lib/qwen_transcribe.py's OUTPUT rules change (word
++-- filtering, burst policy, time semantics) -- it keys the transcribe cache,
++-- so old-rule results age out instead of being served as fresh.
++-- v2: smear defense (uniform-cadence and burst-overhang words stripped).
++vo.QWEN_RUNNER_VERSION = 2
++
++-- The Qwen engine's launcher. `python` is resolved by vo.QwenPython and
++-- `context_file` by the caller (vo.QwenContextPath + a FileExists check) --
++-- kept out of this function so the argv builder stays pure and testable.
++function vo.BuildQwenArgv(cfg, python, audio, out_json, context_file)
++  cfg = cfg or {}
++  local here = debug.getinfo(1, "S").source:match("@?(.*[\\/])") or ""
++  local argv = { python, here .. "qwen_transcribe.py",
++                 "--audio", audio, "--out", out_json,
++                 "--device", cfg.qwen_device or "auto" }
++  if context_file and context_file ~= "" then
++    argv[#argv + 1] = "--context-file"
++    argv[#argv + 1] = context_file
++  end
++  if cfg.whisper_language and cfg.whisper_language ~= ""
++     and cfg.whisper_language ~= "en" then
++    -- qwen-asr wants full names ("English"), not codes; only pass through a
++    -- value the user set to something qwen can hold, else its default.
++    argv[#argv + 1] = "--language"
++    argv[#argv + 1] = cfg.whisper_language
++  end
++  return argv
++end
++
++-- Where the Qwen venv's python lives. An explicit cfg.qwen_python always
++-- wins; otherwise the dev-layout path relative to this lib
++-- (<repo>/Resources/asr-qwen/venv). No hardcoded repo name -- same
++-- debug.getinfo resolution the PVX venv uses.
++function vo.QwenPython(cfg)
++  cfg = cfg or {}
++  if cfg.qwen_python and cfg.qwen_python ~= "" then return cfg.qwen_python end
++  local here = debug.getinfo(1, "S").source:match("@?(.*[\\/])")
++  if not here then return nil end
++  local root = here .. "../../"
++  if vo.IsWindows() then
++    return root .. "Resources/asr-qwen/venv/Scripts/python.exe"
++  end
++  return root .. "Resources/asr-qwen/venv/bin/python"
++end
++
++-- THE SCRIPT AS DECODING CONTEXT. Qwen3-ASR accepts free text that biases
++-- the decode -- fed the session's script lines, it recovers invented words
++-- and the character's broken-English register that a blind decode
++-- fluency-corrects away (verified live: blind heard "Gun." on a take AJ's
++-- ears confirm says "Can."; with the script it heard "Can."). The cost is
++-- the same pull in the other direction: a genuine mis-read can be decoded
++-- as the scripted words -- which is why Verify, re-listen and the audit
++-- NEVER use this engine or this context. Assignment reads the script;
++-- verification stays script-blind. AJ chose full-script context 2026-08-15.
++--
++-- The file lives in the scratch dir; the Overview rewrites it whenever
++-- scripts load, and the transcribe cache keys on its content hash, so an
++-- edited script re-decodes rather than serving stale-context words.
++function vo.QwenContextPath(cfg)
++  return vo.ResolveScratchDir(cfg) .. "/qwen_context.txt"
++end
++
++-- Returns the path written, or nil when there is nothing to write (the
++-- file is removed then, so a stale script cannot keep biasing decodes).
++function vo.WriteQwenContext(cfg, lines)
++  local seen, texts = {}, {}
++  for _, l in ipairs(lines or {}) do
++    local t = tostring(l.text or ""):match("^%s*(.-)%s*$")
++    if t ~= "" and not seen[t] then
++      seen[t] = true
++      texts[#texts + 1] = t
++    end
++  end
++  local path = vo.QwenContextPath(cfg)
++  if #texts == 0 then
++    os.remove(path)
++    return nil
++  end
++  local body = table.concat(texts, "\n")
++  -- Called from Rebuild, which runs on every project change: skip the write
++  -- when nothing changed, so the file's mtime stays an honest edit marker.
++  local old = io.open(path, "r")
++  if old then
++    local had = old:read("a")
++    old:close()
++    if had == body then return path end
++  end
++  vo.EnsureDir(vo.ResolveScratchDir(cfg))
++  local f = io.open(path, "w")
++  if not f then return nil end
++  f:write(body)
++  f:close()
++  return path
++end
++
++-- Readiness, cheap enough for a Settings frame: the venv python exists. A
++-- missing package inside it still fails at run time with the log tail as
++-- the message -- honest, just later.
++function vo.QwenReady(cfg)
++  local py = vo.QwenPython(cfg)
++  if not py then return false, "Could not resolve the qwen venv path." end
++  if not vo.FileExists(py) then
++    return false, "No python at " .. py ..
++      " -- create the venv and `pip install qwen-asr torch`."
++  end
++  return true, py
++end
++
+ --------------------------------
+ -- Pure layer: backend acquisition catalogs
+ --------------------------------
+@@ -8239,6 +8541,15 @@ vo.CONFIG_SCHEMA = {
+   { key = "whisper_model",      kind = "string", default = "" },
+   { key = "whisper_threads",    kind = "number", default = 4 },
+   { key = "whisper_language",   kind = "string", default = "en" },
++  -- Which engine writes the SIDECAR. Verify and the audit deliberately stay
++  -- whisper regardless (an LLM decoder auto-corrects flubs -- the one bias a
++  -- verifier must not have). "qwen" needs the asr-qwen venv (vo.QwenReady).
++  { key = "transcribe_engine",  kind = "string", default = "whisper" },
++  { key = "qwen_device",        kind = "string", default = "auto" },
++  { key = "qwen_python",        kind = "string", default = "" },
++  -- "script" feeds the loaded lines to the decode (assignment reads the
++  -- script; Verify never does); "off" decodes blind.
++  { key = "qwen_context",       kind = "string", default = "script" },
+   { key = "scratch_dir",        kind = "string", default = "" },
+   { key = "timeout_s",          kind = "number", default = 1800 },
+   { key = "force_retranscribe", kind = "bool",   default = false },
+@@ -8249,6 +8560,7 @@ vo.CONFIG_SCHEMA = {
+   { key = "anchor_count",       kind = "number", default = vo.DEFAULTS.anchor_count },
+   { key = "auto_select_take",    kind = "string", default = vo.DEFAULTS.auto_select_take },
+   { key = "auto_sort_marks",     kind = "bool",   default = vo.DEFAULTS.auto_sort_marks },
++  { key = "names_follow_tracks", kind = "bool",   default = vo.DEFAULTS.names_follow_tracks },
+   { key = "order_weight",        kind = "number", default = vo.DEFAULTS.order_weight },
+   { key = "backbone_min_tokens", kind = "number", default = vo.DEFAULTS.backbone_min_tokens },
+   { key = "pre_pad",            kind = "number", default = vo.DEFAULTS.pre_pad },
+@@ -8285,6 +8597,7 @@ vo.CONFIG_SCHEMA = {
+   { key = "track_selects",      kind = "string", default = "Selects" },
+   { key = "track_alts",         kind = "string", default = "Alts" },
+   { key = "track_review",       kind = "string", default = "Review" },
++  { key = "track_outs",         kind = "string", default = "Outs" },
+   -- The alt naming convention. Not bounded here: vo.PlanAltNames floors and
+   -- clamps its own inputs, so a hand-edited ExtState cannot break a run.
+   { key = "alt_append_pattern", kind = "string", default = "_alt{n}" },
+@@ -8610,6 +8923,13 @@ end
+ -- Checked before any project mutation so a misconfigured backend can never
+ -- leave a half-cut session behind.
+ function vo.IsBackendReady(cfg)
++  -- The gate answers for the engine that will actually run. Verify and the
++  -- audit still shell out to whisper directly, but every readiness question
++  -- a TRANSCRIBE button asks routes here -- with engine=qwen, whisper being
++  -- missing must not block, and the qwen venv being missing must.
++  if cfg and (cfg.transcribe_engine or "whisper") == "qwen" then
++    return vo.QwenReady(cfg)
++  end
+   local bin = cfg and cfg.whisper_bin or ""
+   if bin == "" then
+     return false, "No whisper-cli path is set. Open ajsfx VO Settings."
+@@ -9441,6 +9761,81 @@ function vo.TranscribeSources(cfg, sources, cb)
+     local prefix    = scratch .. "/" .. key
+     local json_path = prefix .. ".json"
+ 
++    -- THE QWEN ENGINE (spec 2026-08-15-qwen-transcription-engine.md): same
++    -- orchestration, three deliberate differences. Its own cache file, so
++    -- switching engines can never serve the other engine's words. No gap
++    -- repair -- that pass exists to mend whisper's swallowed windows with
++    -- whisper re-runs, and the unheard scan still guards real holes. And a
++    -- readiness gate that FAILS the source visibly when the venv is missing,
++    -- rather than quietly running whisper for a user who asked for qwen.
++    if (cfg.transcribe_engine or "whisper") == "qwen" then
++      -- Script context, when the Overview has written one and the config
++      -- has not turned it off. The cache name carries the context's
++      -- content hash: an edited script must re-decode, and a run with no
++      -- context must never serve a with-context cache or vice versa.
++      local context_file = nil
++      if (cfg.qwen_context or "script") ~= "off" then
++        local p = vo.QwenContextPath(cfg)
++        if vo.FileExists(p) then context_file = p end
++      end
++      local chash = context_file
++        and tostring(vo.FileFingerprint(context_file) or "c"):sub(1, 10)
++        or "none"
++      -- vo.QWEN_RUNNER_VERSION rides the cache name: a runner whose OUTPUT
++      -- rules changed (v2 added the smear filter) must never serve a cache
++      -- the old rules wrote.
++      local qwen_json = prefix .. ".qwen-v" .. tostring(vo.QWEN_RUNNER_VERSION)
++                        .. "-" .. chash .. ".json"
++      local function finish_qwen()
++        local f = io.open(qwen_json, "r")
++        if not f then
++          fail(source, "qwen runner reported success but wrote no JSON:\n"
++                       .. qwen_json)
++          step()
++          return
++        end
++        local words = vo.ParseQwenJSON(f:read("a"))
++        f:close()
++        finish(source, words, nil)
++        step()
++      end
++
++      if not cfg.force_retranscribe and vo.FileExists(qwen_json) then
++        finish_qwen()
++        return
++      end
++
++      -- vo.QwenReady's second return is the python path on success, the
++      -- reason on failure.
++      local ready, python = vo.QwenReady(cfg)
++      if not ready then
++        fail(source, python)
++        step()
++        return
++      end
++
++      local duration = source.duration or vo.SourceDuration(source.path)
++      local argv = vo.BuildQwenArgv(cfg, python, source.path, qwen_json,
++                                    context_file)
++      vo.RunWhisperAsync(cfg, argv, scratch,
++        function(code, log)
++          if code ~= 0 then
++            fail(source, string.format("qwen runner exited with code %d\n\n%s",
++                                       code, vo.LogTailForError(log, 1500)))
++            step()
++            return
++          end
++          finish_qwen()
++        end,
++        cb.on_cancel,
++        function(err) fail(source, err); step() end,
++        { duration = duration,
++          on_progress = cb.on_progress and function(info)
++            cb.on_progress(source.path, index, #sources, info)
++          end or nil })
++      return
++    end
++
+     -- The raw whisper JSON is what is cached; repair happens on the way out on
+     -- both paths, so a cache hit gets the same mended transcript a fresh run
+     -- would. An old .csv beside the wav is NOT a cache hit: it has no anchors,

@@ -5586,6 +5586,31 @@ function vo.QwenReady(cfg)
     return false, "No python at " .. py ..
       " -- create the venv and `pip install qwen-asr torch`."
   end
+  -- Cancel and timeout kill the runner BY IMAGE NAME (vo.RunWhisperAsync's
+  -- kill path), and "python.exe" would take every python on the machine
+  -- with it -- render tools included. A one-time copy beside the venv
+  -- python gives taskkill a name only this runner wears; a venv launcher
+  -- finds pyvenv.cfg by its own location, so the copy runs identically.
+  -- If the copy cannot be made, fall back to the shared name: the run
+  -- matters more than kill precision. Review find, 2026-08-16.
+  if vo.IsWindows() then
+    local killable = py:gsub("python%.exe$", "ajsfx-qwen-python.exe")
+    if killable ~= py then
+      if not vo.FileExists(killable) then
+        local src = io.open(py, "rb")
+        if src then
+          local blob = src:read("a")
+          src:close()
+          local dst = io.open(killable, "wb")
+          if dst then
+            dst:write(blob)
+            dst:close()
+          end
+        end
+      end
+      if vo.FileExists(killable) then return true, killable end
+    end
+  end
   return true, py
 end
 
