@@ -3243,6 +3243,131 @@ function vo.PlanReconcile(rows, cfg)
 end
 
 --------------------------------
+-- Pure layer: names follow the tracks
+--------------------------------
+
+-- THE TRACK DECIDES THE ROLE; THE BASE STILL NAMES THE LINE.
+--
+-- An amendment to "the name is the assignment", made when dragging items
+-- between the role tracks turned out to be how takes actually get re-decided:
+-- the BASE of a take's name still says which line it is (that part never
+-- follows a drag), but plain-versus-alt is a ROLE, and the role belongs to
+-- the track the item sits on. This plans the renames that make the names
+-- agree with the tracks -- the exact inverse of vo.PlanPull, which moves
+-- items to agree with their names.
+--
+-- Per base, among items on the role tracks (Selects/Alts/Outs):
+--   the one on Selects gets the plain base name; everything else gets a
+--   numbered alt name, keeping an alt number it already holds. Items OFF the
+--   role tracks (recording, Review) are never renamed, and the numbers they
+--   hold are never reassigned.
+--
+-- Two situations are conflicts, reported and left alone rather than guessed:
+--   two or more items on Selects claiming one base, and a promotion whose
+--   plain name is held by an item this planner is not allowed to touch.
+--
+-- `rows` are { name = <take name>, track_name = <track name> }; extra fields
+-- ride along untouched, so a caller can hand in richer rows and read its own
+-- fields back off plan.renames[i].row. `known_bases` is a set of delivered
+-- line names: a name whose base answers to no line is NOT renamed -- a stray
+-- item parked on Alts is not evidence it belongs to the session. nil plans
+-- nothing, so a caller that failed to load lines cannot mass-rename.
+function vo.PlanRoleNames(rows, known_bases, cfg)
+  cfg = cfg or {}
+  local pattern = cfg.alt_append_pattern or "_alt{n}"
+  local digits  = math.floor(cfg.alt_append_digits or 1)
+  local start   = math.floor(cfg.alt_append_start or 1)
+
+  -- The alt pattern as a number extractor: "_alt{n}" pulls 3 out of
+  -- "Foo_alt3". Same escaping as vo.StripAltSuffix, capturing the number.
+  local esc = pattern:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")
+  local num_matcher = "^.-" .. esc:gsub("{n}", "(%%d+)") .. "$"
+
+  local groups, order = {}, {}
+  for _, row in ipairs(rows or {}) do
+    local nm = row.name
+    if type(nm) == "string" and nm ~= "" then
+      local base = vo.StripAltSuffix(nm, pattern) or nm
+      local g = groups[base]
+      if not g then g = {}; groups[base] = g; order[#order + 1] = base end
+      g[#g + 1] = row
+    end
+  end
+  table.sort(order)
+
+  local plan = { renames = {}, conflicts = {} }
+  for _, base in ipairs(order) do
+    if known_bases and known_bases[base] then
+      local g = groups[base]
+      local sel, n_sel = nil, 0
+      local role_of = {}
+      for _, row in ipairs(g) do
+        local role = vo.MarkFromTrack(row.track_name, cfg)
+        role_of[row] = role
+        if role == "select" then
+          n_sel = n_sel + 1
+          sel = sel or row
+        end
+      end
+
+      if n_sel > 1 then
+        plan.conflicts[#plan.conflicts + 1] = { base = base,
+          detail = n_sel .. " items on the Selects track claim " .. base }
+      else
+        -- Claim numbers in two passes so an untouched row's number is never
+        -- handed to a renumbered one: first the rows this planner may not
+        -- rename, then the role rows that keep a uniquely-held alt name.
+        local used, needs, blocked = {}, {}, nil
+        -- A promoted select's OLD number stays claimed: handing a name that
+        -- existed a moment ago to a different take would quietly swap what
+        -- "Foo_alt1" means to anything outside this project.
+        if sel then
+          local n = tonumber(sel.name:match(num_matcher) or "")
+          if n then used[n] = true end
+        end
+        for _, row in ipairs(g) do
+          if row ~= sel and role_of[row] == nil then
+            if row.name == base then blocked = true end
+            local n = tonumber(row.name:match(num_matcher) or "")
+            if n then used[n] = true end
+          end
+        end
+        for _, row in ipairs(g) do
+          if row ~= sel
+             and (role_of[row] == "keep" or role_of[row] == "out") then
+            if row.name == base then
+              needs[#needs + 1] = row       -- demoted: the plain name is the select's
+            else
+              local n = tonumber(row.name:match(num_matcher) or "")
+              if n and not used[n] then used[n] = true
+              else needs[#needs + 1] = row end  -- duplicate alt number
+            end
+          end
+        end
+
+        if sel and sel.name ~= base and blocked then
+          plan.conflicts[#plan.conflicts + 1] = { base = base,
+            detail = base .. " is already held by an item off the role tracks" }
+        else
+          local n = start
+          for _, row in ipairs(needs) do
+            while used[n] do n = n + 1 end
+            used[n] = true
+            plan.renames[#plan.renames + 1] = { row = row,
+              name = vo.SanitizeName(base ..
+                vo.FormatAltAppend(pattern, n, digits)) }
+          end
+          if sel and sel.name ~= base then
+            plan.renames[#plan.renames + 1] = { row = sel, name = base }
+          end
+        end
+      end
+    end
+  end
+  return plan
+end
+
+--------------------------------
 -- Pure layer: transcript gap repair
 --------------------------------
 
@@ -3378,6 +3503,13 @@ vo.DEFAULTS = {
   -- waiting for a Pull. Off by default: everything else a tick does is
   -- reversible bookkeeping, and this one rearranges audio.
   auto_sort_marks = false,
+
+  -- The other direction: drag an item onto Selects/Alts/Outs and its NAME
+  -- follows the drop -- promoted to the plain delivered name, demoted to a
+  -- numbered alt (vo.PlanRoleNames). On by default because a drag the tool
+  -- ignores is how names and tracks drift apart. It only renames: edges,
+  -- positions and trims are never touched.
+  names_follow_tracks = true,
 
   -- Sequence. A session is read roughly in script order, and that is the only
   -- evidence there is for placing a line too short to identify itself.
@@ -8253,6 +8385,7 @@ vo.CONFIG_SCHEMA = {
   { key = "anchor_count",       kind = "number", default = vo.DEFAULTS.anchor_count },
   { key = "auto_select_take",    kind = "string", default = vo.DEFAULTS.auto_select_take },
   { key = "auto_sort_marks",     kind = "bool",   default = vo.DEFAULTS.auto_sort_marks },
+  { key = "names_follow_tracks", kind = "bool",   default = vo.DEFAULTS.names_follow_tracks },
   { key = "order_weight",        kind = "number", default = vo.DEFAULTS.order_weight },
   { key = "backbone_min_tokens", kind = "number", default = vo.DEFAULTS.backbone_min_tokens },
   { key = "pre_pad",            kind = "number", default = vo.DEFAULTS.pre_pad },
