@@ -934,8 +934,18 @@ end
 -- line's delivered name. It is how two takes of one line can be delivered under
 -- different names: the Append belongs to the line and would rename the select
 -- as well as the alt.
-function vo.PlanPull(items, lines, marks)
+-- `opts.lone_take_is_select` decides what happens to a line that has exactly one
+-- take and no tick. It used to be unconditionally true -- "a lone item IS the
+-- delivery" -- which is right for a folder of rendered files carrying no ticks
+-- at all, and wrong for the workflow where the first Pull is supposed to park
+-- EVERYTHING on Review for the ears to sort. On a session where most lines were
+-- read once, that shortcut delivered nearly the whole session unheard, and
+-- clearing the ticks could not stop it. Default false: a tick is the only thing
+-- that promotes a take, and nothing arrives on Selects because it was lonely.
+function vo.PlanPull(items, lines, marks, opts)
   marks = marks or {}
+  opts  = opts or {}
+  local lone_is_select = opts.lone_take_is_select == true
   local index = vo.BuildNameIndex(lines)
 
   local groups, order = {}, {}
@@ -963,10 +973,10 @@ function vo.PlanPull(items, lines, marks)
     local line    = lines[at] or {}
     local deliver = line.deliver or line.asset
 
-    -- One take is not a decision: a lone item IS the delivery, whether or not
-    -- anybody ticked it, and a folder of rendered files carries no ticks at
-    -- all. Everything else follows the two ticks.
-    if #group == 1 and not marks[group[1].id] then
+    -- A lone item can be treated as the delivery whether or not anybody ticked
+    -- it -- true for a folder of rendered files, which carries no ticks at all.
+    -- Off by default now; see the note on opts.lone_take_is_select.
+    if lone_is_select and #group == 1 and not marks[group[1].id] then
       moves[#moves + 1] = { id = group[1].id, line = at,
                             dest = "selects", rename = group[1].override or deliver }
       summary.selects = summary.selects + 1
@@ -8623,6 +8633,10 @@ vo.CONFIG_SCHEMA = {
   { key = "track_alts",         kind = "string", default = "Alts" },
   { key = "track_review",       kind = "string", default = "Review" },
   { key = "track_outs",         kind = "string", default = "Outs" },
+  -- Does a line's ONLY take reach Selects without a tick? Off: the first Pull
+  -- parks every identified read on Review and a tick is the only promotion.
+  -- On restores the rendered-folder behaviour, where nothing is ticked at all.
+  { key = "pull_lone_take_to_selects", kind = "bool", default = false },
   -- The alt naming convention. Not bounded here: vo.PlanAltNames floors and
   -- clamps its own inputs, so a hand-edited ExtState cannot break a run.
   { key = "alt_append_pattern", kind = "string", default = "_alt{n}" },

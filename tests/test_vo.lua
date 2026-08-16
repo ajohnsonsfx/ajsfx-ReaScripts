@@ -500,13 +500,33 @@ local function dest_of(moves, id)
   return nil
 end
 
-test("one item for a line is the delivery without being marked", function()
-  -- One take is not a decision. Requiring a mark here would make Pull useless
-  -- on a folder of rendered files, which is half of what it is for.
+test("an unticked lone take waits on review like everything else", function()
+  -- The default: nothing reaches Selects because it happened to be the only
+  -- read of its line. On a session where most lines were read once, the old
+  -- shortcut delivered almost everything unheard.
   local moves, n = vo.PlanPull(pull_items("line_042"), name_lines("line_042"), {})
+  assert(#moves == 1 and moves[1].dest == "review", "Got " .. tostring(moves[1].dest))
+  assert(n.review == 1, "counted")
+end)
+
+test("lone_take_is_select restores the rendered-folder behaviour", function()
+  -- Pull over a folder of already-rendered files carries no ticks at all, so
+  -- the shortcut stays available -- it just has to be asked for.
+  local moves, n = vo.PlanPull(pull_items("line_042"), name_lines("line_042"), {},
+                               { lone_take_is_select = true })
   assert(#moves == 1 and moves[1].dest == "selects", "Got " .. tostring(moves[1].dest))
   assert(moves[1].rename == "line_042", "renamed to the delivered name")
   assert(n.selects == 1, "counted")
+end)
+
+test("a tick still outranks the default, both ways", function()
+  local sel = vo.PlanPull(pull_items("line_042"), name_lines("line_042"),
+                          { [1] = "select" })
+  assert(dest_of(sel, 1) == "selects", "an explicit Sel must still deliver")
+  local keep = vo.PlanPull(pull_items("line_042"), name_lines("line_042"),
+                           { [1] = "keep" }, { lone_take_is_select = true })
+  assert(dest_of(keep, 1) == "alts",
+    "the one-take shortcut must not override an explicit tick")
 end)
 
 test("Sel delivers and the unticked takes wait on review", function()
@@ -543,12 +563,6 @@ test("a Keep with no Sel is still delivered as an alt", function()
   assert(dest_of(moves, 2) == "review", "the other still waits")
 end)
 
-test("a lone take that IS ticked keeps to its tick", function()
-  local moves = vo.PlanPull(pull_items("line_042"), name_lines("line_042"),
-                            { [1] = "keep" })
-  assert(dest_of(moves, 1) == "alts",
-    "the one-take shortcut must not override an explicit tick")
-end)
 
 test("an item no line claims is left entirely alone", function()
   local moves, n = vo.PlanPull(pull_items("RIVA_session"), name_lines("line_042"), {})
