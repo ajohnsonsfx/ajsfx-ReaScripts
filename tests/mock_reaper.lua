@@ -22,6 +22,9 @@ function mock.reset()
     mock.selected_items = {}
 
     reaper = {
+        -- Tests run on the developer's machine; "Win64" matches it and keeps
+        -- path-shape assertions (venv Scripts/python.exe) deterministic.
+        GetOS = function() return "Win64" end,
         ShowConsoleMsg = function(msg) table.insert(mock.console, msg) end,
         ShowMessageBox = function(msg, title, typ) table.insert(mock.msgbox, {msg=msg, title=title}) end,
         MB = function(msg, title, typ) table.insert(mock.msgbox, {msg=msg, title=title}) end,

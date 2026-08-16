@@ -246,7 +246,8 @@ end
 -- Fields vo.IsBackendReady actually reads. Only these are refreshed from disk
 -- on the throttle.
 local BACKEND_CFG_KEYS = { "whisper_bin", "whisper_model", "whisper_threads",
-                            "whisper_language", "scratch_dir", "timeout_s" }
+                            "whisper_language", "scratch_dir", "timeout_s",
+                            "transcribe_engine", "qwen_device", "qwen_python" }
 
 local function RefreshBackend()
   local now = r.time_precise()

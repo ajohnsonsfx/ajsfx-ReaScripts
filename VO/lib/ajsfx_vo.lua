@@ -1694,6 +1694,29 @@ function vo.ParseWhisperJSON(text)
   return words
 end
 
+-- Parse the JSON written by lib/qwen_transcribe.py (the Qwen3-ASR engine).
+--
+-- Same word shape as vo.ParseWhisperJSON, and the reason the rest of the
+-- tool never asks which engine made a sidecar: { t0, t1, text, anchor }.
+-- Qwen's forced aligner emits TRUE per-word times, so the anchor IS t0 --
+-- there is no displaced window to correct, which is the point of the engine
+-- (SPEC: docs/superpowers/specs/2026-08-15-qwen-transcription-engine.md).
+-- Returns the words plus the run's metadata (engine, device, language).
+function vo.ParseQwenJSON(text)
+  local doc = type(text) == "string" and json_decode(text) or nil
+  if type(doc) ~= "table" or type(doc.words) ~= "table" then return {} end
+  local words = {}
+  for _, w in ipairs(doc.words) do
+    local t0, t1 = tonumber(w.t0), tonumber(w.t1)
+    local word = trim(w.text or "")
+    if t0 and t1 and word ~= "" then
+      words[#words + 1] = { t0 = t0, t1 = t1, text = word, anchor = t0 }
+    end
+  end
+  return words, { engine = doc.engine, device = doc.device,
+                  language = doc.language }
+end
+
 -- Longest stretch of `words` that is one short phrase repeated back to back.
 --
 -- This is the signature of a whisper decoder that has fallen into a repetition
@@ -5423,6 +5446,53 @@ function vo.BuildWhisperArgv(cfg, audio, out_prefix, span)
   return argv
 end
 
+-- The Qwen engine's launcher. `python` is resolved by vo.QwenPython -- kept
+-- out of this function so the argv builder stays pure and testable.
+function vo.BuildQwenArgv(cfg, python, audio, out_json)
+  cfg = cfg or {}
+  local here = debug.getinfo(1, "S").source:match("@?(.*[\\/])") or ""
+  local argv = { python, here .. "qwen_transcribe.py",
+                 "--audio", audio, "--out", out_json,
+                 "--device", cfg.qwen_device or "auto" }
+  if cfg.whisper_language and cfg.whisper_language ~= ""
+     and cfg.whisper_language ~= "en" then
+    -- qwen-asr wants full names ("English"), not codes; only pass through a
+    -- value the user set to something qwen can hold, else its default.
+    argv[#argv + 1] = "--language"
+    argv[#argv + 1] = cfg.whisper_language
+  end
+  return argv
+end
+
+-- Where the Qwen venv's python lives. An explicit cfg.qwen_python always
+-- wins; otherwise the dev-layout path relative to this lib
+-- (<repo>/Resources/asr-qwen/venv). No hardcoded repo name -- same
+-- debug.getinfo resolution the PVX venv uses.
+function vo.QwenPython(cfg)
+  cfg = cfg or {}
+  if cfg.qwen_python and cfg.qwen_python ~= "" then return cfg.qwen_python end
+  local here = debug.getinfo(1, "S").source:match("@?(.*[\\/])")
+  if not here then return nil end
+  local root = here .. "../../"
+  if vo.IsWindows() then
+    return root .. "Resources/asr-qwen/venv/Scripts/python.exe"
+  end
+  return root .. "Resources/asr-qwen/venv/bin/python"
+end
+
+-- Readiness, cheap enough for a Settings frame: the venv python exists. A
+-- missing package inside it still fails at run time with the log tail as
+-- the message -- honest, just later.
+function vo.QwenReady(cfg)
+  local py = vo.QwenPython(cfg)
+  if not py then return false, "Could not resolve the qwen venv path." end
+  if not vo.FileExists(py) then
+    return false, "No python at " .. py ..
+      " -- create the venv and `pip install qwen-asr torch`."
+  end
+  return true, py
+end
+
 --------------------------------
 -- Pure layer: backend acquisition catalogs
 --------------------------------
@@ -8375,6 +8445,12 @@ vo.CONFIG_SCHEMA = {
   { key = "whisper_model",      kind = "string", default = "" },
   { key = "whisper_threads",    kind = "number", default = 4 },
   { key = "whisper_language",   kind = "string", default = "en" },
+  -- Which engine writes the SIDECAR. Verify and the audit deliberately stay
+  -- whisper regardless (an LLM decoder auto-corrects flubs -- the one bias a
+  -- verifier must not have). "qwen" needs the asr-qwen venv (vo.QwenReady).
+  { key = "transcribe_engine",  kind = "string", default = "whisper" },
+  { key = "qwen_device",        kind = "string", default = "auto" },
+  { key = "qwen_python",        kind = "string", default = "" },
   { key = "scratch_dir",        kind = "string", default = "" },
   { key = "timeout_s",          kind = "number", default = 1800 },
   { key = "force_retranscribe", kind = "bool",   default = false },
@@ -8748,6 +8824,13 @@ end
 -- Checked before any project mutation so a misconfigured backend can never
 -- leave a half-cut session behind.
 function vo.IsBackendReady(cfg)
+  -- The gate answers for the engine that will actually run. Verify and the
+  -- audit still shell out to whisper directly, but every readiness question
+  -- a TRANSCRIBE button asks routes here -- with engine=qwen, whisper being
+  -- missing must not block, and the qwen venv being missing must.
+  if cfg and (cfg.transcribe_engine or "whisper") == "qwen" then
+    return vo.QwenReady(cfg)
+  end
   local bin = cfg and cfg.whisper_bin or ""
   if bin == "" then
     return false, "No whisper-cli path is set. Open ajsfx VO Settings."
@@ -9578,6 +9661,64 @@ function vo.TranscribeSources(cfg, sources, cb)
     local key       = vo.CacheKey(source.path, source.size, cfg)
     local prefix    = scratch .. "/" .. key
     local json_path = prefix .. ".json"
+
+    -- THE QWEN ENGINE (spec 2026-08-15-qwen-transcription-engine.md): same
+    -- orchestration, three deliberate differences. Its own cache file, so
+    -- switching engines can never serve the other engine's words. No gap
+    -- repair -- that pass exists to mend whisper's swallowed windows with
+    -- whisper re-runs, and the unheard scan still guards real holes. And a
+    -- readiness gate that FAILS the source visibly when the venv is missing,
+    -- rather than quietly running whisper for a user who asked for qwen.
+    if (cfg.transcribe_engine or "whisper") == "qwen" then
+      local qwen_json = prefix .. ".qwen.json"
+      local function finish_qwen()
+        local f = io.open(qwen_json, "r")
+        if not f then
+          fail(source, "qwen runner reported success but wrote no JSON:\n"
+                       .. qwen_json)
+          step()
+          return
+        end
+        local words = vo.ParseQwenJSON(f:read("a"))
+        f:close()
+        finish(source, words, nil)
+        step()
+      end
+
+      if not cfg.force_retranscribe and vo.FileExists(qwen_json) then
+        finish_qwen()
+        return
+      end
+
+      -- vo.QwenReady's second return is the python path on success, the
+      -- reason on failure.
+      local ready, python = vo.QwenReady(cfg)
+      if not ready then
+        fail(source, python)
+        step()
+        return
+      end
+
+      local duration = source.duration or vo.SourceDuration(source.path)
+      local argv = vo.BuildQwenArgv(cfg, python, source.path, qwen_json)
+      vo.RunWhisperAsync(cfg, argv, scratch,
+        function(code, log)
+          if code ~= 0 then
+            fail(source, string.format("qwen runner exited with code %d\n\n%s",
+                                       code, vo.LogTailForError(log, 1500)))
+            step()
+            return
+          end
+          finish_qwen()
+        end,
+        cb.on_cancel,
+        function(err) fail(source, err); step() end,
+        { duration = duration,
+          on_progress = cb.on_progress and function(info)
+            cb.on_progress(source.path, index, #sources, info)
+          end or nil })
+      return
+    end
 
     -- The raw whisper JSON is what is cached; repair happens on the way out on
     -- both paths, so a cache hit gets the same mended transcript a fresh run
