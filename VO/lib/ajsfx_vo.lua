@@ -1811,6 +1811,10 @@ function vo.MarkFromTrack(track_name, cfg)
   local name = fold(track_name)
   if name == fold(cfg.track_selects or "Selects") then return "select" end
   if name == fold(cfg.track_alts    or "Alts")    then return "keep"   end
+  -- Out is a DECISION, unlike Review: the user parked the take there.
+  -- Pull leaves it alone, the sheet keeps its row and transcript, and the
+  -- marks read as an explicit no to both Sel and Keep.
+  if name == fold(cfg.track_outs    or "Outs")    then return "out"    end
   return nil
 end
 
@@ -8285,6 +8289,7 @@ vo.CONFIG_SCHEMA = {
   { key = "track_selects",      kind = "string", default = "Selects" },
   { key = "track_alts",         kind = "string", default = "Alts" },
   { key = "track_review",       kind = "string", default = "Review" },
+  { key = "track_outs",         kind = "string", default = "Outs" },
   -- The alt naming convention. Not bounded here: vo.PlanAltNames floors and
   -- clamps its own inputs, so a hand-edited ExtState cannot break a run.
   { key = "alt_append_pattern", kind = "string", default = "_alt{n}" },
