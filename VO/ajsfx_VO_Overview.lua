@@ -12494,6 +12494,25 @@ local function RunRemoteCommand(command)
     -- view exactly as a click on its meter would; "stage clear" clears.
     state.stage_filter = (rest ~= "" and rest ~= "clear") and rest or nil
     return "stage=" .. tostring(state.stage_filter)
+  elseif verb == "todo" then
+    -- The rail's list as text: counts by kind, then every row's label
+    -- and tooltip detail. Read-only; what the triage eye needs.
+    Inbox.MaybeAssemble()
+    local out, kinds = {}, {}
+    local counts = state.inbox_counts or { total = 0 }
+    for k2, n2 in pairs(counts.by_kind or {}) do
+      kinds[#kinds + 1] = k2 .. "=" .. n2
+    end
+    table.sort(kinds)
+    out[#out + 1] = string.format("todo %d (%s)", counts.total or 0,
+                                  table.concat(kinds, ", "))
+    for i, f in ipairs(state.inbox or {}) do
+      if i > 200 then out[#out + 1] = "...capped at 200" break end
+      local lab, tip = Inbox.Label(f)
+      out[#out + 1] = string.format("%3d [%s] %s%s", i, f.kind, lab,
+        tip and (" || " .. tip:gsub("\n", " ")) or "")
+    end
+    return table.concat(out, "\n")
   elseif verb == "rematch" then
     Rematch()
     return "rematched: " .. RemoteStatus()
