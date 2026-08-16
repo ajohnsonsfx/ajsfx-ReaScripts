@@ -8899,6 +8899,82 @@ function vo.FileFingerprint(path)
   return string.format("%08x", h)
 end
 
+-- What identifies a project's AUDIO, cheaply. A save-as leaves this untouched;
+-- opening a DIFFERENT project into the same tab changes it. Sorted, so REAPER's
+-- track order cannot make the same project look like a different one.
+function vo.ProjectSourceFingerprint(track_count, sources)
+  local list = {}
+  for _, p in ipairs(sources or {}) do
+    if p and p ~= "" then list[#list + 1] = tostring(p) end
+  end
+  table.sort(list)
+  return tostring(track_count or 0) .. "|" .. table.concat(list, "|")
+end
+
+-- Same ReaProject handle, different path -- is that a save-as, or a different
+-- project opened into the tab? REAPER hands back the SAME handle for both, so
+-- the handle cannot tell them apart, and guessing "save-as" carries THIS
+-- project's scripts, subs, pins and marks into the OTHER project's sidecar and
+-- overwrites it. (Observed 2026-08-16: opening Job into the tab that held
+-- Carcas wrote Carcas's script list into Job's sidecar.)
+--
+-- Two things have to hold before state may travel: the audio must be unchanged,
+-- and the new path must not already own a sidecar. A genuine save-as to a new
+-- name satisfies both. Anything else is treated as a different project, which
+-- costs a save-as-onto-an-existing-name its carry-over -- the safe direction,
+-- since that sidecar is then read rather than destroyed.
+function vo.IsSaveAs(old_fingerprint, new_fingerprint, new_sidecar_exists)
+  if new_sidecar_exists then return false end
+  return old_fingerprint ~= nil and old_fingerprint == new_fingerprint
+end
+
+-- The live fingerprint of the project REAPER currently has active. Reads the
+-- API rather than state.items, because the caller needs it at the moment the
+-- tab changes -- before anything has been reloaded.
+function vo.CurrentProjectFingerprint()
+  local n, sources = r.CountTracks(0), {}
+  for ti = 0, n - 1 do
+    local tr = r.GetTrack(0, ti)
+    for ii = 0, r.CountTrackMediaItems(tr) - 1 do
+      local tk = r.GetActiveTake(r.GetTrackMediaItem(tr, ii))
+      if tk and not r.TakeIsMIDI(tk) then
+        local src = r.GetMediaItemTake_Source(tk)
+        local p = src and r.GetMediaSourceFileName(src, "")
+        if p and p ~= "" then sources[#sources + 1] = p end
+      end
+    end
+  end
+  return vo.ProjectSourceFingerprint(n, sources)
+end
+
+-- Which engine actually produced a transcript, in the shape vo.TranscriptMeta
+-- wants. It lives here rather than at each call site because there are two
+-- writers (the Sources panel and the headless harness) and they were both
+-- stamping "whisper.cpp" unconditionally -- so a Qwen transcript claimed
+-- whisper's backend AND whisper's model path, and nothing on disk could say
+-- which engine's words you were reading. The script context rides along: it
+-- changes the words materially, so a with-context transcript is not the same
+-- artefact as a blind one.
+function vo.TranscriptBackendMeta(cfg)
+  cfg = cfg or {}
+  if (cfg.transcribe_engine or "whisper") == "qwen" then
+    local model = "qwen-asr runner v" .. tostring(vo.QWEN_RUNNER_VERSION)
+    if (cfg.qwen_context or "script") ~= "off" then
+      model = model .. " +script-context"
+    end
+    return {
+      backend  = "qwen-asr",
+      model    = model,
+      language = cfg.whisper_language or "",
+    }
+  end
+  return {
+    backend  = "whisper.cpp",
+    model    = cfg.whisper_model or "",
+    language = cfg.whisper_language or "",
+  }
+end
+
 -- The identity block every transcript carries. Built in one place so a writer
 -- cannot record a size without a fingerprint, or either without the path.
 function vo.TranscriptMeta(source_path, extra)

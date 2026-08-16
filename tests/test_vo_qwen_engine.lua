@@ -134,5 +134,93 @@ test("engine defaults to whisper; qwen fields present", function()
   assert(d.qwen_context == "script", "context defaults to the script")
 end)
 
+print("TranscriptBackendMeta:")
+
+test("whisper stamps whisper.cpp and its model path", function()
+  local m = vo.TranscriptBackendMeta({
+    whisper_model = "C:/models/ggml-large-v3.bin", whisper_language = "en" })
+  assert(m.backend == "whisper.cpp", "backend was " .. tostring(m.backend))
+  assert(m.model == "C:/models/ggml-large-v3.bin")
+  assert(m.language == "en")
+end)
+
+test("no engine set behaves as whisper", function()
+  assert(vo.TranscriptBackendMeta({}).backend == "whisper.cpp")
+  assert(vo.TranscriptBackendMeta(nil).backend == "whisper.cpp")
+end)
+
+test("qwen never borrows whisper's backend or model", function()
+  local m = vo.TranscriptBackendMeta({
+    transcribe_engine = "qwen",
+    whisper_model     = "C:/models/ggml-large-v3.bin",
+    whisper_language  = "en",
+  })
+  assert(m.backend == "qwen-asr", "backend was " .. tostring(m.backend))
+  assert(not m.model:find("ggml", 1, true), "qwen must not claim a whisper model")
+  assert(m.model:find(tostring(vo.QWEN_RUNNER_VERSION), 1, true),
+         "runner version must be recorded")
+  assert(m.language == "en")
+end)
+
+test("script context is recorded, and its absence too", function()
+  local with = vo.TranscriptBackendMeta({ transcribe_engine = "qwen" })
+  assert(with.model:find("script%-context"), "default context must be stamped")
+  local without = vo.TranscriptBackendMeta({
+    transcribe_engine = "qwen", qwen_context = "off" })
+  assert(not without.model:find("script%-context"),
+         "a blind decode must not claim context")
+end)
+
+print("ProjectSourceFingerprint:")
+
+test("track count and sources both matter", function()
+  local a = vo.ProjectSourceFingerprint(1, { "a.wav" })
+  assert(a ~= vo.ProjectSourceFingerprint(2, { "a.wav" }), "track count ignored")
+  assert(a ~= vo.ProjectSourceFingerprint(1, { "b.wav" }), "source ignored")
+  assert(a == vo.ProjectSourceFingerprint(1, { "a.wav" }), "not stable")
+end)
+
+test("order does not change the fingerprint", function()
+  assert(vo.ProjectSourceFingerprint(2, { "a.wav", "b.wav" })
+      == vo.ProjectSourceFingerprint(2, { "b.wav", "a.wav" }))
+end)
+
+test("an empty project has a fingerprint rather than nil", function()
+  assert(type(vo.ProjectSourceFingerprint(0, {})) == "string")
+  assert(vo.ProjectSourceFingerprint(0, {}) == vo.ProjectSourceFingerprint(0, nil))
+end)
+
+print("IsSaveAs:")
+
+test("same audio, no sidecar at the new path, is a save-as", function()
+  local fp = vo.ProjectSourceFingerprint(1, { "a.wav" })
+  assert(vo.IsSaveAs(fp, fp, false) == true)
+end)
+
+test("different audio is a different project, never a save-as", function()
+  local a = vo.ProjectSourceFingerprint(1, { "Carcas_Cleaned.wav" })
+  local b = vo.ProjectSourceFingerprint(1, { "Job_Cleaned.wav" })
+  assert(vo.IsSaveAs(a, b, false) == false,
+         "opening another project into the tab must not carry state")
+end)
+
+test("a sidecar already at the new path is never overwritten", function()
+  local fp = vo.ProjectSourceFingerprint(1, { "a.wav" })
+  assert(vo.IsSaveAs(fp, fp, true) == false,
+         "an existing sidecar must be read, not clobbered")
+end)
+
+test("an unknown previous fingerprint is not a save-as", function()
+  assert(vo.IsSaveAs(nil, vo.ProjectSourceFingerprint(1, { "a.wav" }), false)
+         == false)
+end)
+
+test("two empty projects are told apart by the sidecar guard", function()
+  -- Both fingerprints are the empty-project string, so the audio cannot
+  -- separate them; the sidecar existing is what stops the clobber.
+  local e = vo.ProjectSourceFingerprint(0, {})
+  assert(vo.IsSaveAs(e, e, true) == false)
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)
