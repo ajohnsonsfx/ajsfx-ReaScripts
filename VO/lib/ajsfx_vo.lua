@@ -8913,16 +8913,34 @@ function vo.FileFingerprint(path)
   return string.format("%08x", h)
 end
 
--- What identifies a project's AUDIO, cheaply. A save-as leaves this untouched;
--- opening a DIFFERENT project into the same tab changes it. Sorted, so REAPER's
--- track order cannot make the same project look like a different one.
-function vo.ProjectSourceFingerprint(track_count, sources)
-  local list = {}
+-- What identifies a project's AUDIO: the DISTINCT set of source files it plays.
+--
+-- Distinct, and nothing else. The first version counted one entry per item and
+-- included the track count, which made it a fingerprint of the EDIT rather than
+-- of the audio -- and both of those change during ordinary work. Cut turns one
+-- recording into forty items; Pull adds the Selects/Alts/Review/Outs tracks. So
+-- the baseline taken at load stopped matching within one press, and a genuine
+-- File>Save As afterwards was read as "a different project landed in this tab":
+-- the session's scripts, subs and pins stayed behind on the OLD sidecar and the
+-- newly-named project opened with nothing configured. Cutting then saving under
+-- a new name is the tool's own main path, so that was most of the time.
+--
+-- Deduplicated and sorted, the set survives every edit that does not change
+-- WHICH RECORDINGS the project plays -- which is exactly the question being
+-- asked. Adding a genuinely new recording does change it, and that resolves as
+-- "different project": the safe direction, since it flushes to the old file and
+-- READS the new one rather than overwriting it.
+function vo.ProjectSourceFingerprint(sources)
+  local seen, list = {}, {}
   for _, p in ipairs(sources or {}) do
-    if p and p ~= "" then list[#list + 1] = tostring(p) end
+    local s = p and tostring(p) or ""
+    if s ~= "" and not seen[s] then
+      seen[s] = true
+      list[#list + 1] = s
+    end
   end
   table.sort(list)
-  return tostring(track_count or 0) .. "|" .. table.concat(list, "|")
+  return table.concat(list, "|")
 end
 
 -- Same ReaProject handle, different path -- is that a save-as, or a different
@@ -8946,8 +8964,8 @@ end
 -- API rather than state.items, because the caller needs it at the moment the
 -- tab changes -- before anything has been reloaded.
 function vo.CurrentProjectFingerprint()
-  local n, sources = r.CountTracks(0), {}
-  for ti = 0, n - 1 do
+  local sources = {}
+  for ti = 0, r.CountTracks(0) - 1 do
     local tr = r.GetTrack(0, ti)
     for ii = 0, r.CountTrackMediaItems(tr) - 1 do
       local tk = r.GetActiveTake(r.GetTrackMediaItem(tr, ii))
@@ -8958,7 +8976,7 @@ function vo.CurrentProjectFingerprint()
       end
     end
   end
-  return vo.ProjectSourceFingerprint(n, sources)
+  return vo.ProjectSourceFingerprint(sources)
 end
 
 -- Which engine actually produced a transcript, in the shape vo.TranscriptMeta
@@ -9019,12 +9037,21 @@ end
 -- runner's atomic rename fail, which costs the whole decode.
 function vo.ResolveScratchDir(cfg)
   if cfg and cfg.scratch_dir and cfg.scratch_dir ~= "" then
-    local ok, proj = pcall(function()
-      return select(2, r.EnumProjects(-1, ""))
+    local ok, handle, proj = pcall(function()
+      local h, p = r.EnumProjects(-1, "")
+      return h, p
     end)
     local name = ok and proj and proj ~= ""
       and proj:match("([^/\\]+)%.[Rr][Pp][Pp]$")
-    return cfg.scratch_dir .. "/" .. (name or "unsaved")
+    if not name then
+      -- An unsaved project has no name to be isolated BY, and a shared
+      -- "unsaved" folder would put two of them in one scratch -- including one
+      -- qwen_context.txt, which is the exact cross-project decode this whole
+      -- per-project split exists to prevent. The project handle is unique per
+      -- open instance, so it separates them until one gets a real name.
+      name = "unsaved-" .. tostring(handle or "0"):gsub("%W", "")
+    end
+    return cfg.scratch_dir .. "/" .. name
   end
 
   local ok, proj_path = pcall(function()

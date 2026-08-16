@@ -357,7 +357,8 @@ def main():
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(doc, f, ensure_ascii=False)
         os.replace(tmp, args.out)
-    except OSError as e:
+    except Exception as e:  # noqa: BLE001 -- the decode succeeded whatever
+                            # broke here, so nothing may re-enter the retry
         # The words are decoded and correct; only the file did not land. Say
         # so plainly, and never re-decode over it.
         log(f"error: decoded {len(words)} word(s) but could not write "
