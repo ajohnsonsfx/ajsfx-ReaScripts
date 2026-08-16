@@ -3295,7 +3295,18 @@ end
 -- line names: a name whose base answers to no line is NOT renamed -- a stray
 -- item parked on Alts is not evidence it belongs to the session. nil plans
 -- nothing, so a caller that failed to load lines cannot mass-rename.
-function vo.PlanRoleNames(rows, known_bases, cfg)
+--
+-- `opts.renumber` is the STRAIGHTEN pass, explicitly stronger: instead of
+-- keeping any unique alt number a take already holds, every line's alts are
+-- renumbered compactly from alt_append_start in `row.pos` order (Alts-track
+-- takes first, then Outs), so a session of swaps and demotions reads
+-- _alt1.._altN again with no gaps. Numbers held by rows off the role tracks
+-- are still skipped -- this pass may not rename those, so it may not hand
+-- their number to someone else either. The default (no renumber) stays
+-- conservative on purpose: it is what the drag-follow sweep runs, and a
+-- number you have seen must never quietly become a different take.
+function vo.PlanRoleNames(rows, known_bases, cfg, opts)
+  opts = opts or {}
   cfg = cfg or {}
   local pattern = cfg.alt_append_pattern or "_alt{n}"
   local digits  = math.floor(cfg.alt_append_digits or 1)
@@ -3343,8 +3354,9 @@ function vo.PlanRoleNames(rows, known_bases, cfg)
         local used, needs, blocked = {}, {}, nil
         -- A promoted select's OLD number stays claimed: handing a name that
         -- existed a moment ago to a different take would quietly swap what
-        -- "Foo_alt1" means to anything outside this project.
-        if sel then
+        -- "Foo_alt1" means to anything outside this project. The straighten
+        -- pass drops this guard knowingly -- renumbering is what was asked.
+        if sel and not opts.renumber then
           local n = tonumber(sel.name:match(num_matcher) or "")
           if n then used[n] = true end
         end
@@ -3355,15 +3367,34 @@ function vo.PlanRoleNames(rows, known_bases, cfg)
             if n then used[n] = true end
           end
         end
-        for _, row in ipairs(g) do
-          if row ~= sel
-             and (role_of[row] == "keep" or role_of[row] == "out") then
-            if row.name == base then
-              needs[#needs + 1] = row       -- demoted: the plain name is the select's
-            else
-              local n = tonumber(row.name:match(num_matcher) or "")
-              if n and not used[n] then used[n] = true
-              else needs[#needs + 1] = row end  -- duplicate alt number
+        if opts.renumber then
+          -- Straighten: every keep/out row gets renumbered, in pos order,
+          -- keeps before outs -- only off-track holders keep their numbers.
+          local order_rows = {}
+          for _, row in ipairs(g) do
+            if row ~= sel
+               and (role_of[row] == "keep" or role_of[row] == "out") then
+              order_rows[#order_rows + 1] = row
+            end
+          end
+          table.sort(order_rows, function(a, b)
+            local ka = (role_of[a] == "out") and 1 or 0
+            local kb = (role_of[b] == "out") and 1 or 0
+            if ka ~= kb then return ka < kb end
+            return (a.pos or 0) < (b.pos or 0)
+          end)
+          needs = order_rows
+        else
+          for _, row in ipairs(g) do
+            if row ~= sel
+               and (role_of[row] == "keep" or role_of[row] == "out") then
+              if row.name == base then
+                needs[#needs + 1] = row     -- demoted: the plain name is the select's
+              else
+                local n = tonumber(row.name:match(num_matcher) or "")
+                if n and not used[n] then used[n] = true
+                else needs[#needs + 1] = row end  -- duplicate alt number
+              end
             end
           end
         end
@@ -3376,9 +3407,13 @@ function vo.PlanRoleNames(rows, known_bases, cfg)
           for _, row in ipairs(needs) do
             while used[n] do n = n + 1 end
             used[n] = true
-            plan.renames[#plan.renames + 1] = { row = row,
-              name = vo.SanitizeName(base ..
-                vo.FormatAltAppend(pattern, n, digits)) }
+            local want = vo.SanitizeName(base ..
+              vo.FormatAltAppend(pattern, n, digits))
+            -- A row already wearing its target name is not a rename; the
+            -- straighten pass hands most rows the name they hold.
+            if want ~= row.name then
+              plan.renames[#plan.renames + 1] = { row = row, name = want }
+            end
           end
           if sel and sel.name ~= base then
             plan.renames[#plan.renames + 1] = { row = sel, name = base }
