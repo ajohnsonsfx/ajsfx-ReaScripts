@@ -138,14 +138,15 @@ def load_model(device):
     return model
 
 
-def run(model, x, bursts, language):
+def run(model, x, bursts, language, context):
     words, dropped = [], 0
     done = 0
     for b0 in range(0, len(bursts), BATCH):
         batch = bursts[b0:b0 + BATCH]
         audio = [(x[s:e], SR) for s, e in batch]
         results = model.transcribe(
-            audio=audio, language=language, return_time_stamps=True)
+            audio=audio, language=language, context=context,
+            return_time_stamps=True)
         for (s, _e), res in zip(batch, results):
             off = s / SR
             for it in res.time_stamps or []:
@@ -174,11 +175,25 @@ def main():
     ap.add_argument("--device", default="auto",
                     choices=["auto", "cuda", "cpu"])
     ap.add_argument("--language", default="English")
+    # The session's script lines, one per line: Qwen3-ASR biases its decode
+    # toward this text, recovering invented words and non-fluent register a
+    # blind decode auto-corrects. Assignment reads the script; the tool's
+    # Verify/audit layers deliberately never pass this.
+    ap.add_argument("--context-file", default="")
     args = ap.parse_args()
 
     if not os.path.isfile(args.audio):
         log(f"error: no such audio file: {args.audio}")
         return 2
+
+    context = ""
+    if args.context_file:
+        with open(args.context_file, encoding="utf-8") as f:
+            context = f.read().strip()
+        if len(context) > 12000:
+            log(f"context trimmed from {len(context)} to 12000 chars")
+            context = context[:12000]
+        log(f"script context: {len(context)} chars")
 
     import torch
 
@@ -200,13 +215,14 @@ def main():
         try:
             model = load_model(device)
             t0 = time.time()
-            words, dropped = run(model, x, bursts, args.language)
+            words, dropped = run(model, x, bursts, args.language, context)
             log(f"decoded + aligned in {time.time() - t0:.1f}s on {device}"
                 + (f", dropped {dropped} zero-width word(s)" if dropped else ""))
             doc = {
                 "engine": "qwen3-asr-1.7b+forced-aligner-0.6b",
                 "device": device,
                 "language": args.language,
+                "context_chars": len(context),
                 "bursts": len(bursts),
                 "dropped_zero_width": dropped,
                 "words": words,

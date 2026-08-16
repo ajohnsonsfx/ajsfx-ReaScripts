@@ -164,6 +164,22 @@ local function DrawBackend()
     dhit, d_idx = im.Combo(ctx, "Qwen device", d_idx - 1,
                            "auto (try GPU, fall back)\0cuda\0cpu\0")
     if dhit then cfg.qwen_device = DEVICES[d_idx + 1] end
+    local CTX = { "script", "off" }
+    local c_idx = (cfg.qwen_context == "off") and 2 or 1
+    local chit
+    chit, c_idx = im.Combo(ctx, "Script context", c_idx - 1,
+                           "script lines (recommended)\0off (blind decode)\0")
+    if chit then cfg.qwen_context = CTX[c_idx + 1] end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx,
+        "Feed the loaded script lines to the decode. Qwen biases toward\n" ..
+        "them: invented words come back spelled right and the character's\n" ..
+        "broken-English register survives, so far fewer false Words-\n" ..
+        "mismatch alarms. The pull cuts both ways -- a genuine mis-read\n" ..
+        "can decode as the scripted words -- which is why Verify,\n" ..
+        "re-listen and the audit always decode script-blind, whatever\n" ..
+        "this is set to. Mis-read hunting is THEIR job, not the sidecar's.")
+    end
     local qready, qwhy = vo.QwenReady(cfg)
     if qready then
       im.TextColored(ctx, 0x66DD66FF, "Qwen venv ready")

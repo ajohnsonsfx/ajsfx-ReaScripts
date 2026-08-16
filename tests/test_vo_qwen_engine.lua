@@ -41,6 +41,30 @@ test("device defaults to auto", function()
   assert(table.concat(argv, " "):find("--device auto", 1, true))
 end)
 
+test("a context file is passed through; none means no flag", function()
+  local with = vo.BuildQwenArgv({}, "py", "a.wav", "o.json", "ctx.txt")
+  assert(table.concat(with, " "):find("--context-file ctx.txt", 1, true))
+  local without = vo.BuildQwenArgv({}, "py", "a.wav", "o.json", nil)
+  assert(not table.concat(without, " "):find("--context-file", 1, true))
+end)
+
+test("WriteQwenContext dedupes lines and round-trips; empty removes", function()
+  local cfg = { scratch_dir = "tests" }
+  local path = vo.WriteQwenContext(cfg, {
+    { text = " Master want stone. " },
+    { text = "Master want stone." },      -- duplicate after trim
+    { text = "Tower loud." },
+    { text = "" },
+  })
+  assert(path, "no path returned")
+  local f = assert(io.open(path, "r"))
+  local body = f:read("a")
+  f:close()
+  assert(body == "Master want stone.\nTower loud.", "got: " .. body)
+  assert(vo.WriteQwenContext(cfg, {}) == nil, "empty lines must return nil")
+  assert(io.open(path, "r") == nil, "empty lines must remove the file")
+end)
+
 test("the 'en' code is NOT passed through as a language", function()
   -- qwen-asr validates full names ("English"); the whisper default "en"
   -- would be a hard error, so it means "engine default" here.
@@ -107,6 +131,7 @@ test("engine defaults to whisper; qwen fields present", function()
   assert(d.transcribe_engine == "whisper", "default engine must stay whisper")
   assert(d.qwen_device == "auto")
   assert(d.qwen_python == "")
+  assert(d.qwen_context == "script", "context defaults to the script")
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))
