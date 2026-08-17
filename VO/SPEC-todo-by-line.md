@@ -54,12 +54,39 @@ Only the earliest unmet stage shows -- a line that is Not Found has nothing
 to edit. This is the strip's stage remainder logic (`Strip.RowPasses`
 order), reused.
 
-**Errors ride the stage as a suffix.** The line's Todo header reads
-`<stage> · Conflict` when fault findings survive suppression (Req-3):
-Multiple selects, Name/Edges mismatch, Marker without audio, suspect
-triggers, Vet stale... The strip's rows beneath list each error with its
-evidence and verbs. Errors are not a stage: they can appear at any rung,
-and Done requires both the ladder cleared and zero errors.
+**Errors re-open their home stage.** Every error kind names the stage whose
+work fixes it, and a line's displayed stage is the EARLIEST of its ladder
+rung and any live error's home stage -- a verified line that grows a second
+select drops back to `Needs select · Conflict`, because picking the select
+is the work you now have to redo. The header reads `<stage> · Conflict`;
+the strip's rows beneath list each error with its evidence and verbs.
+
+The mapping (AJ-approved 2026-08-17):
+
+    Marker/marks without audio          -> Not Found
+    Name/Edges mismatch (parity)        -> Needs edit
+    Unmarked item                       -> Needs edit
+    Multiple selects / marks vs track   -> Needs select
+    Words mismatch (suspect)            -> Unverified
+    Vet stale                           -> Unverified
+
+Done requires both the ladder cleared and zero errors.
+
+**Errors debounce; fixes do not (the anti-jank law).** Mid-work transients
+-- two selects for the moment between a drag and its counter-drag, a
+half-finished rename -- must not flash Conflict. One asymmetric rule at one
+layer (the error feed in the collapse stage):
+
+    A NEW error is drawn only once the project has sat still for
+    ERROR_SETTLE seconds (3; a constant, not a config knob). A FIXED
+    error disappears instantly.
+
+"Sat still" is `GetProjectStateChangeCount` not ticking -- the project's
+own edit clock, so it covers drags, ticks, scripts and hand edits without
+knowing which was which. Each error key gets a first-seen time at rebuild;
+it draws when the settle window has passed with no ticks. Once drawn it is
+STICKY -- resuming work does not re-hide it -- until the error itself is
+gone. Stages do not debounce: they move only on real completions.
 
 Rows keep today's rail anatomy: amber category button = the jump, evidence in
 the tooltip, fix verbs beside it. **Verb law (AJ):** a Todo row offers a
@@ -180,9 +207,13 @@ panels became the rail in beta33):
 - stage entry: a line reports only its earliest unmet stage
 - scanner not run -> lines it would judge sit at Not Scanned; running it
   moves them to their real stage
-- errors never change the stage: a Needs-edit line with a conflict stays
-  Needs edit, wearing the error suffix
+- home stages: an error pulls the displayed stage back to its home when the
+  home is earlier than the ladder rung; never forward
 - Done requires ladder cleared and zero errors
+- debounce: a fresh error inside the settle window is withheld from the
+  strip and the count; the same error past the window draws; once drawn it
+  stays through new edits; a fixed error vanishes on the next rebuild
+  (pure-layer tests inject the clock and the change count)
 
 `tests/test_vo_tidy.lua` gains, for widened `vo.SelectConflicts`:
 
