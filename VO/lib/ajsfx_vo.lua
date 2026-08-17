@@ -5023,6 +5023,29 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
       local at_start = sp0 or s.raw_start
       local at_stop  = sp1 or s.raw_stop
 
+      -- TRUSTING THE WORD TIMES INSTEAD OF THE ENVELOPE.
+      --
+      -- Everything above exists because whisper's word times could not tell
+      -- speech from the pause they had absorbed: a word's END was simply the
+      -- next word's START (94% touch exactly), so the take's own silence sat
+      -- INSIDE its span and an edge had to be measured in to the sound before
+      -- it could be padded back out.
+      --
+      -- A forced aligner does not work that way. Measured on a Qwen transcript
+      -- 2026-08-16: of 52 take-final words, 51 of 51 had an END placed
+      -- independently of the next word's start, with a median duration of 640ms
+      -- against 400ms for words generally -- the line's natural decay measured
+      -- into the word, which is exactly what the envelope walk was reconstructing.
+      -- Mid-line ends are still chained (74%), but a cut only ever uses a
+      -- take-final one.
+      --
+      -- With this on, the edges ARE the word times and the envelope is not
+      -- consulted. Off by default: it is only true for an engine that reports
+      -- real ends, and a whisper transcript would be cut to the pause.
+      if vo.Opt(cfg, "trust_word_ends") then
+        at_start, at_stop = s.raw_start, s.raw_stop
+      end
+
       -- The search window is bounded by the neighbouring WORD -- every word the
       -- transcript holds, not just the ones this cut selected. Bounding by the
       -- neighbouring SPAN alone is not enough: a false start or an aside sitting
@@ -5139,8 +5162,13 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
         end
         return t
       end
-      at_start = extend_through_sound(at_start, start_limit, -1)
-      at_stop  = extend_through_sound(at_stop,  stop_limit,  1)
+      -- The walk is the envelope's job too, so it goes with it: its whole
+      -- purpose is to recover a breath the word times could not see, and when
+      -- the word times are the answer there is nothing to recover.
+      if not vo.Opt(cfg, "trust_word_ends") then
+        at_start = extend_through_sound(at_start, start_limit, -1)
+        at_stop  = extend_through_sound(at_stop,  stop_limit,  1)
+      end
 
       local head = math.min(pre,  vo.Opt(cfg, "snap_head_room"))
       local tail = math.min(post, vo.Opt(cfg, "snap_tail_room"))
@@ -8617,6 +8645,17 @@ vo.CONFIG_SCHEMA = {
   -- them (min(pre_pad, snap_head_room)), dragging the pads did nothing at all.
   { key = "snap_head_room",     kind = "number", default = vo.DEFAULTS.snap_head_room },
   { key = "snap_tail_room",     kind = "number", default = vo.DEFAULTS.snap_tail_room },
+  -- The cut's fades. Settable because they are half of what "how much room"
+  -- means: the only thing room is FOR is somewhere to put the fade, so a user
+  -- tightening one wants to tighten the other. They were read through vo.Opt
+  -- all along but were missing from this schema, so SaveConfig dropped any
+  -- value written to them and the defaults were the only reachable setting.
+  -- Edges come from the transcript's word times rather than the audio
+  -- envelope. Only sound for an engine that reports real word ends; see the
+  -- note in vo.ApplyPadding.
+  { key = "trust_word_ends",    kind = "bool",   default = false },
+  { key = "cut_fade_in",        kind = "number", default = vo.DEFAULTS.cut_fade_in },
+  { key = "cut_fade_out",       kind = "number", default = vo.DEFAULTS.cut_fade_out },
   { key = "unheard_min_length", kind = "number", default = vo.DEFAULTS.unheard_min_length },
   { key = "unheard_join",       kind = "number", default = vo.DEFAULTS.unheard_join },
   { key = "trim_head_slack",    kind = "number", default = vo.DEFAULTS.trim_head_slack },
