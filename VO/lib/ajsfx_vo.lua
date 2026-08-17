@@ -340,10 +340,22 @@ function vo.BuildScriptLines(rows, cols, filters)
     local keep = text ~= "" and asset ~= "" and not skip[fold(asset)]
     -- Character filter applies ONLY when a character column is mapped: with no
     -- column the filter is inert (keep all — preserves the "filter inert without
-    -- the column" contract); with a column, a row whose character is empty or
-    -- not in the include-set is dropped.
+    -- the column" contract).
+    --
+    -- An EMPTY cell is always kept. The include-set is built by ticking the
+    -- values the scripts actually contain (see vo.ScriptSpeakers), and a blank
+    -- cell offers nothing to tick -- so excluding it would make lines
+    -- unreachable through the UI that is supposed to control this. A script
+    -- that simply does not fill the column excludes nobody, which is the same
+    -- "inert without the data" contract one level down.
+    --
+    -- Note that a cell reading "(no speaker set)" is NOT empty: it is a value
+    -- the script chose to write, it appears in the tick list like any other, and
+    -- guessing at which strings secretly mean "nobody" is exactly the kind of
+    -- inference that would go wrong on somebody else's export.
     if keep and speakers and cols.speaker then
-      keep = (speaker_key ~= nil) and speakers[speaker_key] == true
+      keep = (speaker_raw == nil or speaker_raw == "")
+             or speakers[speaker_key] == true
     end
 
     if keep then
@@ -357,6 +369,75 @@ function vo.BuildScriptLines(rows, cols, filters)
   end
 
   return lines
+end
+
+-- Every distinct speaker value the scripts actually contain, with how many
+-- lines each one holds -- the tick list the character filter is built from.
+--
+-- Read from the RAW rows, not from `sc.lines`, and that is the whole point: the
+-- lines have already had the filter applied, so a panel built from them could
+-- only ever offer the characters that are already included. There would be no
+-- way back to the ones you excluded.
+--
+-- `scripts` is vo.LoadScripts's `scripts` array. Disabled scripts are skipped:
+-- a script switched off contributes no lines, so offering its cast would be
+-- offering a filter over nothing. Rows with an empty speaker cell are counted
+-- separately as `blank` -- they are always kept (see vo.BuildScriptLines) and
+-- so are not a choice to be made.
+--
+-- The counts mirror what the sheet would show: a row with no text or no
+-- filename, and a row whose filename is a skip value ("TO RECORD"), is dropped
+-- here exactly as vo.BuildScriptLines drops it. Only the SPEAKER filter is left
+-- out, which is the one this list exists to control. A tick reading "Carcas
+-- (27)" that produced 24 lines would be worse than no number at all.
+--
+-- Returns `{ { name, key, n }, ... }` sorted by name, and the blank count.
+function vo.ScriptSpeakers(scripts, skip_values)
+  local skip = {}
+  for _, v in ipairs(skip_values or vo.DEFAULT_SKIP_VALUES) do skip[fold(v)] = true end
+
+  local by_key, blank = {}, 0
+  for _, sc in ipairs(scripts or {}) do
+    if sc.enabled ~= false and sc.header and sc.rows then
+      local cols = vo.MapColumns(sc.header, sc.mapping or {})
+      if cols and cols.speaker then
+        for _, row in ipairs(sc.rows) do
+          local text  = vo.StripWrappingQuotes(trim(row[cols.text]))
+          local asset = trim(row[cols.asset])
+          local raw   = trim(row[cols.speaker])
+          if text == "" or asset == "" or skip[fold(asset)] then -- luacheck: ignore
+          elseif raw == "" then
+            blank = blank + 1
+          else
+            local key = fold(raw)
+            local rec = by_key[key]
+            if rec then
+              rec.n = rec.n + 1
+            else
+              by_key[key] = { name = raw, key = key, n = 1 }
+            end
+          end
+        end
+      end
+    end
+  end
+  local out = {}
+  for _, rec in pairs(by_key) do out[#out + 1] = rec end
+  table.sort(out, function(a, b) return a.name < b.name end)
+  return out, blank
+end
+
+-- The include-set vo.BuildScriptLines wants, from the list of names the project
+-- stored. nil (or an empty list) means every character, which is what a project
+-- that never chose should get.
+function vo.SpeakerFilter(names)
+  if not names or #names == 0 then return nil end
+  local set = {}
+  for _, n in ipairs(names) do
+    local key = fold(tostring(n or ""))
+    if key ~= "" then set[key] = true end
+  end
+  return next(set) and set or nil
 end
 
 -- Script lines that two or more rows want DELIVERED under the same name, after
@@ -7223,6 +7304,19 @@ function vo.SerializeProjectFile(entries, meta)
     end
   end
 
+  -- WHICH CHARACTERS THIS PROJECT IS EDITING. A property of the session, like
+  -- the substitutions above: one recording is one performer, and the script it
+  -- was cut from usually carries the whole scene. Written here rather than held
+  -- in the config because the answer is different for every project and the
+  -- same on every machine.
+  --
+  -- No rows means every character, so a project that never chose is unchanged.
+  for _, name in ipairs(meta.speakers or {}) do
+    if name and name ~= "" then
+      out[#out + 1] = vo.FormatCSVRow({ "Speaker", name })
+    end
+  end
+
   -- Pins live in the preamble rather than the entry table because they are keyed
   -- by the SCRIPT LINE, while every entry row is keyed by a stretch of audio.
   -- Keeping them out of that table is also what lets them be added without
@@ -7325,7 +7419,7 @@ function vo.ParseProjectFile(text)
   end
 
   local parsed = { version = version, scripts = {}, appends = {},
-                   line_edits = {}, names = {}, subs = {},
+                   line_edits = {}, names = {}, subs = {}, speakers = {},
                    entries = {}, pins = {}, view = { col_filters = {}, expanded = {} } }
   -- The pre-multi-script format, folded in below only if no Script row appears.
   local legacy_path, legacy_mapping = nil, nil
@@ -7368,6 +7462,18 @@ function vo.ParseProjectFile(text)
       local from, to = rows[i][2] or "", rows[i][3] or ""
       if from ~= "" then
         parsed.subs[#parsed.subs + 1] = { from = from, to = to }
+      end
+    elseif key == "Speaker" then
+      -- Which characters this project is editing. Deduped on the way in: the
+      -- list is an include-SET, so a name twice is the same instruction, and a
+      -- file hand-edited into repeating one should not make the panel repeat it.
+      local name = rows[i][2] or ""
+      if name ~= "" then
+        local dup = false
+        for _, had in ipairs(parsed.speakers) do
+          if fold(had) == fold(name) then dup = true break end
+        end
+        if not dup then parsed.speakers[#parsed.speakers + 1] = name end
       end
     elseif key == "Name" then
       local script, asset = rows[i][2] or "", rows[i][3] or ""
