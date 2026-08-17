@@ -72,21 +72,30 @@ The mapping (AJ-approved 2026-08-17):
 
 Done requires both the ladder cleared and zero errors.
 
-**Errors debounce; fixes do not (the anti-jank law).** Mid-work transients
--- two selects for the moment between a drag and its counter-drag, a
-half-finished rename -- must not flash Conflict. One asymmetric rule at one
-layer (the error feed in the collapse stage):
+**Edit-boundary refresh (the anti-jank law).** Mid-gesture transients must
+never draw, and a real mistake must show the instant it lands -- so there
+is NO settle timer (a first draft had one; AJ: 3s is long enough to make an
+actual mistake and lose the context). Instead:
 
-    A NEW error is drawn only once the project has sat still for
-    ERROR_SETTLE seconds (3; a constant, not a config knob). A FIXED
-    error disappears instantly.
+    The Todo recomputes ONLY on a `GetProjectStateChangeCount` tick, and
+    shows whatever is true at that instant. Instantly, both directions.
 
-"Sat still" is `GetProjectStateChangeCount` not ticking -- the project's
-own edit clock, so it covers drags, ticks, scripts and hand edits without
-knowing which was which. Each error key gets a first-seen time at rebuild;
-it draws when the settle window has passed with no ticks. Once drawn it is
-STICKY -- resuming work does not re-hide it -- until the error itself is
-gone. Stages do not debounce: they move only on real completions.
+This is airtight because of two invariants, not a heuristic:
+
+1. REAPER bumps the change count when an edit LANDS -- mouse release,
+   action completion -- never mid-gesture. Half a drag is invisible to the
+   Todo by construction.
+2. Every tool verb is one `core.Transaction` (already project law). A
+   multi-step fix -- SetSelect demoting the sibling, Pull moving items --
+   is one tick, one rebuild; the Todo never sees intermediate steps.
+
+Drop take B on Selects while A still holds the pick: `Needs select ·
+Conflict` appears on that release -- the moment it might be an actual
+mistake. Drag one off: it clears on that release. Nothing to tune.
+
+LAW FOR FUTURE VERBS: any new operation that mutates in more than one step
+MUST be transaction-wrapped, or its intermediate states become visible
+Todo flashes. This is now a correctness requirement, not just undo hygiene.
 
 Rows keep today's rail anatomy: amber category button = the jump, evidence in
 the tooltip, fix verbs beside it. **Verb law (AJ):** a Todo row offers a
@@ -210,10 +219,9 @@ panels became the rail in beta33):
 - home stages: an error pulls the displayed stage back to its home when the
   home is earlier than the ladder rung; never forward
 - Done requires ladder cleared and zero errors
-- debounce: a fresh error inside the settle window is withheld from the
-  strip and the count; the same error past the window draws; once drawn it
-  stays through new edits; a fixed error vanishes on the next rebuild
-  (pure-layer tests inject the clock and the change count)
+- edit-boundary refresh: the collapse recomputes only when the injected
+  change count ticks; an unchanged count returns the cached result
+  untouched (pure-layer test, change count injected)
 
 `tests/test_vo_tidy.lua` gains, for widened `vo.SelectConflicts`:
 
