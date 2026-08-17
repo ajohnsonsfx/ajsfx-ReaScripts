@@ -1,196 +1,182 @@
-# SPEC: the Todo list is a list of LINES
+# SPEC: Todo lives in the sheet, one per line
 
-Status: approved design, 2026-08-17. Supersedes the per-take entry model the
-rail has carried since the redesign (beta34).
+Status: approved design, 2026-08-17. Second draft -- the first draft kept the
+rail and made its entries per-line; AJ's review folded the whole thing into
+the sheet instead. Supersedes the per-take rail model (beta34).
 
-## The complaint
+## The complaint that started it
 
-A line in the Todo list read **"Marks vs track B"**. That was true and useless.
-The real state was: *two takes of one line had been pulled to the Selects
-track*, one of them wearing an alt name. Nothing was wrong with take B's
-marks; what was wrong was that the line had two claimants for the select and
-nobody had said which one is the delivery.
+A line in the Todo rail read **"Marks vs track B"**. True and useless. The
+real state: two takes of one line pulled to the Selects track, one wearing an
+alt name -- the line had two claimants for the select and nobody had said
+which is the delivery. Two defects:
 
-Two separate defects made the list say the wrong thing:
+1. **The root had no finding.** `vo.SelectConflicts` counts only takes
+   *ticked* Sel; one claimant was merely parked on the Selects track. And
+   select conflicts never fed `vo.InboxBuild` at all -- they reached the
+   summary bar and card badge, never Todo.
+2. **The symptom surfaced instead.** `vo.PlanReconcile` correctly said take B
+   was "on the Selects track but not ticked Sel", and that per-take finding
+   is all the rail could show.
 
-1. **The root has no finding.** `vo.SelectConflicts` counts only takes that
-   are *ticked* Sel. Here exactly one was ticked and the other merely sat on
-   the Selects track, so the function saw no conflict. And select conflicts
-   were never fed to `vo.InboxBuild` at all -- they reached only the summary
-   bar and the card badge, never Todo.
-2. **The symptom is what surfaced.** `vo.PlanReconcile` correctly noticed take
-   B was "on the Selects track but not ticked Sel" and that `out_of_sync`
-   finding is what the rail had to show.
+The problem spanned two takes of one line: no per-take entry could state it.
+The finding unit has to be the line. And once it is the line, the rail is a
+second list of the same lines the sheet already draws -- so the rail goes,
+and the Todo moves under each card.
 
-And it generalises: the problem spanned **two takes of one line**, so no
-per-take entry could ever state it. The finding unit has to be the line.
+## The idea
 
-## Req-1: one Todo entry per line
+**The Todo list is everything between here and "done", in the order the work
+happens.** Identifying takes, cutting, picking a select, verifying -- stages,
+plus faults (conflicts, mismatches) when something is wrong. Each line card
+shows its OWN next work, the sheet filters to lines that still have some, and
+the session is finished when the filtered sheet is empty.
 
-`counts.total` becomes the number of **line entries**, not findings.
-"Todo (31)" means *31 lines need you*.
+## Req-1: the per-line Todo strip
 
-Scanners are untouched. Each still emits per-take findings; `vo.InboxBuild`
-gains a collapse stage after the ranking sort.
+Each line card grows a Todo strip: one amber row per surviving finding for
+that line, drawn under the card's existing content.
 
-### The line key
+A line's strip shows:
 
-A finding groups under `vo.LineKey(row)` when it carries a row. Findings that
-carry only a media item (the parity watcher's `divergence` entries) have no
-row, so they key on the take name's stem -- `"name:" .. base` -- exactly the
-string `Inbox.Parts` already computes for them today.
+- its **earliest unmet stage** -- exactly one of, in pipeline order:
+    1. "Not matched"      -- row.status == "missing"; nothing recorded/found
+    2. "No audio"         -- transcribed, but no item plays that stretch
+    3. "Uncut takes"      -- takes still sitting whole on the recording track
+    4. "No take picked"   -- takes exist, none is the select, none vetted
+    5. "Unverified"       -- delivered but no ears/stamp on it
+  Later stages are not shown: a never-matched line has nothing to cut. This
+  is the strip's stage remainder logic (`Strip.RowPasses` order), reused.
+- its **fault findings** that survive suppression (Req-3): Multiple selects,
+  Name/Edges mismatch, Marker without audio, suspect triggers, Vet stale...
+  Faults draw above the stage row -- something *wrong* outranks something
+  *undone*.
 
-This seam is real and is left as-is: a divergence finding and a row finding
-for the same line will not merge if the take's name stem disagrees with the
-line's asset. That is the same drift the rail has today, and closing it means
-resolving the item back to a row, which belongs to a different change.
+Rows keep today's rail anatomy: amber category button = the jump, evidence in
+the tooltip, fix verbs beside it. **Verb law (AJ):** a Todo row offers a
+button only for a fix that is already a button somewhere else (Fix from...,
+Fix names). Work done by dragging or ticking gets Jump only -- no second
+interface. Clearing one issue by hand lets the next rebuild post whatever is
+now true, one issue at a time, each true when it appears.
 
-Findings with no line at all (`unheard`, `scan_suspects`, `scan_unheard`) keep
-their own pseudo-groups and count as one entry each, as they do now.
+## Req-2: show/hide, filter, count
 
-### Entry shape
+- **Show/hide.** One button toggles all Todo strips, persisted like the other
+  panel collapses (`ui-copy` law: big panels collapse, counts stay visible).
+- **Filter.** New sheet filter **"Todo"**: only lines with a non-empty Todo.
+  Finishing a line's last item drops it from view on the next rebuild --
+  the sheet drains as the work completes.
+- **Count.** The strip button keeps reading "Todo (N)" where **N = lines
+  with work** (plus Session entries, Req-5). Counting stays on while strips
+  are hidden.
 
-    { key       = <line key>,
-      label     = <display name: row.deliver or row.asset, or the stem>,
-      headline  = <the surviving finding with the lowest weight>,
-      findings  = { <every surviving finding for this line, rank order> } }
+## Req-3: causal suppression
 
-`headline` is `findings[1]`; it is named separately so the walk and the label
-do not have to re-derive it.
-
-The entry *replaces* today's group header rather than adding a level, so the
-rail's visual structure does not change: line name, then one amber issue row
-per surviving finding with its fixes beside it. What changes is that the
-header is now an addressable thing with a count behind it.
-
-Grouping moves to `vo.InboxBuild`, which makes two existing passes redundant
-and they come out: the display-order reshuffle in `Inbox.MaybeAssemble` (the
-"DISPLAY ORDER IS WALK ORDER" loop) and the regroup at the top of
-`Inbox.Draw`. Both exist only because the list arrived flat. `Inbox.Parts`
-stays -- it still supplies `cat`, `take` and `tip` per finding -- but its
-`group` field becomes the entry's label rather than the grouping key.
-
-## Req-2: causal suppression
-
-A finding that is merely the downstream shadow of another finding on the same
-line is **deleted** -- not counted, not drawn, no "+N more". It returns on its
-own when the root clears, because the scanners rerun on the next rebuild.
-
-The rules live in one table beside `vo.INBOX_WEIGHT`, keyed root -> predicate
-on the victim:
+A finding that is the downstream shadow of another on the same line is
+**deleted** -- not counted, not drawn. It returns by itself when the root
+clears, because scanners rerun each rebuild. Rules in one table beside
+`vo.INBOX_WEIGHT`:
 
     vo.INBOX_SUPPRESS = {
       contested_select = <out_of_sync findings whose detail names track placement>,
       no_audio         = <suspect findings on the same row triggering thin or no_words>,
     }
 
-**Rule 1 -- contested select swallows track placement.** When a line is
-contested, an `out_of_sync` finding on that line whose detail names the track
-("on the Selects track but not ticked Sel", "ticked Sel but the item is not on
-the Selects track") is the arithmetic of the contest, not news. The predicate
-tests `d.detail:find("track", 1, true)`, the same test
-`Inbox.MaybeAssemble` already uses to decide an OK stamp cannot silence a
-placement finding.
+- **Contested select swallows track placement.** "On the Selects track but
+  not ticked Sel" is the arithmetic of the contest, not news. Predicate:
+  `detail:find("track", 1, true)` -- the same test the OK-stamp bypass uses.
+- **No audio swallows the words.** thin / no_words on a row whose marker has
+  no audio under it reports that no words were found in audio that is not
+  there. Other suspect triggers on that row (name_mismatch, unmarked, stamp)
+  survive -- they are about the marks, which exist.
+- **Not a rule: undecided.** A line with no pick still needs its takes'
+  problems visible -- you need them to decide.
+- Stage suppression is structural (Req-1: earliest unmet stage only), not a
+  table entry.
 
-**Rule 2 -- no audio swallows the words.** A `no_audio` finding says the
-marker has nothing playing under it. A `suspect` finding on that same row
-triggering `thin` or `no_words` is reporting that no words were found in the
-audio that is not there. Suspect triggers *other* than thin/no_words
-(`name_mismatch`, `unmarked`, `stamp`) survive -- those are about the marks,
-which still exist.
+Rule of admission: if clearing the root would not make the symptom vanish on
+the next rebuild, it is not a symptom and must not be suppressed.
 
-**Not a rule: `undecided`.** A line with no take picked is genuinely
-undecided, and its takes' own problems still matter -- you need them to decide.
+## Req-4: contested = ticked OR parked on Selects
 
-Adding a rule later means one entry in this table plus its test. Anything
-suppressed must be re-derivable: if clearing the root would not make the
-symptom disappear on the next rebuild, it is not a symptom and must not be
-suppressed.
-
-## Req-3: contested = ticked OR parked on Selects
-
-`vo.SelectConflicts(rows, cfg)` widens. A take **claims the select** when
+`vo.SelectConflicts(rows, cfg)` widens: a take claims the select when
 
     row.user_select == true  OR  vo.MarkFromTrack(row.track_name, cfg) == "select"
 
-excluding orphans and missing rows, as today. Two or more claimants on one
-`vo.LineKey` is a contest.
+(orphans and missing excluded, as today). 2+ claimants on one `vo.LineKey` =
+contested. Widening the existing function keeps the card badge, Tidy message
+and Todo reporting one number. Entries carry `claimants = { <rows> }` so the
+card can name them by take letter and track.
 
-Widening the existing function rather than adding a second detector is the
-point: the summary bar, the card badge, and Todo then cannot report different
-numbers for the same state. The `cfg` argument is new and optional -- omitted,
-it falls back to `vo.LoadConfig()`'s defaults at the call sites that have no
-cfg to hand.
+New fault kind **`contested_select`**, weight 15 (below suspect_select 10,
+above out_of_sync 20). Category text: **"Multiple selects"**. Jump only.
 
-Returned entries carry their claimants so the entry can name them:
+Copy everywhere the count shows (Tidy summary, card badge tooltip):
+**"N lines with multiple selects"** -- a contest can be three. The number
+goes up on existing sessions; that is a correction, those lines were always
+contested and never counted.
 
-    { key = <line key>, label = <line name>, count = N, claimants = { <rows> } }
+## Req-5: the Session card and line resolution
 
-### The count's copy changes
+- Findings resolve to their line through `state.overview` (the reconciled
+  sheet+items state). Parity findings that carry only an item resolve
+  through the item->row index Rebuild already builds; the take-name-stem
+  fallback survives only for an item in no row at all.
+- Findings with no line -- **unheard sound** spans, **"scan not run"**
+  status rows -- live on one pinned **Session** card at the top of the
+  sheet. Jump-only rows; each counts toward N.
 
-Every place that number is shown now reads **"N lines with multiple
-selects"** -- not "two selects", because a widened contest can be three.
-Affected: the Tidy summary message and the card badge tooltip.
+## Req-6: keyboard walk
 
-The number will go **up** on existing sessions. That is a correction: lines
-like the one that started this spec were always contested and were never
-counted.
+The rail's J/K moves to the sheet: J/K hop between lines that still have
+Todo (respecting the current filter), verb keys act on the focused line's
+top finding. Same config bindings, same guard off active widgets and popups.
 
-## Req-4: the new finding, and its verbs
+## What gets deleted, what survives
 
-New kind `contested_select`, weight **15** -- below `suspect_select` (10),
-above `out_of_sync` (20), so it outranks and can suppress what it causes.
+Deleted:
 
-Category text: **"Multiple selects"**. Tooltip names the claimants by take
-letter and says which track each sits on.
+- `Inbox.Draw`, the rail child window, `Inbox.WIDTH`, the rail's layout
+  share in the body split, and the rail-hidden toggle wiring (the show/hide
+  button re-targets the in-card strips).
+- The display-order reshuffle in `Inbox.MaybeAssemble` and `Inbox.Draw`'s
+  regroup pass -- grouping moves into `vo.InboxBuild`.
 
-**Its only verb is Jump.**
+Survives, re-housed rather than reinterpreted (the same contract as when the
+panels became the rail in beta33):
 
-This is a deliberate limit, and it is the general law for Todo verbs from here
-on: *a Todo entry offers a button only for a fix that is already a button
-somewhere else.* Picking the select is done by dragging the item or ticking
-the Sel box -- the rail does not grow a second interface for it. `SetSelect`
-already enforces exclusivity and demotes the losing sibling to Keep, and Pull
-already moves items; neither needs a rail wrapper.
-
-The consequence is a **sequence**, and it is the intended behaviour: you clear
-the contest by hand, and if the names fall out of step as a result, the next
-rebuild posts *that* -- "Name mismatch", with its existing Fix-from button.
-One issue at a time, each one true when it appears.
-
-## Req-5: the walk
-
-J/K move entry to entry -- line to line. Verb keys act on the entry's
-headline finding. `state.inbox_sel` indexes entries, not findings.
+- `Inbox.MaybeAssemble`'s feed-staleness logic and OK-stamp filtering.
+- `Inbox.Parts`' per-finding category/take/tip split -- it feeds the card
+  strips now.
+- `Inbox.FixVerbs` and the batch verbs ("Fix N out of sync...", "Adopt
+  timeline for N"); batch verbs move to the Session card.
 
 ## Testing
 
-`tests/test_vo_inbox.lua` gains:
+`tests/test_vo_inbox.lua` gains, for the collapse in `vo.InboxBuild`:
 
-- collapse: three findings across two takes of one line produce one entry;
-  `counts.total` counts entries
-- headline: the lowest-weight survivor becomes `headline`
-- suppression rule 1: a contested line's track-placement `out_of_sync` finding
-  is absent from `findings` and from `counts.total`
-- suppression rule 1 boundary: an `out_of_sync` finding on the same line whose
-  detail does *not* name the track survives
-- suppression rule 2: `thin` and `no_words` suspects vanish under `no_audio`;
-  `name_mismatch` on the same row survives
-- `undecided` suppresses nothing
-- no-line findings (`unheard`, `scan_*`) each remain one entry
+- three findings across two takes of one line -> one line entry; counts
+  count lines
+- lowest-weight survivor is the entry's lead
+- suppression rule 1: contested line's track-placement out_of_sync gone from
+  findings and counts; a non-placement out_of_sync on the same line survives
+- suppression rule 2: thin and no_words vanish under no_audio on the same
+  row; name_mismatch survives
+- undecided suppresses nothing
+- line-less findings (unheard, scan_*) group under the session key
+- stage entry: a line reports only its earliest unmet stage
 
-`tests/test_vo_tidy.lua` gains, for the widened `vo.SelectConflicts`:
+`tests/test_vo_tidy.lua` gains, for widened `vo.SelectConflicts`:
 
-- one ticked + one parked on Selects = contested (the bug that started this)
-- two ticked, neither on Selects = still contested
-- one ticked, one on Alts = not contested
-- orphans never claim
-- claimant rows come back on the entry
+- one ticked + one parked on Selects = contested (the originating bug)
+- two ticked, neither on Selects = contested
+- one ticked + one on Alts = not contested
+- orphans never claim; claimant rows ride the entry
 
 ## Out of scope
 
-- Resolving a divergence finding's item back to a sheet row so it shares a
-  line key with row findings.
 - Any new verb, popup, or picker for choosing the select.
-- Changing how any scanner decides what is wrong. This spec changes only
-  which findings are *posted*, and how they are counted and grouped.
+- Changing what any scanner decides is wrong -- this changes what is posted,
+  grouped, and counted, not what is detected.
+- Auto-running scanners so stage 4/5 entries appear without a manual scan
+  (the "scan not run" Session rows keep that honest for now).
