@@ -3293,7 +3293,13 @@ end
 --   the one on Selects gets the plain base name; everything else gets a
 --   numbered alt name, keeping an alt number it already holds. Items OFF the
 --   role tracks (recording, Review) are never renamed, and the numbers they
---   hold are never reassigned.
+--   hold are never reassigned -- UNLESS the caller says the row is not a take
+--   at all (`row.is_take == false`), which is what a leftover on the recording
+--   track is. That distinction was a real bug: cutting leaves named residue
+--   behind on the recording track, the residue kept wearing "line_alt1", and
+--   every genuine alt of that line was pushed up a number -- a session read
+--   _alt2, _alt3, _alt4 with no _alt1 anywhere. The marker IS the take, so a
+--   clip carrying none holds no name worth protecting.
 --
 -- Two situations are conflicts, reported and left alone rather than guessed:
 --   two or more items on Selects claiming one base, and a promotion whose
@@ -3371,7 +3377,10 @@ function vo.PlanRoleNames(rows, known_bases, cfg, opts)
           if n then used[n] = true end
         end
         for _, row in ipairs(g) do
-          if row ~= sel and role_of[row] == nil then
+          -- `is_take == false` is the caller saying "this clip carries no take
+          -- marker" -- residue, not a delivery. It is still never renamed; it
+          -- just stops holding a name and a number hostage.
+          if row ~= sel and role_of[row] == nil and row.is_take ~= false then
             if row.name == base then blocked = true end
             local n = tonumber(row.name:match(num_matcher) or "")
             if n then used[n] = true end
