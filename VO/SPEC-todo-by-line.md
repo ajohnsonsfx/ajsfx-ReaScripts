@@ -37,20 +37,29 @@ the session is finished when the filtered sheet is empty.
 Each line card grows a Todo strip: one amber row per surviving finding for
 that line, drawn under the card's existing content.
 
-A line's strip shows:
+**Two axes (AJ): stages and errors.** A line has exactly ONE stage -- its
+place in the pipeline -- and may additionally carry errors. The stage names
+(AJ's list):
 
-- its **earliest unmet stage** -- exactly one of, in pipeline order:
-    1. "Not matched"      -- row.status == "missing"; nothing recorded/found
-    2. "No audio"         -- transcribed, but no item plays that stretch
-    3. "Uncut takes"      -- takes still sitting whole on the recording track
-    4. "No take picked"   -- takes exist, none is the select, none vetted
-    5. "Unverified"       -- delivered but no ears/stamp on it
-  Later stages are not shown: a never-matched line has nothing to cut. This
-  is the strip's stage remainder logic (`Strip.RowPasses` order), reused.
-- its **fault findings** that survive suppression (Req-3): Multiple selects,
-  Name/Edges mismatch, Marker without audio, suspect triggers, Vet stale...
-  Faults draw above the stage row -- something *wrong* outranks something
-  *undone*.
+    1. "Not Scanned"   -- the scanners that would judge this line have not run
+    2. "Not Found"     -- nothing plays this line: never matched, or the
+                          audio left the project (tooltip says which)
+    3. "Needs edit"    -- takes still sitting uncut on the recording track
+    4. "Needs select"  -- takes exist, none is the pick
+    5. "Unverified"    -- delivered but no ears/stamp on it
+    6. "Done"          -- stage ladder cleared AND no errors; the line
+                          leaves the Todo filter
+
+Only the earliest unmet stage shows -- a line that is Not Found has nothing
+to edit. This is the strip's stage remainder logic (`Strip.RowPasses`
+order), reused.
+
+**Errors ride the stage as a suffix.** The line's Todo header reads
+`<stage> · Conflict` when fault findings survive suppression (Req-3):
+Multiple selects, Name/Edges mismatch, Marker without audio, suspect
+triggers, Vet stale... The strip's rows beneath list each error with its
+evidence and verbs. Errors are not a stage: they can appear at any rung,
+and Done requires both the ladder cleared and zero errors.
 
 Rows keep today's rail anatomy: amber category button = the jump, evidence in
 the tooltip, fix verbs beside it. **Verb law (AJ):** a Todo row offers a
@@ -122,9 +131,13 @@ contested and never counted.
   sheet+items state). Parity findings that carry only an item resolve
   through the item->row index Rebuild already builds; the take-name-stem
   fallback survives only for an item in no row at all.
-- Findings with no line -- **unheard sound** spans, **"scan not run"**
-  status rows -- live on one pinned **Session** card at the top of the
-  sheet. Jump-only rows; each counts toward N.
+- Findings with no line -- **unheard sound** spans -- live on one pinned
+  **Session** card at the top of the sheet, along with the batch verbs.
+  Jump-only rows; each counts toward N.
+- The old "scan not run" status rows dissolve into the per-line **Not
+  Scanned** stage: while a scanner has not run this session, every line it
+  would judge sits at Not Scanned. Honest and impossible to miss -- a stale
+  scanner can never read as a clean sheet.
 
 ## Req-6: keyboard walk
 
@@ -163,8 +176,13 @@ panels became the rail in beta33):
 - suppression rule 2: thin and no_words vanish under no_audio on the same
   row; name_mismatch survives
 - undecided suppresses nothing
-- line-less findings (unheard, scan_*) group under the session key
+- line-less findings (unheard) group under the session key
 - stage entry: a line reports only its earliest unmet stage
+- scanner not run -> lines it would judge sit at Not Scanned; running it
+  moves them to their real stage
+- errors never change the stage: a Needs-edit line with a conflict stays
+  Needs edit, wearing the error suffix
+- Done requires ladder cleared and zero errors
 
 `tests/test_vo_tidy.lua` gains, for widened `vo.SelectConflicts`:
 
