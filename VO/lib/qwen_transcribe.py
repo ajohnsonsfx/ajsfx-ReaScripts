@@ -307,7 +307,15 @@ def main():
     else:
         tries = [args.device]
 
+    # ONLY the decode is retried on another device. Writing the result used to
+    # sit inside this try, so an OSError saving the JSON -- a full disk, a
+    # cloud-sync folder holding a handle -- was read as "cuda failed" and paid
+    # for a whole second decode on CPU that could not possibly succeed either.
+    # Observed live 2026-08-16: CUDA decoded a 4-minute source fine, could not
+    # rename the .tmp on a Google Drive path, and the run cost another 85s on
+    # CPU before reporting a permission error.
     last_err = None
+    result = None
     for device in tries:
         try:
             model = load_model(device)
@@ -317,24 +325,9 @@ def main():
             log(f"decoded + aligned in {time.time() - t0:.1f}s on {device}"
                 + (f", dropped {dropped} zero-width word(s)" if dropped else "")
                 + (f", stripped {smeared} smeared word(s)" if smeared else ""))
-            doc = {
-                "engine": "qwen3-asr-1.7b+forced-aligner-0.6b",
-                "device": device,
-                "language": args.language,
-                "context_chars": len(context),
-                "bursts": len(bursts),
-                "dropped_zero_width": dropped,
-                "stripped_smears": smeared,
-                "words": words,
-            }
-            tmp = args.out + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(doc, f, ensure_ascii=False)
-            os.replace(tmp, args.out)
-            log("progress = 100%")
-            log(f"wrote {len(words)} word(s) to {args.out}")
-            return 0
-        except Exception as e:  # noqa: BLE001 -- any cuda failure falls back
+            result = (device, words, dropped, smeared)
+            break
+        except Exception as e:  # noqa: BLE001 -- any decode failure falls back
             last_err = e
             log(f"{device} failed: {type(e).__name__}: {e}")
             if device != tries[-1]:
@@ -343,8 +336,41 @@ def main():
                     torch.cuda.empty_cache()
                 except Exception:
                     pass
-    log(f"error: transcription failed: {last_err}")
-    return 1
+
+    if result is None:
+        log(f"error: transcription failed: {last_err}")
+        return 1
+
+    device, words, dropped, smeared = result
+    doc = {
+        "engine": "qwen3-asr-1.7b+forced-aligner-0.6b",
+        "device": device,
+        "language": args.language,
+        "context_chars": len(context),
+        "bursts": len(bursts),
+        "dropped_zero_width": dropped,
+        "stripped_smears": smeared,
+        "words": words,
+    }
+    tmp = args.out + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(doc, f, ensure_ascii=False)
+        os.replace(tmp, args.out)
+    except Exception as e:  # noqa: BLE001 -- the decode succeeded whatever
+                            # broke here, so nothing may re-enter the retry
+        # The words are decoded and correct; only the file did not land. Say
+        # so plainly, and never re-decode over it.
+        log(f"error: decoded {len(words)} word(s) but could not write "
+            f"{args.out}: {type(e).__name__}: {e}")
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return 1
+    log("progress = 100%")
+    log(f"wrote {len(words)} word(s) to {args.out}")
+    return 0
 
 
 if __name__ == "__main__":

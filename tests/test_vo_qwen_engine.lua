@@ -50,6 +50,9 @@ end)
 
 test("WriteQwenContext dedupes lines and round-trips; empty removes", function()
   local cfg = { scratch_dir = "tests" }
+  -- ResolveScratchDir puts each project in its own subfolder under the
+  -- configured root, and the mock has no RecursiveCreateDirectory to make it.
+  os.execute('mkdir -p "' .. vo.ResolveScratchDir(cfg) .. '"')
   local path = vo.WriteQwenContext(cfg, {
     { text = " Master want stone. " },
     { text = "Master want stone." },      -- duplicate after trim
@@ -132,6 +135,133 @@ test("engine defaults to whisper; qwen fields present", function()
   assert(d.qwen_device == "auto")
   assert(d.qwen_python == "")
   assert(d.qwen_context == "script", "context defaults to the script")
+end)
+
+print("ResolveScratchDir:")
+
+test("an explicit scratch_dir still isolates projects from each other", function()
+  -- The context file IS that session's script, so two projects sharing one
+  -- scratch folder would decode each other's context.
+  local d = vo.ResolveScratchDir({ scratch_dir = "C:/scratch" })
+  assert(d:find("^C:/scratch/"), "must sit under the configured root: " .. d)
+  assert(d ~= "C:/scratch", "must not be the bare root")
+end)
+
+test("no scratch_dir keeps the project-folder default", function()
+  local d = vo.ResolveScratchDir({})
+  assert(d:find("vo_scratch", 1, true), "expected a vo_scratch path: " .. d)
+end)
+
+print("TranscriptBackendMeta:")
+
+test("whisper stamps whisper.cpp and its model path", function()
+  local m = vo.TranscriptBackendMeta({
+    whisper_model = "C:/models/ggml-large-v3.bin", whisper_language = "en" })
+  assert(m.backend == "whisper.cpp", "backend was " .. tostring(m.backend))
+  assert(m.model == "C:/models/ggml-large-v3.bin")
+  assert(m.language == "en")
+end)
+
+test("no engine set behaves as whisper", function()
+  assert(vo.TranscriptBackendMeta({}).backend == "whisper.cpp")
+  assert(vo.TranscriptBackendMeta(nil).backend == "whisper.cpp")
+end)
+
+test("qwen never borrows whisper's backend or model", function()
+  local m = vo.TranscriptBackendMeta({
+    transcribe_engine = "qwen",
+    whisper_model     = "C:/models/ggml-large-v3.bin",
+    whisper_language  = "en",
+  })
+  assert(m.backend == "qwen-asr", "backend was " .. tostring(m.backend))
+  assert(not m.model:find("ggml", 1, true), "qwen must not claim a whisper model")
+  assert(m.model:find(tostring(vo.QWEN_RUNNER_VERSION), 1, true),
+         "runner version must be recorded")
+  assert(m.language == "en")
+end)
+
+test("script context is recorded, and its absence too", function()
+  local with = vo.TranscriptBackendMeta({ transcribe_engine = "qwen" })
+  assert(with.model:find("script%-context"), "default context must be stamped")
+  local without = vo.TranscriptBackendMeta({
+    transcribe_engine = "qwen", qwen_context = "off" })
+  assert(not without.model:find("script%-context"),
+         "a blind decode must not claim context")
+end)
+
+print("ProjectSourceFingerprint:")
+
+test("which recordings are played is what matters", function()
+  local a = vo.ProjectSourceFingerprint({ "a.wav" })
+  assert(a ~= vo.ProjectSourceFingerprint({ "b.wav" }), "source ignored")
+  assert(a == vo.ProjectSourceFingerprint({ "a.wav" }), "not stable")
+end)
+
+test("CUTTING a recording does not change the fingerprint", function()
+  -- The regression that made this a set: Cut turns one recording into forty
+  -- items of the SAME source, and the old per-item fingerprint changed with it
+  -- -- so the baseline taken at load stopped matching within one press and a
+  -- genuine Save As afterwards was read as a different project.
+  local whole = vo.ProjectSourceFingerprint({ "rec.wav" })
+  local cut = {}
+  for _ = 1, 40 do cut[#cut + 1] = "rec.wav" end
+  assert(whole == vo.ProjectSourceFingerprint(cut),
+         "splitting one recording must not look like a different project")
+end)
+
+test("PULLING to new tracks does not change the fingerprint", function()
+  -- Pull adds Selects/Alts/Review/Outs and moves items onto them. Same audio,
+  -- more tracks -- which is why the track count is no longer part of this.
+  local before = vo.ProjectSourceFingerprint({ "rec.wav", "rec.wav" })
+  local after  = vo.ProjectSourceFingerprint({ "rec.wav", "rec.wav", "rec.wav" })
+  assert(before == after, "new destination tracks must not read as a new project")
+end)
+
+test("a genuinely new recording DOES change it", function()
+  assert(vo.ProjectSourceFingerprint({ "a.wav" })
+      ~= vo.ProjectSourceFingerprint({ "a.wav", "b.wav" }))
+end)
+
+test("order does not change the fingerprint", function()
+  assert(vo.ProjectSourceFingerprint({ "a.wav", "b.wav" })
+      == vo.ProjectSourceFingerprint({ "b.wav", "a.wav" }))
+end)
+
+test("an empty project has a fingerprint rather than nil", function()
+  assert(type(vo.ProjectSourceFingerprint({})) == "string")
+  assert(vo.ProjectSourceFingerprint({}) == vo.ProjectSourceFingerprint(nil))
+end)
+
+print("IsSaveAs:")
+
+test("same audio, no sidecar at the new path, is a save-as", function()
+  local fp = vo.ProjectSourceFingerprint({ "a.wav" })
+  assert(vo.IsSaveAs(fp, fp, false) == true)
+end)
+
+test("different audio is a different project, never a save-as", function()
+  local a = vo.ProjectSourceFingerprint({ "Carcas_Cleaned.wav" })
+  local b = vo.ProjectSourceFingerprint({ "Job_Cleaned.wav" })
+  assert(vo.IsSaveAs(a, b, false) == false,
+         "opening another project into the tab must not carry state")
+end)
+
+test("a sidecar already at the new path is never overwritten", function()
+  local fp = vo.ProjectSourceFingerprint({ "a.wav" })
+  assert(vo.IsSaveAs(fp, fp, true) == false,
+         "an existing sidecar must be read, not clobbered")
+end)
+
+test("an unknown previous fingerprint is not a save-as", function()
+  assert(vo.IsSaveAs(nil, vo.ProjectSourceFingerprint({ "a.wav" }), false)
+         == false)
+end)
+
+test("two empty projects are told apart by the sidecar guard", function()
+  -- Both fingerprints are the empty-project string, so the audio cannot
+  -- separate them; the sidecar existing is what stops the clobber.
+  local e = vo.ProjectSourceFingerprint({})
+  assert(vo.IsSaveAs(e, e, true) == false)
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))

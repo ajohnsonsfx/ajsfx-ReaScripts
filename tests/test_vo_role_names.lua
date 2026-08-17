@@ -101,6 +101,44 @@ test("an untouchable row's alt number is never reassigned", function()
          "demotion collided with an off-track alt number")
 end)
 
+test("residue with no take marker does not reserve an alt number", function()
+  -- Cut leaves named leftovers on the recording track. They carry no take
+  -- marker, so they are not takes -- and a non-take must not push the line's
+  -- real alt off _alt1. This was live: a session read _alt2, _alt3, _alt4
+  -- with no _alt1 anywhere, every number eaten by residue.
+  local rows = {
+    { name = "Foo_alt1", track_name = "JOB raw", is_take = false },
+    { name = "Foo",      track_name = "Alts" },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG)
+  assert(renamed(plan, rows[1]) == nil, "residue was renamed")
+  assert(renamed(plan, rows[2]) == "Foo_alt1",
+         "demotion skipped past residue, got " .. tostring(renamed(plan, rows[2])))
+end)
+
+test("residue holding the plain name does not block a promotion", function()
+  local rows = {
+    { name = "Foo",      track_name = "JOB raw", is_take = false },
+    { name = "Foo_alt1", track_name = "Selects" },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG)
+  assert(#plan.conflicts == 0, "residue blocked a promotion")
+  assert(renamed(plan, rows[2]) == "Foo", "promotion missing")
+end)
+
+test("an off-track row that IS a take still reserves its number", function()
+  -- The guard still has to work: a real take parked on Review carries a
+  -- marker, and handing its number to somebody else changes what a name
+  -- already seen outside this project means.
+  local rows = {
+    { name = "Foo_alt1", track_name = "Review", is_take = true },
+    { name = "Foo",      track_name = "Alts" },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG)
+  assert(renamed(plan, rows[2]) == "Foo_alt2",
+         "a real off-track take lost its number")
+end)
+
 test("duplicate alt numbers on role tracks are renumbered", function()
   local rows = {
     { name = "Foo_alt1", track_name = "Alts" },

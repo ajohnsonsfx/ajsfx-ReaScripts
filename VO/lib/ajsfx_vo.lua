@@ -340,10 +340,22 @@ function vo.BuildScriptLines(rows, cols, filters)
     local keep = text ~= "" and asset ~= "" and not skip[fold(asset)]
     -- Character filter applies ONLY when a character column is mapped: with no
     -- column the filter is inert (keep all — preserves the "filter inert without
-    -- the column" contract); with a column, a row whose character is empty or
-    -- not in the include-set is dropped.
+    -- the column" contract).
+    --
+    -- An EMPTY cell is always kept. The include-set is built by ticking the
+    -- values the scripts actually contain (see vo.ScriptSpeakers), and a blank
+    -- cell offers nothing to tick -- so excluding it would make lines
+    -- unreachable through the UI that is supposed to control this. A script
+    -- that simply does not fill the column excludes nobody, which is the same
+    -- "inert without the data" contract one level down.
+    --
+    -- Note that a cell reading "(no speaker set)" is NOT empty: it is a value
+    -- the script chose to write, it appears in the tick list like any other, and
+    -- guessing at which strings secretly mean "nobody" is exactly the kind of
+    -- inference that would go wrong on somebody else's export.
     if keep and speakers and cols.speaker then
-      keep = (speaker_key ~= nil) and speakers[speaker_key] == true
+      keep = (speaker_raw == nil or speaker_raw == "")
+             or speakers[speaker_key] == true
     end
 
     if keep then
@@ -357,6 +369,75 @@ function vo.BuildScriptLines(rows, cols, filters)
   end
 
   return lines
+end
+
+-- Every distinct speaker value the scripts actually contain, with how many
+-- lines each one holds -- the tick list the character filter is built from.
+--
+-- Read from the RAW rows, not from `sc.lines`, and that is the whole point: the
+-- lines have already had the filter applied, so a panel built from them could
+-- only ever offer the characters that are already included. There would be no
+-- way back to the ones you excluded.
+--
+-- `scripts` is vo.LoadScripts's `scripts` array. Disabled scripts are skipped:
+-- a script switched off contributes no lines, so offering its cast would be
+-- offering a filter over nothing. Rows with an empty speaker cell are counted
+-- separately as `blank` -- they are always kept (see vo.BuildScriptLines) and
+-- so are not a choice to be made.
+--
+-- The counts mirror what the sheet would show: a row with no text or no
+-- filename, and a row whose filename is a skip value ("TO RECORD"), is dropped
+-- here exactly as vo.BuildScriptLines drops it. Only the SPEAKER filter is left
+-- out, which is the one this list exists to control. A tick reading "Carcas
+-- (27)" that produced 24 lines would be worse than no number at all.
+--
+-- Returns `{ { name, key, n }, ... }` sorted by name, and the blank count.
+function vo.ScriptSpeakers(scripts, skip_values)
+  local skip = {}
+  for _, v in ipairs(skip_values or vo.DEFAULT_SKIP_VALUES) do skip[fold(v)] = true end
+
+  local by_key, blank = {}, 0
+  for _, sc in ipairs(scripts or {}) do
+    if sc.enabled ~= false and sc.header and sc.rows then
+      local cols = vo.MapColumns(sc.header, sc.mapping or {})
+      if cols and cols.speaker then
+        for _, row in ipairs(sc.rows) do
+          local text  = vo.StripWrappingQuotes(trim(row[cols.text]))
+          local asset = trim(row[cols.asset])
+          local raw   = trim(row[cols.speaker])
+          if text == "" or asset == "" or skip[fold(asset)] then -- luacheck: ignore
+          elseif raw == "" then
+            blank = blank + 1
+          else
+            local key = fold(raw)
+            local rec = by_key[key]
+            if rec then
+              rec.n = rec.n + 1
+            else
+              by_key[key] = { name = raw, key = key, n = 1 }
+            end
+          end
+        end
+      end
+    end
+  end
+  local out = {}
+  for _, rec in pairs(by_key) do out[#out + 1] = rec end
+  table.sort(out, function(a, b) return a.name < b.name end)
+  return out, blank
+end
+
+-- The include-set vo.BuildScriptLines wants, from the list of names the project
+-- stored. nil (or an empty list) means every character, which is what a project
+-- that never chose should get.
+function vo.SpeakerFilter(names)
+  if not names or #names == 0 then return nil end
+  local set = {}
+  for _, n in ipairs(names) do
+    local key = fold(tostring(n or ""))
+    if key ~= "" then set[key] = true end
+  end
+  return next(set) and set or nil
 end
 
 -- Script lines that two or more rows want DELIVERED under the same name, after
@@ -934,8 +1015,18 @@ end
 -- line's delivered name. It is how two takes of one line can be delivered under
 -- different names: the Append belongs to the line and would rename the select
 -- as well as the alt.
-function vo.PlanPull(items, lines, marks)
+-- `opts.lone_take_is_select` decides what happens to a line that has exactly one
+-- take and no tick. It used to be unconditionally true -- "a lone item IS the
+-- delivery" -- which is right for a folder of rendered files carrying no ticks
+-- at all, and wrong for the workflow where the first Pull is supposed to park
+-- EVERYTHING on Review for the ears to sort. On a session where most lines were
+-- read once, that shortcut delivered nearly the whole session unheard, and
+-- clearing the ticks could not stop it. Default false: a tick is the only thing
+-- that promotes a take, and nothing arrives on Selects because it was lonely.
+function vo.PlanPull(items, lines, marks, opts)
   marks = marks or {}
+  opts  = opts or {}
+  local lone_is_select = opts.lone_take_is_select == true
   local index = vo.BuildNameIndex(lines)
 
   local groups, order = {}, {}
@@ -963,10 +1054,10 @@ function vo.PlanPull(items, lines, marks)
     local line    = lines[at] or {}
     local deliver = line.deliver or line.asset
 
-    -- One take is not a decision: a lone item IS the delivery, whether or not
-    -- anybody ticked it, and a folder of rendered files carries no ticks at
-    -- all. Everything else follows the two ticks.
-    if #group == 1 and not marks[group[1].id] then
+    -- A lone item can be treated as the delivery whether or not anybody ticked
+    -- it -- true for a folder of rendered files, which carries no ticks at all.
+    -- Off by default now; see the note on opts.lone_take_is_select.
+    if lone_is_select and #group == 1 and not marks[group[1].id] then
       moves[#moves + 1] = { id = group[1].id, line = at,
                             dest = "selects", rename = group[1].override or deliver }
       summary.selects = summary.selects + 1
@@ -3283,7 +3374,13 @@ end
 --   the one on Selects gets the plain base name; everything else gets a
 --   numbered alt name, keeping an alt number it already holds. Items OFF the
 --   role tracks (recording, Review) are never renamed, and the numbers they
---   hold are never reassigned.
+--   hold are never reassigned -- UNLESS the caller says the row is not a take
+--   at all (`row.is_take == false`), which is what a leftover on the recording
+--   track is. That distinction was a real bug: cutting leaves named residue
+--   behind on the recording track, the residue kept wearing "line_alt1", and
+--   every genuine alt of that line was pushed up a number -- a session read
+--   _alt2, _alt3, _alt4 with no _alt1 anywhere. The marker IS the take, so a
+--   clip carrying none holds no name worth protecting.
 --
 -- Two situations are conflicts, reported and left alone rather than guessed:
 --   two or more items on Selects claiming one base, and a promotion whose
@@ -3361,7 +3458,10 @@ function vo.PlanRoleNames(rows, known_bases, cfg, opts)
           if n then used[n] = true end
         end
         for _, row in ipairs(g) do
-          if row ~= sel and role_of[row] == nil then
+          -- `is_take == false` is the caller saying "this clip carries no take
+          -- marker" -- residue, not a delivery. It is still never renamed; it
+          -- just stops holding a name and a number hostage.
+          if row ~= sel and role_of[row] == nil and row.is_take ~= false then
             if row.name == base then blocked = true end
             local n = tonumber(row.name:match(num_matcher) or "")
             if n then used[n] = true end
@@ -5013,6 +5113,29 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
       local at_start = sp0 or s.raw_start
       local at_stop  = sp1 or s.raw_stop
 
+      -- TRUSTING THE WORD TIMES INSTEAD OF THE ENVELOPE.
+      --
+      -- Everything above exists because whisper's word times could not tell
+      -- speech from the pause they had absorbed: a word's END was simply the
+      -- next word's START (94% touch exactly), so the take's own silence sat
+      -- INSIDE its span and an edge had to be measured in to the sound before
+      -- it could be padded back out.
+      --
+      -- A forced aligner does not work that way. Measured on a Qwen transcript
+      -- 2026-08-16: of 52 take-final words, 51 of 51 had an END placed
+      -- independently of the next word's start, with a median duration of 640ms
+      -- against 400ms for words generally -- the line's natural decay measured
+      -- into the word, which is exactly what the envelope walk was reconstructing.
+      -- Mid-line ends are still chained (74%), but a cut only ever uses a
+      -- take-final one.
+      --
+      -- With this on, the edges ARE the word times and the envelope is not
+      -- consulted. Off by default: it is only true for an engine that reports
+      -- real ends, and a whisper transcript would be cut to the pause.
+      if vo.Opt(cfg, "trust_word_ends") then
+        at_start, at_stop = s.raw_start, s.raw_stop
+      end
+
       -- The search window is bounded by the neighbouring WORD -- every word the
       -- transcript holds, not just the ones this cut selected. Bounding by the
       -- neighbouring SPAN alone is not enough: a false start or an aside sitting
@@ -5129,8 +5252,13 @@ function vo.ApplyPadding(spans, cfg, bounds, probe, floor_db, words)
         end
         return t
       end
-      at_start = extend_through_sound(at_start, start_limit, -1)
-      at_stop  = extend_through_sound(at_stop,  stop_limit,  1)
+      -- The walk is the envelope's job too, so it goes with it: its whole
+      -- purpose is to recover a breath the word times could not see, and when
+      -- the word times are the answer there is nothing to recover.
+      if not vo.Opt(cfg, "trust_word_ends") then
+        at_start = extend_through_sound(at_start, start_limit, -1)
+        at_stop  = extend_through_sound(at_stop,  stop_limit,  1)
+      end
 
       local head = math.min(pre,  vo.Opt(cfg, "snap_head_room"))
       local tail = math.min(post, vo.Opt(cfg, "snap_tail_room"))
@@ -7176,6 +7304,19 @@ function vo.SerializeProjectFile(entries, meta)
     end
   end
 
+  -- WHICH CHARACTERS THIS PROJECT IS EDITING. A property of the session, like
+  -- the substitutions above: one recording is one performer, and the script it
+  -- was cut from usually carries the whole scene. Written here rather than held
+  -- in the config because the answer is different for every project and the
+  -- same on every machine.
+  --
+  -- No rows means every character, so a project that never chose is unchanged.
+  for _, name in ipairs(meta.speakers or {}) do
+    if name and name ~= "" then
+      out[#out + 1] = vo.FormatCSVRow({ "Speaker", name })
+    end
+  end
+
   -- Pins live in the preamble rather than the entry table because they are keyed
   -- by the SCRIPT LINE, while every entry row is keyed by a stretch of audio.
   -- Keeping them out of that table is also what lets them be added without
@@ -7278,7 +7419,7 @@ function vo.ParseProjectFile(text)
   end
 
   local parsed = { version = version, scripts = {}, appends = {},
-                   line_edits = {}, names = {}, subs = {},
+                   line_edits = {}, names = {}, subs = {}, speakers = {},
                    entries = {}, pins = {}, view = { col_filters = {}, expanded = {} } }
   -- The pre-multi-script format, folded in below only if no Script row appears.
   local legacy_path, legacy_mapping = nil, nil
@@ -7321,6 +7462,18 @@ function vo.ParseProjectFile(text)
       local from, to = rows[i][2] or "", rows[i][3] or ""
       if from ~= "" then
         parsed.subs[#parsed.subs + 1] = { from = from, to = to }
+      end
+    elseif key == "Speaker" then
+      -- Which characters this project is editing. Deduped on the way in: the
+      -- list is an include-SET, so a name twice is the same instruction, and a
+      -- file hand-edited into repeating one should not make the panel repeat it.
+      local name = rows[i][2] or ""
+      if name ~= "" then
+        local dup = false
+        for _, had in ipairs(parsed.speakers) do
+          if fold(had) == fold(name) then dup = true break end
+        end
+        if not dup then parsed.speakers[#parsed.speakers + 1] = name end
       end
     elseif key == "Name" then
       local script, asset = rows[i][2] or "", rows[i][3] or ""
@@ -8607,6 +8760,17 @@ vo.CONFIG_SCHEMA = {
   -- them (min(pre_pad, snap_head_room)), dragging the pads did nothing at all.
   { key = "snap_head_room",     kind = "number", default = vo.DEFAULTS.snap_head_room },
   { key = "snap_tail_room",     kind = "number", default = vo.DEFAULTS.snap_tail_room },
+  -- The cut's fades. Settable because they are half of what "how much room"
+  -- means: the only thing room is FOR is somewhere to put the fade, so a user
+  -- tightening one wants to tighten the other. They were read through vo.Opt
+  -- all along but were missing from this schema, so SaveConfig dropped any
+  -- value written to them and the defaults were the only reachable setting.
+  -- Edges come from the transcript's word times rather than the audio
+  -- envelope. Only sound for an engine that reports real word ends; see the
+  -- note in vo.ApplyPadding.
+  { key = "trust_word_ends",    kind = "bool",   default = false },
+  { key = "cut_fade_in",        kind = "number", default = vo.DEFAULTS.cut_fade_in },
+  { key = "cut_fade_out",       kind = "number", default = vo.DEFAULTS.cut_fade_out },
   { key = "unheard_min_length", kind = "number", default = vo.DEFAULTS.unheard_min_length },
   { key = "unheard_join",       kind = "number", default = vo.DEFAULTS.unheard_join },
   { key = "trim_head_slack",    kind = "number", default = vo.DEFAULTS.trim_head_slack },
@@ -8623,6 +8787,10 @@ vo.CONFIG_SCHEMA = {
   { key = "track_alts",         kind = "string", default = "Alts" },
   { key = "track_review",       kind = "string", default = "Review" },
   { key = "track_outs",         kind = "string", default = "Outs" },
+  -- Does a line's ONLY take reach Selects without a tick? Off: the first Pull
+  -- parks every identified read on Review and a tick is the only promotion.
+  -- On restores the rendered-folder behaviour, where nothing is ticked at all.
+  { key = "pull_lone_take_to_selects", kind = "bool", default = false },
   -- The alt naming convention. Not bounded here: vo.PlanAltNames floors and
   -- clamps its own inputs, so a hand-edited ExtState cannot break a run.
   { key = "alt_append_pattern", kind = "string", default = "_alt{n}" },
@@ -8899,6 +9067,100 @@ function vo.FileFingerprint(path)
   return string.format("%08x", h)
 end
 
+-- What identifies a project's AUDIO: the DISTINCT set of source files it plays.
+--
+-- Distinct, and nothing else. The first version counted one entry per item and
+-- included the track count, which made it a fingerprint of the EDIT rather than
+-- of the audio -- and both of those change during ordinary work. Cut turns one
+-- recording into forty items; Pull adds the Selects/Alts/Review/Outs tracks. So
+-- the baseline taken at load stopped matching within one press, and a genuine
+-- File>Save As afterwards was read as "a different project landed in this tab":
+-- the session's scripts, subs and pins stayed behind on the OLD sidecar and the
+-- newly-named project opened with nothing configured. Cutting then saving under
+-- a new name is the tool's own main path, so that was most of the time.
+--
+-- Deduplicated and sorted, the set survives every edit that does not change
+-- WHICH RECORDINGS the project plays -- which is exactly the question being
+-- asked. Adding a genuinely new recording does change it, and that resolves as
+-- "different project": the safe direction, since it flushes to the old file and
+-- READS the new one rather than overwriting it.
+function vo.ProjectSourceFingerprint(sources)
+  local seen, list = {}, {}
+  for _, p in ipairs(sources or {}) do
+    local s = p and tostring(p) or ""
+    if s ~= "" and not seen[s] then
+      seen[s] = true
+      list[#list + 1] = s
+    end
+  end
+  table.sort(list)
+  return table.concat(list, "|")
+end
+
+-- Same ReaProject handle, different path -- is that a save-as, or a different
+-- project opened into the tab? REAPER hands back the SAME handle for both, so
+-- the handle cannot tell them apart, and guessing "save-as" carries THIS
+-- project's scripts, subs, pins and marks into the OTHER project's sidecar and
+-- overwrites it. (Observed 2026-08-16: opening Job into the tab that held
+-- Carcas wrote Carcas's script list into Job's sidecar.)
+--
+-- Two things have to hold before state may travel: the audio must be unchanged,
+-- and the new path must not already own a sidecar. A genuine save-as to a new
+-- name satisfies both. Anything else is treated as a different project, which
+-- costs a save-as-onto-an-existing-name its carry-over -- the safe direction,
+-- since that sidecar is then read rather than destroyed.
+function vo.IsSaveAs(old_fingerprint, new_fingerprint, new_sidecar_exists)
+  if new_sidecar_exists then return false end
+  return old_fingerprint ~= nil and old_fingerprint == new_fingerprint
+end
+
+-- The live fingerprint of the project REAPER currently has active. Reads the
+-- API rather than state.items, because the caller needs it at the moment the
+-- tab changes -- before anything has been reloaded.
+function vo.CurrentProjectFingerprint()
+  local sources = {}
+  for ti = 0, r.CountTracks(0) - 1 do
+    local tr = r.GetTrack(0, ti)
+    for ii = 0, r.CountTrackMediaItems(tr) - 1 do
+      local tk = r.GetActiveTake(r.GetTrackMediaItem(tr, ii))
+      if tk and not r.TakeIsMIDI(tk) then
+        local src = r.GetMediaItemTake_Source(tk)
+        local p = src and r.GetMediaSourceFileName(src, "")
+        if p and p ~= "" then sources[#sources + 1] = p end
+      end
+    end
+  end
+  return vo.ProjectSourceFingerprint(sources)
+end
+
+-- Which engine actually produced a transcript, in the shape vo.TranscriptMeta
+-- wants. It lives here rather than at each call site because there are two
+-- writers (the Sources panel and the headless harness) and they were both
+-- stamping "whisper.cpp" unconditionally -- so a Qwen transcript claimed
+-- whisper's backend AND whisper's model path, and nothing on disk could say
+-- which engine's words you were reading. The script context rides along: it
+-- changes the words materially, so a with-context transcript is not the same
+-- artefact as a blind one.
+function vo.TranscriptBackendMeta(cfg)
+  cfg = cfg or {}
+  if (cfg.transcribe_engine or "whisper") == "qwen" then
+    local model = "qwen-asr runner v" .. tostring(vo.QWEN_RUNNER_VERSION)
+    if (cfg.qwen_context or "script") ~= "off" then
+      model = model .. " +script-context"
+    end
+    return {
+      backend  = "qwen-asr",
+      model    = model,
+      language = cfg.whisper_language or "",
+    }
+  end
+  return {
+    backend  = "whisper.cpp",
+    model    = cfg.whisper_model or "",
+    language = cfg.whisper_language or "",
+  }
+end
+
 -- The identity block every transcript carries. Built in one place so a writer
 -- cannot record a size without a fingerprint, or either without the path.
 function vo.TranscriptMeta(source_path, extra)
@@ -8919,9 +9181,31 @@ end
 
 -- Scratch directory for transcripts and launcher files. Prefers the configured
 -- path, then a folder beside the project, then the system temp dir.
+-- Where decode caches, run logs and the Qwen context file live.
+--
+-- With `scratch_dir` set, each project gets its OWN subfolder under it. The
+-- context file is per-project by definition -- it is that session's script --
+-- and a shared folder would also have two projects' run logs overwriting each
+-- other. Setting scratch_dir is how you get this data OFF a cloud-synced
+-- project folder: a sync client holding a handle on the folder makes the
+-- runner's atomic rename fail, which costs the whole decode.
 function vo.ResolveScratchDir(cfg)
   if cfg and cfg.scratch_dir and cfg.scratch_dir ~= "" then
-    return cfg.scratch_dir
+    local ok, handle, proj = pcall(function()
+      local h, p = r.EnumProjects(-1, "")
+      return h, p
+    end)
+    local name = ok and proj and proj ~= ""
+      and proj:match("([^/\\]+)%.[Rr][Pp][Pp]$")
+    if not name then
+      -- An unsaved project has no name to be isolated BY, and a shared
+      -- "unsaved" folder would put two of them in one scratch -- including one
+      -- qwen_context.txt, which is the exact cross-project decode this whole
+      -- per-project split exists to prevent. The project handle is unique per
+      -- open instance, so it separates them until one gets a real name.
+      name = "unsaved-" .. tostring(handle or "0"):gsub("%W", "")
+    end
+    return cfg.scratch_dir .. "/" .. name
   end
 
   local ok, proj_path = pcall(function()

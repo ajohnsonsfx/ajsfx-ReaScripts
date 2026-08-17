@@ -296,13 +296,12 @@ local function RunTranscribe(rows, force)
     end,
 
     -- Written per file, as each finishes. A cancel at file 40 of 47 must not
-    -- discard 39 completed whisper runs.
+    -- discard 39 completed runs.
     on_source = function(path, words, i, total)
-      local meta = vo.TranscriptMeta(path, {
-        backend  = "whisper.cpp",
-        model    = cfg.whisper_model or "",
-        language = cfg.whisper_language or "",
-      })
+      -- Which engine is stamped is decided by vo.TranscriptBackendMeta, not
+      -- here: this used to hardcode whisper, which quietly mislabelled every
+      -- Qwen transcript.
+      local meta = vo.TranscriptMeta(path, vo.TranscriptBackendMeta(cfg))
       local ok, why = vo.WriteTranscript(path, words, meta)
       if not ok then
         state.write_fails[#state.write_fails + 1] = (path .. ": " .. tostring(why))

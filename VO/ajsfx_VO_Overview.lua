@@ -1,7 +1,7 @@
 -- @description ajsfx VO Overview
 -- @author ajsfx
--- @version 0.15beta45
--- @changelog PRE-RELEASE: THE REVIEW PASS -- FIVE FINDINGS FROM AN ADVERSARIAL SWEEP OF BETAS 37-44, ALL FIXED. (1) Cancelling or timing out a Qwen transcribe killed by process image name, and that name was python.exe -- EVERY python on the machine died with it, render tools included; the venv python is now copied once to ajsfx-qwen-python.exe (a venv launcher keys on its location, not its name) so the kill can only ever hit the runner. (2) The names-follow-tracks sweep ignored the "In sync" master switch: with sync OFF -- the mode whose tooltip promises "nothing runs by itself" -- a drag still got auto-renamed; the sweep now honours the switch, and "Fix names now" is the manual path while you drive. (3) An OK stamp silenced marks-vs-track findings, but the stamp's fingerprint never witnessed TRACK PLACEMENT -- an OK'd take later dragged to the wrong track kept its blessing and its finding was hidden; placement findings are now never silenced by OK. (4) A transient script-read failure (CSV locked mid-autosave) deleted the Qwen decode-context file, silently flipping the next transcription to a BLIND decode under its own cache key; the context now survives any rebuild that still has scripts configured. (5) Runner hardening: bursts separated by a 0.4-0.5s breath could overlap after padding and decode the boundary word twice (padding now clamps to half the real gap); words dropped for overhanging their burst are now counted in the report; ffmpeg failures print ffmpeg's actual reason instead of a raw traceback; a path the legacy Windows codepage cannot encode no longer crashes the log itself; the context file read tolerates a BOM and a mid-read rewrite. Also from the sweep, confirmed sound and deliberately unchanged: PlanRoleNames cannot assign duplicate final names, Pull cannot drag an unmarked take off the Outs shelf, a killed Qwen run cannot leave a half-written cache (tmp+atomic rename), and the sweep cannot chase its own renames. (beta44: THE SMEAR DEFENSE.) Found live the day it mattered: with script context on, the decoder sometimes emits lines the burst's audio does not hold (the context pulling), and with no acoustics to pin them to the forced aligner falls back to distributing those words EVENLY -- sometimes past the burst's end -- so phantom word streams landed across NEIGHBOURING takes' time ranges and the sheet flooded amber with "extra words" no one said there. Real speech is never metronomic, so uniformity is the conviction: the runner now strips runs of 3+ words with identical durations of 0.7s and up ("want stone Old book" at exactly 1.27s each), runs of 6+ words at identical start gaps ("What do you think the Tower is" at exactly 0.26s), and anything overhanging its burst's actual length. Tuned against real speech as carefully as against the fiction: an actor repeating a short line rides the aligner's grid (four words at a uniform 0.32s is a legitimate "That is my work") and a slow deliberate read has uniform near-second start gaps ("Master want stone" at 0.88/0.88) -- both survive, verified case by case. The transcribe cache now carries a RUNNER VERSION alongside the context hash, so results written under the old rules age out instead of being served as fresh -- re-transcribing after this update actually re-decodes. (beta43: STRAIGHTEN NAMES.) Next to "Fix names now" in the Pull panel (and as straighten_names on the remote seam): every select gets its line's plain delivered name, and every line's alts are RENUMBERED compactly from _alt1 in timeline order, Outs continuing after the alts -- the gaps that swaps and demotions leave (an only-alt sitting at _alt4) close up. This is deliberately a SEPARATE, manual verb from the drag-follow sweep: the sweep never renumbers, because a number you have seen must never quietly become a different take -- straightening is the one press where renumbering is exactly what was asked, so the vacated-number guard relaxes for it and for nothing else. Idempotent (a straight session plans zero renames), timeline-ordered, per-line; two selects on one line still refuses and reports rather than guessing, and takes off the role tracks are never renamed and keep their numbers (the renumbering skips around them). One undo step. (beta42: THE SCRIPT IS THE DECODE'S CONTEXT (QWEN ENGINE).) With the Qwen engine selected, the loaded script lines now ride along as decoding context ("Script context" in Settings' Backend section, on by default; "off" decodes blind). Qwen3-ASR biases toward text it is given: invented words come back spelled right, and the character's non-fluent register survives where a blind decode auto-corrects it -- verified live on a take the blind decode heard as "Gun." that the user's own ears confirm says "Can.", and on "Master Wandstone" resolving to the scripted "Master want stone". The pull cuts both ways, and the tool is built for that: a genuine mis-read can decode as the scripted words, so VERIFY, RE-LISTEN AND THE AUDIT REMAIN SCRIPT-BLIND WHISPER regardless of this setting -- assignment reads the script, verification never does, and mis-read hunting is verification's job by contract now, not a side effect of transcription. The context file is rewritten from the loaded lines on every rebuild (deduplicated, skipped when unchanged), and the Qwen transcribe cache keys on the context's content hash, so editing the script re-decodes rather than serving stale-context words, and a with-context run can never serve a blind cache or vice versa. Context costs decode time -- the model re-reads the script per burst, about 3x (105 seconds against 34 for a half-hour source on an uncontended GPU) -- and on the full validation session every one of 419 take spans still held its words with clean stamps. (beta41: A SECOND TRANSCRIPTION ENGINE -- QWEN3-ASR WITH TRUE WORD TIMES.) Settings' Backend section grows a "Transcription engine" choice: whisper (unchanged, still the default) or Qwen3-ASR-1.7B with its forced aligner, run from a local python venv (Resources/asr-qwen, or point "qwen_python" anywhere). The aligner emits REAL per-word start and end times -- no displaced windows, so for Qwen sidecars the anchor IS the start time and the whole DTW correction layer has nothing to correct. Benchmarked against the user's own approved item edges on 30 takes before building: first words land +0.02..+0.10s inside the cut start, ends inside the tails, zero clipped word heads. Sidecar format is unchanged (t0,t1,word,anchor) -- the matcher, cutter, sheet and judges cannot tell the engines apart, which is the point. Device is auto by default: try CUDA (about 5 GB in bf16 -- the GPU is shared with render tools), fall back to CPU on any failure including mid-run OOM; CPU is a real mode at roughly 1.6 s per take resident. Each engine caches under its own scratch file, so switching engines can never serve the other engine's words. The runner decodes per SPEECH BURST, not per file: a VO source is the same line read back to back, and on minutes-long windows that repetition defeats the aligner (words collapse to zero width on one instant) and invites the decoder to dedup a repeat so one read's span comes back empty -- bursts found by energy, joined only under 0.4s, each aligned on its own, put every one of a real session's 419 take spans in possession of its words with zero degenerate stamps, including the spans whisper's swallowed-gap holes had left blank. Gap repair stays whisper-only by design (it exists to mend whisper's swallowed windows with whisper re-runs; the unheard scan still guards real holes on either engine). VERIFY AND RE-LISTEN STAY WHISPER REGARDLESS of the engine setting: Qwen's LLM decoder drifts toward fluent expected text -- it heard "sentinels" for a take that plainly says "sentence" -- which is exactly the bias a verifier must not have; assignment and verification now deliberately use different ears. Readiness routes with the engine: with qwen selected, a missing venv blocks transcription with the reason (never a silent fall back to whisper), and whisper being absent blocks nothing. (beta40: NAMES FOLLOW THE TRACKS.) Drag a take onto Selects and its name becomes the line's plain delivered name; drag it onto Alts or Outs and it picks up a numbered alt name. For EVERY drag -- including the batch drags and sync-off sessions that beta31's waterfall never covered, because this is no longer scoped to what the watcher could attribute to one element: after any edit settles, one whole-session sweep (vo.PlanRoleNames) renames every take on a role track whose name disagrees with it, and an empty plan costs nothing. The BASE of a name -- WHICH line the take is -- never follows a drag, only the plain-versus-alt role does. Edges, positions and trims are never touched: it renames, full stop. A promoted select's old alt number is retired, never handed to a different take. The two situations no rule can decide are reported in the message line, not guessed: two takes left sitting on Selects for one line, and a promotion whose plain name is held by an item off the role tracks (Review, or a recording). Names outside the loaded script are never renamed, and no script loaded means no plan at all. The switch lives in the Pull panel beside auto-sort ("Names follow the tracks as I drag items", ON by default -- a drag the tool ignores is how names and tracks drift apart), and next to it "Fix names now" runs the same sweep over a whole session of drags made before this shipped or while it was off: one undo step, and undoing it does not re-trigger it. names_from_tracks joined the remote seam. (beta39: THE OUTS TRACK, THE TODO LIST GROUPS BY LINE, AND OK MEANS OK.) A valid OK stamp now silences that item's parity findings -- the human looked at exactly this state, marker and edges and name and words, and said it is right; the Todo row and the batch verbs go quiet, and any later edit clears the stamp by itself and the finding returns. J/K walk the rail in the order the screen shows. Rejected takes get a home the tool understands: an Outs track under each recording, built by Pull and "Build the destination tracks" alongside Review/Selects/Alts. Drag a take onto Outs and that IS the decision -- the watcher writes an explicit no to Sel and Keep, Pull leaves the take parked there instead of dragging it back to Review (ticking it later outranks the shelf and it moves again), the sheet keeps its row and transcript, and the parity engine keeps its context -- no more blank transcripts and phantom mismatches from parking rejects on the source track. The track name is configurable in Settings' Output section. And the Todo list now GROUPS BY LINE: one header per line, then one amber issue row per finding -- "Edges mismatch B", "No take picked" -- with its fixes on the same row, so a line with three problems shows three rows under one name and "how much is wrong with THIS line" is visible without reading anything. (beta38: THE TODO LIST READS AT A GLANCE, AND STOPS CRYING WOLF.) "Heard, not tracked" left the list: on a real session it pointed at takes that were already selected and pulled -- the span lookup loses hand-trimmed and comped items even though the name already assigns them -- so it flooded the list with rows that were nobody's job. The Todo list is the reconciliation contract: everything on it must be something you actually have to do. (The scan still runs; it just no longer nags.) Each row is now CATEGORY FIRST, then the take's identity -- "Words mismatch · OldBookManSay B", "Edges mismatch · <item name>", "No take picked · <line>" -- instead of a sentence of time ranges and quoted words. The categories: Words mismatch, Name mismatch, Edges mismatch, Name and edges mismatch, Marks vs track, Marker/Marks without audio, Heard not tracked, No take picked, Unheard sound, Thin coverage, No marker, Vet stale, NO WORDS. The verbose evidence did not vanish -- the words, the divergence detail and the durations moved to each row's tooltip, one hover away, because the sheet already shows the details; the list only has to say what kind of problem and whose. Clipping a long name now costs the tail of the id, never the category. (beta37: THE RAIL FOLDS, AND "NEEDS YOU" GREW UP.) First session with the new window taught two things. One: the Todo rail and the log are worth their space only when you are triaging -- so the whole right column now folds away behind the strip's Todo button (the sheet takes the full width), and the log folds separately down to its header line inside the rail. Both remember across sessions, and the Todo count stays on the strip button even while the rail is hidden, so a session can never look clean just because the list is out of sight. The keyboard walk goes quiet while the rail is hidden -- no invisible verbs. Two: "Needs you" was too conversational for a work queue; it is "Todo" everywhere now ("Review" was the other candidate, but this tool already has a Review track and a review status, and a third meaning would be one too many). (beta36: VERBS LIVE ON THE SELECTION.) The four button rows (Match / Fix / Pick / Pull) retire; in their place is one verb bar between the strip and the sheet that shows only what applies. Select a recording (an item whose markers say it is still uncut, or raw audio with none) and the bar offers Match takes to script, Cut from markers, Untrack; select cut takes and it offers Fix from Transcript, Verify, Re-cut, Untrack; mixed selections get only the verbs every part shares, and nothing on screen ever offers to touch something that is not in hand. Click a stage meter and that stage's own verbs join the bar after a divider: the auto-pick pair and alt naming on Decided, Cut's measuring verbs on Cut, Verify and its Re-listen toggle on Verified, Pull's runs and both layout panels on Delivered, Match and the substitutions on Matched -- so a verb with no selection scope still has exactly one home, and the strip teaches where. The parity watcher's switch rides the toolbar as "In sync". OK stays deliberately OFF the bar: it is your per-take judgment and belongs on the take row's own box, beside the words it judges. Every verb dispatches the function its row button always did -- this whole release moves furniture, not meaning. The window is now what the redesign drew: strip, verb bar, sheet, rail. (beta35: THE PIPELINE STRIP IS THE WINDOW.) The top of the Overview is now six stage meters -- Sources, Matched, Cut, Decided, Verified, Delivered -- computed from the same counters the summary line reads, so where the session is needs no tab to answer. Every meter is also a FILTER: click "Decided 180/195" and the sheet shows exactly the fifteen undecided lines, composed with your own search and character filters; click again to clear. The hero leads the strip -- the strip is the path, the button advances it -- and Settings and the "Needs you" count close it. Sources became the strip's first stage: the whole transcription surface (scan, transcribe, per-file progress, transcript detail with clickable words) now draws where the sheet does, fed by the same module, and the separate Sources window is gone from the package. "Show source in Sources" on a take now opens the stage on that recording. Setup folded to a ribbon row (script list, Start over); the tab bar retired with nothing left to choose between. A "stage" verb joined the remote seam for the test harness. (beta34: THE INBOX.) The five Check panels asked one question five ways -- "what needs me?" -- split by which scanner happened to fire. They are now ONE ranked rail, always on screen to the right of the sheet: Selects-track suspects first (a flagged deliverable is the risk), then everything the watcher refused to guess, then takes without audio, unidentified reads, undecided lines, other suspects, unheard stretches. Every row keeps the evidence-first contract: the words ARE the jump, and the verbs on the row are the same verbs the panels dispatched -- Fix from Transcript/Marker/Item/Sheet, Relink, Pick first/last, Re-listen. A scanner that has not run appears as a Scan row at its rank, never silently clean. The rail is keyboard-walkable: J/K walk the findings, Enter jumps, 1 and 2 press the row's verbs -- all five keys remappable in the Settings window's new Keyboard section, which warns when two bindings share a key. The Log left its tab for a strip under the rail, newest first, so an action and its report sit in one column; Copy and Clear came with it. The Check and Log tabs retired with their contents -- Verify moved to the Main tab -- and the tab bar now reads Setup / Main / Settings plus a "Needs you (N)" count that points the walk at the top finding. Nothing changed meaning: every verb dispatches the function it always did; this release only moves where they live. (beta33: EVERY FLAG SHOWS ITS EVIDENCE.) Auditing the whole verify list by hand taught one lesson: a flag without the words is a hunt -- you had to go find what the take actually says before you could judge the judgment. Now the evidence rides with every finding. Out of sync rows append the anchored words under the marker ('marker says X, item says Y -- words: "..."'). Suspects rows grow an evidence line (the words, and the judge's best guess when it would not swear), list Selects FIRST with an ON SELECTS tag -- a flagged deliverable is the risk -- and "no anchored words at all" becomes its own named trigger instead of hiding inside thin coverage: a delivered take nothing has ever checked on paper is the riskiest row on the sheet. (beta32, same day: no phantom divergence when asset and deliver names differ.) A line's marker ASSET and its DELIVER filename can legitimately differ (asset "DBP_Grumbar_Grumbar_", delivering as "DBP_Grumbar_Grumbar"), and items wear the deliver name -- but the parity engine compared item names against the asset alone, so every correctly-named take of such a line sat in "Out of sync" as a phantom divergence with nothing actually wrong. A name now counts as agreement when it is the marker's asset, the line's deliver name, or a conventional alt of either. Found live on the one-word line "You". (beta31, same day: drags between delivery tracks re-role the name.) Swap a select and an alt by dragging them between Selects and Alts and the names now follow the ROLE: the take arriving on Selects drops its _altN for the plain deliver name, the one arriving on Alts picks a number up. The watcher used to adopt the marks and then run the fill-blanks alt namer, which never overwrites -- so a role swap swapped the ticks and left both names describing the old roles. The sync waterfall now runs the overwriting namer (the old "Fix names from the sheet") scoped to the moved items: tool-generated names re-role, a name you typed is kept, as everywhere. (beta30, same day: the anchor sweep.) Following beta29's find, every consumer of stored transcript words was checked for the retired midpoint/window rules. Two more judges were on them and are now on the sheet's anchor rule: the re-listen STALENESS check (it clipped the stored side by midpoint, so a displaced window read as "sidecar stale" about a take whose displayed transcript matched the audio exactly) and the remote seam's verify verb. Confirmed correct and deliberately left alone: gap repair and word merging (the stamps ARE the object there), fresh-decode clipping (no anchors exist yet), cut boundary planning (edges come from the envelope by design), the unheard scan (approximate coverage is its nature), word-to-project display mapping, and the vetted fingerprint's word hash -- self-consistent by design, now with a comment forbidding a casual "fix" that would uncheck every Vet and OK in every project. (beta29, same day: Fix from Transcript, quick check and Suspects moved to the anchor rule.) Fix from Transcript, quick check and the Suspects scan judged stored words by the MIDPOINT of whisper's t0/t1 window -- the rule the anchor work (SPEC-word-anchors.md) proved wrong, because a displaced window puts a word's stamps seconds away from its audio. The sheet has displayed words by their DTW ANCHOR all along, so a take could show "because God," on screen while every judge quietly read "I think it mean" off the displaced stamps and reported that the marker agrees with the transcript. All three now use the sheet's own anchor rule (vo.WordsInRange): one rule everywhere, so a verdict is always about evidence you can see. WordsWithin keeps its one legitimate job, clipping FRESH decode output, where anchors do not exist. Found live on a real clip whose displaced window was 2.5 seconds late. (beta28, same day: hidden markers die first.) A clip can carry tool markers OUTSIDE the audio it can play -- split residue parked before or after the visible window. They are invisible in the take list, they can survive the leftover pass when no neighbouring clip claims them, they make every shape test read the clip as "several markers", and the first of them in chunk order is what names the item. "Fix from Transcript" now drops them outright as its step 0 -- the clip only owns what it can play -- before removing duplicates, judging the words, and pruning; the report counts them ("Dropped N hidden markers"). The rename step also refuses to let an out-of-coverage marker be judged or claim the item's name on the automatic path, where nothing drops it. (0.15beta27, same day: Fix from Transcript judges the words under each marker.) The rename step judged each marker by overlap against the MATCHER's spans, so where the matcher had assigned that audio to the same wrong line -- or to nothing -- it found no disagreement and reported "all markers already agree with the transcript" about a marker the words plainly refute. It now reads the words under each marker and judges them with the same judge Verify trusts (vo.JudgeLine): a marker whose words clearly say another line is renamed to it, and a range the judge cannot place is COUNTED AND REPORTED as unplaced -- never silently read as agreement. The report says "the words", and means them. (0.15beta26, same day: drag-to-line renames the item again.) The drop retargeted the marker but could silently skip the rename: "is this clip shared?" was answered by counting SHEET ROWS pointing at the item, and a stale duplicate row or an orphan mark aimed at the same clip made a one-take clip read as shared -- marker moved, name kept, the exact split-brain the tool exists to prevent. The question is now asked of the clip's own markers, after the retarget: only a marker still naming a DIFFERENT line blocks the rename (renaming would misname that neighbour -- a real uncut recording still refuses, correctly). Un-assigning a take clears the clip's name by the same rule: only when no other marker still claims it. It shipped as only the rename step, so a clip carrying a stale second marker -- split residue, or a line the words contradict -- kept it, and the one authority entitled to delete a marker was refusing to. One press, one undo step: drop duplicate markers (decided by the words spoken there) and leftover markers whose audio lives in a neighbouring clip, rename the survivors from the transcript, then prune markers left naming the same line twice on one clip (the copy covering more audio wins). The edit-authority fixes still refuse multi-marker clips -- they cannot know which marker is right; the words can, which is why this is transcript authority's job. Same waterfall from the Out of sync panel's "Fix from Transcript". (0.15beta24, same day: the OK box.) A fifth box on every take row (Lock Keep Sel Vet OK): tick OK to say "I checked -- this read IS this line", for the reads whisper mishears (a name like Bolvd heard as BOLVED) that are nonetheless correct. Vet stays the MACHINE's box, exactly as before; OK is YOURS -- two different facts, two boxes, two keys, never mixed. The transcript stays exactly as heard -- nothing is rewritten -- but with OK ticked, Suspects stops flagging the name-vs-words disagreement and quick check reports "OK'd by you" instead of re-judging it. The mark is a fingerprint like the machine's stamp, so any edit to the item, marker, name or words withdraws it by itself -- it can never silently outlive the state you actually looked at. Click again to withdraw it yourself; an explicit re-listen still runs and its verdict still stands. Works on a highlighted batch like every mark. (Replaces beta23's right-click-the-Vet-box design minutes into review: overloading the machine's box with the human's verdict hid whose judgment the tick was.) Click a finding in the "Out of sync" panel and you are looking at it: the clip selects in REAPER and the edit cursor moves to it -- and the sheet's line selects, unfolds and scrolls on its own, because the sheet already mirrors the arrange selection every frame. The marks-vs-tracks rows in the same panel do the trip too (they used to select the sheet row only). Checking a finding now costs one click instead of a hunt across three views. (0.15beta21, same day: the parity watcher itself -- edit one thing and the rest catches up, one "Keep the session in sync" switch, "Fix from Transcript / Marker / Item / Sheet" on everything queued.) Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.
+-- @version 0.15beta58
+-- @changelog PRE-RELEASE: A SESSION CAN SAY WHICH CHARACTERS IT IS EDITING. One recording is one performer, but the script it was cut from carries the whole scene -- so a Carcas session counted 39 lines when 10 of them were Player lines nobody in that room ever read, and every "18 of 39" was measured against a total that could not be reached. The Scripts panel now lists the characters the scripts actually contain, with a line count each, and ticking the ones this project delivers narrows the session to them. Stored per PROJECT in the sidecar (a new Speaker row) rather than in the config, because the answer differs for every project and is the same on every machine; tick nothing and every character is included, so existing projects are untouched. It narrows the DECODE for free: vo.WriteQwenContext is handed the same line list, so a session that names its character stops offering the recogniser words from parts it will never hear. Two rules keep it honest. A row whose character cell is EMPTY is always kept -- the tick list is built from the values the scripts contain, so a blank offers nothing to tick and excluding it would strand those lines where no UI could reach them (real greeting CSVs leave the column unfilled). And a cell reading "(no speaker set)" is NOT treated as blank: it is a string the script chose to write, it appears in the tick list like any other name, and guessing which strings secretly mean nobody would go wrong on somebody else's export. The cast is read from the RAW rows, never from the filtered lines, or an excluded character could never be un-excluded. Counts mirror the sheet's own drops (no text, no filename, TO RECORD), so the number beside a tick is the number of lines ticking it adds. Seam verb: speakers [all|<name>,<name>]. (beta57: PRE-RELEASE: RESIDUE AT THE HEAD AND TAIL OF A RECORDING KEPT ITS STOLEN NAME. Cut already knows that a name is a CLAIM TO BE A TAKE and clears it from any clip carrying no take marker -- REAPER's split hands both halves the original take name, so the air between takes is born already calling itself the take before it. That sweep was bounded to the REGIONS the cut rearranged, and the two places residue actually survives are the ones no region can cover: the air BEFORE the first take and AFTER the last, where there is no take to define a region around. A real session kept a 26-second clip at position 0 called line_HungryAlone_Root_alt2 -- and since Pull routes by name and the sheet lists what it finds, that scrap read as a delivered take in the item-name column. The sweep is bounded to the TRACKS the cut touched now, not the regions: a recording track is this tool's own workspace, so a name on it with no marker behind it can only be residue. The safety case it was written for is intact -- a folder of rendered files Pull is meant to serve has no markers anywhere on it, is therefore not a recording track, and is never touched. New seam verb clear_residue runs the same sweep across every recording track without re-cutting, for sessions already carrying the mess. (beta56: PRE-RELEASE: LEFTOVERS ON THE RECORDING TRACK WERE EATING THE ALT NUMBERS. A session read _alt2, _alt3 and _alt4 with no _alt1 anywhere, and the numbering ran straight down the Alts track instead of restarting per line -- which looked like the numbering was global when it never was. The cause: cutting leaves NAMED residue behind on the recording track, that residue still answers to a line's base name, and vo.PlanRoleNames treated every item it was not allowed to rename as a holder whose alt number must be reserved. So a leftover wearing line_alt1 quietly claimed 1 and pushed the line's real alt to 2. The rule the rest of the tool already runs on settles it: THE MARKER IS THE TAKE, so a clip carrying no take marker is residue, not a delivery, and holds no name worth protecting. Rows now carry is_take, the Overview sets it by asking the clip for its markers, and a row that is not a take is still never renamed -- it just stops holding a number and a plain name hostage. Straighten repairs any session already numbered the old way. (beta55: PRE-RELEASE: THE CUT CAN TRUST THE WORD TIMES NOW, AND THE FADES ARE FINALLY SETTABLE. Every edge the cutter places has been measured from the AUDIO ENVELOPE rather than the transcript, and the comment explaining why is precise about the reason: whisper word times are contiguous by construction -- a word's END is simply the next word's START, 94% touch exactly -- so the pause around a take sits INSIDE its span and an edge had to be trimmed in to the sound before it could be padded back out. A forced aligner does not work that way. Measured on a Qwen transcript: of 52 take-final words, 51 of 51 had an end placed independently of the next word's start, median duration 640ms against 400ms for words generally -- the line's decay measured into the word, which is what the envelope walk was reconstructing. New setting "trust_word_ends" (default OFF, since it is only true for an engine that reports real ends) takes the edges straight from t0/t1 and skips both the envelope bounds and the walk-through-welded-sound. Cut that way, edges are exact: every clip sits at t0 minus the head room and t1 plus the tail room, with no variance at all. Probed against the cutter's own gate, the two ends are NOT symmetric and that is the design input: 68% of clips have NO sound at all before t0 (so head room is pure dead air in front of the line), while only 20% are clean after t1 (median 40ms of real decay, p90 120ms). Also: cut_fade_in and cut_fade_out were read through vo.Opt all along but were MISSING from CONFIG_SCHEMA, so SaveConfig dropped anything written to them and the hardcoded defaults were the only reachable value -- they are settings now, which matters because the room and the fade are the same decision (the only thing room is FOR is somewhere to put the fade). (beta54: NOTES ON CLIPS ARE A CATEGORY, NOT AN ESSAY. A partial take carried four sentences -- both durations, the marker id and its range, both possible causes, and which button fixes which -- stamped across the clip. Nobody stops mid-audition to read that, so it was not a note, it was clutter with a timestamp on it. Every note is now the KIND of problem and at most two numbers: "PARTIAL 0.0/6.1s", "3 MARKERS", "RATE DROPPED x2". The timestamp is gone with them -- a note rewritten on every run does not need to say when. Nothing is lost: the Todo rail has carried the evidence category-first with the detail one hover away since beta38, and that is where findings are worked through; a clip only has to say which kind of problem it has so the eye can skip it or stop. Same reasoning that retired the sentence-long Todo rows, applied to the place it was missed. (beta53: THE TRIM STOPS SCRIBBLING ON EVERY LEFTOVER. A marker-less clip got a note stamped on it reading "left alone: no take marker, so nothing says which line this is. Match takes to script marks it" -- and after a whole pass that is one note per leftover, dozens across the recording track, with the advice wrong on every one: the match HAD run, and these are the stretches it found no line for. Room tone, breaths, and the director talking. Telling the user to press the button they just pressed is worse than saying nothing. The count still reaches them in the run's own message ("N selected item(s) hold no marker at all"); a note earns its place on a clip only when it explains something clip-specific, which is why the several-markers-here note stays. A "clear_notes" verb joined the seam to strip notes a previous version already wrote -- notes are annotations, never take identity, so clearing them cannot lose a take. (beta52: THE CONVERGENCE FIX IS IN THE BUTTON NOW, NOT BESIDE IT. beta50 taught the tool to match and cut until nothing new turns up, but only the test seam could reach it -- so a user pressing "Run the whole pass" still got the single pass that leaves most of a long session uncut, and the fix existed without being reachable the way anyone actually works. The hero button now IS that loop: match and cut repeat until a pass finds no unmarked read, then the tracks are built and everything is pulled, still one undo however many passes it took. Its report says how many passes settled the session, because a session that needed four is a session where three quarters of the takes would have been missed in silence. THE HERO ALSO STOPS PICKING FOR YOU: it used to run the auto-pick, so the first press delivered a take per line nobody had listened to -- everything lands on Review and the choosing is yours, matching what Pull already does. Pick first/last remain their own buttons for when you want them. Two bugs found by running the rewired button on a real session rather than reasoning about it: the selection restore handed REAPER pointers to items the split had DESTROYED (a crash, not a catchable error -- every pointer is validated now), and restoring the pre-press selection left the following Pull with nothing selected to pull. On the seam as "whole_pass", so the harness exercises the same entry point the user presses. (beta51: THE SAVE-AS GUARD WAS FINGERPRINTING THE EDIT, NOT THE AUDIO -- FOUND BY AN ADVERSARIAL REVIEW OF beta46-50, NOT BY USING IT. beta46 stopped a tab switch overwriting another project's sidecar by comparing the project's audio before and after, but it built that fingerprint from ONE ENTRY PER ITEM plus the track count -- and both of those change during ordinary work. Cut turns one recording into forty items; Pull adds the Selects/Alts/Review/Outs tracks. So the baseline taken at load stopped matching within a single press, and a genuine File>Save As afterwards was read as "a different project landed in this tab": the session's scripts, subs and pins stayed behind on the OLD sidecar and the newly-named project opened with nothing configured. Cut-then-save-under-a-new-name is the tool's own main path, so that was most of the time. The fingerprint is now the DISTINCT SET of source files the project plays, which survives every edit that does not change which recordings are in the session -- with tests for cutting and pulling specifically, the two cases the original tests missed by only ever checking the function in isolation. Also from the same review: an unsaved project no longer shares one "unsaved" scratch subfolder with every other unsaved project (the qwen context file lives there, and sharing it is the exact cross-project decode the per-project split exists to prevent); settle restores the item selection it has to widen; and the qwen runner's write-failure handler catches more than OSError, so no failure to save can re-enter the decode retry. (beta50: ONE MATCH-AND-CUT PASS WAS NEVER ENOUGH, AND THE WINDOW NEVER SAID SO. Identify works per ITEM. On the first press the whole recording is ONE item, so every read it does not manage to mark stays buried inside the un-split residue -- and only after Cut has split that residue into items of their own can the next Identify see those reads as takes at all. Measured on a real 42-minute session: pass 1 delivered 60 takes and left 2072s of performance on the source track (18% claimed), pass 2 reached 110 takes, pass 3 reached 125 with 449s left (78%, converged). Nothing on screen suggested pressing it again -- each pass reported success and described the remainder as "reads with no take marker", which reads as a fact about the recording rather than as an instruction. The actor had read one line five times; four of those reads were stranded, which is exactly the material the Review track exists to let you choose between. Trim.settle now matches and cuts until the session stops yielding takes -- convergence, not a fixed count: it stops the moment a pass leaves no unmarked read, or stops making progress, with a 6-pass backstop that three passes never reached on the worst session on hand. On the remote seam as "settle". (beta49: TWO REPORTS THAT LIED, BOTH FOUND DRIVING REAL SESSIONS. (1) The clipped-opening report fired on nearly every take -- 29 of 29 on one session -- because every read is preceded by a breath of room tone, and a warning that always fires is not read at all. Pull already measures every leftover and MUTES the ones that are silence or too short to be usable, so it already knows which hold no speech; the report now skips them. The rule was always about a VOICED leftover stranded at a take's head, and now it only says so when that is what it found. (2) "Matched N line(s) to the script; identified 0 item(s)" was what Match takes to script said when NOTHING WAS SELECTED -- a sentence that opens with a success and reports a no-op as a count. It now says plainly that no recording is selected and what to select. (beta48: A FAILED WRITE NO LONGER COSTS A SECOND DECODE, AND SCRATCH CAN LEAVE THE PROJECT FOLDER. The Qwen runner wrapped the decode AND the result write in one try/except whose handler was "cuda failed, fall back to cpu". So an OSError saving the JSON -- a full disk, or a cloud-sync client holding a handle on the project folder -- was read as a device failure and paid for a whole second decode on CPU that could not possibly succeed either. Seen live: CUDA decoded a 4-minute source in seconds, could not rename its .tmp on a Google Drive path, and the run spent another 85s on CPU before reporting a permission error that had nothing to do with the GPU. Only the DECODE is retried on another device now; a write failure says so plainly, keeps the words it decoded out of the retry loop, and cleans up its .tmp. Relatedly, setting "scratch_dir" now gives each project its OWN subfolder under that root instead of sharing one -- the Qwen context file IS a session's script, and two projects sharing a scratch folder would decode against each other's context and overwrite each other's run logs. That makes scratch_dir usable for what it is for: getting decode caches off a cloud-synced project folder, where a sync handle can fail the runner's atomic rename. (beta47: THE FIRST PULL PARKS EVERYTHING ON REVIEW. Pull had a shortcut -- a line with exactly ONE take and no tick went straight to Selects, on the reasoning that "one take is not a decision". On a session where most lines are read once that delivered nearly the whole session UNHEARD, and clearing the ticks could not stop it, because the shortcut never consulted them. Now a tick is the only thing that promotes a take: the first Pull parks every identified read on Review and the choosing is left to ears. The old behaviour is still reachable for its real use -- Pull over a folder of already-rendered files, which carries no ticks at all -- as "pull_lone_take_to_selects" in Settings, off by default. Two new remote-seam verbs came out of driving a real session headlessly: "pick first|last" (the auto-pick pair the Decided stage draws) and "unpick" (clear every Sel in scope). (beta46: THREE FIXES FOUND WHILE SETTING UP FIVE REAL SESSIONS IN ONE SITTING. (1) OPENING A PROJECT INTO AN EXISTING TAB OVERWROTE ITS SIDECAR WITH THE PREVIOUS PROJECT'S STATE. REAPER hands back the SAME ReaProject handle when a different project is opened into a tab it already had, and the window used the handle alone to recognise a save-as -- so a plain File>Open looked exactly like "same project, new name", kept the old project's state and pointed it at the new project's sidecar. Observed live: opening one character's session into the tab that held another wrote the FIRST character's script list, subs and pins into the SECOND character's sidecar. On a session with work in it that is the user's Sel/Keep marks gone. The handle is no longer trusted by itself: state travels only when the project's AUDIO is unchanged (vo.ProjectSourceFingerprint -- track count plus the sorted source paths) AND the new path does not already own a sidecar. A genuine save-as to a new name satisfies both; anything else is treated as a different project, so the pending state still flushes to the OLD file and the new one is READ rather than destroyed. (2) EVERY QWEN TRANSCRIPT CLAIMED TO BE WHISPER. Both transcript writers stamped backend "whisper.cpp" and whisper's model path unconditionally, so a sidecar decoded by Qwen -- with or without script context, which materially changes the words -- was indistinguishable on disk from a whisper one. vo.TranscriptBackendMeta now decides the stamp in one place: qwen records "qwen-asr", its runner version, and whether script context was used. (3) NEW PROJECTS INHERITED A STRANGER'S SUBSTITUTIONS. The one-time migration that adopted the machine's old global ExtState substitution table into any project with none of its own had no expiry, so every new session picked up whatever was left in that slot -- arriving in a file the user never edited, quietly steering the matcher. Removed: a project with no substitutions now has none. (beta45: THE REVIEW PASS.) FIVE FINDINGS FROM AN ADVERSARIAL SWEEP OF BETAS 37-44, ALL FIXED. (1) Cancelling or timing out a Qwen transcribe killed by process image name, and that name was python.exe -- EVERY python on the machine died with it, render tools included; the venv python is now copied once to ajsfx-qwen-python.exe (a venv launcher keys on its location, not its name) so the kill can only ever hit the runner. (2) The names-follow-tracks sweep ignored the "In sync" master switch: with sync OFF -- the mode whose tooltip promises "nothing runs by itself" -- a drag still got auto-renamed; the sweep now honours the switch, and "Fix names now" is the manual path while you drive. (3) An OK stamp silenced marks-vs-track findings, but the stamp's fingerprint never witnessed TRACK PLACEMENT -- an OK'd take later dragged to the wrong track kept its blessing and its finding was hidden; placement findings are now never silenced by OK. (4) A transient script-read failure (CSV locked mid-autosave) deleted the Qwen decode-context file, silently flipping the next transcription to a BLIND decode under its own cache key; the context now survives any rebuild that still has scripts configured. (5) Runner hardening: bursts separated by a 0.4-0.5s breath could overlap after padding and decode the boundary word twice (padding now clamps to half the real gap); words dropped for overhanging their burst are now counted in the report; ffmpeg failures print ffmpeg's actual reason instead of a raw traceback; a path the legacy Windows codepage cannot encode no longer crashes the log itself; the context file read tolerates a BOM and a mid-read rewrite. Also from the sweep, confirmed sound and deliberately unchanged: PlanRoleNames cannot assign duplicate final names, Pull cannot drag an unmarked take off the Outs shelf, a killed Qwen run cannot leave a half-written cache (tmp+atomic rename), and the sweep cannot chase its own renames. (beta44: THE SMEAR DEFENSE.) Found live the day it mattered: with script context on, the decoder sometimes emits lines the burst's audio does not hold (the context pulling), and with no acoustics to pin them to the forced aligner falls back to distributing those words EVENLY -- sometimes past the burst's end -- so phantom word streams landed across NEIGHBOURING takes' time ranges and the sheet flooded amber with "extra words" no one said there. Real speech is never metronomic, so uniformity is the conviction: the runner now strips runs of 3+ words with identical durations of 0.7s and up ("want stone Old book" at exactly 1.27s each), runs of 6+ words at identical start gaps ("What do you think the Tower is" at exactly 0.26s), and anything overhanging its burst's actual length. Tuned against real speech as carefully as against the fiction: an actor repeating a short line rides the aligner's grid (four words at a uniform 0.32s is a legitimate "That is my work") and a slow deliberate read has uniform near-second start gaps ("Master want stone" at 0.88/0.88) -- both survive, verified case by case. The transcribe cache now carries a RUNNER VERSION alongside the context hash, so results written under the old rules age out instead of being served as fresh -- re-transcribing after this update actually re-decodes. (beta43: STRAIGHTEN NAMES.) Next to "Fix names now" in the Pull panel (and as straighten_names on the remote seam): every select gets its line's plain delivered name, and every line's alts are RENUMBERED compactly from _alt1 in timeline order, Outs continuing after the alts -- the gaps that swaps and demotions leave (an only-alt sitting at _alt4) close up. This is deliberately a SEPARATE, manual verb from the drag-follow sweep: the sweep never renumbers, because a number you have seen must never quietly become a different take -- straightening is the one press where renumbering is exactly what was asked, so the vacated-number guard relaxes for it and for nothing else. Idempotent (a straight session plans zero renames), timeline-ordered, per-line; two selects on one line still refuses and reports rather than guessing, and takes off the role tracks are never renamed and keep their numbers (the renumbering skips around them). One undo step. (beta42: THE SCRIPT IS THE DECODE'S CONTEXT (QWEN ENGINE).) With the Qwen engine selected, the loaded script lines now ride along as decoding context ("Script context" in Settings' Backend section, on by default; "off" decodes blind). Qwen3-ASR biases toward text it is given: invented words come back spelled right, and the character's non-fluent register survives where a blind decode auto-corrects it -- verified live on a take the blind decode heard as "Gun." that the user's own ears confirm says "Can.", and on "Master Wandstone" resolving to the scripted "Master want stone". The pull cuts both ways, and the tool is built for that: a genuine mis-read can decode as the scripted words, so VERIFY, RE-LISTEN AND THE AUDIT REMAIN SCRIPT-BLIND WHISPER regardless of this setting -- assignment reads the script, verification never does, and mis-read hunting is verification's job by contract now, not a side effect of transcription. The context file is rewritten from the loaded lines on every rebuild (deduplicated, skipped when unchanged), and the Qwen transcribe cache keys on the context's content hash, so editing the script re-decodes rather than serving stale-context words, and a with-context run can never serve a blind cache or vice versa. Context costs decode time -- the model re-reads the script per burst, about 3x (105 seconds against 34 for a half-hour source on an uncontended GPU) -- and on the full validation session every one of 419 take spans still held its words with clean stamps. (beta41: A SECOND TRANSCRIPTION ENGINE -- QWEN3-ASR WITH TRUE WORD TIMES.) Settings' Backend section grows a "Transcription engine" choice: whisper (unchanged, still the default) or Qwen3-ASR-1.7B with its forced aligner, run from a local python venv (Resources/asr-qwen, or point "qwen_python" anywhere). The aligner emits REAL per-word start and end times -- no displaced windows, so for Qwen sidecars the anchor IS the start time and the whole DTW correction layer has nothing to correct. Benchmarked against the user's own approved item edges on 30 takes before building: first words land +0.02..+0.10s inside the cut start, ends inside the tails, zero clipped word heads. Sidecar format is unchanged (t0,t1,word,anchor) -- the matcher, cutter, sheet and judges cannot tell the engines apart, which is the point. Device is auto by default: try CUDA (about 5 GB in bf16 -- the GPU is shared with render tools), fall back to CPU on any failure including mid-run OOM; CPU is a real mode at roughly 1.6 s per take resident. Each engine caches under its own scratch file, so switching engines can never serve the other engine's words. The runner decodes per SPEECH BURST, not per file: a VO source is the same line read back to back, and on minutes-long windows that repetition defeats the aligner (words collapse to zero width on one instant) and invites the decoder to dedup a repeat so one read's span comes back empty -- bursts found by energy, joined only under 0.4s, each aligned on its own, put every one of a real session's 419 take spans in possession of its words with zero degenerate stamps, including the spans whisper's swallowed-gap holes had left blank. Gap repair stays whisper-only by design (it exists to mend whisper's swallowed windows with whisper re-runs; the unheard scan still guards real holes on either engine). VERIFY AND RE-LISTEN STAY WHISPER REGARDLESS of the engine setting: Qwen's LLM decoder drifts toward fluent expected text -- it heard "sentinels" for a take that plainly says "sentence" -- which is exactly the bias a verifier must not have; assignment and verification now deliberately use different ears. Readiness routes with the engine: with qwen selected, a missing venv blocks transcription with the reason (never a silent fall back to whisper), and whisper being absent blocks nothing. (beta40: NAMES FOLLOW THE TRACKS.) Drag a take onto Selects and its name becomes the line's plain delivered name; drag it onto Alts or Outs and it picks up a numbered alt name. For EVERY drag -- including the batch drags and sync-off sessions that beta31's waterfall never covered, because this is no longer scoped to what the watcher could attribute to one element: after any edit settles, one whole-session sweep (vo.PlanRoleNames) renames every take on a role track whose name disagrees with it, and an empty plan costs nothing. The BASE of a name -- WHICH line the take is -- never follows a drag, only the plain-versus-alt role does. Edges, positions and trims are never touched: it renames, full stop. A promoted select's old alt number is retired, never handed to a different take. The two situations no rule can decide are reported in the message line, not guessed: two takes left sitting on Selects for one line, and a promotion whose plain name is held by an item off the role tracks (Review, or a recording). Names outside the loaded script are never renamed, and no script loaded means no plan at all. The switch lives in the Pull panel beside auto-sort ("Names follow the tracks as I drag items", ON by default -- a drag the tool ignores is how names and tracks drift apart), and next to it "Fix names now" runs the same sweep over a whole session of drags made before this shipped or while it was off: one undo step, and undoing it does not re-trigger it. names_from_tracks joined the remote seam. (beta39: THE OUTS TRACK, THE TODO LIST GROUPS BY LINE, AND OK MEANS OK.) A valid OK stamp now silences that item's parity findings -- the human looked at exactly this state, marker and edges and name and words, and said it is right; the Todo row and the batch verbs go quiet, and any later edit clears the stamp by itself and the finding returns. J/K walk the rail in the order the screen shows. Rejected takes get a home the tool understands: an Outs track under each recording, built by Pull and "Build the destination tracks" alongside Review/Selects/Alts. Drag a take onto Outs and that IS the decision -- the watcher writes an explicit no to Sel and Keep, Pull leaves the take parked there instead of dragging it back to Review (ticking it later outranks the shelf and it moves again), the sheet keeps its row and transcript, and the parity engine keeps its context -- no more blank transcripts and phantom mismatches from parking rejects on the source track. The track name is configurable in Settings' Output section. And the Todo list now GROUPS BY LINE: one header per line, then one amber issue row per finding -- "Edges mismatch B", "No take picked" -- with its fixes on the same row, so a line with three problems shows three rows under one name and "how much is wrong with THIS line" is visible without reading anything. (beta38: THE TODO LIST READS AT A GLANCE, AND STOPS CRYING WOLF.) "Heard, not tracked" left the list: on a real session it pointed at takes that were already selected and pulled -- the span lookup loses hand-trimmed and comped items even though the name already assigns them -- so it flooded the list with rows that were nobody's job. The Todo list is the reconciliation contract: everything on it must be something you actually have to do. (The scan still runs; it just no longer nags.) Each row is now CATEGORY FIRST, then the take's identity -- "Words mismatch · OldBookManSay B", "Edges mismatch · <item name>", "No take picked · <line>" -- instead of a sentence of time ranges and quoted words. The categories: Words mismatch, Name mismatch, Edges mismatch, Name and edges mismatch, Marks vs track, Marker/Marks without audio, Heard not tracked, No take picked, Unheard sound, Thin coverage, No marker, Vet stale, NO WORDS. The verbose evidence did not vanish -- the words, the divergence detail and the durations moved to each row's tooltip, one hover away, because the sheet already shows the details; the list only has to say what kind of problem and whose. Clipping a long name now costs the tail of the id, never the category. (beta37: THE RAIL FOLDS, AND "NEEDS YOU" GREW UP.) First session with the new window taught two things. One: the Todo rail and the log are worth their space only when you are triaging -- so the whole right column now folds away behind the strip's Todo button (the sheet takes the full width), and the log folds separately down to its header line inside the rail. Both remember across sessions, and the Todo count stays on the strip button even while the rail is hidden, so a session can never look clean just because the list is out of sight. The keyboard walk goes quiet while the rail is hidden -- no invisible verbs. Two: "Needs you" was too conversational for a work queue; it is "Todo" everywhere now ("Review" was the other candidate, but this tool already has a Review track and a review status, and a third meaning would be one too many). (beta36: VERBS LIVE ON THE SELECTION.) The four button rows (Match / Fix / Pick / Pull) retire; in their place is one verb bar between the strip and the sheet that shows only what applies. Select a recording (an item whose markers say it is still uncut, or raw audio with none) and the bar offers Match takes to script, Cut from markers, Untrack; select cut takes and it offers Fix from Transcript, Verify, Re-cut, Untrack; mixed selections get only the verbs every part shares, and nothing on screen ever offers to touch something that is not in hand. Click a stage meter and that stage's own verbs join the bar after a divider: the auto-pick pair and alt naming on Decided, Cut's measuring verbs on Cut, Verify and its Re-listen toggle on Verified, Pull's runs and both layout panels on Delivered, Match and the substitutions on Matched -- so a verb with no selection scope still has exactly one home, and the strip teaches where. The parity watcher's switch rides the toolbar as "In sync". OK stays deliberately OFF the bar: it is your per-take judgment and belongs on the take row's own box, beside the words it judges. Every verb dispatches the function its row button always did -- this whole release moves furniture, not meaning. The window is now what the redesign drew: strip, verb bar, sheet, rail. (beta35: THE PIPELINE STRIP IS THE WINDOW.) The top of the Overview is now six stage meters -- Sources, Matched, Cut, Decided, Verified, Delivered -- computed from the same counters the summary line reads, so where the session is needs no tab to answer. Every meter is also a FILTER: click "Decided 180/195" and the sheet shows exactly the fifteen undecided lines, composed with your own search and character filters; click again to clear. The hero leads the strip -- the strip is the path, the button advances it -- and Settings and the "Needs you" count close it. Sources became the strip's first stage: the whole transcription surface (scan, transcribe, per-file progress, transcript detail with clickable words) now draws where the sheet does, fed by the same module, and the separate Sources window is gone from the package. "Show source in Sources" on a take now opens the stage on that recording. Setup folded to a ribbon row (script list, Start over); the tab bar retired with nothing left to choose between. A "stage" verb joined the remote seam for the test harness. (beta34: THE INBOX.) The five Check panels asked one question five ways -- "what needs me?" -- split by which scanner happened to fire. They are now ONE ranked rail, always on screen to the right of the sheet: Selects-track suspects first (a flagged deliverable is the risk), then everything the watcher refused to guess, then takes without audio, unidentified reads, undecided lines, other suspects, unheard stretches. Every row keeps the evidence-first contract: the words ARE the jump, and the verbs on the row are the same verbs the panels dispatched -- Fix from Transcript/Marker/Item/Sheet, Relink, Pick first/last, Re-listen. A scanner that has not run appears as a Scan row at its rank, never silently clean. The rail is keyboard-walkable: J/K walk the findings, Enter jumps, 1 and 2 press the row's verbs -- all five keys remappable in the Settings window's new Keyboard section, which warns when two bindings share a key. The Log left its tab for a strip under the rail, newest first, so an action and its report sit in one column; Copy and Clear came with it. The Check and Log tabs retired with their contents -- Verify moved to the Main tab -- and the tab bar now reads Setup / Main / Settings plus a "Needs you (N)" count that points the walk at the top finding. Nothing changed meaning: every verb dispatches the function it always did; this release only moves where they live. (beta33: EVERY FLAG SHOWS ITS EVIDENCE.) Auditing the whole verify list by hand taught one lesson: a flag without the words is a hunt -- you had to go find what the take actually says before you could judge the judgment. Now the evidence rides with every finding. Out of sync rows append the anchored words under the marker ('marker says X, item says Y -- words: "..."'). Suspects rows grow an evidence line (the words, and the judge's best guess when it would not swear), list Selects FIRST with an ON SELECTS tag -- a flagged deliverable is the risk -- and "no anchored words at all" becomes its own named trigger instead of hiding inside thin coverage: a delivered take nothing has ever checked on paper is the riskiest row on the sheet. (beta32, same day: no phantom divergence when asset and deliver names differ.) A line's marker ASSET and its DELIVER filename can legitimately differ (asset "DBP_Grumbar_Grumbar_", delivering as "DBP_Grumbar_Grumbar"), and items wear the deliver name -- but the parity engine compared item names against the asset alone, so every correctly-named take of such a line sat in "Out of sync" as a phantom divergence with nothing actually wrong. A name now counts as agreement when it is the marker's asset, the line's deliver name, or a conventional alt of either. Found live on the one-word line "You". (beta31, same day: drags between delivery tracks re-role the name.) Swap a select and an alt by dragging them between Selects and Alts and the names now follow the ROLE: the take arriving on Selects drops its _altN for the plain deliver name, the one arriving on Alts picks a number up. The watcher used to adopt the marks and then run the fill-blanks alt namer, which never overwrites -- so a role swap swapped the ticks and left both names describing the old roles. The sync waterfall now runs the overwriting namer (the old "Fix names from the sheet") scoped to the moved items: tool-generated names re-role, a name you typed is kept, as everywhere. (beta30, same day: the anchor sweep.) Following beta29's find, every consumer of stored transcript words was checked for the retired midpoint/window rules. Two more judges were on them and are now on the sheet's anchor rule: the re-listen STALENESS check (it clipped the stored side by midpoint, so a displaced window read as "sidecar stale" about a take whose displayed transcript matched the audio exactly) and the remote seam's verify verb. Confirmed correct and deliberately left alone: gap repair and word merging (the stamps ARE the object there), fresh-decode clipping (no anchors exist yet), cut boundary planning (edges come from the envelope by design), the unheard scan (approximate coverage is its nature), word-to-project display mapping, and the vetted fingerprint's word hash -- self-consistent by design, now with a comment forbidding a casual "fix" that would uncheck every Vet and OK in every project. (beta29, same day: Fix from Transcript, quick check and Suspects moved to the anchor rule.) Fix from Transcript, quick check and the Suspects scan judged stored words by the MIDPOINT of whisper's t0/t1 window -- the rule the anchor work (SPEC-word-anchors.md) proved wrong, because a displaced window puts a word's stamps seconds away from its audio. The sheet has displayed words by their DTW ANCHOR all along, so a take could show "because God," on screen while every judge quietly read "I think it mean" off the displaced stamps and reported that the marker agrees with the transcript. All three now use the sheet's own anchor rule (vo.WordsInRange): one rule everywhere, so a verdict is always about evidence you can see. WordsWithin keeps its one legitimate job, clipping FRESH decode output, where anchors do not exist. Found live on a real clip whose displaced window was 2.5 seconds late. (beta28, same day: hidden markers die first.) A clip can carry tool markers OUTSIDE the audio it can play -- split residue parked before or after the visible window. They are invisible in the take list, they can survive the leftover pass when no neighbouring clip claims them, they make every shape test read the clip as "several markers", and the first of them in chunk order is what names the item. "Fix from Transcript" now drops them outright as its step 0 -- the clip only owns what it can play -- before removing duplicates, judging the words, and pruning; the report counts them ("Dropped N hidden markers"). The rename step also refuses to let an out-of-coverage marker be judged or claim the item's name on the automatic path, where nothing drops it. (0.15beta27, same day: Fix from Transcript judges the words under each marker.) The rename step judged each marker by overlap against the MATCHER's spans, so where the matcher had assigned that audio to the same wrong line -- or to nothing -- it found no disagreement and reported "all markers already agree with the transcript" about a marker the words plainly refute. It now reads the words under each marker and judges them with the same judge Verify trusts (vo.JudgeLine): a marker whose words clearly say another line is renamed to it, and a range the judge cannot place is COUNTED AND REPORTED as unplaced -- never silently read as agreement. The report says "the words", and means them. (0.15beta26, same day: drag-to-line renames the item again.) The drop retargeted the marker but could silently skip the rename: "is this clip shared?" was answered by counting SHEET ROWS pointing at the item, and a stale duplicate row or an orphan mark aimed at the same clip made a one-take clip read as shared -- marker moved, name kept, the exact split-brain the tool exists to prevent. The question is now asked of the clip's own markers, after the retarget: only a marker still naming a DIFFERENT line blocks the rename (renaming would misname that neighbour -- a real uncut recording still refuses, correctly). Un-assigning a take clears the clip's name by the same rule: only when no other marker still claims it. It shipped as only the rename step, so a clip carrying a stale second marker -- split residue, or a line the words contradict -- kept it, and the one authority entitled to delete a marker was refusing to. One press, one undo step: drop duplicate markers (decided by the words spoken there) and leftover markers whose audio lives in a neighbouring clip, rename the survivors from the transcript, then prune markers left naming the same line twice on one clip (the copy covering more audio wins). The edit-authority fixes still refuse multi-marker clips -- they cannot know which marker is right; the words can, which is why this is transcript authority's job. Same waterfall from the Out of sync panel's "Fix from Transcript". (0.15beta24, same day: the OK box.) A fifth box on every take row (Lock Keep Sel Vet OK): tick OK to say "I checked -- this read IS this line", for the reads whisper mishears (a name like Bolvd heard as BOLVED) that are nonetheless correct. Vet stays the MACHINE's box, exactly as before; OK is YOURS -- two different facts, two boxes, two keys, never mixed. The transcript stays exactly as heard -- nothing is rewritten -- but with OK ticked, Suspects stops flagging the name-vs-words disagreement and quick check reports "OK'd by you" instead of re-judging it. The mark is a fingerprint like the machine's stamp, so any edit to the item, marker, name or words withdraws it by itself -- it can never silently outlive the state you actually looked at. Click again to withdraw it yourself; an explicit re-listen still runs and its verdict still stands. Works on a highlighted batch like every mark. (Replaces beta23's right-click-the-Vet-box design minutes into review: overloading the machine's box with the human's verdict hid whose judgment the tick was.) Click a finding in the "Out of sync" panel and you are looking at it: the clip selects in REAPER and the edit cursor moves to it -- and the sheet's line selects, unfolds and scrolls on its own, because the sheet already mirrors the arrange selection every frame. The marks-vs-tracks rows in the same panel do the trip too (they used to select the sheet row only). Checking a finding now costs one click instead of a hunt across three views. (0.15beta21, same day: the parity watcher itself -- edit one thing and the rest catches up, one "Keep the session in sync" switch, "Fix from Transcript / Marker / Item / Sheet" on everything queued.) Edit one thing and the rest catches up automatically: trim an item's edge and its marker snaps to it; drag a take marker and the item trims and renames onto it; type a line's name onto an item and the marker follows it; move a take between tracks and the sheet's Sel/Keep follow, then the alt names. The watcher attributes each change to the ONE element you edited and syncs the others from it -- and anything it cannot pin on one element (a split, a paste, two edits in one gesture) lands in the new "Out of sync" panel instead of being guessed at, each row with "Fix from Transcript / Marker / Item / Sheet" so you name the authority. One switch, "Keep the session in sync" (default on), replaces the three follower checkboxes. The Fix row slims down to match: "Fix from Transcript" is the macro slot (the one authority that is not your edits), and Update from Item, Trim items to their markers, Snap markers to items, Remove Extra Take Markers, and both Fix-names buttons fold into the watcher and the queue. "Marks vs tracks" folds into "Out of sync" too. Every automatic sync is one undo step, and undoing it does not re-trigger it.)))
 -- @about ajsfx VO — script-matched cut-and-name for game VO and dialogue
 --        delivery. Transcribe your recordings once in "ajsfx VO Sources", see
 --        every script line and every take in "ajsfx VO Overview", tick the
@@ -468,6 +468,21 @@ local function LoadScripts()
   local filters = (saved_skips and #saved_skips > 0)
     and { skip_values = saved_skips } or nil
 
+  -- WHICH CHARACTERS THIS PROJECT IS EDITING. One recording is one performer,
+  -- but the script it was cut from usually carries the whole scene -- so a
+  -- Carcas session counting 39 lines was counting ten Player lines nobody in
+  -- that room ever read, and every "18 of 39" was measured against a total that
+  -- could not be reached.
+  --
+  -- It narrows the DECODE as well, for free: vo.WriteQwenContext is handed
+  -- these same lines, so a session that names its character stops offering the
+  -- recogniser words from parts it will never hear.
+  local speaker_set = vo.SpeakerFilter(state.speakers)
+  if speaker_set then
+    filters = filters or {}
+    filters.speakers = speaker_set
+  end
+
   state.loaded = vo.LoadScripts(state.scripts, ReadFile, filters)
   -- A script whose columns were never mapped gets the header's own suggestion,
   -- so a freshly added CSV usually just works. Auto-detection knows the usual
@@ -539,6 +554,7 @@ local function LoadProjectFile()
   state.entries, state.project_error, state.parse_failed = {}, "", false
   state.scripts, state.appends, state.pins = {}, {}, {}
   state.line_edits, state.names, state.subs = {}, {}, {}
+  state.speakers = {}
   state.subs_text = nil
   state.expanded = {}
   -- Everything below describes the PREVIOUS project. A message like "Pulled 27
@@ -552,6 +568,10 @@ local function LoadProjectFile()
   -- Which tab this state was loaded from, so the frame loop can notice the
   -- user landing on a different one.
   state.tab_proj, state.tab_path = proj_handle, proj
+  -- What this tab's AUDIO looked like when the state was loaded. MaybeFollowProject
+  -- compares it to decide whether a path change is a save-as or a different
+  -- project opened into the tab -- the handle cannot tell those apart.
+  state.tab_fingerprint = vo.CurrentProjectFingerprint()
   state.project_path = (proj ~= "") and vo.ProjectFilePath(proj) or nil
   if not state.project_path then return end
 
@@ -567,26 +587,21 @@ local function LoadProjectFile()
     state.line_edits = parsed.line_edits or {}
     state.names      = parsed.names or {}
     state.subs       = parsed.subs or {}
+    -- Which characters this project is editing; empty means all of them.
+    state.speakers   = parsed.speakers or {}
 
-    -- Substitutions used to live in global ExtState. A project that has none of
-    -- its own adopts whatever the machine is still carrying, ONCE, so a table
-    -- built up over months is not silently dropped by the version that moved
-    -- it. Written into the project on the next save, after which the global
-    -- copy is never consulted for this project again.
+    -- Substitutions are the project's own, full stop. There used to be a
+    -- migration here that poured the machine's global ExtState table into any
+    -- project that had none of its own -- meant to run once, but it had no
+    -- expiry, so EVERY new session inherited whatever was left in that slot
+    -- (a single stale `archivists -> archivist` in practice, arriving in a
+    -- file the user never edited). Removed 2026-08-16. A project with no subs
+    -- now has no subs.
     --
-    -- Guarded on the project having NONE: a project that has deliberately
-    -- emptied its table must not have the old global one poured back in.
-    if #state.subs == 0 then
-      -- Clear the slot first, or LoadConfig hands back the LAST project's
-      -- table and this project adopts it -- the precise thing moving them out
-      -- of global state was meant to stop. LoadScripts fills it back in.
-      vo.SetProjectSubstitutions(nil)
-      local global_subs = vo.LoadConfig().substitutions
-      if global_subs and next(global_subs) then
-        state.subs = vo.SubRows(vo.FormatSubstitutionText(global_subs))
-        state.dirty = true
-      end
-    end
+    -- The slot is still cleared, because LoadConfig otherwise hands back the
+    -- LAST project's table -- the precise thing moving them out of global
+    -- state was meant to stop. LoadScripts fills it back in.
+    vo.SetProjectSubstitutions(nil)
 
     -- The table is handed back the way it was left. A stored status or column
     -- this version no longer has is dropped rather than carried: it would filter
@@ -647,7 +662,7 @@ local function SaveProjectFile()
     entries,
     { scripts = state.scripts, appends = state.appends, pins = state.pins,
       line_edits = state.line_edits, names = state.names,
-      subs = state.subs,
+      subs = state.subs, speakers = state.speakers,
       view = {
         character   = state.character,
         search      = state.search,
@@ -1262,16 +1277,28 @@ end
 -- project's own file and reloads from the new tab's. A save-as is the same
 -- project under a new name (same handle, new path): the state is kept and the
 -- sidecar path moves with the project instead.
+--
+-- The handle ALONE does not identify that case. REAPER reuses the ReaProject
+-- handle when a different project is opened into the same tab, so a plain
+-- File>Open looked exactly like a save-as and carried this project's state into
+-- the other project's sidecar -- overwriting its scripts, subs, pins and marks.
+-- vo.IsSaveAs is what decides now; see its comment for the rule.
 local function MaybeFollowProject()
   local proj, path = CurrentProject()
   if proj == state.tab_proj and path == state.tab_path then return end
 
   if proj == state.tab_proj then
-    state.tab_path = path
-    state.project_path = (path ~= "") and vo.ProjectFilePath(path) or nil
-    -- Rewrite at the new location so the sidecar exists beside the new file.
-    state.dirty = state.dirty or (state.project_path ~= nil)
-    return
+    local new_sidecar = (path ~= "") and vo.ProjectFilePath(path) or nil
+    if vo.IsSaveAs(state.tab_fingerprint, vo.CurrentProjectFingerprint(),
+                   new_sidecar ~= nil and vo.FileExists(new_sidecar)) then
+      state.tab_path = path
+      state.project_path = new_sidecar
+      -- Rewrite at the new location so the sidecar exists beside the new file.
+      state.dirty = state.dirty or (state.project_path ~= nil)
+      return
+    end
+    -- Not a save-as: a different project landed in this tab. Fall through and
+    -- treat it as one, so the flush below still goes to the OLD project's file.
   end
 
   FlushProjectFile(true)
@@ -2265,11 +2292,18 @@ end
 -- scraps of inter-take air a cut leaves behind are born already claiming to be
 -- the take that preceded them.
 --
--- Bounded to the regions the cut just rearranged, which is what keeps it safe:
--- everything inside one of those was produced by this split, so a name in there
--- with no marker behind it can only be split residue. An item ANYWHERE ELSE
--- with a name and no marker is a rendered file Pull is meant to serve, and is
--- never touched.
+-- Bounded to the TRACKS the cut just rearranged, which is what keeps it safe: a
+-- recording track is this tool's own workspace, so a name on it with no marker
+-- behind it can only be split residue. An item on any OTHER track with a name
+-- and no marker is a rendered file Pull is meant to serve, and is never
+-- touched.
+--
+-- The bound used to be the regions themselves, and that missed the two places
+-- residue actually survives: the air BEFORE the first take and AFTER the last,
+-- which no cut region covers because no take is there to define one. A real
+-- session kept a 26s clip at position 0 called "..._HungryAlone_Root_alt2" --
+-- a name it had every right to be believed about, since Pull routes by name and
+-- the sheet lists it as a take. Residue outside every region is still residue.
 function Trim.clear_residue_names(regions)
   local cleared = 0
   -- Tracks can go stale the same way items do -- deleting a recording folder
@@ -2283,27 +2317,84 @@ function Trim.clear_residue_names(regions)
   for i = #regions, 1, -1 do
     if not track_alive(regions[i].track) then table.remove(regions, i) end
   end
+  -- One sweep per track, however many regions landed on it.
+  local swept = {}
   for _, reg in ipairs(regions or {}) do
     local tr = reg.track
-    if tr then
+    if tr and not swept[tr] then
+      swept[tr] = true
       for i = 0, r.CountTrackMediaItems(tr) - 1 do
         local item = r.GetTrackMediaItem(tr, i)
-        local pos  = r.GetMediaItemInfo_Value(item, "D_POSITION")
-        local len  = r.GetMediaItemInfo_Value(item, "D_LENGTH")
-        if pos >= (reg.from - 1e-6) and (pos + len) <= (reg.to + 1e-6) then
-          local take = r.GetActiveTake(item)
-          if take and not r.TakeIsMIDI(take) then
-            local _, nm = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
-            if nm and nm ~= "" and not Trim.has_marker(item) then
-              r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", true)
-              cleared = cleared + 1
-            end
+        local take = r.GetActiveTake(item)
+        if take and not r.TakeIsMIDI(take) then
+          local _, nm = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+          if nm and nm ~= "" and not Trim.has_marker(item) then
+            r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", true)
+            cleared = cleared + 1
           end
         end
       end
     end
   end
   return cleared
+end
+
+-- The same sweep, reachable without re-cutting: every recording track in the
+-- project, rather than the ones a cut just touched.
+--
+-- A RECORDING TRACK IS THE PARENT OF A ROLE TRACK. Pull builds Selects, Alts
+-- and Review as children of the recording they came from, so the folder
+-- structure states the relationship and nothing has to be guessed.
+--
+-- The obvious test -- "it holds a clip with a take marker" -- is wrong AFTER a
+-- pull, which is exactly when the repair is wanted: every marked take has
+-- MOVED to a role track by then, leaving the recording holding nothing but
+-- residue. So the marker test is kept as a second way in, for a session cut but
+-- not yet pulled, and the two are unioned.
+--
+-- The safety case survives both: a folder of rendered files Pull is meant to
+-- serve has no markers anywhere on it and no role-track children, so it is
+-- never a recording track and its names are never touched.
+--
+-- REVIEW COUNTS AS A DESTINATION HERE, even though vo.MarkFromTrack maps it to
+-- nil. That nil is right where it is asked -- Review means "undecided", which
+-- is the absence of a mark, not a mark -- but it makes Review look like an
+-- ordinary track to anything scanning by role, and Review is full of marked
+-- takes, so it would have been swept as if it were a recording. Every
+-- destination Pull writes to is asked for by name instead.
+function Trim.sweep_residue_names()
+  local cfg, seen, regions = vo.LoadConfig(), {}, {}
+  local dest = {}
+  for _, k in ipairs({ "track_selects", "track_alts", "track_review", "track_outs" }) do
+    local nm = cfg[k]
+    if type(nm) == "string" and nm ~= "" then dest[nm:lower()] = true end
+  end
+  for _, nm in ipairs({ "selects", "alts", "review", "outs" }) do dest[nm] = true end
+  local function is_dest(tn) return dest[tostring(tn or ""):lower()] == true end
+
+  local function add(tr)
+    if tr and not seen[tr] then
+      local _, tn = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
+      -- A delivered take is supposed to be named, so a destination is never
+      -- swept even if it turns up as somebody's parent.
+      if not is_dest(tn) then
+        seen[tr] = true
+        regions[#regions + 1] = { track = tr }
+      end
+    end
+  end
+  for ti = 0, r.CountTracks(0) - 1 do
+    local tr = r.GetTrack(0, ti)
+    local _, tn = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
+    if is_dest(tn) then
+      add(r.GetParentTrack(tr))
+    else
+      for i = 0, r.CountTrackMediaItems(tr) - 1 do
+        if Trim.has_marker(r.GetTrackMediaItem(tr, i)) then add(tr) break end
+      end
+    end
+  end
+  return Trim.clear_residue_names(regions), #regions
 end
 
 -- Clips whose NAME and whose MARKER name two different lines.
@@ -2769,21 +2860,19 @@ local function IdentifyItems(opts)
   -- SAY IT ON THE CLIP. A partial is invisible otherwise -- named, in the
   -- sheet, audible, and refused by every button precisely because nothing about
   -- it is broken except the match behind it.
-  local note_stamp2 = os.date("%Y-%m-%d %H:%M")
   for _, p in ipairs(partials) do
     if Trim.item_alive(p.item) then
-      -- States the FACT and stops. An earlier draft of this said the match had
-      -- merged two reads, which was a guess -- and the first case it was
-      -- checked against turned out to be a correctly matched take that had
-      -- simply been cut in half. A note that explains a cause it cannot know is
-      -- worse than one that just shows the two numbers.
-      vo.WriteNoteMarker(p.item, p.at or 0, note_stamp2, string.format(
-        "PARTIAL: this clip holds %.1fs of the %.1fs take %s, marker -%s at " ..
-        "%.2f-%.2f. Either the clip was cut short of the line, or the marker " ..
-        "is. \"Fix from Item\" in Out of sync fixes the marker; extending " ..
-        "the clip fixes the clip.",
-        p.covered or 0, p.span_len or 0, tostring(p.asset),
-        tostring(p.marker_id or "?"), p.marker_from or 0, p.marker_to or 0))
+      -- CATEGORY AND TWO NUMBERS. Nothing else fits on a clip.
+      --
+      -- This used to be four sentences -- the two durations, the marker id and
+      -- its range, both possible causes, and which button fixes which. On a
+      -- timeline that is an essay per clip, and a note nobody stops to read is
+      -- not a note. The Todo rail already carries the evidence, category-first
+      -- with the detail one hover away (beta38), and that is where a user goes
+      -- to work through findings; the clip only has to say WHICH KIND of
+      -- problem it has, so the eye can skip or stop.
+      vo.WriteNoteMarker(p.item, p.at or 0, nil, string.format(
+        "PARTIAL %.1f/%.1fs", p.covered or 0, p.span_len or 0))
     end
   end
 
@@ -2916,7 +3005,6 @@ function Trim.update(dir, opts)
 
   -- Read ONCE per run, so every note this press writes carries the same stamp
   -- and a glance tells you which run left which explanation.
-  local note_stamp = os.date("%Y-%m-%d %H:%M")
 
   ;(opts.no_transaction and Trim.bare or core.Transaction)(
       from_item and "VO Overview: update from item"
@@ -3028,21 +3116,24 @@ function Trim.update(dir, opts)
           -- the recording track looking identical to one the run simply had not
           -- reached -- which is the question "it was identified, so why was it
           -- not faded or pulled?" with no answer anywhere on screen.
-          vo.WriteNoteMarker(item, mks[1] and mks[1].start or 0, note_stamp,
-            string.format("left alone: %d markers here, no single range to " ..
-                          "trim onto. Cut from markers splits it, or delete " ..
-                          "the wrong one.", #mks))
+          vo.WriteNoteMarker(item, mks[1] and mks[1].start or 0, nil,
+            string.format("%d MARKERS", #mks))
         elseif #shape.nomarker == 1 then
           nomarker = nomarker + 1
-          -- Placed at the clip's own source start, NOT at 0. A take marker's
-          -- position is in SOURCE time, so 0 is somewhere near the top of the
-          -- recording -- outside this clip's window, and therefore invisible on
-          -- the clip it is about. A note nobody can see is not a note.
-          local tk = r.GetActiveTake(item)
-          local at = tk and r.GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS") or 0
-          vo.WriteNoteMarker(item, at, note_stamp,
-            "left alone: no take marker, so nothing says which line this is. " ..
-            "Match takes to script marks it.")
+          -- DELIBERATELY NOT NOTED ON THE CLIP.
+          --
+          -- This used to stamp "left alone: no take marker ... Match takes to
+          -- script marks it" on every marker-less clip. After a full pass that
+          -- is one note per leftover -- dozens of them across the recording
+          -- track -- and the advice is wrong on every one: the match already
+          -- ran, and these are the stretches it found no line for. Room tone,
+          -- breaths, and the director talking. Telling the user to press the
+          -- button they just pressed is worse than saying nothing.
+          --
+          -- The count still reaches them: "N selected item(s) hold no marker at
+          -- all" is in the run's own message. A note earns its place on a clip
+          -- only when it explains something that clip-specific -- which is why
+          -- the several-markers case above still writes one.
         end
 
         local was_in  = r.GetMediaItemInfo_Value(item, "D_FADEINLEN")
@@ -3569,7 +3660,17 @@ function RoleNames.Plan(opts)
           tn = got or ""
           track_of[tr] = tn
         end
+        -- A clip with no take marker is not a take: the marker IS the row.
+        -- Cut leaves named residue on the recording track, and that residue
+        -- used to reserve its alt number against the line -- see
+        -- vo.PlanRoleNames. Cheap to ask, and only asked off the role tracks
+        -- because on them the track already settles the question.
+        local is_take = true
+        if vo.MarkFromTrack(tn, cfg) == nil then
+          is_take = r.GetNumTakeMarkers(take) > 0
+        end
         rows[#rows + 1] = { name = nm, track_name = tn, take = take,
+                            is_take = is_take,
                             pos = r.GetMediaItemInfo_Value(item, "D_POSITION") }
       end
     end
@@ -5868,6 +5969,66 @@ local function DrawScriptPanel()
     im.TextDisabled(ctx, "No scripts yet. Press Add script… to choose one.")
   end
 
+  -- WHO THIS SESSION IS. Set here, beside the scripts, because it is a fact
+  -- about the script rather than about the view: one recording is one
+  -- performer, and the script it came from usually carries the whole scene.
+  --
+  -- Everything downstream follows from the line list, so ticking a name here
+  -- fixes the denominators ("18 of 39" against a 39 that could never be
+  -- reached) AND narrows the recogniser's script context, which is the same
+  -- list of lines.
+  local cast, blank = vo.ScriptSpeakers(state.loaded.scripts,
+                                        vo.LoadConfig().skip_values)
+  if #cast > 0 then
+    im.Separator(ctx)
+    im.Text(ctx, "Characters in this session")
+    im.SameLine(ctx)
+    im.TextDisabled(ctx, (#state.speakers == 0)
+      and "(none ticked = every character)"
+      or  string.format("(%d of %d ticked)", #state.speakers, #cast))
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx,
+        "Which characters this project is EDITING -- not a view filter.\n" ..
+        "An unticked character's lines leave the session entirely: they stop\n" ..
+        "counting toward the totals, and they stop being offered to the\n" ..
+        "transcriber as script context.\n\n" ..
+        "Tick none and every character is included, which is what a project\n" ..
+        "that never chose has always done.\n\n" ..
+        "A row whose character cell is EMPTY is always kept -- there is\n" ..
+        "nothing to tick, so nothing could bring it back.")
+    end
+
+    local picked = {}
+    for _, nm in ipairs(state.speakers or {}) do picked[nm:lower()] = true end
+
+    local changed_any = false
+    for _, rec in ipairs(cast) do
+      local on = picked[rec.key] == true
+      local hit, now = im.Checkbox(ctx,
+        string.format("%s (%d)##spk_%s", rec.name, rec.n, rec.key), on)
+      if hit then
+        local next_list = {}
+        for _, nm in ipairs(state.speakers or {}) do
+          if nm:lower() ~= rec.key then next_list[#next_list + 1] = nm end
+        end
+        if now then next_list[#next_list + 1] = rec.name end
+        state.speakers = next_list
+        changed_any = true
+      end
+      im.SameLine(ctx)
+    end
+    im.NewLine(ctx)
+    if blank > 0 then
+      im.TextDisabled(ctx, string.format(
+        "%d line%s with no character set %s always kept.",
+        blank, blank == 1 and "" or "s", blank == 1 and "is" or "are"))
+    end
+    if changed_any then
+      state.dirty = true
+      Reload()
+    end
+  end
+
   -- Removed and reordered after the loop: mutating the list mid-draw would
   -- shift every index under the widgets still to be drawn.
   if remove_at then
@@ -7531,7 +7692,8 @@ local function Pull()
   Reload()
   state.name_baseline = nil
   local items, marks = TargetItems()
-  local moves, summary = vo.PlanPull(items, state.lines, marks)
+  local moves, summary = vo.PlanPull(items, state.lines, marks,
+    { lone_take_is_select = vo.Opt(vo.LoadConfig(), "pull_lone_take_to_selects") })
 
   if #moves == 0 then
     state.message, state.message_kind = string.format(
@@ -7706,7 +7868,16 @@ local function Pull()
         local tk2 = r.GetActiveTake(it2)
         if tk2 then
           local _, nm2 = r.GetSetMediaItemTakeInfo_String(tk2, "P_NAME", "", false)
-          if nm2 == "" or nm2:find("%.wav$") then
+          -- MUTED leftovers are excluded, and that is the whole signal-to-noise
+          -- of this report. The pass just above measures every leftover and
+          -- mutes the ones that are silence or too short to be usable -- so a
+          -- muted leftover has already been judged to hold no speech, and the
+          -- rule here is about a VOICED leftover stranded at a take's head.
+          -- Without this the report fired on nearly every take (29 of 29 on one
+          -- session), because every read is preceded by a breath of room tone,
+          -- and a warning that always fires is not read at all.
+          if (nm2 == "" or nm2:find("%.wav$"))
+             and r.GetMediaItemInfo_Value(it2, "B_MUTE") < 0.5 then
             local offs2 = r.GetMediaItemTakeInfo_Value(tk2, "D_STARTOFFS")
             leftovers[#leftovers + 1] = {
               pos = r.GetMediaItemInfo_Value(it2, "D_POSITION"),
@@ -8064,10 +8235,23 @@ local function MatchTakes(opts)
   -- before would file the new markers under the old marks. Nothing adopted
   -- means no second rescan -- and a rescan here re-reads a chunk per item, so
   -- it is not a cost to pay for no reason.
-  local got = IdentifyItems({ quiet = true, no_reload = (adopted == 0) })
+  local got = IdentifyItems({ quiet = true, no_reload = (adopted == 0),
+                              no_transaction = opts.no_transaction })
         or { wrote = 0, named = 0, many = 0, none = 0, unusable = 0,
              updated = 0, unchanged = 0, items = 0 }
   Reload()
+
+  -- "identified 0 item(s)" is what this said when nothing was selected, and it
+  -- reads as a result rather than as "you have not given me anything to work
+  -- on" -- the sheet refreshed, so the sentence even opens with a success. Say
+  -- what actually happened, and what to do about it.
+  if got.items == 0 then
+    state.message, state.message_kind = string.format(
+      "Matched %d line(s) to the script, but marked nothing: no recording is " ..
+      "selected. Select the recording (or its takes) and run this again.",
+      refreshed), "warn"
+    return
+  end
 
   local parts = { string.format(
     "Matched %d line(s) to the script; identified %d item(s): marked %d take(s), named %d.",
@@ -8108,6 +8292,105 @@ local function MatchTakes(opts)
   state.message = table.concat(parts, " ")
   state.message_kind = (#conflicts > 0 or got.none > 0 or got.unusable > 0)
                        and "warn" or "ok"
+end
+
+-- MATCH AND CUT UNTIL THE SESSION STOPS YIELDING TAKES.
+--
+-- One pass is not enough, and that cost a real session most of its takes.
+-- Identify works per ITEM: on the first press the whole recording is ONE item,
+-- so the reads it does not manage to mark stay inside the un-split residue.
+-- Only after Cut has split that residue into items of their own can the next
+-- Identify see them as takes at all. Measured on a 42-minute session, 2026-08-16:
+--
+--   pass 1   60 takes on Review, 2072s left on the source track  (18% claimed)
+--   pass 2  110 takes,            947s left                      (57%)
+--   pass 3  125 takes,            449s left                      (78%, converged)
+--
+-- Nothing about that is obvious from the window: each pass reported success and
+-- named the leftovers "reads with no take marker", which reads as a fact about
+-- the recording rather than an instruction to press the button again.
+--
+-- Convergence, not a fixed count: stop as soon as a pass leaves no unmarked
+-- read, or stops making progress. The cap is a backstop against a pathological
+-- session oscillating, never the expected exit -- three passes settled the
+-- worst real session on hand.
+--
+-- Select-all before each pass because both verbs are scoped to REAPER's item
+-- selection, and the whole point is that this pass must see the items the last
+-- pass created.
+function Trim.settle(opts)
+  opts = opts or {}
+  local max_passes = opts.max_passes or 6
+  local log, applied_total = {}, 0
+
+  -- The user's selection is theirs. Both verbs below scope off REAPER's item
+  -- selection and this has to widen it to everything the last pass created, so
+  -- it is put back at the end rather than left as "all items".
+  local was_selected = {}
+  for i = 0, r.CountSelectedMediaItems(0) - 1 do
+    was_selected[#was_selected + 1] = r.GetSelectedMediaItem(0, i)
+  end
+
+  local last = nil
+  for pass = 1, max_passes do
+    r.Main_OnCommand(40182, 0)          -- Select all items
+    MatchTakes({ mark = true, no_transaction = opts.no_transaction })
+    local matched = state.message
+    local res = Trim.cut_from_markers({ quiet = true,
+                                        no_transaction = opts.no_transaction,
+                                        no_reload = false }) or {}
+    local cut = res.cut or { applied = 0, unmarked = 0 }
+    local trim = res.trim or { acted = 0 }
+    -- The LAST pass's numbers are the session's numbers; the earlier ones are
+    -- scaffolding. Kept so the caller can report the run rather than the loop.
+    last = { matched = matched, res = res, passes = pass }
+
+    applied_total = applied_total + (cut.applied or 0)
+    log[#log + 1] = string.format("pass %d: cut %d, trimmed %d, %d unmarked",
+      pass, cut.applied or 0, trim.acted or 0, cut.unmarked or 0)
+
+    if (cut.unmarked or 0) == 0 then
+      log[#log + 1] = "converged: every read has a marker"
+      break
+    end
+    -- No progress with reads still unmarked is not convergence, it is a floor.
+    -- Say so rather than spending five more passes proving it.
+    if (cut.applied or 0) == 0 and (trim.acted or 0) == 0 then
+      log[#log + 1] = string.format(
+        "stopped: %d read(s) still unmarked but the pass changed nothing",
+        cut.unmarked or 0)
+      break
+    end
+    if pass == max_passes then
+      log[#log + 1] = string.format(
+        "stopped at the %d-pass cap with %d read(s) still unmarked",
+        max_passes, cut.unmarked or 0)
+    end
+  end
+
+  -- Restoring is opt-out because a CALLER may want to keep working on what this
+  -- produced -- GoldenPath pulls straight afterwards, and handing it back a
+  -- selection of items that no longer exist would leave it nothing to pull.
+  --
+  -- Every pointer is validated first. Splitting DESTROYS the item it split, so
+  -- `was_selected` is full of dangling MediaItem*s by now, and handing one of
+  -- those to the API is a crash in REAPER rather than an error Lua can catch.
+  if opts.restore_selection ~= false then
+    r.Main_OnCommand(40289, 0)          -- Unselect all items
+    for _, it in ipairs(was_selected) do
+      if r.ValidatePtr2(0, it, "MediaItem*") then
+        r.SetMediaItemSelected(it, true)
+      end
+    end
+    r.UpdateArrange()
+  end
+
+  Reload()
+  state.message = table.concat(log, " | ")
+  state.message_kind = "ok"
+  state.cut_result, state.cut_result_kind = state.message, "ok"
+  return { applied = applied_total, log = log, passes = (last and last.passes or 0),
+           matched = last and last.matched, res = last and last.res }
 end
 
 -- "Re-cut selected takes": un-split a clump so the cut can run again.
@@ -8176,7 +8459,6 @@ function Trim.recut(opts)
 
   -- Read ONCE, so every note this press writes carries the same stamp -- the
   -- same reason Trim.update reads it once.
-  local note_stamp = os.date("%Y-%m-%d %H:%M")
   local healed, grown, noted = 0, 0, 0
 
   ;(opts.no_transaction and Trim.bare or core.Transaction)(
@@ -8241,20 +8523,17 @@ function Trim.recut(opts)
         r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", true)
       end
 
+      -- Category only, like every other note. The rates it dropped are in the
+      -- run's message, which is where a number you might want to type back in
+      -- belongs -- not on a clip, where it cannot be copied anyway.
       local note = nil
       if #plan.dropped_rate > 0 then
-        local bits = {}
-        for _, d in ipairs(plan.dropped_rate) do
-          bits[#bits + 1] = string.format("playrate %.3f / pitch %+d",
-                                          d.playrate, math.floor(d.pitch))
-        end
-        note = string.format("RATE: re-cut dropped %s from %d item(s).",
-                             table.concat(bits, ", "), #plan.dropped_rate)
+        note = string.format("RATE DROPPED x%d", #plan.dropped_rate)
         noted = noted + 1
       end
       vo.WriteNoteMarker(survivor,
         take and r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS") or 0,
-        note_stamp, note)
+        nil, note)
     end
 
     -- 4 and 5. Every survivor, selected together, handed to the existing
@@ -8320,6 +8599,7 @@ local function ResetProject(also_transcripts)
   -- or the in-memory copy writes the sidecar straight back.
   state.entries, state.scripts, state.appends, state.pins = {}, {}, {}, {}
   state.line_edits, state.names, state.subs = {}, {}, {}
+  state.speakers = {}
   state.subs_text = nil
   state.loaded = { scripts = {}, lines = {} }
   state.selection, state.expanded = {}, {}
@@ -8336,19 +8616,31 @@ local function ResetProject(also_transcripts)
   state.message_kind = (#failed > 0) and "error" or "ok"
 end
 
--- The golden path: what a session does the first time, in order, on one press.
+-- The golden path: what a session does the first time, on one press.
 --
--- Match, cut, pick a take per line, pull to the tracks. Each of these is its
--- own button because each is worth running alone -- but a new session runs all
--- four, in this order, every time, and making the user rediscover that order
--- is making them learn the tool before they can use it.
+-- Match and cut UNTIL NOTHING NEW TURNS UP, then pull everything to Review.
+-- Each step is its own button because each is worth running alone -- but a new
+-- session runs all of them, in this order, every time, and making the user
+-- rediscover that order is making them learn the tool before they can use it.
 --
--- The order is load-bearing. Cut needs the match to know where takes are; the
--- pick needs the takes to exist; Pull routes by the marks the pick just made.
+-- The order is load-bearing: cut needs the match to know where takes are, and
+-- Pull routes by the names the cut just wrote.
+--
+-- MATCH AND CUT ARE ONE STEP HERE, not two, and that is the whole reason this
+-- button is worth pressing. Running them once is not enough -- Identify works
+-- per ITEM, so reads it cannot mark stay inside the un-split residue until Cut
+-- has split that residue into items of its own. On a 42-minute session one pass
+-- delivered 60 takes and left 2072 seconds of performance uncut; looping to
+-- convergence delivered 148. Trim.settle owns that loop, so the hero and the
+-- harness cannot drift apart about what "the whole pass" means.
+--
+-- NOTHING IS PICKED. The pass used to run AutoSelectTakes here, which meant the
+-- first press of the hero delivered a take per line that nobody had listened
+-- to. Everything lands on Review and the choosing is yours -- the same rule
+-- vo.PlanPull follows (see opts.lone_take_is_select).
 --
 -- Everything that touches items runs inside ONE transaction, so the whole pass
--- is a single undo. The match is sheet-only and sits outside it: undoing the
--- audio should not throw away tracking that is still true.
+-- is a single undo however many passes convergence took.
 local function GoldenPath()
   -- Per-step wall clock, reported with the result.
   --
@@ -8372,39 +8664,30 @@ local function GoldenPath()
   --
   -- Outside the transaction below, deliberately: undoing the AUDIO should not
   -- throw away the identification, which is still true either way.
-  MatchTakes({ mark = true })
-  local matched = state.message or ""
-  lap("match+mark")
-
-  -- Captured before anything splits, for the same reason cut_from_markers does
-  -- it: REAPER leaves the pieces of a split selected, so every later step would
-  -- silently re-scope itself to clips this press created.
-  local picked = Trim.scope()
-
-  local cut_err, res
+  local cut_err, res, matched, passes
   core.Transaction("VO Overview: run the whole pass", function()
     local ok, err = pcall(function()
-      -- Clean the markers, split at them, trim the singles, name and fade --
-      -- the whole of "Cut from markers", not a second copy of it. Duplicating
-      -- these steps here is exactly how the hero and the button drifted apart
-      -- before.
-      res = Trim.cut_from_markers({ picked = picked, no_transaction = true,
-                                    no_reload = true, quiet = true })
+      -- Match and cut, repeatedly, until a pass finds no unmarked read. This is
+      -- the SAME loop the seam runs -- duplicating these steps here is exactly
+      -- how the hero and the buttons drifted apart before.
+      local got = Trim.settle({ no_transaction = true,
+                                restore_selection = false })
+      res, matched, passes = got.res, got.matched, got.passes
     end)
     if not ok then
       cut_err = tostring(err)
-      return          -- a failed cut leaves nothing to pick or pull
+      return          -- a failed cut leaves nothing to pull
     end
-    lap("cut")
+    lap(string.format("match+cut x%d", passes or 1))
     Reload()
     lap("reload")
-    -- Now that the takes EXIST as their own items, each one is a row that can
-    -- carry a mark.
-    AutoSelectTakes(AffectedRows())
-    lap("pick")
-    -- Build before pulling so Selects / Alts / Review exist even where nothing
-    -- lands: an empty Alts track is how you see the shape the session is
-    -- heading for. Pull would make them as a side effect otherwise.
+    -- Dest.build and Pull both scope off REAPER's own item selection, and the
+    -- item this press started on was DESTROYED by the split that made the
+    -- takes. Select what the cut produced, or the pass ends by pulling nothing.
+    r.Main_OnCommand(40182, 0)          -- Select all items
+    -- Build before pulling so Selects / Alts / Review / Outs exist even where
+    -- nothing lands: an empty Alts track is how you see the shape the session
+    -- is heading for. Pull would make them as a side effect otherwise.
     Dest.build()
     lap("build")
     Pull()
@@ -8417,7 +8700,7 @@ local function GoldenPath()
 
   if cut_err then
     state.message, state.message_kind =
-      "Stopped at the cut, so nothing was picked or pulled: " .. cut_err, "error"
+      "Stopped at the cut, so nothing was pulled: " .. cut_err, "error"
     r.ShowConsoleMsg("ajsfx VO -- whole pass FAILED at the cut\n" .. cut_err .. "\n\n")
     return
   end
@@ -8442,7 +8725,13 @@ local function GoldenPath()
     end
     if #bits > 0 then cut_bit = "Cut: " .. table.concat(bits, ", ") .. "." end
   end
-  state.message = matched .. "  |  " .. cut_bit .. "  |  " ..
+  if (passes or 1) > 1 then
+    -- Say it took more than one look. A session that needed four passes is a
+    -- session where three quarters of the takes would have been missed by the
+    -- old single-pass hero, and that is worth seeing rather than smoothing over.
+    cut_bit = cut_bit .. string.format(" (%d passes to settle.)", passes)
+  end
+  state.message = (matched or "") .. "  |  " .. cut_bit .. "  |  " ..
                   (state.pull_result or "Pulled.") ..
                   "  |  [" .. table.concat(marks, ", ") .. "]"
   state.message_kind = state.pull_result_kind or "ok"
@@ -8584,7 +8873,8 @@ local function DrawPullPanel()
                              tostring(r.CountSelectedMediaItems(0)) }, "|")
   if key ~= state.pull_count_key then
     local items, marks = TargetItems()
-    local _, n = vo.PlanPull(items, state.lines, marks)
+    local _, n = vo.PlanPull(items, state.lines, marks,
+      { lone_take_is_select = vo.Opt(vo.LoadConfig(), "pull_lone_take_to_selects") })
     state.pull_count_key, state.pull_count = key, n
   end
   local n = state.pull_count
@@ -10182,11 +10472,18 @@ function Strip.Draw()
     "  2. clean the markers -- duplicates decided by the words\n" ..
     "  3. split at those markers, and trim single-take clips onto theirs\n" ..
     "  4. name every clip for its line, and fade the cut edges\n" ..
-    "  5. pick a take for each line\n" ..
-    "  6. build Selects / Alts / Review, and pull the items there\n\n" ..
-    "What is left is the judgement: check the selects and alts, check\n" ..
-    "the edits, then deliver. The stages beside this button are the\n" ..
-    "path -- each is a meter, and clicking one shows what it still owes.\n\n" ..
+    "  5. repeat 1-4 until a pass finds no unmarked read\n" ..
+    "  6. build Selects / Alts / Review / Outs, and pull EVERYTHING\n" ..
+    "     to Review\n\n" ..
+    "Steps 1-4 repeat because one look is not enough: reads that could\n" ..
+    "not be marked stay buried inside the uncut audio until a split has\n" ..
+    "freed them. On a 42-minute session one pass found 60 takes and left\n" ..
+    "34 minutes of performance uncut; repeating found 148.\n\n" ..
+    "Nothing is picked for you. Every take lands on Review -- the honest\n" ..
+    "state, because no one has listened yet. Audition there and drag the\n" ..
+    "keepers onto Selects; names follow the track. The stages beside this\n" ..
+    "button are the path -- each is a meter, and clicking one shows what\n" ..
+    "it still owes.\n\n" ..
     "This CHANGES ITEMS: it cuts, names and moves audio. Acts on the\n" ..
     "selection; the amber line below says what that is right now.\n\n" ..
     "Step 5 picks each line's " ..
@@ -12720,13 +13017,13 @@ local REMOTE_SECTION = "ajsfx_vo_remote"
 local REMOTE_HELP =
   "status | rematch | cut | identify | " ..
   "sync_markers | build_tracks | pull | name_alts | names_from_tracks | " ..
-  "straighten_names | " ..
+  "straighten_names | clear_residue | speakers [all|<name>,<name>] | " ..
   "sort script|record | " ..
   "dupes | append script|asset|nth|text | " ..
   "rows [needle] | spans <needle> | missing | boundaries | marker_words | " ..
   "verify | unheard | " ..
   "vet [needle] | vet_status | suspects | lock <needle> 0|1 | " ..
-  "make_select <takename> | place | tighten | trim_to_markers"
+  "clear_notes | whole_pass | settle | unpick | pick first|last | make_select <takename> | place | tighten | trim_to_markers"
 
 local function RemoteStatus()
   local c, parts = state.check or {}, {}
@@ -13057,6 +13354,47 @@ local function RunRemoteCommand(command)
   elseif verb == "straighten_names" then
     RoleNames.Apply(false, { renumber = true })
     return state.message or "straighten_names ran"
+  elseif verb == "speakers" then
+    local cast, blank = vo.ScriptSpeakers(state.loaded.scripts,
+                                          vo.LoadConfig().skip_values)
+    if rest ~= "" then
+      local want = {}
+      if rest ~= "all" and rest ~= "*" then
+        for piece in tostring(rest):gmatch("[^,]+") do
+          local nm = piece:match("^%s*(.-)%s*$")
+          -- Matched against the cast so the stored name is the script's own
+          -- spelling, not whatever case was typed at the seam.
+          for _, rec in ipairs(cast) do
+            if rec.key == nm:lower() then want[#want + 1] = rec.name end
+          end
+        end
+      end
+      state.speakers = want
+      state.dirty = true
+      LoadScripts()
+      Rebuild()
+    end
+    local parts = {}
+    for _, rec in ipairs(cast) do
+      local on = false
+      for _, nm in ipairs(state.speakers or {}) do
+        if nm:lower() == rec.key then on = true end
+      end
+      parts[#parts + 1] = string.format("%s%s(%d)", on and "[x] " or "[ ] ",
+                                        rec.name, rec.n)
+    end
+    return string.format("%s | %d blank always kept | %d line(s) in the session",
+      #parts > 0 and table.concat(parts, "  ") or "no character column mapped",
+      blank, #(state.lines or {}))
+  elseif verb == "clear_residue" then
+    local cleared, tracks
+    core.Transaction("VO Overview: clear residue names", function()
+      cleared, tracks = Trim.sweep_residue_names()
+    end)
+    Reload()
+    return string.format(
+      "Cleared the take name from %d clip(s) with no take marker, across %d " ..
+      "recording track(s).", cleared, tracks)
   elseif verb == "sort" then
     if rest == "script" or rest == "record" then state.layout_order = rest end
     SortOnTimeline()
@@ -13151,6 +13489,70 @@ local function RunRemoteCommand(command)
   elseif verb == "tighten" then
     TightenItems()
     return state.message or "tighten ran"
+  elseif verb == "clear_notes" then
+    -- Strip every note marker in the project. Notes are annotations the tool
+    -- wrote to explain a skip; they are not take identity, so removing them
+    -- cannot lose a take. For clearing out a version's worth of notes that a
+    -- later version stopped writing.
+    local cleared, touched = 0, 0
+    core.Transaction("VO Overview: clear notes", function()
+      for ti = 0, r.CountTracks(0) - 1 do
+        local tr = r.GetTrack(0, ti)
+        for ii = 0, r.CountTrackMediaItems(tr) - 1 do
+          local item = r.GetTrackMediaItem(tr, ii)
+          local ok, chunk = r.GetItemStateChunk(item, "", false)
+          if ok then
+            local has = false
+            for _, m in ipairs(vo.ParseTKMChunk(chunk)) do
+              if vo.IsNoteMarker(m.name) then has = true break end
+            end
+            if has then
+              local done, dropped = vo.WriteNoteMarker(item, 0, "", nil)
+              if done then
+                cleared = cleared + (dropped or 0)
+                touched = touched + 1
+              end
+            end
+          end
+        end
+      end
+    end)
+    Reload()
+    return string.format("cleared %d note(s) from %d item(s)", cleared, touched)
+  elseif verb == "whole_pass" then
+    -- The hero button, headless. Here so the harness exercises the SAME entry
+    -- point the user presses, rather than a hand-assembled imitation of it that
+    -- can quietly stop matching what the button does.
+    GoldenPath()
+    return state.message or "whole_pass ran with no result string"
+  elseif verb == "settle" then
+    -- Match and cut until the session stops yielding takes. See Trim.settle.
+    local got = Trim.settle()
+    return string.format("%s\n(%d clip(s) cut in total)",
+                         state.message or "settle ran", got.applied or 0)
+  elseif verb == "unpick" then
+    -- Clear every Sel in scope, so a Pull parks all identified reads on Review
+    -- and the choosing is left to ears. Uses SetSelect, the same writer the
+    -- checkbox does, so nothing here knows about the sidecar's format.
+    local cleared = 0
+    Batch(function()
+      for _, row in ipairs(AffectedRows()) do
+        if row.user_select then
+          SetSelect(row, false)
+          cleared = cleared + 1
+        end
+      end
+    end)
+    return string.format("cleared the select on %d row(s)", cleared)
+  elseif verb == "pick" then
+    -- The auto-pick pair from the Decided stage, headless: "pick last" (the
+    -- usual rule -- the last read of a line is the keeper) or "pick first".
+    -- Same function the buttons press, same scope rules, so a headless run and
+    -- a click cannot drift apart.
+    local rule = (rest == "first") and "first" or "last"
+    AutoSelectTakes(AffectedRows(), rule)
+    return string.format("pick %s: %s", rule,
+                         state.message or "ran with no result string")
   elseif verb == "make_select" then
     -- Promote the take currently named `rest` to its line's Select.
     for _, row in ipairs(state.overview or {}) do

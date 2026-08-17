@@ -191,6 +191,99 @@ test("missing optional speaker column leaves speaker nil and filter inert", func
   assert(lines[1].speaker == nil, "speaker should be nil")
 end)
 
+test("an EMPTY character cell survives the filter", function()
+  -- The tick list is built from the values the script contains, so a blank
+  -- cell offers nothing to tick and excluding it would strand the line where
+  -- no UI could reach it. A real greeting CSV leaves the column unfilled.
+  local r2 = rows()
+  r2[#r2 + 1] = { "GRT_001", "", "Dialogue", "Well met", "vo_greet_01" }
+  local lines = vo.BuildScriptLines(r2, COLS, { speakers = { npc = true } })
+  local found = false
+  for _, l in ipairs(lines) do if l.asset == "vo_greet_01" then found = true end end
+  assert(found, "a blank-character line was dropped by the filter")
+  assert(#lines == 3, "expected 2 NPC + 1 blank, got " .. #lines)
+end)
+
+test("a character value that merely LOOKS unset is still a value", function()
+  -- "(no speaker set)" is a string the script chose to write. Guessing which
+  -- strings secretly mean nobody would go wrong on somebody else's export, so
+  -- it filters like any other name -- and appears in the tick list.
+  local r2 = rows()
+  r2[#r2 + 1] = { "GRT_001", "(no speaker set)", "Dialogue", "Well met", "vo_greet_01" }
+  local only_npc = vo.BuildScriptLines(r2, COLS, { speakers = { npc = true } })
+  assert(#only_npc == 2, "the sentinel leaked in as if blank, got " .. #only_npc)
+  local both = vo.BuildScriptLines(r2, COLS,
+    { speakers = { npc = true, ["(no speaker set)"] = true } })
+  assert(#both == 3, "ticking the sentinel did not include it, got " .. #both)
+end)
+
+--------------------------------
+-- ScriptSpeakers / SpeakerFilter
+--------------------------------
+print("\nScriptSpeakers:")
+
+local function scripts_for(rs)
+  return { { enabled = true, header = { "id", "Speaker", "Cat", "Text", "File" },
+             mapping = { speaker = "Speaker", text = "Text", asset = "File" },
+             rows = rs } }
+end
+
+test("counts every distinct character, and blanks separately", function()
+  local r2 = rows()
+  r2[#r2 + 1] = { "GRT_001", "", "Dialogue", "Well met", "vo_greet_01" }
+  local cast, blank = vo.ScriptSpeakers(scripts_for(r2))
+  assert(#cast == 2, "expected NPC and Player, got " .. #cast)
+  -- 2, not 4: the NPC rows reading TO RECORD and the one with no text at all
+  -- never reach the sheet, so counting them here would make the tick lie.
+  assert(cast[1].name == "NPC" and cast[1].n == 2, "NPC: " .. tostring(cast[1].n))
+  assert(cast[2].name == "Player" and cast[2].n == 1, "Player: " .. tostring(cast[2].n))
+  assert(blank == 1, "blank: " .. tostring(blank))
+end)
+
+test("the counts equal the lines that character actually contributes", function()
+  -- The number beside a tick must be the number of lines ticking it adds.
+  local r2 = rows()
+  r2[#r2 + 1] = { "GRT_001", "", "Dialogue", "Well met", "vo_greet_01" }
+  local cast = vo.ScriptSpeakers(scripts_for(r2))
+  for _, rec in ipairs(cast) do
+    local only = vo.BuildScriptLines(r2, COLS, { speakers = { [rec.key] = true } })
+    -- minus the blank-character line, which every filter keeps
+    assert(#only - 1 == rec.n, string.format(
+      "%s counted %d but contributes %d", rec.name, rec.n, #only - 1))
+  end
+end)
+
+test("the cast is read from RAW rows, so an excluded character still lists", function()
+  -- The whole point: a panel built from the FILTERED lines could only offer
+  -- the characters already included, and nothing could ever be un-excluded.
+  local sc = scripts_for(rows())
+  sc[1].lines = vo.BuildScriptLines(rows(), COLS, { speakers = { npc = true } })
+  local cast = vo.ScriptSpeakers(sc)
+  local names = {}
+  for _, rec in ipairs(cast) do names[rec.name] = true end
+  assert(names.Player, "an excluded character vanished from the tick list")
+end)
+
+test("a disabled script contributes no cast", function()
+  local sc = scripts_for(rows())
+  sc[1].enabled = false
+  local cast = vo.ScriptSpeakers(sc)
+  assert(#cast == 0, "a switched-off script offered its cast, got " .. #cast)
+end)
+
+test("SpeakerFilter: no names means every character", function()
+  assert(vo.SpeakerFilter(nil) == nil, "nil should mean all")
+  assert(vo.SpeakerFilter({}) == nil, "empty should mean all")
+  assert(vo.SpeakerFilter({ "" }) == nil, "blank-only should mean all")
+end)
+
+test("SpeakerFilter folds names so stored case does not matter", function()
+  local set = vo.SpeakerFilter({ "Carcas" })
+  assert(set.carcas == true, "expected a folded key")
+  local lines = vo.BuildScriptLines(rows(), COLS, { speakers = vo.SpeakerFilter({ "npc" }) })
+  assert(#lines == 2, "expected 2 NPC lines, got " .. #lines)
+end)
+
 --------------------------------
 -- DuplicateAssets
 --------------------------------
@@ -500,13 +593,33 @@ local function dest_of(moves, id)
   return nil
 end
 
-test("one item for a line is the delivery without being marked", function()
-  -- One take is not a decision. Requiring a mark here would make Pull useless
-  -- on a folder of rendered files, which is half of what it is for.
+test("an unticked lone take waits on review like everything else", function()
+  -- The default: nothing reaches Selects because it happened to be the only
+  -- read of its line. On a session where most lines were read once, the old
+  -- shortcut delivered almost everything unheard.
   local moves, n = vo.PlanPull(pull_items("line_042"), name_lines("line_042"), {})
+  assert(#moves == 1 and moves[1].dest == "review", "Got " .. tostring(moves[1].dest))
+  assert(n.review == 1, "counted")
+end)
+
+test("lone_take_is_select restores the rendered-folder behaviour", function()
+  -- Pull over a folder of already-rendered files carries no ticks at all, so
+  -- the shortcut stays available -- it just has to be asked for.
+  local moves, n = vo.PlanPull(pull_items("line_042"), name_lines("line_042"), {},
+                               { lone_take_is_select = true })
   assert(#moves == 1 and moves[1].dest == "selects", "Got " .. tostring(moves[1].dest))
   assert(moves[1].rename == "line_042", "renamed to the delivered name")
   assert(n.selects == 1, "counted")
+end)
+
+test("a tick still outranks the default, both ways", function()
+  local sel = vo.PlanPull(pull_items("line_042"), name_lines("line_042"),
+                          { [1] = "select" })
+  assert(dest_of(sel, 1) == "selects", "an explicit Sel must still deliver")
+  local keep = vo.PlanPull(pull_items("line_042"), name_lines("line_042"),
+                           { [1] = "keep" }, { lone_take_is_select = true })
+  assert(dest_of(keep, 1) == "alts",
+    "the one-take shortcut must not override an explicit tick")
 end)
 
 test("Sel delivers and the unticked takes wait on review", function()
@@ -543,12 +656,6 @@ test("a Keep with no Sel is still delivered as an alt", function()
   assert(dest_of(moves, 2) == "review", "the other still waits")
 end)
 
-test("a lone take that IS ticked keeps to its tick", function()
-  local moves = vo.PlanPull(pull_items("line_042"), name_lines("line_042"),
-                            { [1] = "keep" })
-  assert(dest_of(moves, 1) == "alts",
-    "the one-take shortcut must not override an explicit tick")
-end)
 
 test("an item no line claims is left entirely alone", function()
   local moves, n = vo.PlanPull(pull_items("RIVA_session"), name_lines("line_042"), {})
@@ -1100,6 +1207,33 @@ test("a line with no append key still resolves", function()
   local lines = { { asset = "a" } }
   vo.ResolveNames(lines, {})
   assert(lines[1].deliver == "a", "A key-less line must not error")
+end)
+
+print("\nThe cast lives in the project:")
+
+test("chosen characters round-trip through the project file", function()
+  local text = vo.SerializeProjectFile({}, {
+    speakers = { "Carcas", "(no speaker set)" },
+  })
+  assert(text:find("\nSpeaker,", 1, true), "no Speaker row")
+  local parsed = assert(vo.ParseProjectFile(text))
+  assert(#parsed.speakers == 2, "count: " .. #parsed.speakers)
+  assert(parsed.speakers[1] == "Carcas", "got " .. tostring(parsed.speakers[1]))
+  -- A name with a comma and brackets in it must survive the CSV cell.
+  assert(parsed.speakers[2] == "(no speaker set)",
+         "got " .. tostring(parsed.speakers[2]))
+end)
+
+test("a project that never chose a character parses as ALL of them", function()
+  local parsed = assert(vo.ParseProjectFile(vo.SerializeProjectFile({}, {})))
+  assert(#parsed.speakers == 0, "an unchosen project invented a cast")
+  assert(vo.SpeakerFilter(parsed.speakers) == nil, "empty list must mean all")
+end)
+
+test("the same character twice is one instruction, not two", function()
+  local parsed = assert(vo.ParseProjectFile(vo.SerializeProjectFile({}, {
+    speakers = { "Carcas", "CARCAS" } })))
+  assert(#parsed.speakers == 1, "count: " .. #parsed.speakers)
 end)
 
 print("\nSubstitutions live in the project:")
