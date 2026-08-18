@@ -277,9 +277,16 @@ panels became the rail in beta33):
 - home stages: an error pulls the displayed stage back to its home when the
   home is earlier than the ladder rung; never forward
 - Done requires ladder cleared and zero errors
-- edit-boundary refresh: the collapse recomputes only when the injected
-  change count ticks; an unchanged count returns the cached result
-  untouched (pure-layer test, change count injected)
+- edit-boundary refresh: NOT a pure-layer test, and this bullet used to
+  claim otherwise. `vo.TodoBuild` is stateless -- it holds no cache and
+  takes no change count, so there is nothing at that layer to inject one
+  into. The caching the anti-jank law describes lives one floor up, in
+  `Inbox.MaybeAssemble` (`ajsfx_VO_Overview.lua`), which skips the rebuild
+  on a reference-identity check against the last assembled rows and rides
+  `RELOAD_THROTTLE`. That is REAPER-coupled: covering it needs the live
+  harness in REAPER (`VO/MANUAL_TEST.md`), not `tests/`. Traced correct by
+  review; left uncovered deliberately rather than faked with a test of the
+  pure layer that would prove nothing about the jank.
 
 `tests/test_vo_tidy.lua` gains, for widened `vo.SelectConflicts`:
 
