@@ -6815,6 +6815,66 @@ function vo.InboxBuild(src)
   return findings, counts
 end
 
+-- THE STAGE LADDER (SPEC-todo-by-line.md, AJ's names): a line has exactly ONE
+-- stage -- its place in the pipeline -- and shows the earliest unmet rung.
+vo.TODO_STAGES = { "not_scanned", "not_found", "needs_edit",
+                   "needs_select", "unverified", "done" }
+vo.TODO_STAGE_LABEL = {
+  not_scanned = "Not Scanned", not_found = "Not Found",
+  needs_edit = "Needs edit", needs_select = "Needs select",
+  unverified = "Unverified", done = "Done",
+}
+
+local STAGE_INDEX = {}
+for i, id in ipairs(vo.TODO_STAGES) do STAGE_INDEX[id] = i end
+function vo.StageIndex(id) return STAGE_INDEX[id] end
+
+-- g: has_takes (a row with take_index > 0 and not missing), any_item (a row
+-- with a live item), any_uncut (an item still holding >1 counting marker),
+-- picked (user_select somewhere), verified (user_status "verified"
+-- somewhere), scanned (the suspects scan ran this session).
+--
+-- Not Found is checked before Not Scanned even though AJ's ladder lists
+-- Not Scanned first: a line that does not exist in the audio cannot be
+-- scanned, so Not Scanned is only for lines a scanner would judge.
+function vo.LineStage(g)
+  g = g or {}
+  if not g.has_takes or not g.any_item then return "not_found" end
+  if not g.scanned then return "not_scanned" end
+  if g.any_uncut then return "needs_edit" end
+  if not g.picked and not g.verified then return "needs_select" end
+  if not g.verified then return "unverified" end
+  return "done"
+end
+
+-- Which stage's work fixes each error kind (AJ-approved mapping,
+-- SPEC-todo-by-line.md Req-1). nil = the finding is not an error: it is a
+-- stage (`undecided`), a session-level row (`unheard`), or already
+-- dissolved into the ladder (`scan_*`).
+local SUSPECT_HOME = { unmarked = "needs_edit", name_mismatch = "unverified",
+                       stamp = "unverified", thin = "unverified",
+                       no_words = "unverified" }
+function vo.ErrorHome(f)
+  local k = f and f.kind
+  local p = (f and f.payload) or {}
+  if k == "no_audio" then return "not_found" end
+  if k == "contested_select" then return "needs_select" end
+  if k == "out_of_sync" then
+    -- Parity divergences (name/edges vs marker) are edit work; the
+    -- PlanReconcile flavour (marks vs track) is a select question.
+    return p.divergence and "needs_edit" or "needs_select"
+  end
+  if k == "suspect" or k == "suspect_select" then
+    local best
+    for t in pairs(p.triggers or {}) do
+      local h = SUSPECT_HOME[t]
+      if h and (not best or STAGE_INDEX[h] < STAGE_INDEX[best]) then best = h end
+    end
+    return best or "unverified"
+  end
+  return nil
+end
+
 vo.VETTED_EXT = "P_EXT:ajsfx_vo_vetted"
 
 -- The HUMAN's mark, on its own key: "I checked, this read IS this line."

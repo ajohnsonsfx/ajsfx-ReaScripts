@@ -236,6 +236,46 @@ test("suppression copies, never mutates, the caller's suspect entry", function()
   assert(s.triggers.thin == true, "the caller's table was mutated")
 end)
 
+print("\nLineStage / ErrorHome:")
+
+test("the ladder in order", function()
+  assert(vo.LineStage({ has_takes = true, any_item = true, scanned = false }) == "not_scanned")
+  assert(vo.LineStage({ has_takes = false, scanned = true }) == "not_found")
+  assert(vo.LineStage({ has_takes = true, any_item = false, scanned = true }) == "not_found",
+         "takes whose audio left the project are Not Found")
+  assert(vo.LineStage({ has_takes = true, any_item = true, any_uncut = true,
+                        scanned = true }) == "needs_edit")
+  assert(vo.LineStage({ has_takes = true, any_item = true, scanned = true }) == "needs_select")
+  assert(vo.LineStage({ has_takes = true, any_item = true, picked = true,
+                        scanned = true }) == "unverified")
+  assert(vo.LineStage({ has_takes = true, any_item = true, picked = true,
+                        verified = true, scanned = true }) == "done")
+end)
+
+test("a line with nothing recorded is Not Found even before a scan", function()
+  assert(vo.LineStage({ has_takes = false, scanned = false }) == "not_found",
+         "nothing to scan -- Not Scanned is only for lines a scanner would judge")
+end)
+
+test("error homes match the AJ-approved mapping", function()
+  assert(vo.ErrorHome({ kind = "no_audio", payload = {} }) == "not_found")
+  assert(vo.ErrorHome({ kind = "out_of_sync",
+                        payload = { divergence = { fields = {} } } }) == "needs_edit")
+  assert(vo.ErrorHome({ kind = "out_of_sync", payload = { row = {} } }) == "needs_select",
+         "marks vs track is a select question")
+  assert(vo.ErrorHome({ kind = "contested_select", payload = {} }) == "needs_select")
+  assert(vo.ErrorHome({ kind = "suspect",
+                        payload = { triggers = { name_mismatch = true } } }) == "unverified")
+  assert(vo.ErrorHome({ kind = "suspect",
+                        payload = { triggers = { unmarked = true, stamp = true } } }) == "needs_edit",
+         "earliest home among a suspect's triggers wins")
+  assert(vo.ErrorHome({ kind = "suspect_select",
+                        payload = { triggers = { stamp = true } } }) == "unverified")
+  assert(vo.ErrorHome({ kind = "undecided", payload = {} }) == nil,
+         "undecided is a stage, not an error")
+  assert(vo.ErrorHome({ kind = "unheard", payload = {} }) == nil)
+end)
+
 --------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
