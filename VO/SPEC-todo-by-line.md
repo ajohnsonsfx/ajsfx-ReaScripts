@@ -45,14 +45,19 @@ place in the pipeline -- and may additionally carry errors. The stage names
                           audio left the project (tooltip says which)
     2. "Needs edit"    -- takes still sitting uncut on the recording track
     3. "Needs select"  -- takes exist, none is the pick
-    4. "Unverified"    -- delivered, but nobody has confirmed the READ:
-                          no OK box of yours (confirmed_state) and no Vet
-                          stamp of the machine's, on the take that SHIPS.
-                          The Lock box is not a verdict -- it settles which
-                          take, not whether the read is right, and reading
-                          it here left a session of hand-OK'd lines all
-                          saying Unverified (AJ, live). OK on an ALT does
-                          not verify the line; the select is what ships.
+    4. "Unverified"    -- some tracked take of it has not been heard:
+                          it carries neither an OK of yours (confirmed_state)
+                          nor a Vet stamp of the machine.s. EVERY tracked
+                          take, not only the one that ships -- AJ: "if I
+                          listen to a line and it is NOT a read, I am going
+                          to untrack it, so an empty OK box means I am not
+                          done". A take dropped to Outs was still listened
+                          to; a take with no item cannot be heard and holds
+                          nothing open.
+                          The retired Lock box was never a verdict -- it
+                          settled which take, not whether the read is right,
+                          and reading it here left a session of hand-OK.d
+                          lines all saying Unverified (AJ, live).
                           Its one button is Verify, and the empty OK box
                           of the take that ships wears an amber ring: the
                           rung must never name a problem and no remedy,

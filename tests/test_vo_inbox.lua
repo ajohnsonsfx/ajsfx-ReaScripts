@@ -326,17 +326,17 @@ test("the ladder in order", function()
                         any_uncut = true }) == "needs_edit")
   assert(vo.LineStage({ has_takes = true, any_item = true }) == "needs_select")
   assert(vo.LineStage({ has_takes = true, any_item = true,
-                        picked = true }) == "unverified")
+                        picked = true, unheard = true }) == "unverified")
   assert(vo.LineStage({ has_takes = true, any_item = true, picked = true,
-                        verified = true }) == "done")
+                        unheard = false }) == "done")
 end)
 
 test("the ladder reads persistent state only -- never whether a scanner ran", function()
   -- The scan flag lives in session memory and is cleared by every Rebuild,
   -- so a rung that depended on it jammed EVERY line at rung 1 the moment
   -- you ticked a box. Nothing about a scanner may move a line's stage.
-  local off = vo.LineStage({ has_takes = true, any_item = true, scanned = false })
-  local on  = vo.LineStage({ has_takes = true, any_item = true, scanned = true })
+  local off = vo.LineStage({ has_takes = true, any_item = true, scanned = false, unheard = true })
+  local on  = vo.LineStage({ has_takes = true, any_item = true, scanned = true, unheard = true })
   assert(off == on and off == "needs_select", "got " .. off .. " / " .. on)
   for _, id in ipairs(vo.TODO_STAGES) do
     assert(id ~= "not_scanned", "not_scanned is not a stage any more")
@@ -368,11 +368,11 @@ test("OK on the delivered take clears Unverified -- it is YOUR ears", function()
   -- confirmed_state='ok'. Reading only the first counted LOCKS and left a
   -- whole session of hand-OK'd lines reading Unverified (AJ, live).
   assert(vo.LineStage({ has_takes = true, any_item = true,
-                        picked = true, verified = true }) == "done")
+                        picked = true, unheard = false }) == "done")
 end)
 
 test("the machine's Vet counts as well as yours", function()
-  local g = { has_takes = true, any_item = true, picked = true, verified = true }
+  local g = { has_takes = true, any_item = true, picked = true }
   assert(vo.LineStage(g) == "done")
 end)
 
@@ -380,12 +380,12 @@ test("a Lock alone settles the pick but never the verdict", function()
   -- Locked, nothing picked: past Needs select (the Decided meter agrees),
   -- but locking is not listening, so it stops at Unverified.
   assert(vo.LineStage({ has_takes = true, any_item = true,
-                        locked = true }) == "unverified")
+                        locked = true, unheard = true }) == "unverified")
 end)
 
 test("picked but nobody has confirmed it is Unverified", function()
   assert(vo.LineStage({ has_takes = true, any_item = true,
-                        picked = true }) == "unverified")
+                        picked = true, unheard = true }) == "unverified")
 end)
 print("\nTodoBuild:")
 
@@ -497,14 +497,34 @@ test("the machine's Vet stamp clears it too", function()
   assert(counts.total == 0)
 end)
 
-test("OK on an ALT does not verify the line -- the select is what ships", function()
+test("an un-OK.d take holds the line open, ship it or not", function()
+  -- AJ: "if I listen to a line and it is NOT a read, I am going to untrack
+  -- it -- so an empty OK box means I am not done." Every take still tracked
+  -- is one he means to hear, so OK on the select alone does not finish the
+  -- line while an alt sits unheard.
   local sel = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
-                user_select = true }
-  local alt = { script_row = "s1", asset = "line_a", take_index = 2, item = "i2",
-                confirmed_state = "ok" }
+                user_select = true, confirmed_state = "ok" }
+  local alt = { script_row = "s1", asset = "line_a", take_index = 2, item = "i2" }
   local todo = tb({ findings = {}, rows = { sel, alt } })
   assert(todo.by_key["s1"].stage == "unverified",
          "got " .. tostring(todo.by_key["s1"] and todo.by_key["s1"].stage))
+end)
+
+test("every tracked take OK.d finishes the line", function()
+  local sel = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+                user_select = true, confirmed_state = "ok" }
+  local alt = { script_row = "s1", asset = "line_a", take_index = 2, item = "i2",
+                vetted_state = "ok" }
+  local _, counts = tb({ findings = {}, rows = { sel, alt } })
+  assert(counts.total == 0, "got " .. counts.total)
+end)
+
+test("a take with no item cannot be listened to and holds nothing open", function()
+  local sel = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+                user_select = true, confirmed_state = "ok" }
+  local gone = { script_row = "s1", asset = "line_a", take_index = 2 }
+  local _, counts = tb({ findings = {}, rows = { sel, gone } })
+  assert(counts.total == 0, "got " .. counts.total)
 end)
 
 test("a Lock settles the pick but leaves the line Unverified", function()

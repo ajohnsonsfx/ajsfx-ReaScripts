@@ -6938,14 +6938,15 @@ function vo.StageIndex(id) return STAGE_INDEX[id] end
 
 -- g: has_takes (a row with take_index > 0 and not missing), any_item (a row
 -- with a live item), any_uncut (an item still holding >1 counting marker),
--- picked (user_select somewhere), verified (user_status "verified"
--- somewhere). All five survive a restart, which is the whole requirement.
+-- picked (user_select somewhere), unheard (SOME take with an item carries
+-- neither an OK nor a Vet stamp). All of them survive a restart, which is
+-- the whole requirement.
 function vo.LineStage(g)
   g = g or {}
   if not g.has_takes or not g.any_item then return "not_found" end
   if g.any_uncut then return "needs_edit" end
   if not g.picked and not g.locked then return "needs_select" end
-  if not g.verified then return "unverified" end
+  if g.unheard then return "unverified" end
   return "done"
 end
 
@@ -7030,13 +7031,18 @@ function vo.TodoBuild(src)
       -- The Lock box (user_status "verified") settles WHICH take, exactly as
       -- the Decided meter reads it. It is not a verdict on the READ.
       if row.user_status == "verified" then ga.locked = true end
-      -- VERIFICATION IS EARS: the OK box is yours (confirmed_state), the Vet
-      -- stamp is the machine's, and it counts for the take that actually ships.
-      -- Reading the Lock box instead left a whole session of hand-OK'd lines
-      -- all reading Unverified (AJ, live 2026-08-17).
-      if (row.user_select or row.user_status == "verified")
-         and (row.confirmed_state == "ok" or row.vetted_state == "ok") then
-        ga.verified = true
+      -- AN EMPTY OK BOX IS WORK, ON ANY TAKE (AJ): "if I listen to a line and
+      -- it is NOT a read, I am going to untrack it -- so an empty OK box
+      -- means I am not done". Every take still tracked is therefore one he
+      -- means to listen to, whether it ships or not; a take dropped to Outs
+      -- was still listened to, which is the whole point of OK and Keep being
+      -- independent axes (SPEC-the-marks.md).
+      --
+      -- Only takes with an ITEM count: there is nothing to listen to
+      -- otherwise, and a row that cannot be heard must not hold a line open.
+      if row.status ~= "missing" and (row.take_index or 0) > 0 and row.item
+         and row.confirmed_state ~= "ok" and row.vetted_state ~= "ok" then
+        ga.unheard = true
       end
     end
   end

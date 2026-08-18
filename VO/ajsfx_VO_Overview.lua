@@ -12403,18 +12403,18 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
       local okd = row.confirmed_state == "ok"
       local ohit = im.Checkbox(ctx, "##okd", okd)
 
-      -- THE RING POINTS AT THE NEXT CLICK. A line sitting at Unverified is
-      -- waiting for exactly one thing -- your ears on the take that ships --
-      -- so the empty OK box of the SELECT wears the ring, and no other box
-      -- on the line does (AJ: "my eyes are drawn immediately to what I need
-      -- to do"). Ticking it clears the rung, so the ring goes with it.
+      -- THE RING POINTS AT THE NEXT CLICK. Every empty OK on an unverified
+      -- line wears it, not just the select.s: a take you have not ticked is
+      -- a take you have not heard, because one that is not a read gets
+      -- untracked rather than left sitting there (AJ). Ticking the last one
+      -- clears the rung, so the rings go with it.
       --
       -- Same amber and same geometry as the contested-Sel ring, drawn
       -- OUTSIDE the box so it reads as an annotation on the tick rather
       -- than the tick having changed shape. The rect comes from the box.s
       -- own position and size for the reason the Sel ring does: an ImGui
       -- field the binding lacks RAISES in the shim rather than reading nil.
-      if not okd and row.user_select == true and state.todo then
+      if not okd and row.item and state.todo then
         local ent = state.todo.by_key and state.todo.by_key[vo.LineKey(row)]
         if ent and ent.stage == "unverified" then
           local bw, bh = im.GetItemRectSize(ctx)

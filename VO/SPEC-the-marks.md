@@ -67,8 +67,10 @@ Therefore, and these are testable requirements:
 
 - Ticking OK must never tick Keep, and unticking Keep must never clear OK.
   A take dropped to Outs keeps its OK: you still listened to it.
-- "Have I listened to this line?" is answered by OK (or Vet) on the take that
-  SHIPS -- never by Lock, and never by Keep.
+- "Have I listened to this line?" is answered by OK (or Vet) on EVERY tracked
+  take -- never by Lock, and never by Keep. A take that is not a read gets
+  untracked, so one still sitting there without an OK is one not yet heard,
+  whether it ships or not.
 - A take on the Selects track is never judged on Keep: Sel already implies it.
   Measuring Keep against the Alts track alone reported every properly-made
   select as out of sync (fixed 2026-08-17).
