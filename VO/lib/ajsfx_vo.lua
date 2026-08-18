@@ -1204,14 +1204,25 @@ end
 --
 -- It never overwrites: this button fills blanks, it does not impose a
 -- convention on work already done. Returns `{ { index = <index into rows>,
--- name = <string> }, ... }` and the number skipped.
+-- name = <string> }, ... }`, the number skipped, and any conflicts.
+--
+-- `opts.known_bases`, when given, is every real script line name (the same
+-- set vo.PlanRoleNames takes as `known_bases`). A minted name is checked
+-- against it the same case/extension-normalised way vo.PlanRoleNames checks
+-- its own mints -- see that function's `line_key` -- because with script
+-- lines "Foo" and "Foo_alt1", minting "Foo_alt1" for a Foo take silently
+-- hands its coverage to the wrong line. Without `known_bases` no check runs,
+-- same as before this guard existed.
 function vo.PlanAltNames(rows, opts)
   opts = opts or {}
   local pattern = opts.pattern or "_alt{n}"
   local start   = math.floor(tonumber(opts.start) or 1)
   local digits  = math.floor(tonumber(opts.digits) or 1)
 
-  local edits, skipped, seen = {}, 0, {}
+  local line_key = {}
+  for b in pairs(opts.known_bases or {}) do line_key[vo.NormalizeItemName(b)] = b end
+
+  local edits, skipped, conflicts, seen = {}, 0, {}, {}
   for i, row in ipairs(rows or {}) do
     -- An alt is a take kept but not chosen: Keep ticked, Sel not.
     if row.user_keep and not row.user_select and row.asset then
@@ -1227,14 +1238,21 @@ function vo.PlanAltNames(rows, opts)
         -- Built on the line's DELIVERED name, so an alt of a line that already
         -- carries an Append keeps it: line_042_ch2 -> line_042_ch2_alt1.
         local base = row.deliver or row.asset
-        edits[#edits + 1] = {
-          index = i,
-          name  = base .. vo.FormatAltAppend(pattern, n, digits),
-        }
+        local want = base .. vo.FormatAltAppend(pattern, n, digits)
+        -- THE NAME MUST NOT BE SOMEBODY ELSE'S LINE.
+        local onto = line_key[vo.NormalizeItemName(want)]
+        if onto and onto ~= base then
+          conflicts[#conflicts + 1] = { base = base, detail =
+            string.format("%s would become %s, which is the script line %s" ..
+                          " -- change the alt suffix in Settings",
+                          base, want, onto) }
+        else
+          edits[#edits + 1] = { index = i, name = want }
+        end
       end
     end
   end
-  return edits, skipped
+  return edits, skipped, conflicts
 end
 
 -- Is this name nothing more than the alt convention applied to `base`?
@@ -1292,17 +1310,28 @@ end
 -- from the top, a line whose alts drifted to `_alt2` comes back to `_alt1`.
 --
 -- Returns `{ { index = <index into rows>, name = <string> }, ... }`, the number
--- left alone, and the number ticked but unnameable -- so the REAPER side stays
--- a thin writer. The last two are counted separately because they are different
--- news: one is the verb working as designed, the other is the sheet missing
--- something.
+-- left alone, the number ticked but unnameable, and any conflicts -- so the
+-- REAPER side stays a thin writer. The first two counts are separate because
+-- they are different news: one is the verb working as designed, the other is
+-- the sheet missing something.
+--
+-- `opts.known_bases`, when given, is every real script line name (the same
+-- set vo.PlanRoleNames takes as `known_bases`). A minted alt name is checked
+-- against it the same way vo.PlanAltNames and vo.PlanRoleNames check theirs
+-- -- with script lines "Foo" and "Foo_alt1", minting "Foo_alt1" for a Foo
+-- take would silently hand its coverage to the wrong line, so that mint is
+-- refused and reported as a conflict instead. A hand-typed override is the
+-- user's own decision and is never second-guessed here.
 function vo.PlanNamesFromSheet(rows, opts)
   opts = opts or {}
   local pattern = opts.pattern or "_alt{n}"
   local start   = math.floor(tonumber(opts.start) or 1)
   local digits  = math.floor(tonumber(opts.digits) or 1)
 
-  local edits, skipped, nameless, seen = {}, 0, 0, {}
+  local line_key = {}
+  for b in pairs(opts.known_bases or {}) do line_key[vo.NormalizeItemName(b)] = b end
+
+  local edits, skipped, nameless, conflicts, seen = {}, 0, 0, {}, {}
   for i, row in ipairs(rows or {}) do
     local base = row.deliver or row.asset
     if not (row.user_select or row.user_keep) then
@@ -1314,9 +1343,10 @@ function vo.PlanNamesFromSheet(rows, opts)
     elseif not base or base == "" then
       nameless = nameless + 1
     else
+      local is_alt = row.user_keep and not row.user_select
       local name
       -- An alt is a take kept but not chosen, same reading as vo.PlanAltNames.
-      if row.user_keep and not row.user_select then
+      if is_alt then
         local key = tostring(row.script_row or ((row.script or "") .. "\0" .. tostring(row.asset)))
         local n = (seen[key] or start - 1) + 1
         seen[key] = n
@@ -1329,11 +1359,23 @@ function vo.PlanNamesFromSheet(rows, opts)
       -- was written by the tool, not chosen, so it does not outrank the sheet.
       if override ~= "" and not vo.IsConventionalAltName(override, base, pattern) then
         name = override
+      elseif is_alt then
+        -- THE NAME MUST NOT BE SOMEBODY ELSE'S LINE.
+        local onto = line_key[vo.NormalizeItemName(name)]
+        if onto and onto ~= base then
+          conflicts[#conflicts + 1] = { base = base, detail =
+            string.format("%s would become %s, which is the script line %s" ..
+                          " -- change the alt suffix in Settings",
+                          base, name, onto) }
+          name = nil
+        end
       end
-      edits[#edits + 1] = { index = i, name = name }
+      if name then
+        edits[#edits + 1] = { index = i, name = name }
+      end
     end
   end
-  return edits, skipped, nameless
+  return edits, skipped, nameless, conflicts
 end
 
 -- The whole script side of a project, loaded in one call. Both ajsfx VO Overview
@@ -3474,8 +3516,31 @@ function vo.BaseOfTakeName(name, known_bases, cfg)
   if nm == "" then return nm end
   cfg = cfg or {}
 
+  -- Matched case-insensitively, like every other resolution path
+  -- (NormalizeItemName, BuildNameIndex/ResolveItemName, PlanRoleNames' own
+  -- line_key) -- but returning the CANONICAL name known_bases stores, not the
+  -- take's own casing, so "foo_alt1" resolves to the line "Foo" rather than a
+  -- phantom "foo" nothing else recognises. An exact-case match always wins
+  -- over a case-folded one; when two known bases differ only by case and
+  -- neither matches exactly, the alphabetically-first one wins, so the same
+  -- input resolves the same way on every run.
+  local lower_index
+  local function build_lower_index()
+    local idx, keys = {}, {}
+    for b in pairs(known_bases) do keys[#keys + 1] = b end
+    table.sort(keys)
+    for _, b in ipairs(keys) do
+      local lk = vo.NormalizeItemName(b)
+      if not idx[lk] then idx[lk] = b end
+    end
+    return idx
+  end
   local function known(b)
-    return b and b ~= "" and (not known_bases or known_bases[b]) and b or nil
+    if not b or b == "" then return nil end
+    if not known_bases then return b end
+    if known_bases[b] then return b end
+    lower_index = lower_index or build_lower_index()
+    return lower_index[vo.NormalizeItemName(b)]
   end
 
   -- 1. the suffixes this project is configured to write
@@ -3488,16 +3553,23 @@ function vo.BaseOfTakeName(name, known_bases, cfg)
   end
 
   -- 2. the name IS a line
-  if known_bases and known_bases[nm] then return nm end
+  hit = known(nm)
+  if hit then return hit end
 
   -- 3. whatever suffix some earlier setting wrote: the longest line name
-  --    this take name begins with, with a separator after it.
+  --    this take name begins with, with a separator after it. Case-folded
+  --    like everything above; ties on length prefer the candidate that
+  --    matches the take's own casing exactly.
   if known_bases then
-    local best
+    local nm_lower = vo.NormalizeItemName(nm)
+    local best, best_len, best_exact
     for b in pairs(known_bases) do
-      if #b < #nm and nm:sub(1, #b) == b
-         and (not best or #b > #best) then
-        best = b
+      local lb = vo.NormalizeItemName(b)
+      if #lb < #nm_lower and nm_lower:sub(1, #lb) == lb then
+        local exact = nm:sub(1, #b) == b
+        if not best or #lb > best_len or (#lb == best_len and exact and not best_exact) then
+          best, best_len, best_exact = b, #lb, exact
+        end
       end
     end
     if best then return best end
@@ -8800,8 +8872,19 @@ function vo.SummarizeOverview(rows)
     elseif n[row.status] then
       n[row.status] = n[row.status] + 1
     end
-    if row.user_status and row.user_status ~= "junk" and n[row.user_status] then
+    -- "verified" is handled below, not here: user_status "verified" is the
+    -- retired Lock box (SPEC-the-marks.md, "Vet is unused"), and counting it
+    -- as the meter's Verified reads zero forever on a session that never
+    -- ticks Lock.
+    if row.user_status and row.user_status ~= "junk" and row.user_status ~= "verified"
+       and n[row.user_status] then
       n[row.user_status] = n[row.user_status] + 1
+    end
+    -- Verified mirrors vo.LineStage/vo.TodoBuild's read of the Vet stamp:
+    -- the machine's stamp (vetted_state) or the human's confirmation
+    -- (confirmed_state) -- Vet or OK, never Lock.
+    if row.vetted_state == "ok" or row.confirmed_state == "ok" then
+      n.verified = n.verified + 1
     end
     -- Script coverage counts LINES, not takes: five takes of one line is one
     -- line delivered, and a progress number that says otherwise is a lie.

@@ -7604,10 +7604,11 @@ function Trim.fix_names_from_sheet(opts)
   -- table happens to show is a fix that lies. An unscoped press keeps the
   -- filtered view as its range, as ever.
   local rows = opts.picked and (state.overview or {}) or AffectedRows()
-  local edits, untouched, nameless = vo.PlanNamesFromSheet(rows, {
-    pattern = cfg.alt_append_pattern,
-    start   = cfg.alt_append_start,
-    digits  = cfg.alt_append_digits,
+  local edits, untouched, nameless, plan_conflicts = vo.PlanNamesFromSheet(rows, {
+    pattern     = cfg.alt_append_pattern,
+    start       = cfg.alt_append_start,
+    digits      = cfg.alt_append_digits,
+    known_bases = Trim.LineBases(),
   })
 
   local named, stranded, shared = 0, 0, 0
@@ -7666,13 +7667,23 @@ function Trim.fix_names_from_sheet(opts)
   -- deliberately skipped.
   if opts.picked then untouched, nameless = 0, 0 end
 
+  -- Same shape as RoleNames.Apply's conflict report: refused mints are named
+  -- rather than silently dropped, and their presence forces the "error" kind
+  -- even when other rows still got named.
+  local conflicts = ""
+  if plan_conflicts and #plan_conflicts > 0 then
+    local parts = {}
+    for _, c in ipairs(plan_conflicts) do parts[#parts + 1] = c.detail end
+    conflicts = " Left alone: " .. table.concat(parts, "; ") .. "."
+  end
+
   -- Named nothing with nothing left alone means nothing was TICKED, which is
   -- the likely confusion: this names what is being DELIVERED, and a take that
   -- is neither Keep nor Sel is not being delivered.
   state.message, state.message_kind =
-    (named == 0 and untouched == 0 and nameless == 0) and string.format(
+    (named == 0 and untouched == 0 and nameless == 0 and conflicts == "") and string.format(
       "Nothing to name: %d row(s) in range, none with Keep or Sel ticked.", #rows) or
-    string.format("Named %d item%s from the sheet.%s%s%s%s",
+    string.format("Named %d item%s from the sheet.%s%s%s%s%s",
       named, named == 1 and "" or "s",
       untouched > 0 and string.format(
         " %d had neither Keep nor Sel and were left alone.", untouched) or "",
@@ -7681,8 +7692,9 @@ function Trim.fix_names_from_sheet(opts)
       nameless > 0 and string.format(
         " %d are ticked but the sheet gives them no name.", nameless) or "",
       shared > 0 and string.format(
-        " %d share an item with another take -- cut them apart first.", shared) or ""),
-    (named > 0) and "ok" or "warn"
+        " %d share an item with another take -- cut them apart first.", shared) or "",
+      conflicts),
+    (conflicts ~= "") and "error" or (named > 0) and "ok" or "warn"
   state.pull_result, state.pull_result_kind = state.message, state.message_kind
 end
 
@@ -8197,78 +8209,6 @@ function Dest.pull_all()
   state.message, state.message_kind = table.concat(parts, " "), worst
 end
 
--- Names every alt that has none.
---
--- A PER-TAKE name, not an Append: an Append belongs to the script line and
--- would rename the alt's select along with it, leaving the two still colliding.
--- See vo.PlanAltNames.
-local function ApplyAltNames()
-  Reload()
-  state.name_baseline = nil
-  local cfg  = vo.LoadConfig()
-  local rows = AffectedRows()
-  local edits, skipped = vo.PlanAltNames(rows, {
-    pattern = cfg.alt_append_pattern,
-    start   = cfg.alt_append_start,
-    digits  = cfg.alt_append_digits,
-  })
-
-  -- One transaction for the lot, so a run of forty alts is one undo step
-  -- rather than forty. The entry is written directly rather than through
-  -- Mutate, which rebuilds the whole match on every call -- forty rebuilds for
-  -- one press, and each one invalidating the rows still to be named.
-  local named = 0
-  if #edits > 0 then
-    -- Resolved once for the whole run, against the live project: the rows'
-    -- cached pointers can be stale, and a stale one here writes a name onto
-    -- somebody else's clip.
-    local items = vo.CollectProjectSpans()
-    core.Transaction("VO Overview: name alts", function()
-      for _, e in ipairs(edits) do
-        local row   = rows[e.index]
-        local clean = row and vo.SanitizeName(e.name) or ""
-        if clean ~= "" then
-          local item = row.source_path and row.source_start
-                       and vo.ResolveSourceTime(row.source_path, row.source_start, items)
-          if item then
-            local take = r.GetActiveTake(item)
-            if take then
-              r.GetSetMediaItemTakeInfo_String(take, "P_NAME", clean, true)
-            end
-          end
-          EntryFor(row).name_override = clean
-          named = named + 1
-        end
-      end
-    end)
-    r.UpdateArrange()
-    state.dirty = true
-    Reload()
-  end
-
-  -- Named 0 with nothing skipped means nothing was TICKED, which is the likely
-  -- confusion: the button names alts, and an alt is a row with Keep ticked
-  -- and Sel not.
-  local why = ""
-  if named == 0 and skipped == 0 then
-    local keeps, sels = 0, 0
-    for _, row in ipairs(rows) do
-      if row.user_keep then keeps = keeps + 1 end
-      if row.user_select then sels = sels + 1 end
-    end
-    why = string.format(
-      " No alts in range: %d row(s) shown, %d with Keep ticked, %d with Sel. " ..
-      "An alt is Keep ticked and Sel not.", #rows, keeps, sels)
-  end
-
-  state.message, state.message_kind = string.format(
-    "Named %d alt%s.%s%s", named, named == 1 and "" or "s",
-    skipped > 0 and string.format(" %d already had a name and were left alone.", skipped) or "",
-    why),
-    (named > 0) and "ok" or "error"
-  state.pull_result, state.pull_result_kind = state.message, state.message_kind
-end
-
 -- The user typed a line's name onto an item: the name IS the assignment (the
 -- governing rule of the whole tool), so the marker follows it. Only names
 -- that RESOLVE to a script line count -- "great one, keep" is a note, not a
@@ -8337,8 +8277,8 @@ function Trim.sync_dispatch(attributed)
       state.message, state.message_kind = string.format(
         "%d take(s) followed their track -- Selects ticks Sel, Alts ticks " ..
         "Keep, anywhere else clears both.", adopted), "ok"
-      -- The OVERWRITING namer, scoped to the moved items -- not
-      -- ApplyAltNames, which only fills blanks. A drag between the
+      -- The OVERWRITING namer, scoped to the moved items -- not a namer
+      -- that only fills blanks. A drag between the
       -- delivery tracks is a ROLE change: the take that arrives on
       -- Selects should drop its _altN for the plain name, and the one
       -- that leaves should pick a number up. Swapping a select and an
@@ -8402,7 +8342,7 @@ local function MatchTakes(opts)
   local refreshed = #state.overview
 
   -- The timeline's word on marks, made explicit -- the same write Repair's
-  -- "Adopt timeline" does, without the panel trip.
+  -- "Refresh" does, without the panel trip.
   local plan = vo.PlanReconcile(state.overview, cfg)
   local adopted = #plan.disagree
   for _, f in ipairs(plan.disagree) do
@@ -10434,7 +10374,7 @@ function Inbox.RowVerbs(f)
   elseif k == "out_of_sync" then
     local row = p.row
     return {
-      { label = "Adopt timeline", fn = function()
+      { label = "Refresh", fn = function()
           pending_action = function()
             local want = vo.MarkFromTrack(row.track_name, vo.LoadConfig())
             Mutate(row, function(e)
@@ -10607,9 +10547,9 @@ function Inbox.DrawStrip(entry, indent)
   -- Sel checkmark did not follow). The watcher usually catches this; when
   -- it does not, this is the press that settles it.
   --
-  -- Same write as the "Adopt timeline" verb and its batch form, so a line
-  -- fixed here and a queue fixed there cannot end up meaning different
-  -- things.
+  -- Same write as the out-of-sync row's "Refresh" verb and its batch form,
+  -- so a line fixed here and a queue fixed there cannot end up meaning
+  -- different things.
   if entry.conflict and ign_row then
     im.SameLine(ctx)
     if im.SmallButton(ctx, "Refresh##tdadopt" .. entry.key) then
@@ -10813,7 +10753,7 @@ function Inbox.DrawSession()
   local dis = Inbox.disagree or {}
   if #dis > 1 then
     BatchHeader()
-    if im.SmallButton(ctx, string.format("Adopt timeline for %d##inbbadopt",
+    if im.SmallButton(ctx, string.format("Refresh %d##inbbadopt",
                                          #dis)) then
       local findings = dis
       pending_action = function()
@@ -11267,10 +11207,10 @@ function Strip.Draw()
       "                           names re-role (select -> plain, alt ->\n" ..
       "                           numbered; a name you typed is kept)\n\n" ..
       "It waits for the drag to finish, acts once, and each sync is its\n" ..
-      "own undo step. Anything it cannot pin on ONE element goes to the\n" ..
-      "rail instead of being guessed at.\n\n" ..
-      "Off: nothing runs by itself, and the rail collects everything for\n" ..
-      "you to fix by hand.")
+      "own undo step. Anything it cannot pin on ONE element is left for\n" ..
+      "the sheet's Todo to surface instead of being guessed at.\n\n" ..
+      "Off: nothing runs by itself, and the sheet's Todo collects\n" ..
+      "everything for you to fix by hand.")
   end
   -- The Todo count is the STRIPS' toggle (SPEC-todo-by-line.md): each
   -- line's Todo lives in its card, and this hides them all. The count

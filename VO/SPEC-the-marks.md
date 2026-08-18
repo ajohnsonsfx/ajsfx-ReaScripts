@@ -108,14 +108,29 @@ Note the asymmetry that remains, and is correct: an OK self-clears on any
 edit to the take, so its protection goes with it. A take you changed is a
 take you have not yet listened to in its new form.
 
+## Lock alone settles the Todo ladder's Needs select rung (deliberate)
+
+Lock is "neither a verdict nor a shipping decision" (above), but `vo.LineStage`
+treats a locked line (`g.locked`) as past Needs select even with nothing
+picked -- the same rung a real Sel clears. This is a deliberate legacy
+exception, not a reintroduction of Lock-as-listening: a line someone forced a
+match on by hand (right-click **Lock to time selection**) has had its "which
+take" question answered by that override, so the ladder must not keep
+demanding a pick it will never get. It still stops at Unverified rather than
+Done -- locking is not listening, so the OK/Vet question stays open. Asserted
+by `tests/test_vo_inbox.lua`, "a Lock alone settles the pick but never the
+verdict" (~line 379).
+
 ## Vet is unused
 
 AJ uses neither. Two consequences worth stating rather than discovering:
 
 - Any count that means "has this been listened to" and reads `user_status ==
   "verified"` is reading the LOCK box, and will read zero forever. The stage
-  ladder's Unverified rung had this bug; **the pipeline strip's Verified meter
-  still does** (`vo.SummarizeOverview`, `n.verified`) -- its own tooltip
-  promises "the machine's stamp or yours", which is Vet or OK, not Lock.
+  ladder's Unverified rung had this bug; the pipeline strip's Verified meter
+  (`vo.SummarizeOverview`, `n.verified`) had it too and is now fixed to match
+  -- it counts a row with `vetted_state == "ok"` or `confirmed_state == "ok"`,
+  the same read as the stage ladder, so its tooltip's promise ("the machine's
+  stamp or yours", i.e. Vet or OK) is finally what it counts.
 - Neither box may become load-bearing. A workflow that only works once the
   user starts ticking Lock is a workflow that does not work.

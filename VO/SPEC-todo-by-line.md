@@ -120,14 +120,15 @@ The mapping (AJ-approved 2026-08-17):
 Done requires both the ladder cleared and zero errors.
 
 **Edit-boundary refresh (the anti-jank law).** Mid-gesture transients must
-never draw, and a real mistake must show the instant it lands -- so there
-is NO settle timer (a first draft had one; AJ: 3s is long enough to make an
-actual mistake and lose the context). Instead:
+never draw, and a real mistake must show as soon as the tool notices it -- so
+there is NO settle timer OF ITS OWN (a first draft had one; AJ: 3s is long
+enough to make an actual mistake and lose the context). Instead:
 
     The Todo recomputes ONLY on a `GetProjectStateChangeCount` tick, and
-    shows whatever is true at that instant. Instantly, both directions.
+    shows whatever is true as of the rebuild that tick triggers.
 
-This is airtight because of two invariants, not a heuristic:
+This is airtight against MID-GESTURE flashes because of two invariants, not
+a heuristic:
 
 1. REAPER bumps the change count when an edit LANDS -- mouse release,
    action completion -- never mid-gesture. Half a drag is invisible to the
@@ -136,9 +137,20 @@ This is airtight because of two invariants, not a heuristic:
    multi-step fix -- SetSelect demoting the sibling, Pull moving items --
    is one tick, one rebuild; the Todo never sees intermediate steps.
 
+It is not instant, though: the tick only schedules a rebuild, and rebuilds
+ride the window's existing `RELOAD_THROTTLE` (1.5s, `ajsfx_VO_Overview.lua`)
+that already governed every other automatic rescan -- a drag gesture moves
+the change counter every frame, and rebuilding on each one would force a
+matching pass and a project-file read that often. So a mistake can take up
+to ~1.5s to surface, never longer, and never a flash of something that was
+never true. "No settle timer" means no CORRECTNESS-bearing timer was added
+on top of that -- nothing here waits to see if you meant it, the way the
+retired 3s draft did.
+
 Drop take B on Selects while A still holds the pick: `Needs select ·
-Conflict` appears on that release -- the moment it might be an actual
-mistake. Drag one off: it clears on that release. Nothing to tune.
+Conflict` appears within one throttle window of that release -- the moment
+it might be an actual mistake. Drag one off: it clears the same way.
+Nothing to tune.
 
 LAW FOR FUTURE VERBS: any new operation that mutates in more than one step
 MUST be transaction-wrapped, or its intermediate states become visible

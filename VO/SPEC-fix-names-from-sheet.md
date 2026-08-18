@@ -76,10 +76,12 @@ cut, not a rename.
 
 ## Build it as
 
-`vo.PlanNamesFromSheet(rows, opts) -> edits, skipped` in the pure layer, tests
-first. `opts = { pattern, start, digits }`. Returns
+`vo.PlanNamesFromSheet(rows, opts) -> edits, skipped, conflicts` in the pure
+layer, tests first. `opts = { pattern, start, digits, known_bases }`. Returns
 `{ { index, name }, ... }` like `vo.PlanAltNames` does, so the REAPER side stays
-a thin writer.
+a thin writer. `known_bases` is the set of real line names: a mint that would
+land on a DIFFERENT line's name is refused and reported in `conflicts`
+(`{ base, detail }`), never silently applied — the 0.15 postmortem guard.
 
 Tests that must exist:
 

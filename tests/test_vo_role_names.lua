@@ -503,6 +503,27 @@ test("no line list means no guessing", function()
   assert(vo.BaseOfTakeName("Foo_alt3", nil, CFG) == "Foo")
 end)
 
+test("matching is case-insensitive but returns the CANONICAL line name", function()
+  -- Every other resolution path lowercases (NormalizeItemName,
+  -- BuildNameIndex/ResolveItemName, PlanRoleNames' own line_key); a take
+  -- named foo_alt1 must resolve to the line "Foo" -- in Foo's own casing --
+  -- not be silently dropped for not matching known_bases exact-case.
+  local known = { Foo = true, Bar = true }
+  assert(vo.BaseOfTakeName("foo_alt1", known, CFG) == "Foo",
+         "got " .. tostring(vo.BaseOfTakeName("foo_alt1", known, CFG)))
+  assert(vo.BaseOfTakeName("FOO", known, CFG) == "Foo",
+         "the name IS a line, case-folded: got "
+         .. tostring(vo.BaseOfTakeName("FOO", known, CFG)))
+end)
+
+test("an exact-case match wins when both cases are known lines", function()
+  local known = { Foo = true, foo = true }
+  assert(vo.BaseOfTakeName("foo_alt1", known, CFG) == "foo",
+         "got " .. tostring(vo.BaseOfTakeName("foo_alt1", known, CFG)))
+  assert(vo.BaseOfTakeName("Foo_alt1", known, CFG) == "Foo",
+         "got " .. tostring(vo.BaseOfTakeName("Foo_alt1", known, CFG)))
+end)
+
 
 print("\nNamedAssetOf survives a suffix change:")
 

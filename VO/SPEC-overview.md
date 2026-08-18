@@ -853,8 +853,8 @@ again".
 The test for a new verb: if pressing it could lose work when pressed by
 mistake, it points at the project and needs a name that says so.
 
-Two older labels predate this rule and point project -> sheet while calling
+Two older labels predated this rule, pointing project -> sheet while calling
 themselves "Adopt timeline" (the out-of-sync row verb, and its batch form
 "Adopt timeline for N"). They are the SAME write the per-line Refresh
-performs. Renaming them to Refresh would finish the convention; it has not
-been done, so the sheet currently carries two names for one operation.
+performs, and have been renamed to Refresh so the sheet no longer carries two
+names for one operation.
