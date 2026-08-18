@@ -963,9 +963,22 @@ function vo.CheckCoverage(items, lines, opts)
 
   for _, it in ipairs(items or {}) do
     local at, why = vo.ResolveItemName(index, it.name)
-    if not at and why ~= "ambiguous" and opts.alt_pattern then
-      local base = vo.StripAltSuffix(it.name, opts.alt_pattern)
-      if base then at, why = vo.ResolveItemName(index, base) end
+    -- The gate stays: a caller that names no pattern and no line list is
+    -- asking for raw resolution, and must not have suffixes guessed for it.
+    if not at and why ~= "ambiguous"
+       and (opts.alt_pattern or opts.known_bases) then
+      -- Which line does this name claim? Asked of the LINE NAMES, not of
+      -- the current suffix setting -- an out named _out1, or an alt still
+      -- wearing a suffix an older setting wrote, is a take of its line and
+      -- not a stray. Reading it by pattern alone put 83 items of a finished
+      -- session under "not on the script" the moment the setting changed.
+      local base = vo.BaseOfTakeName(it.name, opts.known_bases, {
+        alt_append_pattern = opts.alt_pattern,
+        out_append_pattern = opts.out_pattern,
+      })
+      if base and base ~= it.name then
+        at, why = vo.ResolveItemName(index, base)
+      end
     end
     if not at and why ~= "ambiguous" and opts.source_names
        and opts.source_names[vo.NormalizeItemName(it.name)] then
@@ -1030,7 +1043,7 @@ function vo.PlanPull(items, lines, marks, opts)
   local index = vo.BuildNameIndex(lines)
 
   local groups, order = {}, {}
-  local summary = { selects = 0, alts = 0, review = 0,
+  local summary = { selects = 0, alts = 0, review = 0, outs = 0,
                     unknown = 0, ambiguous = 0 }
 
   for _, item in ipairs(items or {}) do
@@ -1076,10 +1089,17 @@ function vo.PlanPull(items, lines, marks, opts)
           moves[#moves + 1] = { id = item.id, line = at,
                                 dest = "alts", rename = item.override or deliver }
           summary.alts = summary.alts + 1
+        elseif mark == "out" then
+          -- An explicit no to Keep. Pull has to agree with the auto-sort or
+          -- the two would file the same take differently and each rebuild
+          -- would undo the other (vo.TrackForMarks).
+          moves[#moves + 1] = { id = item.id, line = at, dest = "outs" }
+          summary.outs = summary.outs + 1
         else
-          -- Unticked takes go to Review and STAY there. Not a rejection and not
-          -- a decision -- the first Pull of a session puts everything there,
-          -- and what is left after the marking is what was never wanted.
+          -- Takes nobody has ruled on go to Review and STAY there. Not a
+          -- rejection and not a decision -- the first Pull of a session puts
+          -- everything there, and what is left after the marking is what was
+          -- never wanted.
           moves[#moves + 1] = { id = item.id, line = at, dest = "review" }
           summary.review = summary.review + 1
         end
@@ -1184,14 +1204,25 @@ end
 --
 -- It never overwrites: this button fills blanks, it does not impose a
 -- convention on work already done. Returns `{ { index = <index into rows>,
--- name = <string> }, ... }` and the number skipped.
+-- name = <string> }, ... }`, the number skipped, and any conflicts.
+--
+-- `opts.known_bases`, when given, is every real script line name (the same
+-- set vo.PlanRoleNames takes as `known_bases`). A minted name is checked
+-- against it the same case/extension-normalised way vo.PlanRoleNames checks
+-- its own mints -- see that function's `line_key` -- because with script
+-- lines "Foo" and "Foo_alt1", minting "Foo_alt1" for a Foo take silently
+-- hands its coverage to the wrong line. Without `known_bases` no check runs,
+-- same as before this guard existed.
 function vo.PlanAltNames(rows, opts)
   opts = opts or {}
   local pattern = opts.pattern or "_alt{n}"
   local start   = math.floor(tonumber(opts.start) or 1)
   local digits  = math.floor(tonumber(opts.digits) or 1)
 
-  local edits, skipped, seen = {}, 0, {}
+  local line_key = {}
+  for b in pairs(opts.known_bases or {}) do line_key[vo.NormalizeItemName(b)] = b end
+
+  local edits, skipped, conflicts, seen = {}, 0, {}, {}
   for i, row in ipairs(rows or {}) do
     -- An alt is a take kept but not chosen: Keep ticked, Sel not.
     if row.user_keep and not row.user_select and row.asset then
@@ -1207,14 +1238,21 @@ function vo.PlanAltNames(rows, opts)
         -- Built on the line's DELIVERED name, so an alt of a line that already
         -- carries an Append keeps it: line_042_ch2 -> line_042_ch2_alt1.
         local base = row.deliver or row.asset
-        edits[#edits + 1] = {
-          index = i,
-          name  = base .. vo.FormatAltAppend(pattern, n, digits),
-        }
+        local want = base .. vo.FormatAltAppend(pattern, n, digits)
+        -- THE NAME MUST NOT BE SOMEBODY ELSE'S LINE.
+        local onto = line_key[vo.NormalizeItemName(want)]
+        if onto and onto ~= base then
+          conflicts[#conflicts + 1] = { base = base, detail =
+            string.format("%s would become %s, which is the script line %s" ..
+                          " -- change the alt suffix in Settings",
+                          base, want, onto) }
+        else
+          edits[#edits + 1] = { index = i, name = want }
+        end
       end
     end
   end
-  return edits, skipped
+  return edits, skipped, conflicts
 end
 
 -- Is this name nothing more than the alt convention applied to `base`?
@@ -1228,8 +1266,16 @@ end
 --
 -- Anchored at both ends: "line_042_alt1_room" is a name with a reason behind
 -- it, not the convention.
-function vo.IsConventionalAltName(name, base, pattern)
+-- A take of a line wears the line name plus a role suffix: the marker
+-- carries the script filename and the item carries filename + append, and
+-- BOTH are correct. Any configured suffix counts -- reading only the alt
+-- pattern reported every out as a marker/item name mismatch (AJ, live).
+function vo.IsConventionalAltName(name, base, pattern, out_pattern)
   if not name or not base or base == "" then return false end
+  if out_pattern and out_pattern ~= "" and out_pattern ~= pattern
+     and vo.IsConventionalAltName(name, base, out_pattern) then
+    return true
+  end
   -- Lua patterns: braces are not magic, so escaping the rest leaves "{n}"
   -- findable afterwards.
   local function esc(s)
@@ -1264,17 +1310,28 @@ end
 -- from the top, a line whose alts drifted to `_alt2` comes back to `_alt1`.
 --
 -- Returns `{ { index = <index into rows>, name = <string> }, ... }`, the number
--- left alone, and the number ticked but unnameable -- so the REAPER side stays
--- a thin writer. The last two are counted separately because they are different
--- news: one is the verb working as designed, the other is the sheet missing
--- something.
+-- left alone, the number ticked but unnameable, and any conflicts -- so the
+-- REAPER side stays a thin writer. The first two counts are separate because
+-- they are different news: one is the verb working as designed, the other is
+-- the sheet missing something.
+--
+-- `opts.known_bases`, when given, is every real script line name (the same
+-- set vo.PlanRoleNames takes as `known_bases`). A minted alt name is checked
+-- against it the same way vo.PlanAltNames and vo.PlanRoleNames check theirs
+-- -- with script lines "Foo" and "Foo_alt1", minting "Foo_alt1" for a Foo
+-- take would silently hand its coverage to the wrong line, so that mint is
+-- refused and reported as a conflict instead. A hand-typed override is the
+-- user's own decision and is never second-guessed here.
 function vo.PlanNamesFromSheet(rows, opts)
   opts = opts or {}
   local pattern = opts.pattern or "_alt{n}"
   local start   = math.floor(tonumber(opts.start) or 1)
   local digits  = math.floor(tonumber(opts.digits) or 1)
 
-  local edits, skipped, nameless, seen = {}, 0, 0, {}
+  local line_key = {}
+  for b in pairs(opts.known_bases or {}) do line_key[vo.NormalizeItemName(b)] = b end
+
+  local edits, skipped, nameless, conflicts, seen = {}, 0, 0, {}, {}
   for i, row in ipairs(rows or {}) do
     local base = row.deliver or row.asset
     if not (row.user_select or row.user_keep) then
@@ -1286,9 +1343,10 @@ function vo.PlanNamesFromSheet(rows, opts)
     elseif not base or base == "" then
       nameless = nameless + 1
     else
+      local is_alt = row.user_keep and not row.user_select
       local name
       -- An alt is a take kept but not chosen, same reading as vo.PlanAltNames.
-      if row.user_keep and not row.user_select then
+      if is_alt then
         local key = tostring(row.script_row or ((row.script or "") .. "\0" .. tostring(row.asset)))
         local n = (seen[key] or start - 1) + 1
         seen[key] = n
@@ -1301,11 +1359,23 @@ function vo.PlanNamesFromSheet(rows, opts)
       -- was written by the tool, not chosen, so it does not outrank the sheet.
       if override ~= "" and not vo.IsConventionalAltName(override, base, pattern) then
         name = override
+      elseif is_alt then
+        -- THE NAME MUST NOT BE SOMEBODY ELSE'S LINE.
+        local onto = line_key[vo.NormalizeItemName(name)]
+        if onto and onto ~= base then
+          conflicts[#conflicts + 1] = { base = base, detail =
+            string.format("%s would become %s, which is the script line %s" ..
+                          " -- change the alt suffix in Settings",
+                          base, name, onto) }
+          name = nil
+        end
       end
-      edits[#edits + 1] = { index = i, name = name }
+      if name then
+        edits[#edits + 1] = { index = i, name = name }
+      end
     end
   end
-  return edits, skipped, nameless
+  return edits, skipped, nameless, conflicts
 end
 
 -- The whole script side of a project, loaded in one call. Both ajsfx VO Overview
@@ -1940,16 +2010,24 @@ end
 -- Sel wins over Keep, the same precedence vo.PlanPull uses: a take that is both
 -- is THE delivery, and a take that is only Keep ships beside it as an alt.
 --
+-- AN EXPLICIT NO TO KEEP IS OUTS (AJ, once the Outs track existed). Unticking
+-- Keep is a decision -- "not this one" -- and Outs is where a rejected take
+-- belongs; it used to land back on the recording, which is where a take
+-- nobody has RULED on goes, so a rejection and an untouched take were filed
+-- identically. `stored` is the raw entry, where a false means the user said
+-- no and a nil means nobody has said anything: the difference the effective
+-- marks cannot carry, because both read as false.
+--
 -- Returns nil for "no decision", and nil is deliberately NOT Review here. Pull
 -- parks undecided takes on Review because a first pass has to put everything
--- somewhere before anyone has listened. Auto-sort answers a click that just
--- REMOVED a decision, and the honest place for a take nobody is keeping is the
--- recording it was cut out of -- the caller reads nil as "hand it back to its
--- parent".
-function vo.TrackForMarks(marks)
+-- somewhere before anyone has listened. The honest place for a take nobody has
+-- ruled on is the recording it was cut out of -- the caller reads nil as "hand
+-- it back to its parent".
+function vo.TrackForMarks(marks, stored)
   marks = marks or {}
   if marks.select then return "selects" end
   if marks.keep   then return "alts"    end
+  if stored and stored.keep == false then return "outs" end
   return nil
 end
 
@@ -2140,10 +2218,12 @@ function vo.ParityDiff(takes, opts)
       local deliver = tk.sheet and tk.sheet.deliver
       local agrees = not (iname and iname ~= "")
         or iname == tk.marker.asset
-        or vo.IsConventionalAltName(iname, tk.marker.asset, opts.alt_pattern)
+        or vo.IsConventionalAltName(iname, tk.marker.asset, opts.alt_pattern,
+                                    opts.out_pattern)
         or (deliver and deliver ~= "" and
             (iname == deliver
-             or vo.IsConventionalAltName(iname, deliver, opts.alt_pattern)))
+             or vo.IsConventionalAltName(iname, deliver, opts.alt_pattern,
+                                         opts.out_pattern)))
       if not agrees then
         fields[#fields + 1] = "name"
         detail = string.format("marker says %s, item says %s",
@@ -2358,23 +2438,30 @@ function vo.LineKey(row)
   return row.script_row or ("asset:" .. tostring(row.asset))
 end
 
--- Lines carrying more than one Sel. Not an error state to be prevented --
--- track placement legitimately creates it (EffectiveMarks rule 2: two items
--- of a line dragged onto Selects both read as Sel) -- but a decision the
--- user still has to make, so Tidy counts them and the card badges them.
--- Orphans are skipped: they are not lines, and their asset keys collide.
-function vo.SelectConflicts(rows)
+-- Lines with more than one CLAIMANT for the select. A take claims when it is
+-- ticked Sel OR merely parked on the Selects track (EffectiveMarks rule 2
+-- would tick it on the next rebuild anyway) -- counting only the ticks let a
+-- line with one tick and one parked take read as settled when it was not
+-- (SPEC-todo-by-line.md). Not an error state to be prevented -- dragging
+-- legitimately creates it -- but a decision the user still has to make.
+-- Orphans are not lines and missing rows have nothing on any track.
+function vo.SelectConflicts(rows, cfg)
   local by_key, order = {}, {}
   for _, row in ipairs(rows or {}) do
-    if row.user_select and row.status ~= "orphan" then
+    local claims = row.status ~= "orphan" and row.status ~= "missing"
+      and (row.user_select == true
+           or vo.MarkFromTrack(row.track_name, cfg) == "select")
+    if claims then
       local key = vo.LineKey(row)
       local got = by_key[key]
       if not got then
-        got = { key = key, label = row.deliver or row.asset or "(unnamed)", count = 0 }
+        got = { key = key, label = row.deliver or row.asset or "(unnamed)",
+                count = 0, claimants = {} }
         by_key[key] = got
         order[#order + 1] = got
       end
       got.count = got.count + 1
+      got.claimants[#got.claimants + 1] = row
     end
   end
   local out = {}
@@ -3331,13 +3418,21 @@ function vo.PlanReconcile(rows, cfg)
     -- Only rows that HAVE an item can disagree with where it sits.
     if row.item_guid then
       local from_track = vo.MarkFromTrack(row.track_name, cfg)
+      -- SEL SUBSUMES KEEP, so a take on Selects is never judged on Keep.
+      -- SetSelect auto-ticks Keep with Sel ("Sel is the NARROWER of the
+      -- two") and Pull reads the destinations as "Review is not-Keep,
+      -- Selects is Keep and Sel, Alts is Keep not Sel" -- but this measured
+      -- Keep against the ALTS track alone, so every correctly-made select
+      -- reported "ticked Keep but the item is not on the Alts track". A
+      -- finished line read "Needs select - Conflict" with its select
+      -- sitting right there (AJ, live 2026-08-17).
       local wants_sel  = (from_track == "select")
       local wants_keep = (from_track == "keep")
       if (row.user_select == true) ~= wants_sel then
         plan.disagree[#plan.disagree + 1] = { row = row, detail = wants_sel
           and "on the Selects track but not ticked Sel"
           or  "ticked Sel but the item is not on the Selects track" }
-      elseif (row.user_keep == true) ~= wants_keep then
+      elseif not wants_sel and (row.user_keep == true) ~= wants_keep then
         plan.disagree[#plan.disagree + 1] = { row = row, detail = wants_keep
           and "on the Alts track but not ticked Keep"
           or  "ticked Keep but the item is not on the Alts track" }
@@ -3402,23 +3497,150 @@ end
 -- their number to someone else either. The default (no renumber) stays
 -- conservative on purpose: it is what the drag-follow sweep runs, and a
 -- number you have seen must never quietly become a different take.
+-- WHICH LINE IS THIS TAKE OF? Answered from the LINE NAMES, not from the
+-- suffix pattern -- because the pattern is a setting, and a setting can
+-- change while the names already written down cannot.
+--
+-- That bit hard. AJ changed the alt suffix to dodge a collision, and every
+-- take already named "_alt5" stopped being recognised as a take of anything:
+-- PlanRoleNames grouped it under the whole string, no line answered to that,
+-- and it was skipped in silence. "Fix names" reported that names and tracks
+-- already agreed while 83 items sat unresolved.
+--
+-- The pattern is still tried first, because it is exact and cheap. Only when
+-- it fails does this fall back to the longest line name the take name starts
+-- with -- longest, so a script carrying both "Foo" and "Foo_Alt1" resolves a
+-- take of the latter to the latter rather than reading "_Alt1" as a suffix.
+function vo.BaseOfTakeName(name, known_bases, cfg)
+  local nm = tostring(name or "")
+  if nm == "" then return nm end
+  cfg = cfg or {}
+
+  -- Matched case-insensitively, like every other resolution path
+  -- (NormalizeItemName, BuildNameIndex/ResolveItemName, PlanRoleNames' own
+  -- line_key) -- but returning the CANONICAL name known_bases stores, not the
+  -- take's own casing, so "foo_alt1" resolves to the line "Foo" rather than a
+  -- phantom "foo" nothing else recognises. An exact-case match always wins
+  -- over a case-folded one; when two known bases differ only by case and
+  -- neither matches exactly, the alphabetically-first one wins, so the same
+  -- input resolves the same way on every run.
+  local lower_index
+  local function build_lower_index()
+    local idx, keys = {}, {}
+    for b in pairs(known_bases) do keys[#keys + 1] = b end
+    table.sort(keys)
+    for _, b in ipairs(keys) do
+      local lk = vo.NormalizeItemName(b)
+      if not idx[lk] then idx[lk] = b end
+    end
+    return idx
+  end
+  local function known(b)
+    if not b or b == "" then return nil end
+    if not known_bases then return b end
+    if known_bases[b] then return b end
+    lower_index = lower_index or build_lower_index()
+    return lower_index[vo.NormalizeItemName(b)]
+  end
+
+  -- 1. the suffixes this project is configured to write
+  local hit = known(vo.StripAltSuffix(nm, cfg.alt_append_pattern or "_alt{n}"))
+  if hit then return hit end
+  local out_pat = cfg.out_append_pattern
+  if out_pat and out_pat ~= "" then
+    hit = known(vo.StripAltSuffix(nm, out_pat))
+    if hit then return hit end
+  end
+
+  -- 2. the name IS a line
+  hit = known(nm)
+  if hit then return hit end
+
+  -- 3. whatever suffix some earlier setting wrote: the longest line name
+  --    this take name begins with, with a separator after it. Case-folded
+  --    like everything above; ties on length prefer the candidate that
+  --    matches the take's own casing exactly.
+  if known_bases then
+    local nm_lower = vo.NormalizeItemName(nm)
+    local best, best_len, best_exact
+    for b in pairs(known_bases) do
+      local lb = vo.NormalizeItemName(b)
+      if #lb < #nm_lower and nm_lower:sub(1, #lb) == lb then
+        local exact = nm:sub(1, #b) == b
+        if not best or #lb > best_len or (#lb == best_len and exact and not best_exact) then
+          best, best_len, best_exact = b, #lb, exact
+        end
+      end
+    end
+    if best then return best end
+  end
+
+  return nm
+end
+
 function vo.PlanRoleNames(rows, known_bases, cfg, opts)
   opts = opts or {}
   cfg = cfg or {}
+  -- TWO NAMESPACES, NOT ONE. An Outs take is not delivered, so numbering it
+  -- among the alts punched gaps in the sequence that IS delivered -- a line
+  -- shipping two alts could read _alt1, _alt7 with five rejects eating the
+  -- middle (AJ: "we have a lot of alt files that are not delivered, and it
+  -- sort of messes with the alt naming"). Alts count 1..N among themselves
+  -- and outs count 1..N among themselves.
   local pattern = cfg.alt_append_pattern or "_alt{n}"
+  -- DEFAULTS TO THE ALT PATTERN, i.e. off. Writing _out names without
+  -- teaching the five places that strip a suffix to find a line meant every
+  -- out stopped resolving to its script line -- 33 items fell off a finished
+  -- session (AJ, live, mid-export). The namespace is sound; the readers have
+  -- to learn it before the writer may use it again.
+  local out_pat = cfg.out_append_pattern
+  if not out_pat or out_pat == "" then out_pat = pattern end
   local digits  = math.floor(cfg.alt_append_digits or 1)
   local start   = math.floor(cfg.alt_append_start or 1)
 
-  -- The alt pattern as a number extractor: "_alt{n}" pulls 3 out of
-  -- "Foo_alt3". Same escaping as vo.StripAltSuffix, capturing the number.
-  local esc = pattern:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")
-  local num_matcher = "^.-" .. esc:gsub("{n}", "(%%d+)") .. "$"
+  -- Each pattern as a number extractor: "_alt{n}" pulls 3 out of "Foo_alt3".
+  -- Same escaping as vo.StripAltSuffix, capturing the number.
+  local function matcher_for(p)
+    local esc = p:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")
+    return "^.-" .. esc:gsub("{n}", "(%%d+)") .. "$"
+  end
+  local num_matcher = matcher_for(pattern)
+  local out_matcher = matcher_for(out_pat)
+  -- ONE pattern or two? With the out namespace off (the default) alts and
+  -- outs share a pattern AND a number pool, which is the behaviour that
+  -- predates it. Getting this wrong made a CONSERVATIVE pass plan 27
+  -- renumbers of takes nobody had touched, because every Outs row read as
+  -- sitting in the wrong namespace.
+  local split = (out_pat ~= pattern)
+  local PAT   = { keep = pattern,     out = out_pat }
+  local MATCH = { keep = num_matcher, out = out_matcher }
+
+  -- The number this name already holds in `role`'s namespace, or nil if it
+  -- is not in that namespace at all. Unsplit, a number is just a number.
+  local function held_number(nm, role)
+    if not split then return tonumber(nm:match(num_matcher) or "") end
+    local other = (role == "keep") and out_matcher or num_matcher
+    if nm:match(other) then return nil end
+    return tonumber(nm:match(MATCH[role]) or "")
+  end
+
+  -- EVERY LINE NAME, AS THE RESOLVER SEES IT. A minted name is looked up
+  -- case-insensitively with the extension stripped (vo.NormalizeItemName),
+  -- so "Root_alt1" and a script line called "Root_Alt1" are the SAME KEY --
+  -- and a take handed that name silently becomes a take of the other line.
+  -- It happened: a finished session, an _alt{n} pattern, and a script whose
+  -- lines were named Root, Root_Alt1, Root_Alt2.
+  local line_key = {}
+  for b in pairs(known_bases or {}) do line_key[vo.NormalizeItemName(b)] = b end
 
   local groups, order = {}, {}
   for _, row in ipairs(rows or {}) do
     local nm = row.name
     if type(nm) == "string" and nm ~= "" then
-      local base = vo.StripAltSuffix(nm, pattern) or nm
+      -- Found from the LINE NAMES, so a take still wearing a suffix some
+      -- earlier setting wrote is grouped with its line rather than skipped
+      -- as a name nothing answers to (vo.BaseOfTakeName).
+      local base = vo.BaseOfTakeName(nm, known_bases, cfg)
       local g = groups[base]
       if not g then g = {}; groups[base] = g; order[#order + 1] = base end
       g[#g + 1] = row
@@ -3448,52 +3670,61 @@ function vo.PlanRoleNames(rows, known_bases, cfg, opts)
         -- Claim numbers in two passes so an untouched row's number is never
         -- handed to a renumbered one: first the rows this planner may not
         -- rename, then the role rows that keep a uniquely-held alt name.
-        local used, needs, blocked = {}, {}, nil
+        -- One pool per namespace, so an out number can never block an alt.
+        -- Unsplit, the two roles share one pool, so outs go on counting
+        -- where the alts stopped -- exactly as before the namespace existed.
+        local used = { keep = {} }
+        used.out = split and {} or used.keep
+        local needs, blocked = { keep = {}, out = {} }, nil
+        local function claim(nm)
+          for _, kind in ipairs({ "keep", "out" }) do
+            local n = held_number(nm, kind)
+            if n then used[kind][n] = true end
+            if not split then return end
+          end
+        end
         -- A promoted select's OLD number stays claimed: handing a name that
         -- existed a moment ago to a different take would quietly swap what
         -- "Foo_alt1" means to anything outside this project. The straighten
         -- pass drops this guard knowingly -- renumbering is what was asked.
-        if sel and not opts.renumber then
-          local n = tonumber(sel.name:match(num_matcher) or "")
-          if n then used[n] = true end
-        end
+        if sel and not opts.renumber then claim(sel.name) end
         for _, row in ipairs(g) do
           -- `is_take == false` is the caller saying "this clip carries no take
           -- marker" -- residue, not a delivery. It is still never renamed; it
           -- just stops holding a name and a number hostage.
           if row ~= sel and role_of[row] == nil and row.is_take ~= false then
             if row.name == base then blocked = true end
-            local n = tonumber(row.name:match(num_matcher) or "")
-            if n then used[n] = true end
+            claim(row.name)
           end
         end
         if opts.renumber then
-          -- Straighten: every keep/out row gets renumbered, in pos order,
-          -- keeps before outs -- only off-track holders keep their numbers.
-          local order_rows = {}
+          -- Straighten: every keep/out row gets renumbered in pos order,
+          -- each namespace from its own 1 -- only off-track holders keep
+          -- their numbers.
           for _, row in ipairs(g) do
-            if row ~= sel
-               and (role_of[row] == "keep" or role_of[row] == "out") then
-              order_rows[#order_rows + 1] = row
+            local role = role_of[row]
+            if row ~= sel and (role == "keep" or role == "out") then
+              needs[role][#needs[role] + 1] = row
             end
           end
-          table.sort(order_rows, function(a, b)
-            local ka = (role_of[a] == "out") and 1 or 0
-            local kb = (role_of[b] == "out") and 1 or 0
-            if ka ~= kb then return ka < kb end
-            return (a.pos or 0) < (b.pos or 0)
-          end)
-          needs = order_rows
+          for _, list in pairs(needs) do
+            table.sort(list, function(a, b) return (a.pos or 0) < (b.pos or 0) end)
+          end
         else
           for _, row in ipairs(g) do
-            if row ~= sel
-               and (role_of[row] == "keep" or role_of[row] == "out") then
+            local role = role_of[row]
+            if row ~= sel and (role == "keep" or role == "out") then
+              -- A number only counts as held if it is held in the namespace
+              -- this row now belongs to: a take dragged from Alts to Outs
+              -- wears _alt3, which says nothing about where it sits, so it
+              -- is renamed rather than left claiming an out number.
+              local n = held_number(row.name, role)
               if row.name == base then
-                needs[#needs + 1] = row     -- demoted: the plain name is the select's
+                needs[role][#needs[role] + 1] = row  -- demoted: plain name is the select's
+              elseif n and not used[role][n] then
+                used[role][n] = true
               else
-                local n = tonumber(row.name:match(num_matcher) or "")
-                if n and not used[n] then used[n] = true
-                else needs[#needs + 1] = row end  -- duplicate alt number
+                needs[role][#needs[role] + 1] = row
               end
             end
           end
@@ -3503,20 +3734,47 @@ function vo.PlanRoleNames(rows, known_bases, cfg, opts)
           plan.conflicts[#plan.conflicts + 1] = { base = base,
             detail = base .. " is already held by an item off the role tracks" }
         else
-          local n = start
-          for _, row in ipairs(needs) do
-            while used[n] do n = n + 1 end
-            used[n] = true
-            local want = vo.SanitizeName(base ..
-              vo.FormatAltAppend(pattern, n, digits))
-            -- A row already wearing its target name is not a rename; the
-            -- straighten pass hands most rows the name they hold.
-            if want ~= row.name then
-              plan.renames[#plan.renames + 1] = { row = row, name = want }
+          -- Alts first, then outs, each counting from `start` in its own
+          -- pool -- so the numbers a delivered line carries are 1..N with
+          -- nothing rejected punched out of the middle.
+          local mint, clash = {}, nil
+          for _, role in ipairs({ "keep", "out" }) do
+            local n = start
+            for _, row in ipairs(needs[role]) do
+              while used[role][n] do n = n + 1 end
+              used[role][n] = true
+              local want = vo.SanitizeName(base ..
+                vo.FormatAltAppend(PAT[role], n, digits))
+              -- THE NAME MUST NOT BE SOMEBODY ELSE'S LINE. Checked against
+              -- the resolver's own key, not the raw string, because that is
+              -- what decides which line a take belongs to.
+              local onto = line_key[vo.NormalizeItemName(want)]
+              if onto and onto ~= base then clash = clash or { want, onto } end
+              -- A row already wearing its target name is not a rename; the
+              -- straighten pass hands most rows the name they hold.
+              if want ~= row.name then
+                mint[#mint + 1] = { row = row, name = want }
+              end
             end
           end
           if sel and sel.name ~= base then
-            plan.renames[#plan.renames + 1] = { row = sel, name = base }
+            mint[#mint + 1] = { row = sel, name = base }
+          end
+
+          if clash then
+            -- Reported and left alone, like every other thing this planner
+            -- will not guess at. Renaming ANY of the line is refused, not
+            -- just the offending one: a half-numbered line is worse than an
+            -- untouched one, and the remedy is the same either way --
+            -- change the take suffix so it stops colliding.
+            plan.conflicts[#plan.conflicts + 1] = { base = base, detail =
+              string.format("%s would become %s, which is the script line %s" ..
+                            " -- change the alt suffix in Settings",
+                            base, clash[1], clash[2]) }
+          else
+            for _, rn in ipairs(mint) do
+              plan.renames[#plan.renames + 1] = rn
+            end
           end
         end
       end
@@ -6643,8 +6901,17 @@ vo.WordsWithin = words_within
 -- bug that let a misnamed take pass as clear (commit 32c68c6).
 function vo.NamedAssetOf(take_name, fallback_asset, lines, cfg)
   if not take_name or take_name == "" then return fallback_asset end
-  local base = vo.StripAltSuffix(take_name, (cfg or {}).alt_append_pattern)
-               or take_name
+  -- The base comes from the LINE NAMES, not from the suffix setting alone.
+  -- Judged by pattern, a take wearing a suffix an older setting wrote (or an
+  -- out suffix) claimed no line at all, so this judge fell back to the raw
+  -- name and every one of them was reported as a NAME MISMATCH -- takes that
+  -- were named perfectly correctly (AJ, live).
+  local known = {}
+  for _, l in ipairs(lines or {}) do
+    local b = vo.SanitizeName(l.deliver or l.asset or "")
+    if b ~= "" then known[b] = true end
+  end
+  local base = vo.BaseOfTakeName(take_name, known, cfg or {})
   local at = vo.ResolveItemName(vo.BuildNameIndex(lines or {}), base)
   return at and ((lines or {})[at] or {}).asset or base
 end
@@ -6715,6 +6982,82 @@ function vo.ScanSuspects(rows, transcripts, lines, cfg, thresh)
   return out
 end
 
+-- WHAT THE FREE HUNT READ, per row. A suspect verdict is only as good as
+-- these fields: change one and the verdict has to be re-earned; change
+-- anything else -- a Sel tick, a drag between tracks, a note -- and it
+-- still stands. The same law the Vet stamp lives by
+-- (vo.VettedFingerprint), applied to the scan.
+function vo.SuspectFingerprint(row)
+  return table.concat({
+    tostring(row.status or ""),
+    row.item and "1" or "0",
+    tostring(row.source_path or ""),
+    string.format("%.4f", tonumber(row.source_start) or 0),
+    string.format("%.4f", tonumber(row.source_stop) or 0),
+    tostring(row.take_name or ""),
+    tostring(row.asset or ""),
+    tostring(row.marker_id or ""),
+    tostring(row.confirmed_state or ""),
+    tostring(row.vetted_state or ""),
+  }, "|")
+end
+
+-- WHICH row, across a rebuild. Rebuild constructs fresh row tables, so a
+-- verdict cannot be carried by object identity; a take is named by its
+-- line and its take number, both of which survive.
+function vo.SuspectIdentity(row)
+  return vo.LineKey(row) .. "#" .. tostring(row.take_index or 0)
+end
+
+-- ONCE SCANNED, STAYS SCANNED (AJ). Rebuild used to throw the whole scan
+-- away on every project change, which was needless: almost nothing you do
+-- -- ticking Sel, dragging to Alts, typing a note -- touches anything the
+-- hunt reads. With the findings living on the line cards, discarding them
+-- meant they vanished the moment you ticked a box.
+--
+-- Rows whose inputs are unchanged keep their verdict and re-point at the
+-- rebuilt row. Rows that changed are re-judged, alone -- a handful of rows
+-- rather than the whole sheet. Rows that vanished take their findings with
+-- them.
+--
+-- `prev` nil means NEVER SCANNED and returns nil, nil: a scan nobody asked
+-- for must not be invented. An EMPTY prev map is a full scan, which is how
+-- the Scan button and a changed transcript both come through here.
+function vo.RescanChanged(prev, prev_findings, rows, transcripts, lines, cfg, thresh)
+  if not prev then return nil, nil end
+  local held = {}
+  for _, f in ipairs(prev_findings or {}) do
+    if f.row then held[vo.SuspectIdentity(f.row)] = f end
+  end
+  local map, changed = {}, {}
+  for _, row in ipairs(rows or {}) do
+    if row.status ~= "orphan" then
+      local id, fp = vo.SuspectIdentity(row), vo.SuspectFingerprint(row)
+      map[id] = fp
+      if prev[id] ~= fp then changed[#changed + 1] = row end
+    end
+  end
+  local fresh = {}
+  for _, f in ipairs(vo.ScanSuspects(changed, transcripts, lines, cfg, thresh)) do
+    fresh[vo.SuspectIdentity(f.row)] = f
+  end
+  -- Emitted in ROW order, so the list a rebuild produces reads in the same
+  -- order as the one a full scan produces.
+  local out = {}
+  for _, row in ipairs(rows or {}) do
+    if row.status ~= "orphan" then
+      local id = vo.SuspectIdentity(row)
+      if fresh[id] then
+        out[#out + 1] = fresh[id]
+      elseif prev[id] == map[id] and held[id] then
+        held[id].row = row
+        out[#out + 1] = held[id]
+      end
+    end
+  end
+  return out, map
+end
+
 -- One ranked list of everything that needs the human. Merges every
 -- scanner's output; the WEIGHTS are the priority law (spec: the redesign
 -- design doc, Req-2): what the ears must settle on the Selects track
@@ -6722,8 +7065,8 @@ end
 -- that has not run this session gets a "scan" row at its kind's slot --
 -- a stale scanner must never read as a clean one.
 vo.INBOX_WEIGHT = {
-  suspect_select = 10, out_of_sync = 20, no_audio = 30, unidentified = 40,
-  undecided = 50, suspect = 60, unheard = 70,
+  suspect_select = 10, contested_select = 15, out_of_sync = 20, no_audio = 30,
+  unidentified = 40, undecided = 50, suspect = 60, unheard = 70,
   scan_suspects = 60, scan_unheard = 70,
 }
 
@@ -6740,11 +7083,60 @@ function vo.InboxBuild(src)
     counts.by_kind[kind] = (counts.by_kind[kind] or 0) + 1
   end
   local sel = src.selects_track
+
+  -- CAUSAL SUPPRESSION (SPEC-todo-by-line.md Req-3): a finding that is the
+  -- downstream shadow of another on the same line is deleted -- not counted,
+  -- not drawn. It returns by itself when the root clears, because scanners
+  -- rerun each rebuild. Rule of admission: if clearing the root would not
+  -- make the symptom vanish on the next rebuild, it is not a symptom.
+  local contested_keys = {}
+  for _, c in ipairs(src.contested or {}) do contested_keys[c.key] = true end
+  local disagree = {}
+  for _, d in ipairs(src.disagree or {}) do
+    -- "On the Selects track but not ticked Sel" is the arithmetic of the
+    -- contest, not news. Same placement test the OK-stamp bypass uses.
+    local placement = d.detail and d.detail:find("track", 1, true)
+    local swallowed = placement and d.row and contested_keys[vo.LineKey(d.row)]
+    if not swallowed then disagree[#disagree + 1] = d end
+  end
+
+  local no_audio_rows = {}
+  for _, e in ipairs(src.no_audio or {}) do
+    if e.row then no_audio_rows[e.row] = true end
+  end
+  local suspects = {}
   for _, s in ipairs(src.suspects or {}) do
+    local trig = s.triggers or {}
+    local shadowed = s.row and no_audio_rows[s.row]
+                     and (trig.thin or trig.no_words)
+    if shadowed then
+      -- thin / no_words on a row whose marker has no audio reports that no
+      -- words were found in audio that is not there. Triggers about the
+      -- MARKS (name_mismatch, unmarked, stamp) survive -- the marks exist.
+      -- Copied, not mutated: the entries belong to the caller's scan state.
+      local kept = {}
+      for t in pairs(trig) do
+        if t ~= "thin" and t ~= "no_words" then kept[t] = true end
+      end
+      if next(kept) then
+        local copy = {}
+        for k2, v2 in pairs(s) do copy[k2] = v2 end
+        copy.triggers = kept
+        suspects[#suspects + 1] = copy
+      end
+    else
+      suspects[#suspects + 1] = s
+    end
+  end
+
+  for _, s in ipairs(suspects) do
     add((sel and s.track == sel) and "suspect_select" or "suspect", s)
   end
+  -- A line with two claimants for the select (vo.SelectConflicts entries):
+  -- the root the marks-vs-track findings are symptoms of.
+  for _, c in ipairs(src.contested or {}) do add("contested_select", c) end
   for _, q in ipairs(src.parity_queue or {}) do add("out_of_sync", q) end
-  for _, d in ipairs(src.disagree or {})     do add("out_of_sync", d) end
+  for _, d in ipairs(disagree)               do add("out_of_sync", d) end
   for _, e in ipairs(src.no_audio or {})     do add("no_audio", e) end
   for _, e in ipairs(src.unidentified or {}) do add("unidentified", e) end
   for _, e in ipairs(src.undecided or {})    do add("undecided", e) end
@@ -6757,6 +7149,233 @@ function vo.InboxBuild(src)
     return a._seq < b._seq
   end)
   return findings, counts
+end
+
+-- THE STAGE LADDER (SPEC-todo-by-line.md, AJ's names): a line has exactly ONE
+-- stage -- its place in the pipeline -- and shows the earliest unmet rung.
+--
+-- EVERY RUNG READS PERSISTENT PROJECT STATE. There was a "Not Scanned" rung
+-- above these, meaning the suspects scan had not run; it came out because the
+-- scan flag lives in session memory and Rebuild clears it on every project
+-- change, so the first rung swallowed every line the moment you ticked a box
+-- and no line ever showed the stage it was really at. A scanner that has not
+-- run is a fact about the SESSION -- the Session card says so, with the button
+-- that fixes it -- never a fact about a line.
+vo.TODO_STAGES = { "not_found", "needs_edit",
+                   "needs_select", "unverified", "done" }
+vo.TODO_STAGE_LABEL = {
+  not_found = "Not Found",
+  needs_edit = "Needs edit", needs_select = "Needs select",
+  unverified = "Unverified", done = "Done",
+}
+
+local STAGE_INDEX = {}
+for i, id in ipairs(vo.TODO_STAGES) do STAGE_INDEX[id] = i end
+function vo.StageIndex(id) return STAGE_INDEX[id] end
+
+-- g: has_takes (a row with take_index > 0 and not missing), any_item (a row
+-- with a live item), any_uncut (an item still holding >1 counting marker),
+-- picked (user_select somewhere), unheard (SOME take with an item carries
+-- neither an OK nor a Vet stamp). All of them survive a restart, which is
+-- the whole requirement.
+function vo.LineStage(g)
+  g = g or {}
+  if not g.has_takes or not g.any_item then return "not_found" end
+  if g.any_uncut then return "needs_edit" end
+  if not g.picked and not g.locked then return "needs_select" end
+  if g.unheard then return "unverified" end
+  return "done"
+end
+
+-- Which stage's work fixes each error kind (AJ-approved mapping,
+-- SPEC-todo-by-line.md Req-1). nil = the finding is not an error: it is a
+-- stage (`undecided`), a session-level row (`unheard`), or already
+-- dissolved into the ladder (`scan_*`).
+local SUSPECT_HOME = { unmarked = "needs_edit", name_mismatch = "unverified",
+                       stamp = "unverified", thin = "unverified",
+                       no_words = "unverified" }
+function vo.ErrorHome(f)
+  local k = f and f.kind
+  local p = (f and f.payload) or {}
+  if k == "no_audio" then return "not_found" end
+  if k == "contested_select" then return "needs_select" end
+  if k == "out_of_sync" then
+    -- Parity divergences (name/edges vs marker) are edit work; the
+    -- PlanReconcile flavour (marks vs track) is a select question.
+    return p.divergence and "needs_edit" or "needs_select"
+  end
+  if k == "suspect" or k == "suspect_select" then
+    local best
+    for t in pairs(p.triggers or {}) do
+      local h = SUSPECT_HOME[t]
+      if h and (not best or STAGE_INDEX[h] < STAGE_INDEX[best]) then best = h end
+    end
+    return best or "unverified"
+  end
+  return nil
+end
+
+-- THE COLLAPSE (SPEC-todo-by-line.md): findings and rows in, one entry per
+-- LINE with work out. An entry's stage is the earliest of its ladder rung
+-- (vo.LineStage) and any live error's home stage -- a verified line that
+-- grows a second select drops back to Needs select, because picking the
+-- select is the work you now have to redo. Done lines are simply absent:
+-- the sheet's Todo filter drains as work completes.
+--
+--   todo, counts = vo.TodoBuild{
+--     findings    = <vo.InboxBuild output>,
+--     rows        = <the overview rows>,
+--     uncut       = { [item] = true },   -- items still holding >1 counting marker
+--     row_of_item = { [item] = row },    -- resolve item-only findings to lines
+--   }
+--   todo = { lines = {entry,...}, by_key = {key->entry}, session = {finding,...} }
+--   entry = { key, label, stage, stage_label, conflict, errors = {finding,...} }
+--   counts = { total, lines, session }
+function vo.TodoBuild(src)
+  src = src or {}
+  local uncut = src.uncut or {}
+  local row_of_item = src.row_of_item or {}
+
+  -- Gather per line, in sheet (rows) order.
+  local by_key, order = {}, {}
+  local function line_of(key, label)
+    local g = by_key[key]
+    if not g then
+      g = { key = key, label = label or "(unnamed)", errors = {}, gather = {} }
+      by_key[key] = g
+      order[#order + 1] = g
+    end
+    return g
+  end
+  -- IGNORED LINES ARE NOT WORK. A cut line, a line another performer reads,
+  -- a line recorded elsewhere -- the script still lists it and the sheet
+  -- still shows it, but nothing about it is owed (AJ). Collected before the
+  -- gather so neither a stage nor an error can be built for one.
+  local ignored = {}
+  for _, row in ipairs(src.rows or {}) do
+    if row.line_ignored then ignored[vo.LineKey(row)] = true end
+  end
+  for _, row in ipairs(src.rows or {}) do
+    if row.status ~= "orphan" and not ignored[vo.LineKey(row)] then
+      local g = line_of(vo.LineKey(row), row.deliver or row.asset)
+      local ga = g.gather
+      if row.status ~= "missing" and (row.take_index or 0) > 0 then
+        ga.has_takes = true
+        if row.item then ga.any_item = true end
+      end
+      if row.item and uncut[row.item] then ga.any_uncut = true end
+      if row.user_select then ga.picked = true end
+      -- The Lock box (user_status "verified") settles WHICH take, exactly as
+      -- the Decided meter reads it. It is not a verdict on the READ.
+      if row.user_status == "verified" then ga.locked = true end
+      -- AN EMPTY OK BOX IS WORK, ON ANY TAKE (AJ): "if I listen to a line and
+      -- it is NOT a read, I am going to untrack it -- so an empty OK box
+      -- means I am not done". Every take still tracked is therefore one he
+      -- means to listen to, whether it ships or not; a take dropped to Outs
+      -- was still listened to, which is the whole point of OK and Keep being
+      -- independent axes (SPEC-the-marks.md).
+      --
+      -- Only takes with an ITEM count: there is nothing to listen to
+      -- otherwise, and a row that cannot be heard must not hold a line open.
+      if row.status ~= "missing" and (row.take_index or 0) > 0 and row.item
+         and row.confirmed_state ~= "ok" and row.vetted_state ~= "ok" then
+        ga.unheard = true
+      end
+    end
+  end
+
+  -- Attach errors; line-less findings go to the session list.
+  local session = {}
+  for _, f in ipairs(src.findings or {}) do
+    local home = vo.ErrorHome(f)
+    if home then
+      local p = f.payload or {}
+      local row, orphaned = p.row or (p.item and row_of_item[p.item]) or nil, false
+      -- AN ORPHAN IS NOT THIS SESSION.S WORK. It is audio the script cannot
+      -- name here -- most often another character.s, because narrowing a
+      -- session to its speakers leaves their lines off the sheet -- and the
+      -- gather above skips orphans for exactly that reason.
+      --
+      -- Its findings are dropped rather than counted (AJ). Letting them
+      -- through built a line called "(unnamed)" that no work could clear;
+      -- moving them to the session merely relocated a number the user could
+      -- not act on. The audio is still reported where it belongs: the
+      -- summary.s orphan count and "N name(s) not on the script".
+      if row and row.status == "orphan" then row, orphaned = nil, true end
+      local key = (f.kind == "contested_select" and p.key)
+                  or (row and vo.LineKey(row)) or nil
+      if key and ignored[key] then
+        -- Dismissed line: its findings go with it. Un-ignoring brings them
+        -- straight back, because nothing about them was stored.
+      elseif key then
+        local g = line_of(key, p.label or (row and (row.deliver or row.asset)))
+        g.errors[#g.errors + 1] = f
+        local h = vo.StageIndex(home)
+        if not g.err_stage or h < g.err_stage then g.err_stage = h end
+      elseif not orphaned then
+        -- An error that resolves to no line at all (item gone, no row):
+        -- session-level, still visible, never silently dropped.
+        session[#session + 1] = f
+      end
+    elseif f.kind == "unheard" then
+      session[#session + 1] = f
+    end
+    -- undecided / scan_* / unidentified: dissolved into the ladder; skip.
+  end
+
+  -- Resolve stages, keep only lines with work. Done requires the ladder
+  -- cleared AND zero errors -- the guard is belt-and-braces (error homes
+  -- are all earlier than done), so the invariant does not depend on the
+  -- mapping table staying that way.
+  local lines, out_by_key = {}, {}
+  for _, g in ipairs(order) do
+    local ladder = vo.StageIndex(vo.LineStage(g.gather))
+    local at = g.err_stage and math.min(g.err_stage, ladder) or ladder
+    local id = vo.TODO_STAGES[at]
+    if id ~= "done" or #g.errors > 0 then
+      local entry = { key = g.key, label = g.label, stage = id,
+                      stage_label = vo.TODO_STAGE_LABEL[id],
+                      conflict = #g.errors > 0, errors = g.errors }
+      lines[#lines + 1] = entry
+      out_by_key[g.key] = entry
+    end
+  end
+
+  local counts = { lines = #lines, session = #session,
+                   total = #lines + #session }
+  return { lines = lines, by_key = out_by_key, session = session }, counts
+end
+
+-- WHAT AN OK IS A CLAIM ABOUT. Vet is the MACHINE judging words in a
+-- window, so every edge belongs in its fingerprint: move an edge and the
+-- window it judged is gone. OK is the HUMAN saying "this IS a take, and it
+-- IS this line" -- a claim about IDENTITY. Trimming the head off a take
+-- does not make it a different read, and clearing the mark on every trim
+-- made it cost more than it was worth (AJ: "I have already identified it
+-- as a select -- that is what OK is for now").
+--
+-- So an OK witnesses only what could make this a DIFFERENT take: the audio
+-- it comes from, and the name that assigns it to a line.
+--
+-- Old stamps were written in the Vet format and are still honoured --
+-- vo.ConfirmedMatches pulls the two identity fields out of them -- so a
+-- session full of OKs does not clear itself the day this ships.
+function vo.ConfirmedFingerprint(fp)
+  local path = (fp.source_path or ""):lower():gsub("\\", "/")
+  return table.concat({ "c1", path, fp.take_name or "" }, "|")
+end
+
+function vo.ConfirmedMatches(stamp, fp)
+  if not stamp or stamp == "" then return false end
+  if stamp:sub(1, 3) == "c1|" then
+    return stamp == vo.ConfirmedFingerprint(fp)
+  end
+  -- v1|path|from|length|rate|take_name|mk_pos|mk_len|words
+  local parts = {}
+  for piece in tostring(stamp):gmatch("([^|]*)") do parts[#parts + 1] = piece end
+  if parts[1] ~= "v1" then return false end
+  local path = (fp.source_path or ""):lower():gsub("\\", "/")
+  return parts[2] == path and (parts[6] or "") == (fp.take_name or "")
 end
 
 vo.VETTED_EXT = "P_EXT:ajsfx_vo_vetted"
@@ -7283,6 +7902,17 @@ function vo.SerializeProjectFile(entries, meta)
     end
   end
 
+  -- Lines dismissed as not this session.s job. Same key, same rules: the
+  -- record IS the decision, so removing it is how a line comes back.
+  for _, e in ipairs(meta.ignored or {}) do
+    if e.text and e.text ~= "" then
+      out[#out + 1] = vo.FormatCSVRow({
+        "Ignore", e.script or "", e.asset or "",
+        tostring(e.nth or 1), e.text,
+      })
+    end
+  end
+
   -- The filename the user typed over the script's own. Same key, same rules;
   -- it supersedes Append, which is no longer reachable from the card but is
   -- still written above so a project saved by an older version keeps its names.
@@ -7420,6 +8050,7 @@ function vo.ParseProjectFile(text)
 
   local parsed = { version = version, scripts = {}, appends = {},
                    line_edits = {}, names = {}, subs = {}, speakers = {},
+                   ignored = {},
                    entries = {}, pins = {}, view = { col_filters = {}, expanded = {} } }
   -- The pre-multi-script format, folded in below only if no Script row appears.
   local legacy_path, legacy_mapping = nil, nil
@@ -7457,6 +8088,19 @@ function vo.ParseProjectFile(text)
       if asset ~= "" and nth and text ~= "" then
         parsed.line_edits[#parsed.line_edits + 1] =
           { script = script, asset = asset, nth = math.floor(nth), text = text }
+      end
+    elseif key == "Ignore" then
+      -- A LINE the user has decided is not this session.s job: a cut line, a
+      -- line another performer reads, a line recorded elsewhere. Keyed by the
+      -- line exactly as Line and Name are, and read even when no loaded line
+      -- answers to it -- re-exporting the CSV must not silently un-ignore
+      -- what you dismissed.
+      local script, asset = rows[i][2] or "", rows[i][3] or ""
+      local nth, text = tonumber(rows[i][4] or ""), rows[i][5] or ""
+      if asset ~= "" and nth then
+        parsed.ignored[#parsed.ignored + 1] =
+          { script = script, asset = asset, nth = math.floor(nth),
+            text = (text ~= "") and text or "1" }
       end
     elseif key == "Sub" then
       local from, to = rows[i][2] or "", rows[i][3] or ""
@@ -8228,8 +8872,19 @@ function vo.SummarizeOverview(rows)
     elseif n[row.status] then
       n[row.status] = n[row.status] + 1
     end
-    if row.user_status and row.user_status ~= "junk" and n[row.user_status] then
+    -- "verified" is handled below, not here: user_status "verified" is the
+    -- retired Lock box (SPEC-the-marks.md, "Vet is unused"), and counting it
+    -- as the meter's Verified reads zero forever on a session that never
+    -- ticks Lock.
+    if row.user_status and row.user_status ~= "junk" and row.user_status ~= "verified"
+       and n[row.user_status] then
       n[row.user_status] = n[row.user_status] + 1
+    end
+    -- Verified mirrors vo.LineStage/vo.TodoBuild's read of the Vet stamp:
+    -- the machine's stamp (vetted_state) or the human's confirmation
+    -- (confirmed_state) -- Vet or OK, never Lock.
+    if row.vetted_state == "ok" or row.confirmed_state == "ok" then
+      n.verified = n.verified + 1
     end
     -- Script coverage counts LINES, not takes: five takes of one line is one
     -- line delivered, and a progress number that says otherwise is a lie.
@@ -8794,6 +9449,11 @@ vo.CONFIG_SCHEMA = {
   -- The alt naming convention. Not bounded here: vo.PlanAltNames floors and
   -- clamps its own inputs, so a hand-edited ExtState cannot break a run.
   { key = "alt_append_pattern", kind = "string", default = "_alt{n}" },
+  -- Outs carry their OWN suffix and their own numbering. Sharing the alt
+  -- pattern meant takes nobody ships ate alt numbers and left gaps in the
+  -- sequence that is delivered. Start and digits are shared: they are how
+  -- AJ counts, not what the number means.
+  { key = "out_append_pattern", kind = "string", default = "" },
   { key = "alt_append_start",   kind = "number", default = 1 },
   { key = "alt_append_digits",  kind = "number", default = 1 },
 

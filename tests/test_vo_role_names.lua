@@ -24,7 +24,7 @@ local vo = require("ajsfx_vo")
 print("\n=== ajsfx_vo.lua PlanRoleNames Unit Tests ===\n")
 
 local CFG = { alt_append_pattern = "_alt{n}", alt_append_start = 1,
-              alt_append_digits = 1 }
+              alt_append_digits = 1, out_append_pattern = "_out{n}" }
 local KNOWN = { Foo = true, Bar = true }
 
 local function renamed(plan, row)
@@ -73,13 +73,14 @@ test("a full swap renames both sides in one plan", function()
   assert(renamed(plan, rows[3]) == nil, "bystander was renamed")
 end)
 
-test("plain name on Outs is renamed away like a demotion", function()
+test("plain name on Outs is renamed away, into the out namespace", function()
   local rows = {
     { name = "Foo",      track_name = "Outs" },
     { name = "Foo_alt1", track_name = "Alts" },
   }
   local plan = vo.PlanRoleNames(rows, KNOWN, CFG)
-  assert(renamed(plan, rows[1]) == "Foo_alt2", "out kept the plain name")
+  assert(renamed(plan, rows[1]) == "Foo_out1", "out kept the plain name: "
+         .. tostring(renamed(plan, rows[1])))
 end)
 
 test("items off the role tracks are never renamed", function()
@@ -231,7 +232,7 @@ test("gaps close: a lone alt4 becomes alt1", function()
          "got " .. tostring(renamed(plan, rows[2])))
 end)
 
-test("alts renumber in timeline order, outs continue after", function()
+test("alts renumber in timeline order; outs number separately", function()
   local rows = {
     { name = "Foo",      track_name = "Selects", pos = 0 },
     { name = "Foo_alt7", track_name = "Alts",    pos = 30 },
@@ -241,7 +242,9 @@ test("alts renumber in timeline order, outs continue after", function()
   local plan = vo.PlanRoleNames(rows, KNOWN, CFG, RN)
   assert(renamed(plan, rows[3]) == "Foo_alt1", "earlier alt should be alt1")
   assert(renamed(plan, rows[2]) == "Foo_alt2", "later alt should be alt2")
-  assert(renamed(plan, rows[4]) == "Foo_alt3", "out continues after alts")
+  assert(renamed(plan, rows[4]) == "Foo_out1",
+         "an out must not take an alt number: "
+         .. tostring(renamed(plan, rows[4])))
 end)
 
 test("already-straight names plan zero renames (idempotent)", function()
@@ -283,6 +286,301 @@ test("straighten still refuses a conflicted line", function()
   }
   local plan = vo.PlanRoleNames(rows, KNOWN, CFG, RN)
   assert(#plan.renames == 0 and #plan.conflicts == 1)
+end)
+
+
+print("\nOuts get their own suffix and their own numbers:")
+
+test("an Outs take is named _out, not _alt", function()
+  -- AJ: otherwise "we have a lot of alt files that are not delivered, and it
+  -- sort of messes with the alt naming."
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_alt1", track_name = "Outs",    pos = 10 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG)
+  assert(renamed(plan, rows[2]) == "Foo_out1",
+         "got " .. tostring(renamed(plan, rows[2])))
+end)
+
+test("outs do not consume alt numbers", function()
+  -- The whole point: the alts delivered alongside the select stay 1..N with
+  -- no gaps punched in them by takes nobody ships.
+  local rows = {
+    { name = "Foo",  track_name = "Selects", pos = 0 },
+    { name = "Foo_alt6", track_name = "Outs",    pos = 10 },
+    { name = "Foo_alt7", track_name = "Alts",    pos = 20 },
+    { name = "Foo_alt8", track_name = "Outs",    pos = 30 },
+    { name = "Foo_alt9", track_name = "Alts",    pos = 40 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG)
+  -- The conservative pass leaves a uniquely-held alt number alone, so the
+  -- two alts keep 7 and 9. What moves is the OUTS: an _alt name says
+  -- nothing about the Outs track, so each is renamed into its own
+  -- namespace, numbering from 1 and taking no alt number with it.
+  assert(renamed(plan, rows[3]) == nil, "an alt keeping its number was renamed")
+  assert(renamed(plan, rows[5]) == nil, "an alt keeping its number was renamed")
+  assert(renamed(plan, rows[2]) == "Foo_out1", "first out: "
+         .. tostring(renamed(plan, rows[2])))
+  assert(renamed(plan, rows[4]) == "Foo_out2", "second out: "
+         .. tostring(renamed(plan, rows[4])))
+end)
+
+test("straighten leaves the delivered alts 1..N with no gaps", function()
+  -- The whole point, stated where it is actually true: after a straighten,
+  -- the numbers a line ships read 1, 2 with nothing rejected punched out of
+  -- the middle, however many outs sit beside them.
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_alt6", track_name = "Outs",    pos = 10 },
+    { name = "Foo_alt7", track_name = "Alts",    pos = 20 },
+    { name = "Foo_alt8", track_name = "Outs",    pos = 30 },
+    { name = "Foo_alt9", track_name = "Alts",    pos = 40 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG, { renumber = true })
+  assert(renamed(plan, rows[3]) == "Foo_alt1", tostring(renamed(plan, rows[3])))
+  assert(renamed(plan, rows[5]) == "Foo_alt2", tostring(renamed(plan, rows[5])))
+  assert(renamed(plan, rows[2]) == "Foo_out1", tostring(renamed(plan, rows[2])))
+  assert(renamed(plan, rows[4]) == "Foo_out2", tostring(renamed(plan, rows[4])))
+end)
+
+test("an out already correctly named plans nothing", function()
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_out1", track_name = "Outs",    pos = 10 },
+    { name = "Foo_alt1", track_name = "Alts",    pos = 20 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG)
+  assert(#plan.renames == 0, "planned " .. #plan.renames)
+end)
+
+test("a take moved from Outs back to Alts is renamed across namespaces", function()
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_out1", track_name = "Alts",    pos = 10 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG)
+  assert(renamed(plan, rows[2]) == "Foo_alt1",
+         "got " .. tostring(renamed(plan, rows[2])))
+end)
+
+test("an out name off the role tracks still reserves its out number", function()
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_out1", track_name = "Review",  pos = 10 },  -- untouchable
+    { name = "Foo_alt3", track_name = "Outs",    pos = 20 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG)
+  assert(renamed(plan, rows[3]) == "Foo_out2",
+         "must skip the held out1; got " .. tostring(renamed(plan, rows[3])))
+end)
+
+test("straighten renumbers each namespace from 1", function()
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_alt7", track_name = "Alts",    pos = 10 },
+    { name = "Foo_alt9", track_name = "Outs",    pos = 20 },
+    { name = "Foo_alt4", track_name = "Alts",    pos = 30 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG, { renumber = true })
+  assert(renamed(plan, rows[2]) == "Foo_alt1", tostring(renamed(plan, rows[2])))
+  assert(renamed(plan, rows[4]) == "Foo_alt2", tostring(renamed(plan, rows[4])))
+  assert(renamed(plan, rows[3]) == "Foo_out1", tostring(renamed(plan, rows[3])))
+end)
+
+
+print("\nDefault config (out namespace OFF) must not churn:")
+
+-- The shipped default: no out_append_pattern at all. AJ's session ran a
+-- CONSERVATIVE pass under a half-disabled namespace and it planned 27
+-- renumbers of takes nobody had touched, because every Outs row read as
+-- sitting in the wrong namespace.
+local PLAIN = { alt_append_pattern = "_alt{n}", alt_append_start = 1,
+                alt_append_digits = 1 }
+
+test("settled names plan nothing at all", function()
+  local rows = {
+    { name = "Foo",       track_name = "Selects", pos = 0 },
+    { name = "Foo_alt5",  track_name = "Alts",    pos = 10 },
+    { name = "Foo_alt11", track_name = "Outs",    pos = 20 },
+    { name = "Foo_alt2",  track_name = "Outs",    pos = 30 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, PLAIN)
+  local names = {}
+  for _, rn in ipairs(plan.renames) do names[#names + 1] = rn.name end
+  assert(#plan.renames == 0,
+         "churned: " .. table.concat(names, ", "))
+end)
+
+test("outs and alts share one number pool when unsplit", function()
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_alt1", track_name = "Alts",    pos = 10 },
+    { name = "Bar",      track_name = "Selects", pos = 20 },
+    { name = "Bar",      track_name = "Outs",    pos = 30 },  -- needs a number
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, PLAIN)
+  assert(renamed(plan, rows[4]) == "Bar_alt1",
+         "an unsplit out must take an alt number: "
+         .. tostring(renamed(plan, rows[4])))
+end)
+
+
+print("\nA minted name may never land on another script line:")
+
+test("refuses to mint an alt that IS a script line", function()
+  -- AJ's session, exactly: the script carries lines Root, Root_Alt1 and
+  -- Root_Alt2, and the take pattern is _alt{n}. NormalizeItemName lowercases,
+  -- so "Root_alt1" and the line "Root_Alt1" are the same key -- minting it
+  -- moved takes onto a different script line.
+  local known = { Root = true, Root_Alt1 = true, Root_Alt2 = true }
+  local rows = {
+    { name = "Root",      track_name = "Selects", pos = 0 },
+    { name = "Root_alt7", track_name = "Alts",    pos = 10 },
+  }
+  local plan = vo.PlanRoleNames(rows, known, CFG, { renumber = true })
+  assert(#plan.renames == 0, "minted a name that is a script line: "
+         .. tostring(plan.renames[1] and plan.renames[1].name))
+  assert(#plan.conflicts == 1, "the collision must be reported")
+  assert(tostring(plan.conflicts[1].detail):find("Root_Alt1", 1, true)
+         or tostring(plan.conflicts[1].detail):find("script line", 1, true),
+         "conflict should name the clash: " .. tostring(plan.conflicts[1].detail))
+end)
+
+test("a pattern that does not collide still plans normally", function()
+  local known = { Root = true, Root_Alt1 = true }
+  local cfg = { alt_append_pattern = "_take{n}", alt_append_start = 1,
+                alt_append_digits = 1 }
+  local rows = {
+    { name = "Root",       track_name = "Selects", pos = 0 },
+    { name = "Root_take7", track_name = "Alts",    pos = 10 },
+  }
+  local plan = vo.PlanRoleNames(rows, known, cfg, { renumber = true })
+  assert(renamed(plan, rows[2]) == "Root_take1",
+         "got " .. tostring(renamed(plan, rows[2])))
+end)
+
+
+print("\nBaseOfTakeName: the line is found however the take was named:")
+
+local BK = { Foo = true, Bar = true, Foo_Alt1 = true }
+
+test("the current pattern still wins", function()
+  assert(vo.BaseOfTakeName("Foo_alt3", BK, CFG) == "Foo")
+end)
+
+test("a name left by an OLD pattern is still found", function()
+  -- AJ changed the alt suffix to _alt_take{n} to dodge a collision. Every
+  -- take already named _alt5 stopped being recognised as a take of its line,
+  -- so Fix names reported "already agree" and did nothing at all.
+  local cfg = { alt_append_pattern = "_alt_take{n}", alt_append_start = 1,
+                alt_append_digits = 1 }
+  assert(vo.BaseOfTakeName("Foo_alt5", BK, cfg) == "Foo",
+         "got " .. tostring(vo.BaseOfTakeName("Foo_alt5", BK, cfg)))
+  assert(vo.BaseOfTakeName("Foo_alt_take2", BK, cfg) == "Foo")
+end)
+
+test("an out name is found even when the readers never knew the pattern", function()
+  local cfg = { alt_append_pattern = "_alt{n}", out_append_pattern = "_out{n}",
+                alt_append_start = 1, alt_append_digits = 1 }
+  assert(vo.BaseOfTakeName("Foo_out2", BK, cfg) == "Foo",
+         "got " .. tostring(vo.BaseOfTakeName("Foo_out2", BK, cfg)))
+end)
+
+test("the LONGEST line name wins, so a line that is itself a suffix is safe", function()
+  -- Foo_Alt1 is a real script line. A take of it must resolve to it, not to
+  -- Foo with a suffix of "_Alt1".
+  assert(vo.BaseOfTakeName("Foo_Alt1_alt2", BK, CFG) == "Foo_Alt1",
+         "got " .. tostring(vo.BaseOfTakeName("Foo_Alt1_alt2", BK, CFG)))
+  assert(vo.BaseOfTakeName("Foo_Alt1", BK, CFG) == "Foo_Alt1")
+end)
+
+test("a name belonging to no line stays itself", function()
+  assert(vo.BaseOfTakeName("Stray_alt1", BK, CFG) == "Stray_alt1")
+end)
+
+test("no line list means no guessing", function()
+  assert(vo.BaseOfTakeName("Foo_alt3", nil, CFG) == "Foo")
+end)
+
+test("matching is case-insensitive but returns the CANONICAL line name", function()
+  -- Every other resolution path lowercases (NormalizeItemName,
+  -- BuildNameIndex/ResolveItemName, PlanRoleNames' own line_key); a take
+  -- named foo_alt1 must resolve to the line "Foo" -- in Foo's own casing --
+  -- not be silently dropped for not matching known_bases exact-case.
+  local known = { Foo = true, Bar = true }
+  assert(vo.BaseOfTakeName("foo_alt1", known, CFG) == "Foo",
+         "got " .. tostring(vo.BaseOfTakeName("foo_alt1", known, CFG)))
+  assert(vo.BaseOfTakeName("FOO", known, CFG) == "Foo",
+         "the name IS a line, case-folded: got "
+         .. tostring(vo.BaseOfTakeName("FOO", known, CFG)))
+end)
+
+test("an exact-case match wins when both cases are known lines", function()
+  local known = { Foo = true, foo = true }
+  assert(vo.BaseOfTakeName("foo_alt1", known, CFG) == "foo",
+         "got " .. tostring(vo.BaseOfTakeName("foo_alt1", known, CFG)))
+  assert(vo.BaseOfTakeName("Foo_alt1", known, CFG) == "Foo",
+         "got " .. tostring(vo.BaseOfTakeName("Foo_alt1", known, CFG)))
+end)
+
+
+print("\nNamedAssetOf survives a suffix change:")
+
+local NA_LINES = {
+  { asset = "line_a", deliver = "line_a" },
+  { asset = "line_b", deliver = "line_b" },
+}
+
+test("the configured suffix resolves", function()
+  local cfg = { alt_append_pattern = "_alt{n}" }
+  assert(vo.NamedAssetOf("line_a_alt3", "line_b", NA_LINES, cfg) == "line_a")
+end)
+
+test("a suffix an OLDER setting wrote still resolves", function()
+  -- AJ changed the alt suffix while takes were still named _alt5. Judged by
+  -- pattern alone they claimed no line, so the judge fell back to the raw
+  -- name and reported a name mismatch on takes that were named correctly.
+  local cfg = { alt_append_pattern = "_alt_take{n}" }
+  assert(vo.NamedAssetOf("line_a_alt5", "line_b", NA_LINES, cfg) == "line_a",
+         "got " .. tostring(vo.NamedAssetOf("line_a_alt5", "line_b", NA_LINES, cfg)))
+end)
+
+test("an out name resolves to its line", function()
+  local cfg = { alt_append_pattern = "_alt{n}", out_append_pattern = "_out{n}" }
+  assert(vo.NamedAssetOf("line_a_out2", "line_b", NA_LINES, cfg) == "line_a",
+         "got " .. tostring(vo.NamedAssetOf("line_a_out2", "line_b", NA_LINES, cfg)))
+end)
+
+test("a name claiming no line is still its own answer", function()
+  local cfg = { alt_append_pattern = "_alt{n}" }
+  assert(vo.NamedAssetOf("stray_thing", "line_b", NA_LINES, cfg) == "stray_thing")
+end)
+
+test("no name at all falls back to the marker's line", function()
+  assert(vo.NamedAssetOf("", "line_b", NA_LINES, {}) == "line_b")
+end)
+
+
+print("\nAn out name is a conventional name too:")
+
+test("the out suffix is accepted like the alt suffix", function()
+  -- AJ: the marker carries the script filename, the item carries filename +
+  -- append. Both are CORRECT. Only the alt suffix was recognised, so every
+  -- out was reported as marker/item name mismatch.
+  assert(vo.IsConventionalAltName("Foo_out1", "Foo", "_alt{n}", "_out{n}"),
+         "an out name read as a disagreement")
+  assert(vo.IsConventionalAltName("Foo_alt3", "Foo", "_alt{n}", "_out{n}"))
+end)
+
+test("a genuinely different name is still a disagreement", function()
+  assert(not vo.IsConventionalAltName("Bar_out1", "Foo", "_alt{n}", "_out{n}"))
+  assert(not vo.IsConventionalAltName("Foo_wat1", "Foo", "_alt{n}", "_out{n}"))
+end)
+
+test("with no out pattern it behaves exactly as before", function()
+  assert(vo.IsConventionalAltName("Foo_alt3", "Foo", "_alt{n}"))
+  assert(not vo.IsConventionalAltName("Foo_out1", "Foo", "_alt{n}"))
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))

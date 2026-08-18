@@ -1017,6 +1017,30 @@ test("only alts are touched", function()
   assert(#edits == 0, "a select and an unticked take are not alts")
 end)
 
+test("PlanAltNames refuses to mint a name that IS a different script line", function()
+  -- Script lines Foo and Foo_alt1: minting "Foo_alt1" for a take of Foo
+  -- would silently hand its coverage to the OTHER line.
+  local known = { Foo = true, Foo_alt1 = true }
+  local edits, skipped, conflicts = vo.PlanAltNames({
+    alt_row("keep", "Foo", 1),
+  }, { pattern = "_alt{n}", start = 1, digits = 1, known_bases = known })
+  assert(#edits == 0, "the colliding mint must not be minted, got " .. #edits)
+  assert(skipped == 0, "a refusal is a conflict, not a skip: " .. tostring(skipped))
+  assert(conflicts and #conflicts == 1, "the collision must be reported")
+  assert(tostring(conflicts[1].detail):find("Foo_alt1", 1, true),
+         "conflict should name the clash: " .. tostring(conflicts[1].detail))
+end)
+
+test("PlanAltNames still mints normally when nothing collides", function()
+  local known = { Foo = true, Bar = true }
+  local edits, skipped, conflicts = vo.PlanAltNames({
+    alt_row("keep", "Foo", 1),
+  }, { pattern = "_alt{n}", start = 1, digits = 1, known_bases = known })
+  assert(#edits == 1 and edits[1].name == "Foo_alt1",
+         "got " .. tostring(edits[1] and edits[1].name))
+  assert(conflicts and #conflicts == 0, "no collision, no conflict")
+end)
+
 --------------------------------
 -- PlanNamesFromSheet
 --------------------------------
@@ -1102,6 +1126,35 @@ test("the convention test is anchored, so a longer name is a judgement", functio
   }, ALT_OPTS)
   assert(edits[1].name == "line_042_alt1_room",
     "an alt name with more on the end is not the convention: " .. tostring(edits[1].name))
+end)
+
+test("PlanNamesFromSheet refuses to mint a name that IS a different script line",
+  function()
+  -- Same collision as PlanAltNames: Foo and Foo_alt1 both real lines, and an
+  -- alt of Foo must never be minted "Foo_alt1".
+  local known = { Foo = true, Foo_alt1 = true }
+  local edits, skipped, nameless, conflicts = vo.PlanNamesFromSheet({
+    alt_row("select", "Foo", 1), alt_row("keep", "Foo", 1),
+  }, { pattern = "_alt{n}", start = 1, digits = 1, known_bases = known })
+  assert(#edits == 1 and edits[1].name == "Foo",
+         "only the select is named; the colliding alt is refused, got "
+         .. #edits)
+  assert(conflicts and #conflicts == 1, "the collision must be reported")
+  assert(tostring(conflicts[1].detail):find("Foo_alt1", 1, true),
+         "conflict should name the clash: " .. tostring(conflicts[1].detail))
+  assert(skipped == 0 and nameless == 0,
+         "a refusal is neither a skip nor a nameless row")
+end)
+
+test("PlanNamesFromSheet still mints normally when nothing collides", function()
+  local known = { Foo = true, Bar = true }
+  local edits, _, _, conflicts = vo.PlanNamesFromSheet({
+    alt_row("select", "Foo", 1), alt_row("keep", "Foo", 1),
+  }, { pattern = "_alt{n}", start = 1, digits = 1, known_bases = known })
+  assert(#edits == 2 and edits[1].name == "Foo" and edits[2].name == "Foo_alt1",
+         "got " .. tostring(edits[1] and edits[1].name) .. ", "
+         .. tostring(edits[2] and edits[2].name))
+  assert(conflicts and #conflicts == 0, "no collision, no conflict")
 end)
 
 test("a ticked row the sheet has no name for is reported, not crashed on", function()
@@ -6856,13 +6909,33 @@ test("a heard-but-unmarked line counts as missing, not as delivered", function()
 end)
 
 test("the summary counts the user's marks", function()
+  -- user_status "verified" is the retired Lock box (SPEC-the-marks.md, "Vet
+  -- is unused") -- Flagged is still read straight off user_status, but
+  -- Verified is not: see the Vet-stamp tests below.
   local n = vo.SummarizeOverview({
     { status = "recorded", asset = "a", user_status = "verified" },
     { status = "recorded", asset = "b", user_status = "flagged" },
     { status = "recorded", asset = "c" },
   })
-  assert(n.verified == 1 and n.flagged == 1, "Marks counted independently of status")
+  assert(n.verified == 0, "Lock alone must not count as Verified")
+  assert(n.flagged == 1, "Marks counted independently of status")
   assert(n.total == 3, "Total counts every row")
+end)
+
+test("Verified counts the Vet stamp -- the machine's or the human's -- not Lock",
+  function()
+  -- The bug this replaces: n.verified read user_status == "verified" (the
+  -- LOCK box) and so promised "the machine's stamp or yours" (Vet or OK)
+  -- while reading a box neither writes -- permanently zero on a session
+  -- that never ticks Lock. Mirrors vo.LineStage/vo.TodoBuild's own read of
+  -- the stamp.
+  local n = vo.SummarizeOverview({
+    { status = "recorded", asset = "a", vetted_state = "ok" },       -- machine
+    { status = "recorded", asset = "b", confirmed_state = "ok" },    -- human OK
+    { status = "recorded", asset = "c", user_status = "verified" },  -- Lock only
+    { status = "recorded", asset = "d" },
+  })
+  assert(n.verified == 2, "the Vet and OK stamps count, got " .. n.verified)
 end)
 
 test("dismissed audio leaves the orphan count", function()

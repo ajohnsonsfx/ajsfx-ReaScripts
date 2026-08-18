@@ -162,6 +162,426 @@ test("blank bindings never clash", function()
     "two disabled bindings reported as clashing")
 end)
 
+print("\nContested selects:")
+
+test("contested_select ranks above out_of_sync, below suspect_select", function()
+  local f = vo.InboxBuild({
+    parity_queue = { { item = "i1" } },
+    contested    = { { key = "s1", label = "line_a", count = 2, claimants = {} } },
+    suspects     = { { track = "Selects", row = {} } },
+    selects_track = "Selects",
+  })
+  assert(f[1].kind == "suspect_select", "1st: " .. f[1].kind)
+  assert(f[2].kind == "contested_select", "2nd: " .. f[2].kind)
+  assert(f[3].kind == "out_of_sync", "3rd: " .. f[3].kind)
+  assert(f[2].payload.label == "line_a", "payload is the conflict entry")
+end)
+
+print("\nCausal suppression:")
+
+test("contested line swallows its track-placement out_of_sync", function()
+  local row = { script_row = "s1", asset = "line_a" }
+  local f, c = vo.InboxBuild({
+    contested = { { key = "s1", label = "line_a", count = 2, claimants = {} } },
+    disagree  = { { row = row, detail = "on the Selects track but not ticked Sel" },
+                  { row = row, detail = "something else entirely" } },
+  })
+  local kinds = {}
+  for _, x in ipairs(f) do kinds[#kinds + 1] = x.kind .. ":" .. tostring((x.payload or {}).detail) end
+  assert(c.total == 2, "contested + surviving oos; got " .. c.total
+         .. " [" .. table.concat(kinds, ", ") .. "]")
+  assert(c.by_kind.out_of_sync == 1, "non-placement out_of_sync survives")
+end)
+
+test("uncontested line keeps its track-placement finding", function()
+  local f, c = vo.InboxBuild({
+    disagree = { { row = { script_row = "s2" },
+                   detail = "ticked Sel but the item is not on the Selects track" } },
+  })
+  assert(c.by_kind.out_of_sync == 1)
+end)
+
+test("no_audio swallows thin and no_words on the same row; name_mismatch survives", function()
+  local row = { script_row = "s3", asset = "line_c" }
+  local f, c = vo.InboxBuild({
+    no_audio = { { row = row, why = "unbacked" } },
+    suspects = { { row = row, triggers = { thin = true, no_words = true, name_mismatch = true } },
+                 { row = { script_row = "s4" }, triggers = { thin = true } } },
+  })
+  assert(c.by_kind.no_audio == 1)
+  assert(c.by_kind.suspect == 2, "s3 suspect survives (name_mismatch), s4 untouched")
+  for _, x in ipairs(f) do
+    if x.kind == "suspect" and x.payload.row == row then
+      assert(not x.payload.triggers.thin and not x.payload.triggers.no_words,
+             "thin/no_words gone")
+      assert(x.payload.triggers.name_mismatch, "name_mismatch kept")
+    end
+  end
+end)
+
+test("no_audio swallows a suspect whose only triggers were thin/no_words", function()
+  local row = { script_row = "s5" }
+  local f, c = vo.InboxBuild({
+    no_audio = { { row = row } },
+    suspects = { { row = row, triggers = { thin = true } } },
+  })
+  assert(c.by_kind.suspect == nil, "nothing left to say")
+  assert(c.total == 1, "just the no_audio")
+end)
+
+test("suppression copies, never mutates, the caller's suspect entry", function()
+  local row = { script_row = "s6" }
+  local s = { row = row, triggers = { thin = true, name_mismatch = true } }
+  vo.InboxBuild({ no_audio = { { row = row } }, suspects = { s } })
+  assert(s.triggers.thin == true, "the caller's table was mutated")
+end)
+
+print("\nRescanChanged:")
+
+-- One source, one word, so JudgeLine has something to disagree with.
+local function scan_rows()
+  return {
+    { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+      source_path = "a.wav", source_start = 0, source_stop = 1,
+      take_name = "line_a", marker_id = "m1" },
+    { script_row = "s2", asset = "line_b", take_index = 1, item = "i2",
+      source_path = "a.wav", source_start = 1, source_stop = 2,
+      take_name = "line_b", marker_id = "m2" },
+  }
+end
+local SCAN_TX = { { path = "a.wav", words = {
+  { text = "hello", t0 = 0, t1 = 0.5 }, { text = "world", t0 = 1, t1 = 1.5 } } } }
+local SCAN_LINES = { { asset = "line_a", text = "hello" },
+                     { asset = "line_b", text = "world" } }
+
+test("never scanned stays never scanned -- no verdict is invented", function()
+  local f, m = vo.RescanChanged(nil, nil, scan_rows(), SCAN_TX, SCAN_LINES, {})
+  assert(f == nil and m == nil)
+end)
+
+test("an empty prev map is a full scan, and the map covers every row", function()
+  local rows = scan_rows()
+  local _, m = vo.RescanChanged({}, {}, rows, SCAN_TX, SCAN_LINES, {})
+  assert(m["s1#1"] and m["s2#1"], "both rows fingerprinted")
+end)
+
+test("a rebuild that changed nothing keeps every verdict, re-pointed", function()
+  local rows = scan_rows()
+  local f1, m1 = vo.RescanChanged({}, {}, rows, SCAN_TX, SCAN_LINES, {})
+  -- Rebuild: fresh row tables, identical content.
+  local rows2 = scan_rows()
+  local f2, m2 = vo.RescanChanged(m1, f1, rows2, SCAN_TX, SCAN_LINES, {})
+  assert(#f2 == #f1, "kept " .. #f2 .. " of " .. #f1)
+  for _, f in ipairs(f2) do
+    local same = false
+    for _, r2 in ipairs(rows2) do if f.row == r2 then same = true end end
+    assert(same, "a carried finding still points at the OLD row table")
+  end
+end)
+
+test("a Sel tick changes no verdict -- it is not something the hunt reads", function()
+  local rows = scan_rows()
+  local f1, m1 = vo.RescanChanged({}, {}, rows, SCAN_TX, SCAN_LINES, {})
+  local rows2 = scan_rows()
+  rows2[1].user_select = true
+  rows2[1].user_keep = true
+  local _, m2 = vo.RescanChanged(m1, f1, rows2, SCAN_TX, SCAN_LINES, {})
+  assert(m2["s1#1"] == m1["s1#1"], "the fingerprint moved on a Sel tick")
+end)
+
+test("a trim re-judges that row alone", function()
+  local rows = scan_rows()
+  local f1, m1 = vo.RescanChanged({}, {}, rows, SCAN_TX, SCAN_LINES, {})
+  local rows2 = scan_rows()
+  rows2[1].source_stop = 0.2            -- trimmed: a different stretch of audio
+  local _, m2 = vo.RescanChanged(m1, f1, rows2, SCAN_TX, SCAN_LINES, {})
+  assert(m2["s1#1"] ~= m1["s1#1"], "trimming must move the fingerprint")
+  assert(m2["s2#1"] == m1["s2#1"], "the untouched row must not move")
+end)
+
+test("a row that vanished takes its finding with it", function()
+  local rows = scan_rows()
+  local f1, m1 = vo.RescanChanged({}, {}, rows, SCAN_TX, SCAN_LINES, {})
+  local rows2 = { scan_rows()[1] }
+  local f2, m2 = vo.RescanChanged(m1, f1, rows2, SCAN_TX, SCAN_LINES, {})
+  assert(m2["s2#1"] == nil, "the gone row is out of the map")
+  for _, f in ipairs(f2) do
+    assert(vo.SuspectIdentity(f.row) ~= "s2#1", "a finding outlived its row")
+  end
+end)
+
+test("orphans are never fingerprinted -- their keys collide and are not judged", function()
+  local rows = { { asset = "junk", status = "orphan", take_index = 1 } }
+  local _, m = vo.RescanChanged({}, {}, rows, SCAN_TX, SCAN_LINES, {})
+  assert(next(m) == nil, "an orphan entered the scan map")
+end)
+
+print("\nLineStage / ErrorHome:")
+
+test("the ladder in order", function()
+  assert(vo.LineStage({ has_takes = false }) == "not_found")
+  assert(vo.LineStage({ has_takes = true, any_item = false }) == "not_found",
+         "takes whose audio left the project are Not Found")
+  assert(vo.LineStage({ has_takes = true, any_item = true,
+                        any_uncut = true }) == "needs_edit")
+  assert(vo.LineStage({ has_takes = true, any_item = true }) == "needs_select")
+  assert(vo.LineStage({ has_takes = true, any_item = true,
+                        picked = true, unheard = true }) == "unverified")
+  assert(vo.LineStage({ has_takes = true, any_item = true, picked = true,
+                        unheard = false }) == "done")
+end)
+
+test("the ladder reads persistent state only -- never whether a scanner ran", function()
+  -- The scan flag lives in session memory and is cleared by every Rebuild,
+  -- so a rung that depended on it jammed EVERY line at rung 1 the moment
+  -- you ticked a box. Nothing about a scanner may move a line's stage.
+  local off = vo.LineStage({ has_takes = true, any_item = true, scanned = false, unheard = true })
+  local on  = vo.LineStage({ has_takes = true, any_item = true, scanned = true, unheard = true })
+  assert(off == on and off == "needs_select", "got " .. off .. " / " .. on)
+  for _, id in ipairs(vo.TODO_STAGES) do
+    assert(id ~= "not_scanned", "not_scanned is not a stage any more")
+  end
+end)
+
+test("error homes match the AJ-approved mapping", function()
+  assert(vo.ErrorHome({ kind = "no_audio", payload = {} }) == "not_found")
+  assert(vo.ErrorHome({ kind = "out_of_sync",
+                        payload = { divergence = { fields = {} } } }) == "needs_edit")
+  assert(vo.ErrorHome({ kind = "out_of_sync", payload = { row = {} } }) == "needs_select",
+         "marks vs track is a select question")
+  assert(vo.ErrorHome({ kind = "contested_select", payload = {} }) == "needs_select")
+  assert(vo.ErrorHome({ kind = "suspect",
+                        payload = { triggers = { name_mismatch = true } } }) == "unverified")
+  assert(vo.ErrorHome({ kind = "suspect",
+                        payload = { triggers = { unmarked = true, stamp = true } } }) == "needs_edit",
+         "earliest home among a suspect's triggers wins")
+  assert(vo.ErrorHome({ kind = "suspect_select",
+                        payload = { triggers = { stamp = true } } }) == "unverified")
+  assert(vo.ErrorHome({ kind = "undecided", payload = {} }) == nil,
+         "undecided is a stage, not an error")
+  assert(vo.ErrorHome({ kind = "unheard", payload = {} }) == nil)
+end)
+
+
+test("OK on the delivered take clears Unverified -- it is YOUR ears", function()
+  -- The Lock box writes user_status='verified'; the OK box writes
+  -- confirmed_state='ok'. Reading only the first counted LOCKS and left a
+  -- whole session of hand-OK'd lines reading Unverified (AJ, live).
+  assert(vo.LineStage({ has_takes = true, any_item = true,
+                        picked = true, unheard = false }) == "done")
+end)
+
+test("the machine's Vet counts as well as yours", function()
+  local g = { has_takes = true, any_item = true, picked = true }
+  assert(vo.LineStage(g) == "done")
+end)
+
+test("a Lock alone settles the pick but never the verdict", function()
+  -- Locked, nothing picked: past Needs select (the Decided meter agrees),
+  -- but locking is not listening, so it stops at Unverified.
+  assert(vo.LineStage({ has_takes = true, any_item = true,
+                        locked = true, unheard = true }) == "unverified")
+end)
+
+test("picked but nobody has confirmed it is Unverified", function()
+  assert(vo.LineStage({ has_takes = true, any_item = true,
+                        picked = true, unheard = true }) == "unverified")
+end)
+print("\nTodoBuild:")
+
+local function tb(src) return vo.TodoBuild(src) end
+
+test("three findings across two takes of one line collapse to one entry", function()
+  local r1 = { script_row = "s1", asset = "line_a", deliver = "line_a",
+               take_index = 1, item = "i1" }
+  local r2 = { script_row = "s1", asset = "line_a", deliver = "line_a",
+               take_index = 2, item = "i2" }
+  local findings = vo.InboxBuild({
+    disagree = { { row = r1, detail = "something" },
+                 { row = r2, detail = "something else" } },
+    suspects = { { row = r2, triggers = { name_mismatch = true } } },
+  })
+  local todo, counts = tb({ findings = findings, rows = { r1, r2 }, scanned = true })
+  assert(counts.lines == 1, "one LINE, got " .. counts.lines)
+  assert(counts.total == 1)
+  assert(#todo.lines[1].errors == 3, "all three findings ride the entry, got "
+         .. #todo.lines[1].errors)
+end)
+
+test("errors pull the stage back to their home, never forward", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+               user_select = true, confirmed_state = "ok" }
+  local findings = vo.InboxBuild({
+    contested = { { key = "s1", label = "line_a", count = 2, claimants = { r1 } } },
+  })
+  local todo = tb({ findings = findings, rows = { r1 }, scanned = true })
+  local e = todo.lines[1]
+  assert(e.stage == "needs_select", "verified line dropped back: " .. tostring(e.stage))
+  assert(e.conflict == true)
+  assert(e.stage_label == "Needs select")
+end)
+
+test("a clean unfinished line is stage-only work, no errors", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1" }
+  local todo, counts = tb({ findings = {}, rows = { r1 }, scanned = true })
+  local e = todo.lines[1]
+  assert(e.stage == "needs_select" and e.conflict == false and #e.errors == 0)
+  assert(counts.total == 1)
+end)
+
+test("a done line is absent", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+               user_select = true, confirmed_state = "ok" }
+  local todo, counts = tb({ findings = {}, rows = { r1 }, scanned = true })
+  assert(counts.total == 0, "got " .. counts.total)
+  assert(todo.by_key["s1"] == nil)
+end)
+
+test("a scanner that has not run changes no line's stage", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1" }
+  local r2 = { script_row = "s2", asset = "line_b", status = "missing" }
+  local todo = tb({ findings = {}, rows = { r1, r2 }, scanned = false })
+  assert(todo.by_key["s1"].stage == "needs_select",
+         "got " .. tostring(todo.by_key["s1"].stage))
+  assert(todo.by_key["s2"].stage == "not_found")
+end)
+
+test("uncut items put the line at Needs edit", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "rec" }
+  local todo = tb({ findings = {}, rows = { r1 }, scanned = true,
+                    uncut = { rec = true } })
+  assert(todo.by_key["s1"].stage == "needs_edit")
+end)
+
+test("item-only findings resolve to their line through row_of_item", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1" }
+  local findings = vo.InboxBuild({
+    parity_queue = { { item = "i1", divergence = { fields = { "name" } } } },
+  })
+  local todo, counts = tb({ findings = findings, rows = { r1 }, scanned = true,
+                            row_of_item = { i1 = r1 } })
+  assert(counts.lines == 1, "merged into the line, not a stray; got " .. counts.lines)
+  assert(#todo.lines[1].errors == 1)
+end)
+
+test("line-less findings land on the session list", function()
+  local findings = vo.InboxBuild({
+    unheard = { { source_path = "a.wav", start = 1, stop = 2 } },
+  })
+  local todo, counts = tb({ findings = findings, rows = {}, scanned = true })
+  assert(counts.session == 1 and counts.lines == 0 and counts.total == 1)
+  assert(todo.session[1].kind == "unheard")
+end)
+
+test("orphan rows are not lines", function()
+  local r1 = { asset = "junk", status = "orphan", take_index = 1, item = "i1" }
+  local todo, counts = tb({ findings = {}, rows = { r1 }, scanned = true })
+  assert(counts.total == 0)
+end)
+
+
+test("a picked take with OK ticked leaves the Todo entirely", function()
+  -- AJ's live report: every line read Unverified although he had ticked OK
+  -- on each one. The gather was reading the LOCK box, not the OK box.
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+               user_select = true, confirmed_state = "ok" }
+  local todo, counts = tb({ findings = {}, rows = { r1 } })
+  assert(counts.total == 0, "still on the list: "
+         .. tostring(todo.by_key["s1"] and todo.by_key["s1"].stage))
+end)
+
+test("the machine's Vet stamp clears it too", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+               user_select = true, vetted_state = "ok" }
+  local _, counts = tb({ findings = {}, rows = { r1 } })
+  assert(counts.total == 0)
+end)
+
+test("an un-OK.d take holds the line open, ship it or not", function()
+  -- AJ: "if I listen to a line and it is NOT a read, I am going to untrack
+  -- it -- so an empty OK box means I am not done." Every take still tracked
+  -- is one he means to hear, so OK on the select alone does not finish the
+  -- line while an alt sits unheard.
+  local sel = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+                user_select = true, confirmed_state = "ok" }
+  local alt = { script_row = "s1", asset = "line_a", take_index = 2, item = "i2" }
+  local todo = tb({ findings = {}, rows = { sel, alt } })
+  assert(todo.by_key["s1"].stage == "unverified",
+         "got " .. tostring(todo.by_key["s1"] and todo.by_key["s1"].stage))
+end)
+
+test("every tracked take OK.d finishes the line", function()
+  local sel = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+                user_select = true, confirmed_state = "ok" }
+  local alt = { script_row = "s1", asset = "line_a", take_index = 2, item = "i2",
+                vetted_state = "ok" }
+  local _, counts = tb({ findings = {}, rows = { sel, alt } })
+  assert(counts.total == 0, "got " .. counts.total)
+end)
+
+test("a take with no item cannot be listened to and holds nothing open", function()
+  local sel = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+                user_select = true, confirmed_state = "ok" }
+  local gone = { script_row = "s1", asset = "line_a", take_index = 2 }
+  local _, counts = tb({ findings = {}, rows = { sel, gone } })
+  assert(counts.total == 0, "got " .. counts.total)
+end)
+
+test("a Lock settles the pick but leaves the line Unverified", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+               user_status = "verified" }
+  local todo = tb({ findings = {}, rows = { r1 } })
+  assert(todo.by_key["s1"].stage == "unverified",
+         "got " .. tostring(todo.by_key["s1"].stage))
+end)
+
+test("an ignored line is not work, whatever stage it would be at", function()
+  local r1 = { script_row = "s1", asset = "line_a", status = "missing",
+               line_ignored = true }
+  local r2 = { script_row = "s2", asset = "line_b", status = "missing" }
+  local todo, counts = tb({ findings = {}, rows = { r1, r2 } })
+  assert(counts.total == 1, "got " .. counts.total)
+  assert(todo.by_key["s1"] == nil, "the ignored line is still on the list")
+  assert(todo.by_key["s2"].stage == "not_found")
+end)
+
+test("an ignored line's errors go with it", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+               line_ignored = true }
+  local findings = vo.InboxBuild({
+    disagree = { { row = r1, detail = "something" } },
+  })
+  local todo, counts = tb({ findings = findings, rows = { r1 } })
+  assert(counts.total == 0, "got " .. counts.total)
+  assert(#todo.session == 0, "a dismissed line's finding leaked to the session")
+end)
+
+test("ignoring one take's row ignores the whole LINE", function()
+  -- The mark is on the line, so it reaches every take of it -- including
+  -- takes whose own row was never touched.
+  local a = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+              line_ignored = true }
+  local b = { script_row = "s1", asset = "line_a", take_index = 2, item = "i2" }
+  local _, counts = tb({ findings = {}, rows = { a, b } })
+  assert(counts.total == 0, "got " .. counts.total)
+end)
+
+test("an orphan.s finding is not this session.s work at all", function()
+  -- A take whose line is not on this sheet at all (another character's, in
+  -- AJ's case) has an orphan row. The gather skips orphans, but the error
+  -- attach did not, so a parity finding on one invented a line entry called
+  -- "(unnamed)" and the Todo would not go below 1.
+  local orph = { asset = nil, status = "orphan", item = "i9" }
+  local findings = vo.InboxBuild({
+    parity_queue = { { item = "i9", divergence = { fields = { "name" } } } },
+  })
+  local todo, counts = tb({ findings = findings, rows = { orph },
+                            row_of_item = { i9 = orph } })
+  assert(counts.lines == 0, "made a line out of an orphan: "
+         .. tostring(todo.lines[1] and todo.lines[1].label))
+  assert(counts.total == 0,
+         "an orphan finding was counted; the Todo could never reach zero")
+end)
 --------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

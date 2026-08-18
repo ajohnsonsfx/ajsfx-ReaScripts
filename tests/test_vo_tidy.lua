@@ -62,6 +62,45 @@ test("rows with no script_row group by asset", function()
   assert(#c == 1 and c[1].key == "asset:line_a", "key: " .. tostring(c[1] and c[1].key))
 end)
 
+test("one ticked + one parked on Selects = contested (the originating bug)", function()
+  local rows = {
+    { script_row = "s1", asset = "line_a", deliver = "line_a",
+      user_select = true, track_name = "Alts" },
+    { script_row = "s1", asset = "line_a", deliver = "line_a",
+      track_name = "Selects" },
+  }
+  local c = vo.SelectConflicts(rows)
+  assert(#c == 1, "expected 1 conflict, got " .. #c)
+  assert(c[1].count == 2, "count: " .. tostring(c[1].count))
+  assert(#c[1].claimants == 2, "claimants ride the entry")
+end)
+
+test("one ticked + one on Alts = not contested", function()
+  local rows = {
+    { script_row = "s1", asset = "line_a", user_select = true, track_name = "Selects" },
+    { script_row = "s1", asset = "line_a", track_name = "Alts" },
+  }
+  assert(#vo.SelectConflicts(rows) == 0)
+end)
+
+test("custom Selects track name honoured through cfg", function()
+  local rows = {
+    { script_row = "s1", asset = "line_a", track_name = "MyPicks" },
+    { script_row = "s1", asset = "line_a", track_name = "MyPicks" },
+  }
+  assert(#vo.SelectConflicts(rows) == 0, "default cfg: MyPicks is not Selects")
+  local c = vo.SelectConflicts(rows, { track_selects = "MyPicks" })
+  assert(#c == 1, "cfg names the track: contested")
+end)
+
+test("missing rows never claim", function()
+  local rows = {
+    { script_row = "s1", asset = "line_a", user_select = true, track_name = "Selects" },
+    { script_row = "s1", asset = "line_a", status = "missing", track_name = "Selects" },
+  }
+  assert(#vo.SelectConflicts(rows) == 0)
+end)
+
 print("\nResolveScope:")
 
 -- Three takes of one recording, before Cut: every row's item is the SAME

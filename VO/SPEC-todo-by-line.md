@@ -41,18 +41,65 @@ that line, drawn under the card's existing content.
 place in the pipeline -- and may additionally carry errors. The stage names
 (AJ's list):
 
-    1. "Not Scanned"   -- the scanners that would judge this line have not run
-    2. "Not Found"     -- nothing plays this line: never matched, or the
+    1. "Not Found"     -- nothing plays this line: never matched, or the
                           audio left the project (tooltip says which)
-    3. "Needs edit"    -- takes still sitting uncut on the recording track
-    4. "Needs select"  -- takes exist, none is the pick
-    5. "Unverified"    -- delivered but no ears/stamp on it
-    6. "Done"          -- stage ladder cleared AND no errors; the line
+    2. "Needs edit"    -- takes still sitting uncut on the recording track
+    3. "Needs select"  -- takes exist, none is the pick
+    4. "Unverified"    -- some tracked take of it has not been heard:
+                          it carries neither an OK of yours (confirmed_state)
+                          nor a Vet stamp of the machine.s. EVERY tracked
+                          take, not only the one that ships -- AJ: "if I
+                          listen to a line and it is NOT a read, I am going
+                          to untrack it, so an empty OK box means I am not
+                          done". A take dropped to Outs was still listened
+                          to; a take with no item cannot be heard and holds
+                          nothing open.
+                          The retired Lock box was never a verdict -- it
+                          settled which take, not whether the read is right,
+                          and reading it here left a session of hand-OK.d
+                          lines all saying Unverified (AJ, live).
+                          Its one button is Verify, and the empty OK box
+                          of the take that ships wears an amber ring: the
+                          rung must never name a problem and no remedy,
+                          nor make you hunt for where to click
+    5. "Done"          -- stage ladder cleared AND no errors; the line
                           leaves the Todo filter
 
 Only the earliest unmet stage shows -- a line that is Not Found has nothing
 to edit. This is the strip's stage remainder logic (`Strip.RowPasses`
 order), reused.
+
+**EVERY RUNG READS PERSISTENT PROJECT STATE.** AJ's list opened with a "Not
+Scanned" rung, meaning the suspects scan had not run. It was implemented,
+shipped to a live session, and removed the same day: `state.suspects` is
+cleared by `Rebuild` (`ajsfx_VO_Overview.lua:864`) on EVERY project change,
+so the flag meant "nobody pressed Scan since your last edit" -- and being
+rung 1, it swallowed every line the moment a checkbox was ticked. A real
+58-line session showed 58 lines reading Not Scanned and not one showing the
+stage it was actually at; the whole ladder was inert.
+
+The law it leaves behind: **a stage may only read state that survives a
+restart** (takes, items, uncut markers, picks, stamps). A scanner that has
+not run is a fact about the SESSION -- the Session card says so, and carries
+the button that fixes it -- never a fact about a line. A scan's findings
+still arrive as ERRORS once it has run.
+
+**Ignore: the decision that ends a line.** Some lines are CORRECT with
+nothing delivered -- cut from the script, read by another performer,
+delivered from elsewhere. No amount of work resolves them, so without a
+way to dismiss one the list can never reach empty, and an empty list is
+the whole promise (AJ). An ignored line builds no stage and no errors:
+`vo.TodoBuild` drops it before the gather, so nothing about it can be
+counted or drawn.
+
+Stored keyed by the LINE (`Ignore,script,asset,nth,1` in the sidecar,
+beside the line edits and names), never as a take mark: takes come and go,
+and the reason a line is dismissed has nothing to do with any one of them.
+One press covers every take and survives a restart. Nothing is renamed,
+moved or deleted -- the card stays, showing `Ignored` and a **Restore**
+button, because a dismissed line must never be a dead end. Restoring brings
+the line and its findings straight back, since nothing was stored while it
+was gone. Seam: `ignore <needle>` / `unignore <needle>`.
 
 **Errors re-open their home stage.** Every error kind names the stage whose
 work fixes it, and a line's displayed stage is the EARLIEST of its ladder
@@ -73,14 +120,15 @@ The mapping (AJ-approved 2026-08-17):
 Done requires both the ladder cleared and zero errors.
 
 **Edit-boundary refresh (the anti-jank law).** Mid-gesture transients must
-never draw, and a real mistake must show the instant it lands -- so there
-is NO settle timer (a first draft had one; AJ: 3s is long enough to make an
-actual mistake and lose the context). Instead:
+never draw, and a real mistake must show as soon as the tool notices it -- so
+there is NO settle timer OF ITS OWN (a first draft had one; AJ: 3s is long
+enough to make an actual mistake and lose the context). Instead:
 
     The Todo recomputes ONLY on a `GetProjectStateChangeCount` tick, and
-    shows whatever is true at that instant. Instantly, both directions.
+    shows whatever is true as of the rebuild that tick triggers.
 
-This is airtight because of two invariants, not a heuristic:
+This is airtight against MID-GESTURE flashes because of two invariants, not
+a heuristic:
 
 1. REAPER bumps the change count when an edit LANDS -- mouse release,
    action completion -- never mid-gesture. Half a drag is invisible to the
@@ -89,9 +137,20 @@ This is airtight because of two invariants, not a heuristic:
    multi-step fix -- SetSelect demoting the sibling, Pull moving items --
    is one tick, one rebuild; the Todo never sees intermediate steps.
 
+It is not instant, though: the tick only schedules a rebuild, and rebuilds
+ride the window's existing `RELOAD_THROTTLE` (1.5s, `ajsfx_VO_Overview.lua`)
+that already governed every other automatic rescan -- a drag gesture moves
+the change counter every frame, and rebuilding on each one would force a
+matching pass and a project-file read that often. So a mistake can take up
+to ~1.5s to surface, never longer, and never a flash of something that was
+never true. "No settle timer" means no CORRECTNESS-bearing timer was added
+on top of that -- nothing here waits to see if you meant it, the way the
+retired 3s draft did.
+
 Drop take B on Selects while A still holds the pick: `Needs select ·
-Conflict` appears on that release -- the moment it might be an actual
-mistake. Drag one off: it clears on that release. Nothing to tune.
+Conflict` appears within one throttle window of that release -- the moment
+it might be an actual mistake. Drag one off: it clears the same way.
+Nothing to tune.
 
 LAW FOR FUTURE VERBS: any new operation that mutates in more than one step
 MUST be transaction-wrapped, or its intermediate states become visible
@@ -170,10 +229,9 @@ contested and never counted.
 - Findings with no line -- **unheard sound** spans -- live on one pinned
   **Session** card at the top of the sheet, along with the batch verbs.
   Jump-only rows; each counts toward N.
-- The old "scan not run" status rows dissolve into the per-line **Not
-  Scanned** stage: while a scanner has not run this session, every line it
-  would judge sits at Not Scanned. Honest and impossible to miss -- a stale
-  scanner can never read as a clean sheet.
+- The "scan not run" rows stay SESSION-level, on that card, each with the
+  Scan button that clears it. They are the honest answer to "is this sheet
+  judged yet" without pretending to be a property of any line (Req-1).
 
 ## Req-6: keyboard walk
 
@@ -214,8 +272,8 @@ panels became the rail in beta33):
 - undecided suppresses nothing
 - line-less findings (unheard) group under the session key
 - stage entry: a line reports only its earliest unmet stage
-- scanner not run -> lines it would judge sit at Not Scanned; running it
-  moves them to their real stage
+- a scanner that has not run changes no line's stage, and `not_scanned` is
+  not in `vo.TODO_STAGES`
 - home stages: an error pulls the displayed stage back to its home when the
   home is earlier than the ladder rung; never forward
 - Done requires ladder cleared and zero errors

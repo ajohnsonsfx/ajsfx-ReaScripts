@@ -142,6 +142,37 @@ test("no marks is no destination -- the caller hands it back to the parent", fun
   assert(vo.TrackForMarks(nil) == nil)
 end)
 
+
+test("an explicit no to Keep is Outs, not nowhere", function()
+  -- AJ: unticking Keep is a DECISION now that Outs exists -- the take is
+  -- rejected, not merely un-filed. A STORED false is what says so; a stored
+  -- nil is a take nobody has ruled on and still goes back to its parent.
+  assert(vo.TrackForMarks({ select = false, keep = false },
+                          { keep = false }) == "outs")
+  assert(vo.TrackForMarks({ select = false, keep = false },
+                          { keep = nil }) == nil,
+         "never-decided must not be filed as rejected")
+  assert(vo.TrackForMarks({ select = false, keep = false }) == nil,
+         "no stored marks at all is still no decision")
+end)
+
+test("a live tick always beats a stored rejection", function()
+  -- Ticking Keep again while a stale false is still stored must read as
+  -- Alts, or the box and the track would say different things.
+  assert(vo.TrackForMarks({ select = false, keep = true },
+                          { keep = false }) == "alts")
+  assert(vo.TrackForMarks({ select = true, keep = false },
+                          { keep = false }) == "selects")
+end)
+
+test("Outs round-trips with MarkFromTrack", function()
+  -- The two directions have to agree or an item sorted onto Outs would read
+  -- back as something else on the next rebuild.
+  local cat = vo.TrackForMarks({ select = false, keep = false }, { keep = false })
+  assert(cat == "outs")
+  assert(vo.MarkFromTrack("Outs", {}) == "out")
+end)
+
 test("it round-trips with MarkFromTrack", function()
   -- The two directions have to agree, or an auto-sorted item would read back
   -- off its new track as a different mark on the very next rebuild.
@@ -274,6 +305,45 @@ test("an item on Selects whose row says an explicit no is a disagreement", funct
   assert(#plan.disagree == 1, "disagree: " .. #plan.disagree)
 end)
 
+
+test("a Sel take on Selects is not nagged about Keep", function()
+  -- Sel AUTO-TICKS Keep (SetSelect: "Sel is the NARROWER of the two"), and
+  -- Pull's own law reads "Selects is Keep and Sel". Judging Keep against the
+  -- Alts track anyway flagged every properly-made select as "ticked Keep but
+  -- the item is not on the Alts track" -- AJ, live: a finished line reading
+  -- "Needs select - Conflict" while its select sat right there.
+  local plan = vo.PlanReconcile({
+    { item_guid = "g1", track_name = "Selects",
+      user_select = true, user_keep = true },
+  }, {})
+  assert(#plan.disagree == 0,
+         "flagged: " .. tostring((plan.disagree[1] or {}).detail))
+end)
+
+test("a Sel take on Selects with no Keep is equally fine", function()
+  local plan = vo.PlanReconcile({
+    { item_guid = "g1", track_name = "Selects",
+      user_select = true, user_keep = false },
+  }, {})
+  assert(#plan.disagree == 0,
+         "flagged: " .. tostring((plan.disagree[1] or {}).detail))
+end)
+
+test("Keep is still judged everywhere the track does not say Selects", function()
+  local plan = vo.PlanReconcile({
+    { item_guid = "g1", track_name = "Alts", user_select = false,
+      user_keep = false },
+  }, {})
+  assert(#plan.disagree == 1, "an Alts take not ticked Keep must still speak")
+end)
+
+test("a take ticked Sel off the Selects track still speaks", function()
+  local plan = vo.PlanReconcile({
+    { item_guid = "g1", track_name = "Review", user_select = true },
+  }, {})
+  assert(#plan.disagree == 1)
+end)
+
 test("a row with no item is not a disagreement", function()
   -- Nothing to disagree WITH. This is the orphan_marks case at most.
   local plan = vo.PlanReconcile({
@@ -312,6 +382,52 @@ test("an unmarked row with no item is not damage", function()
   assert(#plan.orphan_marks == 0, "an unrecorded line was reported as damage")
 end)
 
+
+print("\nConfirmedFingerprint:")
+
+local BASE = { source_path = "C:/Au/a.wav", take_name = "line_a",
+               start_offs = 1.0, length = 2.0, playrate = 1.0,
+               mk_pos = 1.0, mk_len = 2.0, words = {} }
+local function with(t)
+  local c = {}
+  for k, v in pairs(BASE) do c[k] = v end
+  for k, v in pairs(t) do c[k] = v end
+  return c
+end
+
+test("trimming a take does not withdraw its OK", function()
+  -- AJ: "we shouldn't automatically uncheck OK when I change item length."
+  local stamp = vo.ConfirmedFingerprint(BASE)
+  assert(vo.ConfirmedMatches(stamp, with{ length = 5.0, start_offs = 0.4 }),
+         "a trim cleared the mark")
+  assert(vo.ConfirmedMatches(stamp, with{ mk_pos = 9.0, mk_len = 0.2 }),
+         "moving the marker cleared the mark")
+end)
+
+test("renaming a take DOES withdraw it -- the name is the assignment", function()
+  local stamp = vo.ConfirmedFingerprint(BASE)
+  assert(not vo.ConfirmedMatches(stamp, with{ take_name = "line_b" }))
+end)
+
+test("different audio withdraws it", function()
+  local stamp = vo.ConfirmedFingerprint(BASE)
+  assert(not vo.ConfirmedMatches(stamp, with{ source_path = "C:/Au/b.wav" }))
+end)
+
+test("an OK stamped in the old Vet format still counts", function()
+  -- Nobody's session may empty itself the day this ships.
+  local old = vo.VettedFingerprint(BASE)
+  assert(vo.ConfirmedMatches(old, BASE), "an untouched old stamp was dropped")
+  assert(vo.ConfirmedMatches(old, with{ length = 7.0 }),
+         "an old stamp should survive a trim too, now that OK means identity")
+  assert(not vo.ConfirmedMatches(old, with{ take_name = "line_b" }),
+         "an old stamp must still fall to a rename")
+end)
+
+test("Vet keeps the strict fingerprint -- its verdict IS about the window", function()
+  local a = vo.VettedFingerprint(BASE)
+  assert(a ~= vo.VettedFingerprint(with{ length = 5.0 }))
+end)
 --------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
