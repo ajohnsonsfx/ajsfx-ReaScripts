@@ -8939,6 +8939,186 @@ local function GoldenPath()
     { text = "Whole pass timing: " .. table.concat(marks, ", ") }
 end
 
+
+-- THE NAMING PANEL: everything about what a take is called, in one place.
+-- It was scattered across three -- the suffix in the Pull panel under "Name
+-- alts", a collision check in Settings, the fix buttons in the verb bar --
+-- and AJ, hunting for the setting that had just cost him a session, said
+-- "this is all confusing to navigate."
+--
+-- Hung on the RoleNames table rather than made a new file local: this chunk
+-- is at Lua's 200-local ceiling and one more would be a load-time error for
+-- the whole script.
+function RoleNames.DrawPanel()
+  im.Separator(ctx)
+  local cfg = vo.LoadConfig()
+
+  im.TextWrapped(ctx,
+    "A take is matched to its script line BY NAME, so these are not " ..
+    "cosmetic. The take you deliver wears the line's plain name; every " ..
+    "other take of it wears a suffix.")
+  im.Spacing(ctx)
+
+  -- The suffixes -------------------------------------------------------
+  im.SetNextItemWidth(ctx, 140)
+  local pchanged, npat = im.InputText(ctx, "Alt suffix##npalt",
+                                      cfg.alt_append_pattern or "_alt{n}")
+  if pchanged then cfg.alt_append_pattern = npat; vo.SaveConfig(cfg) end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Worn by every take you are keeping beside the\n" ..
+                       "delivery. {n} is where the number goes.")
+  end
+  im.SameLine(ctx)
+  im.SetNextItemWidth(ctx, 70)
+  local schanged, nstart = im.InputInt(ctx, "start##npstart",
+                                       math.floor(cfg.alt_append_start or 1))
+  if schanged then cfg.alt_append_start = math.max(0, nstart); vo.SaveConfig(cfg) end
+  im.SameLine(ctx)
+  im.SetNextItemWidth(ctx, 70)
+  local dchanged, ndig = im.InputInt(ctx, "digits##npdig",
+                                     math.floor(cfg.alt_append_digits or 1))
+  if dchanged then
+    cfg.alt_append_digits = math.max(1, math.min(4, ndig)); vo.SaveConfig(cfg)
+  end
+
+  -- Outs get their own suffix, or share the alts'. Off by default: the
+  -- namespace is only safe once every reader knows it (see vo.PlanRoleNames).
+  local split_on = (cfg.out_append_pattern or "") ~= ""
+  local ohit, owant = im.Checkbox(ctx, "Number Outs separately", split_on)
+  if ohit then
+    cfg.out_append_pattern = owant and "_out{n}" or ""
+    vo.SaveConfig(cfg)
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx,
+      "Takes you have dropped to Outs get their own suffix and their own\n" ..
+      "numbers, so they stop eating the numbers of the takes you ship.\n\n" ..
+      "Off: outs are numbered among the alts, as they always were.")
+  end
+  if split_on then
+    im.SameLine(ctx)
+    im.SetNextItemWidth(ctx, 140)
+    local ochanged, opat = im.InputText(ctx, "Out suffix##npout",
+                                        cfg.out_append_pattern or "_out{n}")
+    if ochanged then cfg.out_append_pattern = opat; vo.SaveConfig(cfg) end
+  end
+
+  -- What it produces, and whether it is safe ---------------------------
+  local sample = (state.visible[1] and state.visible[1].asset) or "line_042"
+  local preview = {}
+  for i = 0, 2 do
+    preview[#preview + 1] = sample .. vo.FormatAltAppend(
+      cfg.alt_append_pattern or "_alt{n}",
+      math.floor(cfg.alt_append_start or 1) + i,
+      math.floor(cfg.alt_append_digits or 1))
+  end
+  im.TextDisabled(ctx, "Alts:  " .. table.concat(preview, ", "))
+  if split_on then
+    local op = {}
+    for i = 0, 1 do
+      op[#op + 1] = sample .. vo.FormatAltAppend(
+        cfg.out_append_pattern or "_out{n}",
+        math.floor(cfg.alt_append_start or 1) + i,
+        math.floor(cfg.alt_append_digits or 1))
+    end
+    im.TextDisabled(ctx, "Outs:  " .. table.concat(op, ", "))
+  end
+
+  -- THE TRAP CHECK. A suffix that can spell one of this project's own line
+  -- names is not a preference -- a take handed such a name is READ as
+  -- belonging to that other line. It cost a finished session its line
+  -- assignments before anything in the window said so.
+  local seen, clashes, shown = {}, 0, nil
+  for _, l in ipairs(state.lines or {}) do
+    local b = vo.SanitizeName(l.deliver or l.asset or "")
+    if b ~= "" then seen[vo.NormalizeItemName(b)] = b end
+  end
+  local pats = { cfg.alt_append_pattern or "_alt{n}" }
+  if split_on then pats[#pats + 1] = cfg.out_append_pattern end
+  for _, l in ipairs(state.lines or {}) do
+    local b = vo.SanitizeName(l.deliver or l.asset or "")
+    if b ~= "" then
+      for i = 0, 3 do
+        for _, pat in ipairs(pats) do
+          local want = vo.SanitizeName(b .. vo.FormatAltAppend(pat,
+            math.floor(cfg.alt_append_start or 1) + i,
+            math.floor(cfg.alt_append_digits or 1)))
+          local onto = seen[vo.NormalizeItemName(want)]
+          if onto and onto ~= b then
+            clashes = clashes + 1
+            shown = shown or (want .. "   is the line   " .. onto)
+          end
+        end
+      end
+    end
+  end
+  im.Spacing(ctx)
+  if clashes > 0 then
+    im.TextColored(ctx, 0xDD6666FF, string.format(
+      "This suffix can spell %d of your own script line name(s).", clashes))
+    im.TextDisabled(ctx, "  " .. tostring(shown))
+    im.TextWrapped(ctx,
+      "A take named that way would be read as that line. Renaming those " ..
+      "lines is refused while it collides -- pick a suffix your script " ..
+      "does not use, such as _take{n}.")
+  else
+    im.TextColored(ctx, 0x66BB66FF,
+      "No script line can be spelled by these suffixes.")
+  end
+  im.Spacing(ctx)
+  im.Separator(ctx)
+
+  -- The verbs ----------------------------------------------------------
+  im.Text(ctx, "Fix:")
+  im.SameLine(ctx)
+  if im.Button(ctx, "Fix names##npfix") then
+    pending_action = RoleNames.FixNames
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx,
+      "Every name follows its track, numbers compacted from 1, and\n" ..
+      "residue names cleared. Acts on the LINES of whatever is selected;\n" ..
+      "select nothing and it does the session.\n\n" ..
+      "Renames only -- nothing moves, nothing is cut.")
+  end
+  im.SameLine(ctx)
+  if im.Button(ctx, "Names follow tracks##npfollow") then
+    pending_action = function() RoleNames.Apply(false) end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "The gentler half: put each take in the right\n" ..
+                       "namespace, but leave the numbers it already holds.")
+  end
+  im.SameLine(ctx)
+  if im.Button(ctx, "Clear residue names##npres") then
+    pending_action = function()
+      local cleared
+      core.Transaction("VO Overview: clear residue names", function()
+        cleared = select(1, Trim.sweep_residue_names())
+      end)
+      state.residue_seen = nil
+      Reload()
+      state.message, state.message_kind = string.format(
+        "Cleared the take name from %d clip(s) with no take marker.",
+        cleared or 0), "ok"
+    end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Clips carrying a name but no take marker are not\n" ..
+                       "takes. Taking the name off stops them claiming a\n" ..
+                       "line and reserving its numbers.")
+  end
+
+  local fhit, fwant = im.Checkbox(ctx, "Names follow tracks as I drag",
+                                  cfg.names_follow_tracks ~= false)
+  if fhit then cfg.names_follow_tracks = fwant; vo.SaveConfig(cfg) end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Drag a take onto Selects and it takes the line's\n" ..
+                       "plain name on the spot. Needs \"In sync\".")
+  end
+  im.Spacing(ctx)
+end
+
 local function DrawPullPanel()
   im.Separator(ctx)
   im.TextWrapped(ctx,
@@ -8950,41 +9130,15 @@ local function DrawPullPanel()
     "an item whose name is not on the script is left alone.")
   im.Spacing(ctx)
 
-  -- Alt naming ----------------------------------------------------------
-  local cfg = vo.LoadConfig()
-  im.Text(ctx, "Name alts:")
+  -- Alt naming moved out. It was a naming convention living under a move
+  -- verb, which is exactly why it could not be found when it mattered --
+  -- see the Naming tab, which now holds the suffixes, the preview, the
+  -- collision check and the fix buttons together.
+  im.TextDisabled(ctx, "Take names live in the Naming tab.")
   im.SameLine(ctx)
-  im.SetNextItemWidth(ctx, 110)
-  local changed, pattern = im.InputText(ctx, "pattern##altpat", cfg.alt_append_pattern or "_alt{n}")
-  if changed then cfg.alt_append_pattern = pattern; vo.SaveConfig(cfg) end
-  if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "{n} is where the number goes. With no {n} it goes on the end.")
+  if im.SmallButton(ctx, "Open Naming##pullnaming") then
+    state.panel = "naming"
   end
-  im.SameLine(ctx)
-  im.SetNextItemWidth(ctx, 70)
-  local schanged, start = im.InputInt(ctx, "start##altstart", math.floor(cfg.alt_append_start or 1))
-  if schanged then cfg.alt_append_start = math.max(0, start); vo.SaveConfig(cfg) end
-  im.SameLine(ctx)
-  im.SetNextItemWidth(ctx, 70)
-  local dchanged, digits = im.InputInt(ctx, "digits##altdig", math.floor(cfg.alt_append_digits or 1))
-  if dchanged then cfg.alt_append_digits = math.max(1, math.min(4, digits)); vo.SaveConfig(cfg) end
-  im.SameLine(ctx)
-  if im.Button(ctx, "Name them##altapply") then pending_action = ApplyAltNames end
-  if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, "Fills the Append of every alt that has none.\n" ..
-                       "An Append you typed is never overwritten.")
-  end
-
-  -- Preview against a real line, so the convention is checked before it lands.
-  local sample = (state.visible[1] and state.visible[1].asset) or "line_042"
-  local preview = {}
-  for i = 0, 2 do
-    preview[#preview + 1] = sample ..
-      vo.FormatAltAppend(cfg.alt_append_pattern or "_alt{n}",
-                         math.floor(cfg.alt_append_start or 1) + i,
-                         math.floor(cfg.alt_append_digits or 1))
-  end
-  im.TextDisabled(ctx, "  " .. table.concat(preview, ", "))
   im.Spacing(ctx)
 
   -- Auto-sort ------------------------------------------------------------
@@ -11053,6 +11207,21 @@ function Strip.Draw()
   -- -- the rail is already open, permanently.
   im.SameLine(ctx)
   im.TextDisabled(ctx, "\226\148\130")
+  -- NAMING is a tab, not a setting: what a take is called decides which
+  -- line it belongs to, so it earns a place beside Settings rather than
+  -- inside it (AJ: "can you just make a Naming tab at the top").
+  im.SameLine(ctx)
+  local nm_on = (state.panel == "naming")
+  if nm_on then
+    im.PushStyleColor(ctx, im.Col_Button, 0x3E6FA3FF)
+  end
+  if im.Button(ctx, "Naming") then
+    state.panel = nm_on and nil or "naming"
+  end
+  if nm_on then im.PopStyleColor(ctx) end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "How takes are named, and the buttons that fix them.")
+  end
   im.SameLine(ctx)
   if im.Button(ctx, "Settings") then state.settings_open = true end
   -- The parity watcher's one switch: a global, so it rides the toolbar
@@ -13669,63 +13838,6 @@ local function DrawSettingsWindow()
   -- End is called only when Begin returned visible, matching the main window's
   -- loop. That is ReaImGui's contract, and it differs from upstream Dear ImGui.
   if visible then
-    -- TAKE NAMES. These lived in the Pull panel under "Name alts" -- a naming
-    -- convention filed under a move verb, which is why AJ could not find them
-    -- when he needed them ("as a user it's really not clear where I can do
-    -- that"). Naming belongs where you look for conventions.
-    im.Separator(ctx)
-    im.Text(ctx, "Take names")
-    local ncfg = vo.LoadConfig()
-    im.SetNextItemWidth(ctx, 140)
-    local pchanged, npat = im.InputText(ctx, "Alt suffix##setaltpat",
-                                        ncfg.alt_append_pattern or "_alt{n}")
-    if pchanged then ncfg.alt_append_pattern = npat; vo.SaveConfig(ncfg) end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx,
-        "What every take of a line wears except the one you deliver.\n" ..
-        "{n} is where the number goes.\n\n" ..
-        "It must not be able to spell one of YOUR script line names: a\n" ..
-        "take is matched to its line by name, so _alt1 on a script that\n" ..
-        "also has a line ending _Alt1 makes the two the same thing.")
-    end
-
-    -- THE CHECK, where the setting is. A pattern that can spell a script
-    -- line is not a preference, it is a trap -- one cost a finished session
-    -- its line assignments, and nothing in the window had said so.
-    local clashes, shown = 0, nil
-    local seen = {}
-    for _, l in ipairs(state.lines or {}) do
-      local b = vo.SanitizeName(l.deliver or l.asset or "")
-      if b ~= "" then seen[vo.NormalizeItemName(b)] = b end
-    end
-    for _, l in ipairs(state.lines or {}) do
-      local b = vo.SanitizeName(l.deliver or l.asset or "")
-      if b ~= "" then
-        for i = 0, 3 do
-          local want = vo.SanitizeName(b .. vo.FormatAltAppend(
-            ncfg.alt_append_pattern or "_alt{n}",
-            math.floor(ncfg.alt_append_start or 1) + i,
-            math.floor(ncfg.alt_append_digits or 1)))
-          local onto = seen[vo.NormalizeItemName(want)]
-          if onto and onto ~= b then
-            clashes = clashes + 1
-            shown = shown or (want .. "  =  " .. onto)
-          end
-        end
-      end
-    end
-    if clashes > 0 then
-      im.TextColored(ctx, 0xDD6666FF, string.format(
-        "This suffix can spell %d of your script line name(s).", clashes))
-      im.TextDisabled(ctx, "  " .. tostring(shown))
-      im.TextDisabled(ctx,
-        "  Takes named that way would be read as that line. Renaming is\n" ..
-        "  refused while they collide -- pick a suffix your script does\n" ..
-        "  not use, such as _take{n}.")
-    else
-      im.TextDisabled(ctx, "No script line can be spelled by this suffix.")
-    end
-    im.Spacing(ctx)
 
     local changed, on = im.Checkbox(ctx, "Restore view settings", state.view.restore)
     if changed then SetRestore(on) end
@@ -13819,6 +13931,10 @@ local function RunRemoteCommand(command)
 
   if verb == "status" then
     return RemoteStatus()
+  elseif verb == "panel" then
+    -- Open a panel headless: "panel naming", "panel pull", "panel clear".
+    state.panel = (rest ~= "" and rest ~= "clear") and rest or nil
+    return "panel=" .. tostring(state.panel)
   elseif verb == "stage" then
     -- Test seam for the pipeline strip: "stage sources" shows a stage's
     -- view exactly as a click on its meter would; "stage clear" clears.
@@ -15003,7 +15119,8 @@ local function loop()
     if     state.panel == "script" then DrawScriptPanel()
     elseif state.panel == "pull"   then DrawPullPanel()
     elseif state.panel == "sort"   then DrawLayoutBar()
-    elseif state.panel == "subs"   then Line.DrawSubs() end
+    elseif state.panel == "subs"   then Line.DrawSubs()
+    elseif state.panel == "naming" then RoleNames.DrawPanel() end
 
     local bad = BadScriptCount()
     if bad > 0 then
