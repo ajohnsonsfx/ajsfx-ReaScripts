@@ -6819,8 +6819,17 @@ vo.WordsWithin = words_within
 -- bug that let a misnamed take pass as clear (commit 32c68c6).
 function vo.NamedAssetOf(take_name, fallback_asset, lines, cfg)
   if not take_name or take_name == "" then return fallback_asset end
-  local base = vo.StripAltSuffix(take_name, (cfg or {}).alt_append_pattern)
-               or take_name
+  -- The base comes from the LINE NAMES, not from the suffix setting alone.
+  -- Judged by pattern, a take wearing a suffix an older setting wrote (or an
+  -- out suffix) claimed no line at all, so this judge fell back to the raw
+  -- name and every one of them was reported as a NAME MISMATCH -- takes that
+  -- were named perfectly correctly (AJ, live).
+  local known = {}
+  for _, l in ipairs(lines or {}) do
+    local b = vo.SanitizeName(l.deliver or l.asset or "")
+    if b ~= "" then known[b] = true end
+  end
+  local base = vo.BaseOfTakeName(take_name, known, cfg or {})
   local at = vo.ResolveItemName(vo.BuildNameIndex(lines or {}), base)
   return at and ((lines or {})[at] or {}).asset or base
 end

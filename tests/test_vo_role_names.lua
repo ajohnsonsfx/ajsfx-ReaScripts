@@ -503,5 +503,42 @@ test("no line list means no guessing", function()
   assert(vo.BaseOfTakeName("Foo_alt3", nil, CFG) == "Foo")
 end)
 
+
+print("\nNamedAssetOf survives a suffix change:")
+
+local NA_LINES = {
+  { asset = "line_a", deliver = "line_a" },
+  { asset = "line_b", deliver = "line_b" },
+}
+
+test("the configured suffix resolves", function()
+  local cfg = { alt_append_pattern = "_alt{n}" }
+  assert(vo.NamedAssetOf("line_a_alt3", "line_b", NA_LINES, cfg) == "line_a")
+end)
+
+test("a suffix an OLDER setting wrote still resolves", function()
+  -- AJ changed the alt suffix while takes were still named _alt5. Judged by
+  -- pattern alone they claimed no line, so the judge fell back to the raw
+  -- name and reported a name mismatch on takes that were named correctly.
+  local cfg = { alt_append_pattern = "_alt_take{n}" }
+  assert(vo.NamedAssetOf("line_a_alt5", "line_b", NA_LINES, cfg) == "line_a",
+         "got " .. tostring(vo.NamedAssetOf("line_a_alt5", "line_b", NA_LINES, cfg)))
+end)
+
+test("an out name resolves to its line", function()
+  local cfg = { alt_append_pattern = "_alt{n}", out_append_pattern = "_out{n}" }
+  assert(vo.NamedAssetOf("line_a_out2", "line_b", NA_LINES, cfg) == "line_a",
+         "got " .. tostring(vo.NamedAssetOf("line_a_out2", "line_b", NA_LINES, cfg)))
+end)
+
+test("a name claiming no line is still its own answer", function()
+  local cfg = { alt_append_pattern = "_alt{n}" }
+  assert(vo.NamedAssetOf("stray_thing", "line_b", NA_LINES, cfg) == "stray_thing")
+end)
+
+test("no name at all falls back to the marker's line", function()
+  assert(vo.NamedAssetOf("", "line_b", NA_LINES, {}) == "line_b")
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

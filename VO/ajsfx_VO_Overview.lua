@@ -2070,6 +2070,20 @@ end
 
 -- Whether anything is selected at all, either way. The one question the
 -- toolbar asks before enabling a verb that touches items.
+-- Every delivered line name, as vo.BaseOfTakeName wants them. Cached on
+-- the loaded line list: it is rebuilt whenever the scripts are, and the
+-- alternative is five copies of this loop at five call sites.
+function Trim.LineBases()
+  if Trim._bases_for == state.lines and Trim._bases then return Trim._bases end
+  local set = {}
+  for _, l in ipairs(state.lines or {}) do
+    local b = vo.SanitizeName(l.deliver or l.asset or "")
+    if b ~= "" then set[b] = true end
+  end
+  Trim._bases_for, Trim._bases = state.lines, set
+  return set
+end
+
 function Trim.has_selection()
   if next(SelectedItemSet()) ~= nil then return true end
   return next(state.selection or {}) ~= nil
@@ -2411,9 +2425,7 @@ function Trim.clear_residue_names(regions, dry, bases)
           local in_scope = true
           if bases then
             local cfg2 = vo.LoadConfig()
-            local b = vo.StripAltSuffix(nm, cfg2.alt_append_pattern)
-                      or vo.StripAltSuffix(nm, cfg2.out_append_pattern or "_out{n}")
-                      or nm
+            local b = vo.BaseOfTakeName(nm, Trim.LineBases(), cfg2)
             in_scope = bases[b] == true
           end
           if nm and nm ~= "" and in_scope and not Trim.has_marker(item) then
@@ -3633,7 +3645,7 @@ local function MakeSelect(row)
       local _, nm2 = r.GetSetMediaItemTakeInfo_String(tk2, "P_NAME", "", false)
       if nm2 == base then
         old_sel = other
-      elseif vo.StripAltSuffix(nm2, cfg.alt_append_pattern) == base then
+      elseif vo.BaseOfTakeName(nm2, Trim.LineBases(), cfg) == base then
         local n2 = tonumber(nm2:match("(%d+)%s*$") or "")
         if n2 then used[n2] = true end
       end
@@ -3714,7 +3726,7 @@ local function PlaceSelectedItems()
       local tk = item and r.GetActiveTake(item)
       if tk then
         local _, nm = r.GetSetMediaItemTakeInfo_String(tk, "P_NAME", "", false)
-        local stem = vo.StripAltSuffix(nm, cfg.alt_append_pattern)
+        local stem = vo.BaseOfTakeName(nm, Trim.LineBases(), cfg)
         local at, why = vo.ResolveItemName(index, stem or nm)
         if at then
           local dest = stem and t_alt or t_sel
@@ -5139,7 +5151,7 @@ function DND.UsedAltNumbers(line, cfg)
       -- handed out (see DND.NextAltName), and an asset ending in digits --
       -- line_042 -- would otherwise have its own number read off as an alt.
       if nm ~= base
-         and vo.StripAltSuffix(nm, cfg.alt_append_pattern) == base then
+         and vo.BaseOfTakeName(nm, Trim.LineBases(), cfg) == base then
         local n = tonumber(nm:match("(%d+)%s*$") or "")
         if n then used[n] = true end
       end
@@ -10286,7 +10298,7 @@ function Inbox.Parts(f)
         _, nm = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
       end
       out.group = (nm ~= "")
-        and (vo.StripAltSuffix(nm, vo.LoadConfig().alt_append_pattern) or nm)
+        and vo.BaseOfTakeName(nm, Trim.LineBases(), vo.LoadConfig())
         or "(unnamed item)"
     else
       out.group = "(item gone)"
@@ -14595,7 +14607,7 @@ local function RunRemoteCommand(command)
         if tk then
           local _, nm = r.GetSetMediaItemTakeInfo_String(tk, "P_NAME", "", false)
           if nm ~= "" and not nm:find("%.wav$") then
-            local base = vo.StripAltSuffix(nm, cfg2.alt_append_pattern) or nm
+            local base = vo.BaseOfTakeName(nm, Trim.LineBases(), cfg2)
             local at = vo.ResolveItemName(index, base)
             local line = at and (state.lines or {})[at]
             if line and line.text and line.text ~= "" then
