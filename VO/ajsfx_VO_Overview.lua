@@ -4797,11 +4797,18 @@ local function AutoSelectTakes(rows, rule)
     vo.SaveConfig(cfg)
   end
 
-  -- A locked line has been settled by hand; a bulk action does not get to
-  -- overrule that.
+  -- A line SETTLED BY HAND is not a bulk action.s to overrule -- and OK
+  -- settles it just as Lock does. "I listened, this is a take, it is the
+  -- right line" has to mean the tool stops moving it, or the confirmation
+  -- buys silence and not safety: AJ ticks OK and never touches Lock, so
+  -- every take he had checked by ear was still fair game for a bulk pick
+  -- (SPEC-the-marks.md).
   local locked_line = {}
   for _, row in ipairs(state.overview) do
-    if row.user_status == "verified" and row.asset then locked_line[row.asset] = true end
+    if row.asset and (row.user_status == "verified"
+                      or row.confirmed_state == "ok") then
+      locked_line[row.asset] = true
+    end
   end
 
   local want = (state.auto_select_take == "first") and 1 or nil
@@ -5169,7 +5176,8 @@ function DND.MoveTo(rows, line)
   core.Transaction("VO Overview: move take to line", function()
     for _, row in ipairs(rows) do
       local item = LiveItemFor(row)
-      if row.user_status == "verified" then
+      if row.user_status == "verified" or row.confirmed_state == "ok" then
+        -- Settled by hand, by Lock or by OK alike (SPEC-the-marks.md).
         locked = locked + 1
       elseif not item then
         stranded = stranded + 1
@@ -9051,13 +9059,26 @@ function Verify.Confirm(rows)
           mk_pos      = mk_pos, mk_len = mk_len,
           words       = words_by_path[row.source_path],
         })
+        -- OK PINS THE MATCH, exactly as Lock does. Rematching is steered
+        -- by state.pins and by nothing else, so without this an OK bought
+        -- silence from the scanner and no safety at all: AJ confirms takes
+        -- by ear and never touches Lock, and every one of them was still
+        -- fair game for the next Match run (SPEC-the-marks.md).
+        local _, at = LockOnRow(row)
+        if row.asset and row.asset ~= "" and row.source_path
+           and row.source_start and row.source_stop then
+          local pin = { asset = row.asset, source = row.source_path,
+                        start = row.source_start, stop = row.source_stop }
+          if at then state.pins[at] = pin
+          else state.pins[#state.pins + 1] = pin end
+        end
         n = n + 1
       end
     end
   end
   if n > 0 then
     state.message, state.message_kind = string.format(
-      "OK'd %d take(s) -- the words stay as heard; any edit withdraws " ..
+      "OK.d %d take(s) -- the words stay as heard; any edit withdraws " ..
       "the mark.", n), "ok"
     state.dirty = true
   end
@@ -9072,6 +9093,10 @@ function Verify.Unconfirm(rows)
     if row.item and r.ValidatePtr(row.item, "MediaItem*")
        and vo.ReadConfirmed(row.item) then
       vo.WriteConfirmed(row.item, "")
+      -- The pin goes with it: withdrawing the OK hands the take back to
+      -- the matcher, or a mark you took off would still be steering it.
+      local _, at = LockOnRow(row)
+      if at then table.remove(state.pins, at) end
       n = n + 1
     end
   end
@@ -12051,10 +12076,11 @@ end
 -- zone is used by band and take rows alike, which is what keeps the two
 -- levels correlated without a table's grid.
 local function CardZones(w)
-  -- marks holds FIVE boxes at 34px pitch (Lock/Keep/Sel/Vet/OK, last at
-  -- marks+136): text must clear 78+136+box before it starts. 220 was the
-  -- four-box value and the OK box drew under the transcript, exactly as
-  -- 186 once made the Vetted box do.
+  -- marks holds FOUR boxes at 34px pitch (Keep/Sel/Vet/OK, last at
+  -- marks+102). Text must clear the last box before it starts; the slack
+  -- left by the retired Lock box is deliberately NOT reclaimed here --
+  -- 254 is measured against the transcript column, and a box drawing under
+  -- the words is the failure this number exists to prevent (it did, twice).
   local z = { lead = 0, marks = 78, text = 254 }
   -- Two zones carry the whole card now, and both are things the user acts on:
   -- the text being read, and the name it will be exported under. What went:
@@ -12233,16 +12259,15 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
     -- freely: the take Sel leaves behind becomes an alt on its own, with
     -- nothing to re-tick. Labelled "Alt", the two would read as switches you
     -- had to keep in sync, and changing your mind would look like two edits.
+    -- THE LOCK BOX IS GONE. It said "rematching leaves this take alone",
+    -- which is now what OK says: confirming a read pins it (Verify.Confirm),
+    -- so the box was a second way to state something the user had already
+    -- stated -- and AJ never ticked it, which meant nothing he had checked
+    -- by ear was actually protected. The PIN survives, reachable where it
+    -- is still needed: right-click "Lock to time selection", for forcing a
+    -- match the matcher got wrong, which is the one thing OK cannot say
+    -- (SPEC-the-marks.md).
     im.SetCursorScreenPos(ctx, rx + z.marks, ry)
-    local checked = row.user_status == "verified"
-    local lhit, lnow = im.Checkbox(ctx, "##lock", checked)
-    if lhit then pending_action = function() SetLock(row, lnow) end end
-    if im.IsItemHovered(ctx) then
-      im.SetTooltip(ctx, checked and "Locked here. Rematching will not move it."
-                                  or "Lock: rematching leaves this take where it is.")
-    end
-    im.SameLine(ctx)
-    im.SetCursorScreenPos(ctx, rx + z.marks + 34, ry)
     -- `or user_select`, so a row marked Sel before Sel auto-ticked Keep still
     -- READS the way it routes. Pull has always sent a Sel to Selects whatever
     -- Keep said, so showing Keep empty on those rows would be the display
@@ -12267,7 +12292,7 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
                          "you never have to re-tick anything.")
     end
     im.SameLine(ctx)
-    im.SetCursorScreenPos(ctx, rx + z.marks + 68, ry)
+    im.SetCursorScreenPos(ctx, rx + z.marks + 34, ry)
     local hit, now = im.Checkbox(ctx, "##sel", row.user_select == true)
 
     -- TWO SELECTS ON ONE LINE, ringed where the argument actually is.
@@ -12291,10 +12316,10 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
       -- GetItemRectMin/Max: those two are not used anywhere else in this file,
       -- and an ImGui field the binding does not have is not nil here -- the
       -- shim RAISES on it, which kills the defer loop and takes the window with
-      -- it. The cursor was placed at (rx + z.marks + 68, ry) a line above, so
+      -- it. The cursor was placed at (rx + z.marks + 34, ry) a line above, so
       -- the position is already known and only the size has to be asked for.
       local bw, bh = im.GetItemRectSize(ctx)
-      local bx, by = rx + z.marks + 68, ry
+      local bx, by = rx + z.marks + 34, ry
       -- Outside the box rather than on its border, so the ring reads as an
       -- annotation on the tick and not as the tick having changed shape.
       im.DrawList_AddRect(im.GetWindowDrawList(ctx),
@@ -12331,7 +12356,7 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
     -- clear of the "heard Nx" note missing rows put at this offset.
     if row.item then
       im.SameLine(ctx)
-      im.SetCursorScreenPos(ctx, rx + z.marks + 102, ry)
+      im.SetCursorScreenPos(ctx, rx + z.marks + 68, ry)
       if Verify.active and Verify.active.uid == row.uid then
         im.BeginDisabled(ctx, true)
         im.Checkbox(ctx, "##vetted", false)
@@ -12374,7 +12399,7 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
       -- like Lock/Keep/Sel: a click sets it, a click clears it. The stamp
       -- is a fingerprint, so any edit to the take withdraws it by itself.
       im.SameLine(ctx)
-      im.SetCursorScreenPos(ctx, rx + z.marks + 136, ry)
+      im.SetCursorScreenPos(ctx, rx + z.marks + 102, ry)
       local okd = row.confirmed_state == "ok"
       local ohit = im.Checkbox(ctx, "##okd", okd)
       if im.IsItemHovered(ctx) then
@@ -12406,7 +12431,7 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
     -- Nothing to click: the verb that acts on it is Identify.
     if row.status == "missing" and (row.heard or 0) > 0 then
       im.SameLine(ctx)
-      im.SetCursorScreenPos(ctx, rx + z.marks + 102, ry)
+      im.SetCursorScreenPos(ctx, rx + z.marks + 68, ry)
       im.TextDisabled(ctx, string.format("heard %dx", row.heard))
       if im.IsItemHovered(ctx) then
         im.SetTooltip(ctx, string.format(
@@ -12878,7 +12903,7 @@ local function DrawTakeHeaderRow(z, rx)
   -- DrawCardTakeRow for why Keep is not called "Alt". Vet is the
   -- machine-owned Vetted box; OK is the human's own verdict, deliberately
   -- a separate box on a separate key.
-  for i, l in ipairs({ "Lock", "Keep", "Sel", "Vet", "OK" }) do
+  for i, l in ipairs({ "Keep", "Sel", "Vet", "OK" }) do
     im.SetCursorScreenPos(ctx, rx + z.marks + (i - 1) * 34 - 2, y)
     im.TextDisabled(ctx, l)
   end
@@ -13863,7 +13888,9 @@ local function RunRemoteCommand(command)
     end
     return table.concat(lines, "\n")
   elseif verb == "lock" then
-    -- SetLock on the first row matching the needle -- the Lock checkbox,
+    -- SetLock on the first row matching the needle. The Lock CHECKBOX is
+    -- retired (OK pins the match now); the pin itself lives on, so the seam
+    -- keeps its way to set one.
     -- headless, for exercising "Lock outranks the machine".
     local needle, flag = rest:match("^(.-)%s+([01])$")
     if not needle then return "lock: usage lock <needle> 0|1" end

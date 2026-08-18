@@ -73,7 +73,28 @@ Therefore, and these are testable requirements:
   Measuring Keep against the Alts track alone reported every properly-made
   select as out of sync (fixed 2026-08-17).
 
-## Lock and Vet are unused
+## OK absorbed Lock (2026-08-17)
+
+AJ: "I feel like OK and Lock have a lot of crossover at this point." They
+did, and the crossover was one-sided. Lock protected a take from being
+CHANGED -- it pinned the match (`state.pins`, which is the only thing
+rematching consults) and made bulk verbs skip the line. OK only bought
+silence from the suspect scanner. So a take confirmed by ear was still fair
+game for the next Match run or bulk pick, which is not what "I listened and
+this is right" can be allowed to mean.
+
+**OK now pins the match and confers the same protection**: `Verify.Confirm`
+writes the pin, `Verify.Unconfirm` removes it, and every place that skipped
+a locked line skips an OK.d one. The Lock CHECKBOX is retired -- four boxes,
+not five. The pin survives where OK cannot reach: right-click **Lock to time
+selection** forces a match the matcher got wrong, which needs no correct take
+to exist and so can never be expressed by confirming one.
+
+Note the asymmetry that remains, and is correct: an OK self-clears on any
+edit to the take, so its protection goes with it. A take you changed is a
+take you have not yet listened to in its new form.
+
+## Vet is unused
 
 AJ uses neither. Two consequences worth stating rather than discovering:
 
