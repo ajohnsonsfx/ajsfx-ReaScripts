@@ -2358,23 +2358,30 @@ function vo.LineKey(row)
   return row.script_row or ("asset:" .. tostring(row.asset))
 end
 
--- Lines carrying more than one Sel. Not an error state to be prevented --
--- track placement legitimately creates it (EffectiveMarks rule 2: two items
--- of a line dragged onto Selects both read as Sel) -- but a decision the
--- user still has to make, so Tidy counts them and the card badges them.
--- Orphans are skipped: they are not lines, and their asset keys collide.
-function vo.SelectConflicts(rows)
+-- Lines with more than one CLAIMANT for the select. A take claims when it is
+-- ticked Sel OR merely parked on the Selects track (EffectiveMarks rule 2
+-- would tick it on the next rebuild anyway) -- counting only the ticks let a
+-- line with one tick and one parked take read as settled when it was not
+-- (SPEC-todo-by-line.md). Not an error state to be prevented -- dragging
+-- legitimately creates it -- but a decision the user still has to make.
+-- Orphans are not lines and missing rows have nothing on any track.
+function vo.SelectConflicts(rows, cfg)
   local by_key, order = {}, {}
   for _, row in ipairs(rows or {}) do
-    if row.user_select and row.status ~= "orphan" then
+    local claims = row.status ~= "orphan" and row.status ~= "missing"
+      and (row.user_select == true
+           or vo.MarkFromTrack(row.track_name, cfg) == "select")
+    if claims then
       local key = vo.LineKey(row)
       local got = by_key[key]
       if not got then
-        got = { key = key, label = row.deliver or row.asset or "(unnamed)", count = 0 }
+        got = { key = key, label = row.deliver or row.asset or "(unnamed)",
+                count = 0, claimants = {} }
         by_key[key] = got
         order[#order + 1] = got
       end
       got.count = got.count + 1
+      got.claimants[#got.claimants + 1] = row
     end
   end
   local out = {}

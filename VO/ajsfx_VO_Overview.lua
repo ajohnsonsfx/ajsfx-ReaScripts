@@ -1142,7 +1142,7 @@ local function Rebuild()
   -- conflicts through user_select, the reconcile plan through track_name.
   -- Computed here rather than per frame: the toolbar shows their counts, and
   -- nothing can change either without coming back through Rebuild.
-  state.conflicts = vo.SelectConflicts(state.overview)
+  state.conflicts = vo.SelectConflicts(state.overview, cfg)
   -- The same finding, keyed for the DRAW: the card loop asks "is this row's
   -- line contested?" once per visible take, and walking the conflict list for
   -- each would be a nested scan on every frame. Built here because nothing can
@@ -8199,7 +8199,7 @@ local function MatchTakes(opts)
     end)
   end
 
-  local conflicts = vo.SelectConflicts(state.overview)
+  local conflicts = vo.SelectConflicts(state.overview, cfg)
 
   -- A clump is not this verb's to fix -- it counts them and points at the
   -- button. Re-cutting from the catch-all would throw markers away on a press
@@ -8218,7 +8218,7 @@ local function MatchTakes(opts)
                                refreshed == 1 and "" or "s") }
   if adopted > 0 then bits[#bits + 1] = adopted .. " mark(s) adopted from the timeline" end
   if #conflicts > 0 then
-    bits[#bits + 1] = #conflicts .. " line(s) with two selects -- pick one"
+    bits[#bits + 1] = #conflicts .. " line(s) with multiple selects -- pick one"
   end
   if clump_note then bits[#bits + 1] = clump_note end
   state.dirty = true
@@ -8286,7 +8286,7 @@ local function MatchTakes(opts)
   if clump_note then parts[#parts + 1] = clump_note .. "." end
   if #conflicts > 0 then
     parts[#parts + 1] = string.format(
-      "%d line(s) carry two selects -- pick one.", #conflicts)
+      "%d line(s) with multiple selects -- pick one.", #conflicts)
   end
 
   state.message = table.concat(parts, " ")
@@ -11852,9 +11852,16 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
     -- count in the summary bar says a conflict exists somewhere, which is no
     -- help when the line has nine takes folded into a card. The ring points at
     -- the two ticks that cannot both be right, so untick one and it goes.
-    local contested = row.user_select == true and row.status ~= "orphan"
+    -- A claimant is ticked OR merely parked on Selects (the widened
+    -- SelectConflicts rule) -- the ring must match what counted, or a parked
+    -- take on a contested line would carry no mark of the contest it is in.
+    -- Cheap check first; LoadConfig only runs on a contested line's rows.
+    local contested = row.status ~= "orphan"
                       and state.conflict_keys
                       and state.conflict_keys[vo.LineKey(row)]
+                      and (row.user_select == true
+                           or vo.MarkFromTrack(row.track_name,
+                                               vo.LoadConfig()) == "select")
     if contested then
       -- The box's rect from its OWN top-left plus its size, rather than from
       -- GetItemRectMin/Max: those two are not used anywhere else in this file,
