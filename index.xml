@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ajsfx-ReaScripts" commit="0a8ea514d521f5945fd0f5a7e9715956600508c0">
+<index version="1" name="ajsfx-ReaScripts" commit="44ec91a7f81c99fe14c4ba4e02cca438c9adaeba">
   <category name="Items">
     <reapack name="ajsfx_GentleNormalizer.lua" type="script" desc="Gentle Normalizer">
       <metadata>
@@ -935,6 +935,16 @@ Row 2 stays view-only: search (first), character, filters, folding, follow. Upda
         <source file="lib/ajsfx_vo_sources_ui.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/b4066056609b1869c699246f71a3218abb7ecee2/VO/lib/ajsfx_vo_sources_ui.lua</source>
         <source file="lib/qwen_transcribe.py">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/b4066056609b1869c699246f71a3218abb7ecee2/VO/lib/qwen_transcribe.py</source>
         <source file="lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/b4066056609b1869c699246f71a3218abb7ecee2/lib/ajsfx_core.lua</source>
+      </version>
+      <version name="0.15.1" author="ajsfx" time="2026-08-18T22:13:50Z">
+        <changelog><![CDATA[Bugfix on 0.15. With a custom scratch folder set in Settings, a failed project lookup used to name that folder after the error message itself -- REAPER got a directory called "unsaved-attempttocallanilvaluefieldEnumProjects" instead of a scratch folder. A lookup that fails now names nothing, and the unsaved-project fallback is a stable name again. No behaviour changes anywhere else in 0.15.]]></changelog>
+        <source main="main">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/f9814bf3d72cdac2bde13b7f0fea4a15f7615452/VO/ajsfx_VO_Overview.lua</source>
+        <source main="main" file="ajsfx_VO_Settings.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/f9814bf3d72cdac2bde13b7f0fea4a15f7615452/VO/ajsfx_VO_Settings.lua</source>
+        <source file="lib/ajsfx_vo.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/f9814bf3d72cdac2bde13b7f0fea4a15f7615452/VO/lib/ajsfx_vo.lua</source>
+        <source file="lib/ajsfx_vo_view.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/f9814bf3d72cdac2bde13b7f0fea4a15f7615452/VO/lib/ajsfx_vo_view.lua</source>
+        <source file="lib/ajsfx_vo_sources_ui.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/f9814bf3d72cdac2bde13b7f0fea4a15f7615452/VO/lib/ajsfx_vo_sources_ui.lua</source>
+        <source file="lib/qwen_transcribe.py">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/f9814bf3d72cdac2bde13b7f0fea4a15f7615452/VO/lib/qwen_transcribe.py</source>
+        <source file="lib/ajsfx_core.lua">https://github.com/ajohnsonsfx/ajsfx-ReaScripts/raw/f9814bf3d72cdac2bde13b7f0fea4a15f7615452/lib/ajsfx_core.lua</source>
       </version>
     </reapack>
   </category>
