@@ -2364,7 +2364,7 @@ end
 -- session kept a 26s clip at position 0 called "..._HungryAlone_Root_alt2" --
 -- a name it had every right to be believed about, since Pull routes by name and
 -- the sheet lists it as a take. Residue outside every region is still residue.
-function Trim.clear_residue_names(regions, dry)
+function Trim.clear_residue_names(regions, dry, bases)
   -- `dry` counts without writing, so a button can say how many clips it
   -- would touch BEFORE it is pressed. One walk, one set of rules: a count
   -- that came from a second implementation could disagree with the sweep,
@@ -2392,7 +2392,18 @@ function Trim.clear_residue_names(regions, dry)
         local take = r.GetActiveTake(item)
         if take and not r.TakeIsMIDI(take) then
           local _, nm = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
-          if nm and nm ~= "" and not Trim.has_marker(item) then
+          -- `bases` narrows the sweep to the lines the user picked, so a
+          -- scoped Fix names cannot quietly strip a name off a line they
+          -- were not looking at.
+          local in_scope = true
+          if bases then
+            local cfg2 = vo.LoadConfig()
+            local b = vo.StripAltSuffix(nm, cfg2.alt_append_pattern)
+                      or vo.StripAltSuffix(nm, cfg2.out_append_pattern or "_out{n}")
+                      or nm
+            in_scope = bases[b] == true
+          end
+          if nm and nm ~= "" and in_scope and not Trim.has_marker(item) then
             if not dry then
               r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", true)
             end
@@ -2428,7 +2439,7 @@ end
 -- ordinary track to anything scanning by role, and Review is full of marked
 -- takes, so it would have been swept as if it were a recording. Every
 -- destination Pull writes to is asked for by name instead.
-function Trim.sweep_residue_names(dry)
+function Trim.sweep_residue_names(dry, bases)
   local cfg, seen, regions = vo.LoadConfig(), {}, {}
   local dest = {}
   for _, k in ipairs({ "track_selects", "track_alts", "track_review", "track_outs" }) do
@@ -2460,7 +2471,7 @@ function Trim.sweep_residue_names(dry)
       end
     end
   end
-  return Trim.clear_residue_names(regions, dry), #regions
+  return Trim.clear_residue_names(regions, dry, bases), #regions
 end
 
 -- Clips whose NAME and whose MARKER name two different lines.
@@ -3725,10 +3736,15 @@ function RoleNames.Plan(opts)
   local cfg = vo.LoadConfig()
   -- Only names a loaded line answers to may be renamed: no lines, no plan,
   -- so a session opened without its script cannot be mass-renamed.
+  --
+  -- `opts.bases`, when given, narrows that to the lines the user actually
+  -- picked. Narrowed by LINE and never by item: alt numbers are counted
+  -- across a whole line, so planning from a handful of its takes would hand
+  -- out numbers already worn by the ones left out.
   local known = nil
   for _, l in ipairs(state.lines or {}) do
     local b = vo.SanitizeName(l.deliver or l.asset or "")
-    if b ~= "" then
+    if b ~= "" and (not (opts and opts.bases) or opts.bases[b]) then
       known = known or {}
       known[b] = true
     end
@@ -3764,6 +3780,7 @@ function RoleNames.Plan(opts)
   end
   return vo.PlanRoleNames(rows, known, cfg, opts)
 end
+
 
 -- `auto` is the watcher calling after a settled edit: most edits are not
 -- drags between role tracks, so an empty plan stays quiet there. Conflicts
@@ -5448,6 +5465,61 @@ local function AffectedRows()
   -- vo.ResolveScope.
   return vo.ResolveScope(state.filtered, state.selection, SelectedItemSet(),
                          state.overview)
+end
+
+-- FIX NAMES: the whole naming story in one press (AJ: "I think I want a
+-- button that is just Fix Names that does everything, to the selected
+-- items"). There were three verbs doing overlapping parts of it -- the
+-- older Auto-name the alts, names-follow-tracks, and Straighten -- and
+-- knowing which one to reach for was itself the problem.
+--
+-- In order, because each depends on the last:
+--   1. every name follows its track: the select plain, alts _altN, outs
+--      _outN, each numbered in its own namespace
+--   2. renumbered compactly from 1, so freeing the out numbers actually
+--      closes the gaps they left in the alts
+--   3. residue -- named clips carrying no take marker -- loses its names,
+--      which is what stops them reserving numbers next time
+--
+-- SCOPED BY LINE, never by item. Alt numbers are counted across a whole
+-- line, so planning from a handful of its takes would hand out numbers the
+-- ones left out are already wearing. Selecting any take of a line fixes
+-- that whole line; selecting nothing fixes the session.
+function RoleNames.FixNames()
+  -- AffectedRows falls back to the WHOLE sheet when nothing is picked, so
+  -- it cannot answer "did the user choose a scope" -- asked directly, it
+  -- reported "58 selected line(s)" for a session with nothing selected at
+  -- all. Trim.has_selection is the same test the verb bar greys buttons by.
+  local bases, n_lines = nil, 0
+  if Trim.has_selection() then
+    for _, row in ipairs(AffectedRows() or {}) do
+      local b = vo.SanitizeName(row.deliver or row.asset or "")
+      if b ~= "" then
+        bases = bases or {}
+        if not bases[b] then n_lines = n_lines + 1 end
+        bases[b] = true
+      end
+    end
+  end
+
+  RoleNames.Apply(false, { renumber = true, bases = bases })
+  local named = state.message or ""
+  local kind  = state.message_kind
+
+  local cleared = 0
+  core.Transaction("VO Overview: clear residue names", function()
+    cleared = select(1, Trim.sweep_residue_names(false, bases))
+  end)
+  state.residue_seen = nil
+  Reload()
+
+  state.message, state.message_kind = string.format("%s%s Scope: %s.",
+    named,
+    (cleared > 0)
+      and string.format(" Cleared %d residue name(s).", cleared)
+      or  "",
+    bases and string.format("%d selected line(s)", n_lines)
+           or "the whole session"), kind or "ok"
 end
 
 -- The items Pull and Sort may act on, in timeline order, each carrying the name
@@ -11190,13 +11262,25 @@ Verbs.DEFS = {
           "kept going until they had it. Locked lines are left alone, and\n" ..
           "any Sel you ticked by hand stands.",
   },
+  -- ONE naming button, not three. "Auto-name the alts" named only the
+  -- keeps, and left the user to know that names-follow-tracks and
+  -- Straighten existed and in what order -- AJ asked for "a button that is
+  -- just Fix Names that does everything", which is the right shape: the
+  -- name of a take is one question, not three.
   name_alts = {
-    label = "Auto-name the alts",
-    fn = function() pending_action = ApplyAltNames end,
-    tip = "Give every take marked Keep its own numbered alt name (the\n" ..
-          "pattern in Settings), so it can ship beside the select. The\n" ..
-          "select keeps the plain name; a take that already has its own\n" ..
-          "name is left alone.",
+    label = "Fix names",
+    fn = function() pending_action = RoleNames.FixNames end,
+    tip = "Make every name say what its take actually is, in one press:\n\n" ..
+          "  the select        the line's plain name\n" ..
+          "  Alts              _alt1, _alt2 ... numbered among the alts\n" ..
+          "  Outs              _out1, _out2 ... numbered among the outs\n" ..
+          "  no take marker    no name at all -- it is not a take\n\n" ..
+          "Numbers are compacted from 1, so gaps left by takes you have\n" ..
+          "dropped to Outs close up.\n\n" ..
+          "Acts on the LINES of whatever is selected: picking any take of\n" ..
+          "a line fixes that whole line, because alt numbers are counted\n" ..
+          "across all of it. Select nothing and it fixes the session.\n\n" ..
+          "Renames only -- nothing moves, nothing is cut.",
   },
   recut = {
     label = "Re-cut selected takes",
@@ -13637,7 +13721,7 @@ end
 local REMOTE_SECTION = "ajsfx_vo_remote"
 local REMOTE_HELP =
   "status | rematch | cut | identify | " ..
-  "sync_markers | build_tracks | pull | name_alts | names_from_tracks | " ..
+  "sync_markers | build_tracks | pull | fix_names | names_from_tracks | " ..
   "straighten_names | clear_residue | speakers [all|<name>,<name>] | " ..
   "sort script|record | " ..
   "dupes | append script|asset|nth|text | " ..
@@ -14039,9 +14123,9 @@ local function RunRemoteCommand(command)
   elseif verb == "pull" then
     Pull()
     return state.pull_result or "pull ran with no result string"
-  elseif verb == "name_alts" then
-    ApplyAltNames()
-    return state.pull_result or state.message or "name_alts ran"
+  elseif verb == "fix_names" or verb == "name_alts" then
+    RoleNames.FixNames()
+    return state.message or "fix_names ran"
   elseif verb == "names_from_tracks" then
     RoleNames.Apply(false)
     return state.message or "names_from_tracks ran"
