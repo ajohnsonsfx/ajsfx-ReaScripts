@@ -566,7 +566,7 @@ test("ignoring one take's row ignores the whole LINE", function()
   assert(counts.total == 0, "got " .. counts.total)
 end)
 
-test("an orphan's finding is session work, never a phantom line", function()
+test("an orphan.s finding is not this session.s work at all", function()
   -- A take whose line is not on this sheet at all (another character's, in
   -- AJ's case) has an orphan row. The gather skips orphans, but the error
   -- attach did not, so a parity finding on one invented a line entry called
@@ -579,7 +579,8 @@ test("an orphan's finding is session work, never a phantom line", function()
                             row_of_item = { i9 = orph } })
   assert(counts.lines == 0, "made a line out of an orphan: "
          .. tostring(todo.lines[1] and todo.lines[1].label))
-  assert(counts.session == 1, "the finding must survive as session work")
+  assert(counts.total == 0,
+         "an orphan finding was counted; the Todo could never reach zero")
 end)
 --------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))

@@ -7218,13 +7218,18 @@ function vo.TodoBuild(src)
     local home = vo.ErrorHome(f)
     if home then
       local p = f.payload or {}
-      local row = p.row or (p.item and row_of_item[p.item]) or nil
-      -- An ORPHAN is not a line -- it is audio the script cannot name, and
-      -- the gather above skips it for exactly that reason. Letting its
-      -- findings through here built a line entry labelled "(unnamed)" that
-      -- no work could ever clear, so the Todo could not reach zero (AJ).
-      -- The finding is real; it belongs to the session, not to a line.
-      if row and row.status == "orphan" then row = nil end
+      local row, orphaned = p.row or (p.item and row_of_item[p.item]) or nil, false
+      -- AN ORPHAN IS NOT THIS SESSION.S WORK. It is audio the script cannot
+      -- name here -- most often another character.s, because narrowing a
+      -- session to its speakers leaves their lines off the sheet -- and the
+      -- gather above skips orphans for exactly that reason.
+      --
+      -- Its findings are dropped rather than counted (AJ). Letting them
+      -- through built a line called "(unnamed)" that no work could clear;
+      -- moving them to the session merely relocated a number the user could
+      -- not act on. The audio is still reported where it belongs: the
+      -- summary.s orphan count and "N name(s) not on the script".
+      if row and row.status == "orphan" then row, orphaned = nil, true end
       local key = (f.kind == "contested_select" and p.key)
                   or (row and vo.LineKey(row)) or nil
       if key and ignored[key] then
@@ -7235,7 +7240,7 @@ function vo.TodoBuild(src)
         g.errors[#g.errors + 1] = f
         local h = vo.StageIndex(home)
         if not g.err_stage or h < g.err_stage then g.err_stage = h end
-      else
+      elseif not orphaned then
         -- An error that resolves to no line at all (item gone, no row):
         -- session-level, still visible, never silently dropped.
         session[#session + 1] = f
