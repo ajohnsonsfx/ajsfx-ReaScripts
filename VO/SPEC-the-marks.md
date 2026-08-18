@@ -28,10 +28,22 @@ OK is the HUMAN's verdict on the READ: it exists, it is a take, and it belongs
 to this line. Vet is the MACHINE's verdict on the same question. They are two
 boxes because they can disagree, and a disagreement is worth seeing.
 
-Stored as a fingerprint of what was witnessed (`vo.CONFIRMED_EXT`,
-`vo.VETTED_EXT`), so any edit to the item, marker, name or words withdraws the
-stamp by itself. Track placement is deliberately NOT in the fingerprint --
-moving a take between role tracks does not un-listen to it.
+Both are stored as a fingerprint of what was witnessed (`vo.CONFIRMED_EXT`,
+`vo.VETTED_EXT`) so they can withdraw themselves -- but they witness DIFFERENT
+things, because they are different claims:
+
+- **Vet** is a verdict about WORDS IN A WINDOW, so every edge is in its
+  fingerprint. Move an edge and the window it judged is gone.
+- **OK** is a verdict about IDENTITY -- "this is a take, and it is this
+  line" -- so only the audio it comes from and the name that assigns it to a
+  line are in its fingerprint (`vo.ConfirmedFingerprint`). Trimming the head
+  off a take does not make it a different read. It used to clear on any trim,
+  which cost more than the mark was worth and silently withdrew marks AJ had
+  already made -- 11 lines of them on one live session.
+
+Track placement is in neither: moving a take between role tracks does not
+un-listen to it, which is what lets a take dropped to Outs keep its OK.
+Stamps written in the older format are still honoured (`vo.ConfirmedMatches`).
 
 **2. Are we shipping it? -- Keep, and Sel**
 

@@ -382,6 +382,52 @@ test("an unmarked row with no item is not damage", function()
   assert(#plan.orphan_marks == 0, "an unrecorded line was reported as damage")
 end)
 
+
+print("\nConfirmedFingerprint:")
+
+local BASE = { source_path = "C:/Au/a.wav", take_name = "line_a",
+               start_offs = 1.0, length = 2.0, playrate = 1.0,
+               mk_pos = 1.0, mk_len = 2.0, words = {} }
+local function with(t)
+  local c = {}
+  for k, v in pairs(BASE) do c[k] = v end
+  for k, v in pairs(t) do c[k] = v end
+  return c
+end
+
+test("trimming a take does not withdraw its OK", function()
+  -- AJ: "we shouldn't automatically uncheck OK when I change item length."
+  local stamp = vo.ConfirmedFingerprint(BASE)
+  assert(vo.ConfirmedMatches(stamp, with{ length = 5.0, start_offs = 0.4 }),
+         "a trim cleared the mark")
+  assert(vo.ConfirmedMatches(stamp, with{ mk_pos = 9.0, mk_len = 0.2 }),
+         "moving the marker cleared the mark")
+end)
+
+test("renaming a take DOES withdraw it -- the name is the assignment", function()
+  local stamp = vo.ConfirmedFingerprint(BASE)
+  assert(not vo.ConfirmedMatches(stamp, with{ take_name = "line_b" }))
+end)
+
+test("different audio withdraws it", function()
+  local stamp = vo.ConfirmedFingerprint(BASE)
+  assert(not vo.ConfirmedMatches(stamp, with{ source_path = "C:/Au/b.wav" }))
+end)
+
+test("an OK stamped in the old Vet format still counts", function()
+  -- Nobody's session may empty itself the day this ships.
+  local old = vo.VettedFingerprint(BASE)
+  assert(vo.ConfirmedMatches(old, BASE), "an untouched old stamp was dropped")
+  assert(vo.ConfirmedMatches(old, with{ length = 7.0 }),
+         "an old stamp should survive a trim too, now that OK means identity")
+  assert(not vo.ConfirmedMatches(old, with{ take_name = "line_b" }),
+         "an old stamp must still fall to a rename")
+end)
+
+test("Vet keeps the strict fingerprint -- its verdict IS about the window", function()
+  local a = vo.VettedFingerprint(BASE)
+  assert(a ~= vo.VettedFingerprint(with{ length = 5.0 }))
+end)
 --------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

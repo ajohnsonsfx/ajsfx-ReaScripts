@@ -7098,6 +7098,38 @@ function vo.TodoBuild(src)
   return { lines = lines, by_key = out_by_key, session = session }, counts
 end
 
+-- WHAT AN OK IS A CLAIM ABOUT. Vet is the MACHINE judging words in a
+-- window, so every edge belongs in its fingerprint: move an edge and the
+-- window it judged is gone. OK is the HUMAN saying "this IS a take, and it
+-- IS this line" -- a claim about IDENTITY. Trimming the head off a take
+-- does not make it a different read, and clearing the mark on every trim
+-- made it cost more than it was worth (AJ: "I have already identified it
+-- as a select -- that is what OK is for now").
+--
+-- So an OK witnesses only what could make this a DIFFERENT take: the audio
+-- it comes from, and the name that assigns it to a line.
+--
+-- Old stamps were written in the Vet format and are still honoured --
+-- vo.ConfirmedMatches pulls the two identity fields out of them -- so a
+-- session full of OKs does not clear itself the day this ships.
+function vo.ConfirmedFingerprint(fp)
+  local path = (fp.source_path or ""):lower():gsub("\\", "/")
+  return table.concat({ "c1", path, fp.take_name or "" }, "|")
+end
+
+function vo.ConfirmedMatches(stamp, fp)
+  if not stamp or stamp == "" then return false end
+  if stamp:sub(1, 3) == "c1|" then
+    return stamp == vo.ConfirmedFingerprint(fp)
+  end
+  -- v1|path|from|length|rate|take_name|mk_pos|mk_len|words
+  local parts = {}
+  for piece in tostring(stamp):gmatch("([^|]*)") do parts[#parts + 1] = piece end
+  if parts[1] ~= "v1" then return false end
+  local path = (fp.source_path or ""):lower():gsub("\\", "/")
+  return parts[2] == path and (parts[6] or "") == (fp.take_name or "")
+end
+
 vo.VETTED_EXT = "P_EXT:ajsfx_vo_vetted"
 
 -- The HUMAN's mark, on its own key: "I checked, this read IS this line."

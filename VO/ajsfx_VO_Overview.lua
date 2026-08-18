@@ -960,9 +960,10 @@ local function Rebuild()
     local vet_stamp = row.item and vo.ReadVetted(row.item)
     local ok_stamp  = row.item and vo.ReadConfirmed(row.item)
     if vet_stamp or ok_stamp then
-      -- One recompute serves both stamps: Vet (the machine's verdict) and
-      -- OK (the human's) are different facts on different keys, but they
-      -- self-clear by the same fingerprint rule.
+      -- One recompute feeds both stamps, but they are judged by DIFFERENT
+      -- rules: Vet is a verdict about words in a window, so any edge
+      -- withdraws it; OK is a verdict about identity, so only the audio and
+      -- the name can (vo.ConfirmedMatches).
       local take = r.GetActiveTake(row.item)
       local now = take and vo.VettedFingerprint{
         source_path = row.source_path,
@@ -977,7 +978,9 @@ local function Rebuild()
         row.vetted_state = (vet_stamp == now) and "ok" or "mismatch"
       end
       if ok_stamp then
-        row.confirmed_state = (ok_stamp == now) and "ok" or "mismatch"
+        row.confirmed_state = vo.ConfirmedMatches(ok_stamp, {
+          source_path = row.source_path, take_name = row.take_name or "",
+        }) and "ok" or "mismatch"
       end
     end
   end
@@ -9050,14 +9053,9 @@ function Verify.Confirm(rows)
         if row.marker_id and row.source_start and row.source_stop then
           mk_pos, mk_len = row.source_start, row.source_stop - row.source_start
         end
-        vo.WriteConfirmed(row.item, vo.VettedFingerprint{
+        vo.WriteConfirmed(row.item, vo.ConfirmedFingerprint{
           source_path = row.source_path,
-          start_offs  = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS"),
-          length      = r.GetMediaItemInfo_Value(row.item, "D_LENGTH"),
-          playrate    = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE"),
           take_name   = row.take_name or "",
-          mk_pos      = mk_pos, mk_len = mk_len,
-          words       = words_by_path[row.source_path],
         })
         -- OK PINS THE MATCH, exactly as Lock does. Rematching is steered
         -- by state.pins and by nothing else, so without this an OK bought
