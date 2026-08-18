@@ -7219,6 +7219,12 @@ function vo.TodoBuild(src)
     if home then
       local p = f.payload or {}
       local row = p.row or (p.item and row_of_item[p.item]) or nil
+      -- An ORPHAN is not a line -- it is audio the script cannot name, and
+      -- the gather above skips it for exactly that reason. Letting its
+      -- findings through here built a line entry labelled "(unnamed)" that
+      -- no work could ever clear, so the Todo could not reach zero (AJ).
+      -- The finding is real; it belongs to the session, not to a line.
+      if row and row.status == "orphan" then row = nil end
       local key = (f.kind == "contested_select" and p.key)
                   or (row and vo.LineKey(row)) or nil
       if key and ignored[key] then
