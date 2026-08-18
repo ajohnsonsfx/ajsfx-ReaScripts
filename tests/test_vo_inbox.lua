@@ -177,6 +177,65 @@ test("contested_select ranks above out_of_sync, below suspect_select", function(
   assert(f[2].payload.label == "line_a", "payload is the conflict entry")
 end)
 
+print("\nCausal suppression:")
+
+test("contested line swallows its track-placement out_of_sync", function()
+  local row = { script_row = "s1", asset = "line_a" }
+  local f, c = vo.InboxBuild({
+    contested = { { key = "s1", label = "line_a", count = 2, claimants = {} } },
+    disagree  = { { row = row, detail = "on the Selects track but not ticked Sel" },
+                  { row = row, detail = "something else entirely" } },
+  })
+  local kinds = {}
+  for _, x in ipairs(f) do kinds[#kinds + 1] = x.kind .. ":" .. tostring((x.payload or {}).detail) end
+  assert(c.total == 2, "contested + surviving oos; got " .. c.total
+         .. " [" .. table.concat(kinds, ", ") .. "]")
+  assert(c.by_kind.out_of_sync == 1, "non-placement out_of_sync survives")
+end)
+
+test("uncontested line keeps its track-placement finding", function()
+  local f, c = vo.InboxBuild({
+    disagree = { { row = { script_row = "s2" },
+                   detail = "ticked Sel but the item is not on the Selects track" } },
+  })
+  assert(c.by_kind.out_of_sync == 1)
+end)
+
+test("no_audio swallows thin and no_words on the same row; name_mismatch survives", function()
+  local row = { script_row = "s3", asset = "line_c" }
+  local f, c = vo.InboxBuild({
+    no_audio = { { row = row, why = "unbacked" } },
+    suspects = { { row = row, triggers = { thin = true, no_words = true, name_mismatch = true } },
+                 { row = { script_row = "s4" }, triggers = { thin = true } } },
+  })
+  assert(c.by_kind.no_audio == 1)
+  assert(c.by_kind.suspect == 2, "s3 suspect survives (name_mismatch), s4 untouched")
+  for _, x in ipairs(f) do
+    if x.kind == "suspect" and x.payload.row == row then
+      assert(not x.payload.triggers.thin and not x.payload.triggers.no_words,
+             "thin/no_words gone")
+      assert(x.payload.triggers.name_mismatch, "name_mismatch kept")
+    end
+  end
+end)
+
+test("no_audio swallows a suspect whose only triggers were thin/no_words", function()
+  local row = { script_row = "s5" }
+  local f, c = vo.InboxBuild({
+    no_audio = { { row = row } },
+    suspects = { { row = row, triggers = { thin = true } } },
+  })
+  assert(c.by_kind.suspect == nil, "nothing left to say")
+  assert(c.total == 1, "just the no_audio")
+end)
+
+test("suppression copies, never mutates, the caller's suspect entry", function()
+  local row = { script_row = "s6" }
+  local s = { row = row, triggers = { thin = true, name_mismatch = true } }
+  vo.InboxBuild({ no_audio = { { row = row } }, suspects = { s } })
+  assert(s.triggers.thin == true, "the caller's table was mutated")
+end)
+
 --------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

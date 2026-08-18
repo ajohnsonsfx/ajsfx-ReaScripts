@@ -6747,14 +6747,60 @@ function vo.InboxBuild(src)
     counts.by_kind[kind] = (counts.by_kind[kind] or 0) + 1
   end
   local sel = src.selects_track
+
+  -- CAUSAL SUPPRESSION (SPEC-todo-by-line.md Req-3): a finding that is the
+  -- downstream shadow of another on the same line is deleted -- not counted,
+  -- not drawn. It returns by itself when the root clears, because scanners
+  -- rerun each rebuild. Rule of admission: if clearing the root would not
+  -- make the symptom vanish on the next rebuild, it is not a symptom.
+  local contested_keys = {}
+  for _, c in ipairs(src.contested or {}) do contested_keys[c.key] = true end
+  local disagree = {}
+  for _, d in ipairs(src.disagree or {}) do
+    -- "On the Selects track but not ticked Sel" is the arithmetic of the
+    -- contest, not news. Same placement test the OK-stamp bypass uses.
+    local placement = d.detail and d.detail:find("track", 1, true)
+    local swallowed = placement and d.row and contested_keys[vo.LineKey(d.row)]
+    if not swallowed then disagree[#disagree + 1] = d end
+  end
+
+  local no_audio_rows = {}
+  for _, e in ipairs(src.no_audio or {}) do
+    if e.row then no_audio_rows[e.row] = true end
+  end
+  local suspects = {}
   for _, s in ipairs(src.suspects or {}) do
+    local trig = s.triggers or {}
+    local shadowed = s.row and no_audio_rows[s.row]
+                     and (trig.thin or trig.no_words)
+    if shadowed then
+      -- thin / no_words on a row whose marker has no audio reports that no
+      -- words were found in audio that is not there. Triggers about the
+      -- MARKS (name_mismatch, unmarked, stamp) survive -- the marks exist.
+      -- Copied, not mutated: the entries belong to the caller's scan state.
+      local kept = {}
+      for t in pairs(trig) do
+        if t ~= "thin" and t ~= "no_words" then kept[t] = true end
+      end
+      if next(kept) then
+        local copy = {}
+        for k2, v2 in pairs(s) do copy[k2] = v2 end
+        copy.triggers = kept
+        suspects[#suspects + 1] = copy
+      end
+    else
+      suspects[#suspects + 1] = s
+    end
+  end
+
+  for _, s in ipairs(suspects) do
     add((sel and s.track == sel) and "suspect_select" or "suspect", s)
   end
   -- A line with two claimants for the select (vo.SelectConflicts entries):
   -- the root the marks-vs-track findings are symptoms of.
   for _, c in ipairs(src.contested or {}) do add("contested_select", c) end
   for _, q in ipairs(src.parity_queue or {}) do add("out_of_sync", q) end
-  for _, d in ipairs(src.disagree or {})     do add("out_of_sync", d) end
+  for _, d in ipairs(disagree)               do add("out_of_sync", d) end
   for _, e in ipairs(src.no_audio or {})     do add("no_audio", e) end
   for _, e in ipairs(src.unidentified or {}) do add("unidentified", e) end
   for _, e in ipairs(src.undecided or {})    do add("undecided", e) end
