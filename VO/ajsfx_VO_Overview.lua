@@ -1807,8 +1807,8 @@ end
 -- Selection is REQUIRED. Every other verb treats "nothing selected" as
 -- "everything", and for a verb that throws away decisions that default is a
 -- foot-gun; Start over... is the whole-project form and has its own confirm.
-function Trim.untrack_count()
-  local picked = SelectedItemSet()
+function Trim.untrack_count(picked)
+  picked = picked or SelectedItemSet()
   if next(picked) == nil then return nil end
 
   local n_items, n_markers, n_names = 0, 0, 0
@@ -1845,17 +1845,23 @@ function Trim.untrack_count()
            entries = n_entries, names = n_names, ids = ids }
 end
 
-function Trim.untrack()
+-- `picked` is an item set; omitted, it is whatever REAPER has selected.
+-- Passing one is how a single take.s right-click menu untracks just that
+-- take without disturbing the arrange selection.
+function Trim.untrack(picked)
   Reload()
-  local count = Trim.untrack_count()
+  picked = picked or SelectedItemSet()
+  local count = Trim.untrack_count(picked)
   if not count then
     state.message, state.message_kind =
       "Select the items to untrack in REAPER first.", "warn"
     return
   end
 
+  local base  = Dest.names()
+  local bases = { base.selects, base.alts, base.review, base.outs }
+  local homed = 0
   core.Transaction("VO Overview: untrack items", function()
-    local picked = SelectedItemSet()
     for _, info in ipairs(state.items or {}) do
       local item = info.item
       if item and not info.skip and picked[item] then
@@ -1867,6 +1873,17 @@ function Trim.untrack()
           -- "" is the unassigned name: REAPER shows the source file, and
           -- vo.ResolveItemName reads it as claiming no line.
           r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", true)
+        end
+        -- AND IT GOES HOME. Stripping the marker and the name says it is
+        -- not a take; leaving it parked on Selects or Alts says it still
+        -- ships. AJ: "untrack -- this would put it back up on the source
+        -- track." The recording it was cut from is where it was before
+        -- anything filed it, and a clip with no marker and no name is
+        -- exactly what belongs there.
+        local parent = Dest.recording_of(item, bases)
+        if parent and r.GetMediaItem_Track(item) ~= parent then
+          r.MoveMediaItemToTrack(item, parent)
+          homed = homed + 1
         end
       end
     end
@@ -1887,9 +1904,9 @@ function Trim.untrack()
 
   state.message, state.message_kind = string.format(
     "Untracked %d item(s): %d marker(s), %d stored decision(s), %d name(s) " ..
-    "cleared. The lines still show their takes -- unmarked, as they were " ..
-    "before Identify.",
-    count.items, count.markers, count.entries, count.names), "ok"
+    "cleared, %d moved back to the recording. The lines still show their " ..
+    "takes -- unmarked, as they were before Identify.",
+    count.items, count.markers, count.entries, count.names, homed), "ok"
 end
 
 -- The user's rule for "I trimmed the head past the marker start": the row's
@@ -12047,6 +12064,42 @@ local function DrawTakeRowMenu(row)
           "identification thinks. Select the audio in REAPER first.\n\n" ..
           "Untick Lock to hand it back.")
   end
+
+  -- UNTRACK: "this is not a read." AJ's own first move on hearing a false
+  -- start, a cough or a slate -- and until now it lived only on a verb-bar
+  -- button acting on the REAPER selection, which is the wrong hand when you
+  -- are reading the sheet and the offender is under the cursor.
+  --
+  -- It is the honest opposite of a take: the marker goes (the marker IS the
+  -- take), the name goes (the name IS the assignment), the stored marks go,
+  -- and the clip goes home to the recording. Audio is never touched.
+  --
+  -- NOT fully undoable, and the tooltip says so rather than borrowing the
+  -- promise the other destructive verbs can make. Ctrl+Z restores the
+  -- marker, the name and the track -- those are REAPER's. The Keep / Sel /
+  -- notes stored against the marker live in the sidecar, outside its undo,
+  -- and are gone. OK survives, being a stamp on the item itself.
+  local ulabel = (#targets > 1)
+    and string.format("Untrack %d takes", #targets)
+    or  "Untrack this take"
+  local u_items, u_n = {}, 0
+  for _, t in ipairs(targets) do
+    if t.item then u_items[t.item] = true; u_n = u_n + 1 end
+  end
+  if im.MenuItem(ctx, ulabel, nil, nil, u_n > 0) then
+    pending_action = function() Trim.untrack(u_items) end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx,
+      "Not a read: take the marker and the name off it and send the\n" ..
+      "clip back to the recording it was cut from.\n\n" ..
+      "For a false start, a cough, a slate -- anything the sheet is\n" ..
+      "listing as a take that never was. The line keeps its other\n" ..
+      "takes and the audio is not touched.\n\n" ..
+      "Ctrl+Z brings back the marker, the name and the track. It does\n" ..
+      "NOT bring back this take's Keep / Sel / notes -- those are stored\n" ..
+      "beside the project, not in REAPER's undo.")
+  end
 end
 
 -- -----------------------------------------------------------------------
@@ -14194,6 +14247,16 @@ local function RunRemoteCommand(command)
     AutoSelectTakes(AffectedRows(), rule)
     return string.format("pick %s: %s", rule,
                          state.message or "ran with no result string")
+  elseif verb == "untrack" then
+    -- The take menu's Untrack, headless: by take name, so a test can name
+    -- exactly one clip.
+    for _, row in ipairs(state.overview or {}) do
+      if row.item and row.take_name == rest then
+        Trim.untrack({ [row.item] = true })
+        return state.message or "untracked"
+      end
+    end
+    return "no take carries the name: " .. tostring(rest)
   elseif verb == "refresh_line" or verb == "adopt_line" then
     -- The strip.s per-line Refresh, headless: read one line's Keep/Sel back off the
     -- tracks its items sit on.
