@@ -10447,6 +10447,10 @@ function Strip.RowPasses(row)
   elseif f == "delivered" then
     return row.status ~= "orphan" and row.asset ~= nil
        and not (Strip.covered or {})[row.asset]
+  elseif f == "todo" then
+    -- Only lines with work left (SPEC-todo-by-line.md): the sheet drains
+    -- as Todo clears; empty sheet = session done.
+    return state.todo ~= nil and state.todo.by_key[vo.LineKey(row)] ~= nil
   end
   return true
 end
@@ -10570,6 +10574,23 @@ function Strip.Draw()
     im.SetTooltip(ctx, state.todo_hidden
       and "Show each line's Todo strip and the log. The count keeps\ncounting while they are hidden."
       or  "Hide the Todo strips and the log; the sheet takes the width.\nThe count stays here, still honest.")
+  end
+  -- The drain filter, one click from the count (SPEC-todo-by-line.md):
+  -- only lines with work; finish a line and it leaves the sheet.
+  im.SameLine(ctx)
+  local filtering = state.stage_filter == "todo"
+  if filtering then
+    im.PushStyleColor(ctx, im.Col_Button,
+                      im.GetStyleColor(ctx, im.Col_ButtonActive))
+  end
+  if im.SmallButton(ctx, filtering and "All lines" or "Only todo") then
+    state.stage_filter = filtering and nil or "todo"
+  end
+  if filtering then im.PopStyleColor(ctx) end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, filtering
+      and "Show every line again."
+      or  "Only lines with work left. Finish a line's Todo and it\nleaves the sheet -- empty sheet, session done.")
   end
 end
 
