@@ -3478,6 +3478,15 @@ function vo.PlanRoleNames(rows, known_bases, cfg, opts)
     return tonumber(nm:match(MATCH[role]) or "")
   end
 
+  -- EVERY LINE NAME, AS THE RESOLVER SEES IT. A minted name is looked up
+  -- case-insensitively with the extension stripped (vo.NormalizeItemName),
+  -- so "Root_alt1" and a script line called "Root_Alt1" are the SAME KEY --
+  -- and a take handed that name silently becomes a take of the other line.
+  -- It happened: a finished session, an _alt{n} pattern, and a script whose
+  -- lines were named Root, Root_Alt1, Root_Alt2.
+  local line_key = {}
+  for b in pairs(known_bases or {}) do line_key[vo.NormalizeItemName(b)] = b end
+
   local groups, order = {}, {}
   for _, row in ipairs(rows or {}) do
     local nm = row.name
@@ -3580,6 +3589,7 @@ function vo.PlanRoleNames(rows, known_bases, cfg, opts)
           -- Alts first, then outs, each counting from `start` in its own
           -- pool -- so the numbers a delivered line carries are 1..N with
           -- nothing rejected punched out of the middle.
+          local mint, clash = {}, nil
           for _, role in ipairs({ "keep", "out" }) do
             local n = start
             for _, row in ipairs(needs[role]) do
@@ -3587,15 +3597,36 @@ function vo.PlanRoleNames(rows, known_bases, cfg, opts)
               used[role][n] = true
               local want = vo.SanitizeName(base ..
                 vo.FormatAltAppend(PAT[role], n, digits))
+              -- THE NAME MUST NOT BE SOMEBODY ELSE'S LINE. Checked against
+              -- the resolver's own key, not the raw string, because that is
+              -- what decides which line a take belongs to.
+              local onto = line_key[vo.NormalizeItemName(want)]
+              if onto and onto ~= base then clash = clash or { want, onto } end
               -- A row already wearing its target name is not a rename; the
               -- straighten pass hands most rows the name they hold.
               if want ~= row.name then
-                plan.renames[#plan.renames + 1] = { row = row, name = want }
+                mint[#mint + 1] = { row = row, name = want }
               end
             end
           end
           if sel and sel.name ~= base then
-            plan.renames[#plan.renames + 1] = { row = sel, name = base }
+            mint[#mint + 1] = { row = sel, name = base }
+          end
+
+          if clash then
+            -- Reported and left alone, like every other thing this planner
+            -- will not guess at. Renaming ANY of the line is refused, not
+            -- just the offending one: a half-numbered line is worse than an
+            -- untouched one, and the remedy is the same either way --
+            -- change the take suffix so it stops colliding.
+            plan.conflicts[#plan.conflicts + 1] = { base = base, detail =
+              string.format("%s would become %s, which is the script line %s" ..
+                            " -- change the alt suffix in Settings",
+                            base, clash[1], clash[2]) }
+          else
+            for _, rn in ipairs(mint) do
+              plan.renames[#plan.renames + 1] = rn
+            end
           end
         end
       end

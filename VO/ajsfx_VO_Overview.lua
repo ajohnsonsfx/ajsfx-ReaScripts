@@ -13669,6 +13669,64 @@ local function DrawSettingsWindow()
   -- End is called only when Begin returned visible, matching the main window's
   -- loop. That is ReaImGui's contract, and it differs from upstream Dear ImGui.
   if visible then
+    -- TAKE NAMES. These lived in the Pull panel under "Name alts" -- a naming
+    -- convention filed under a move verb, which is why AJ could not find them
+    -- when he needed them ("as a user it's really not clear where I can do
+    -- that"). Naming belongs where you look for conventions.
+    im.Separator(ctx)
+    im.Text(ctx, "Take names")
+    local ncfg = vo.LoadConfig()
+    im.SetNextItemWidth(ctx, 140)
+    local pchanged, npat = im.InputText(ctx, "Alt suffix##setaltpat",
+                                        ncfg.alt_append_pattern or "_alt{n}")
+    if pchanged then ncfg.alt_append_pattern = npat; vo.SaveConfig(ncfg) end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx,
+        "What every take of a line wears except the one you deliver.\n" ..
+        "{n} is where the number goes.\n\n" ..
+        "It must not be able to spell one of YOUR script line names: a\n" ..
+        "take is matched to its line by name, so _alt1 on a script that\n" ..
+        "also has a line ending _Alt1 makes the two the same thing.")
+    end
+
+    -- THE CHECK, where the setting is. A pattern that can spell a script
+    -- line is not a preference, it is a trap -- one cost a finished session
+    -- its line assignments, and nothing in the window had said so.
+    local clashes, shown = 0, nil
+    local seen = {}
+    for _, l in ipairs(state.lines or {}) do
+      local b = vo.SanitizeName(l.deliver or l.asset or "")
+      if b ~= "" then seen[vo.NormalizeItemName(b)] = b end
+    end
+    for _, l in ipairs(state.lines or {}) do
+      local b = vo.SanitizeName(l.deliver or l.asset or "")
+      if b ~= "" then
+        for i = 0, 3 do
+          local want = vo.SanitizeName(b .. vo.FormatAltAppend(
+            ncfg.alt_append_pattern or "_alt{n}",
+            math.floor(ncfg.alt_append_start or 1) + i,
+            math.floor(ncfg.alt_append_digits or 1)))
+          local onto = seen[vo.NormalizeItemName(want)]
+          if onto and onto ~= b then
+            clashes = clashes + 1
+            shown = shown or (want .. "  =  " .. onto)
+          end
+        end
+      end
+    end
+    if clashes > 0 then
+      im.TextColored(ctx, 0xDD6666FF, string.format(
+        "This suffix can spell %d of your script line name(s).", clashes))
+      im.TextDisabled(ctx, "  " .. tostring(shown))
+      im.TextDisabled(ctx,
+        "  Takes named that way would be read as that line. Renaming is\n" ..
+        "  refused while they collide -- pick a suffix your script does\n" ..
+        "  not use, such as _take{n}.")
+    else
+      im.TextDisabled(ctx, "No script line can be spelled by this suffix.")
+    end
+    im.Spacing(ctx)
+
     local changed, on = im.Checkbox(ctx, "Restore view settings", state.view.restore)
     if changed then SetRestore(on) end
     if im.IsItemHovered(ctx) then
@@ -13974,7 +14032,10 @@ local function RunRemoteCommand(command)
     -- it would refuse. Changes nothing. Exists because a rename that does not
     -- happen looks identical to one that was never wanted, and the difference
     -- is always in the conflict list.
-    local plan = RoleNames.Plan()
+    -- "role_names straighten" dry-runs the renumbering pass, which is the
+    -- one that mints fresh numbers and so the one that can collide with a
+    -- script line. Reading it before pressing it is the whole point.
+    local plan = RoleNames.Plan({ renumber = (rest == "straighten") })
     local bits = { string.format("%d rename(s), %d conflict(s)",
                                  #plan.renames, #plan.conflicts) }
     for i, rn in ipairs(plan.renames) do

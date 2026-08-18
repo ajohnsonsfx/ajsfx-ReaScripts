@@ -425,5 +425,40 @@ test("outs and alts share one number pool when unsplit", function()
          .. tostring(renamed(plan, rows[4])))
 end)
 
+
+print("\nA minted name may never land on another script line:")
+
+test("refuses to mint an alt that IS a script line", function()
+  -- AJ's session, exactly: the script carries lines Root, Root_Alt1 and
+  -- Root_Alt2, and the take pattern is _alt{n}. NormalizeItemName lowercases,
+  -- so "Root_alt1" and the line "Root_Alt1" are the same key -- minting it
+  -- moved takes onto a different script line.
+  local known = { Root = true, Root_Alt1 = true, Root_Alt2 = true }
+  local rows = {
+    { name = "Root",      track_name = "Selects", pos = 0 },
+    { name = "Root_alt7", track_name = "Alts",    pos = 10 },
+  }
+  local plan = vo.PlanRoleNames(rows, known, CFG, { renumber = true })
+  assert(#plan.renames == 0, "minted a name that is a script line: "
+         .. tostring(plan.renames[1] and plan.renames[1].name))
+  assert(#plan.conflicts == 1, "the collision must be reported")
+  assert(tostring(plan.conflicts[1].detail):find("Root_Alt1", 1, true)
+         or tostring(plan.conflicts[1].detail):find("script line", 1, true),
+         "conflict should name the clash: " .. tostring(plan.conflicts[1].detail))
+end)
+
+test("a pattern that does not collide still plans normally", function()
+  local known = { Root = true, Root_Alt1 = true }
+  local cfg = { alt_append_pattern = "_take{n}", alt_append_start = 1,
+                alt_append_digits = 1 }
+  local rows = {
+    { name = "Root",       track_name = "Selects", pos = 0 },
+    { name = "Root_take7", track_name = "Alts",    pos = 10 },
+  }
+  local plan = vo.PlanRoleNames(rows, known, cfg, { renumber = true })
+  assert(renamed(plan, rows[2]) == "Root_take1",
+         "got " .. tostring(renamed(plan, rows[2])))
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)
