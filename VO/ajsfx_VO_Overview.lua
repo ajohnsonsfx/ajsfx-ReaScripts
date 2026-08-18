@@ -10325,7 +10325,11 @@ function Inbox.DrawStrip(entry, indent)
         "its findings straight back.")
     end
   end
-  -- REFRESH: THE TIMELINE IS RIGHT, THE MARKS CATCH UP. A mark you set by
+  -- ADOPT TIMELINE: THE TIMELINE IS RIGHT, THE MARKS CATCH UP. Named for
+  -- the write it performs and NOT "Refresh", which on a sheet reads as
+  -- "redraw the sheet" and promises nothing about marks (AJ). It is the
+  -- same label the row verb and the batch form already carry, so the sheet
+  -- never has two names for one operation. A mark you set by
   -- hand outranks the track it sits on (vo.EffectiveMarks rule 1) -- which
   -- is what lets a tick survive a Pull -- but it also means dragging a
   -- ticked take off Selects leaves the tick behind, and the line reads
@@ -10338,7 +10342,7 @@ function Inbox.DrawStrip(entry, indent)
   -- things.
   if entry.conflict and ign_row then
     im.SameLine(ctx)
-    if im.SmallButton(ctx, "Refresh##tdadopt" .. entry.key) then
+    if im.SmallButton(ctx, "Adopt timeline##tdadopt" .. entry.key) then
       local key = entry.key
       pending_action = function()
         local cfg, n = vo.LoadConfig(), 0
@@ -14189,8 +14193,8 @@ local function RunRemoteCommand(command)
     AutoSelectTakes(AffectedRows(), rule)
     return string.format("pick %s: %s", rule,
                          state.message or "ran with no result string")
-  elseif verb == "refresh_marks" then
-    -- The strip's Refresh, headless: read one line's Keep/Sel back off the
+  elseif verb == "adopt_line" then
+    -- The strip.s per-line Adopt timeline, headless: read one line's Keep/Sel back off the
     -- tracks its items sit on.
     local cfg, n = vo.LoadConfig(), 0
     Batch(function()
