@@ -11800,7 +11800,11 @@ local function CardZones(w)
   --   Notes -- a free-text box the tool cannot act on, a third of the width.
   --   Item  -- which recording and when. That is the project bay's job; here
   --            it was reading room the exported name wanted.
-  local name_w = math.min(340, math.max(200, math.floor(w * 0.26)))
+  -- 340/0.26 was tuned for the sheet sharing the body with the rail; the
+  -- rail is gone and the full-width sheet left the exported names clipped
+  -- in a column that no longer needed to be that narrow (AJ). The name is
+  -- the deliverable -- give it the room the width now affords.
+  local name_w = math.min(560, math.max(200, math.floor(w * 0.35)))
   local fixed  = z.text + name_w + CARD_PAD * 2
   z.text_w  = math.max(160, w - fixed)
   z.name    = z.text + z.text_w + 6
