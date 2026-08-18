@@ -239,22 +239,28 @@ end)
 print("\nLineStage / ErrorHome:")
 
 test("the ladder in order", function()
-  assert(vo.LineStage({ has_takes = true, any_item = true, scanned = false }) == "not_scanned")
-  assert(vo.LineStage({ has_takes = false, scanned = true }) == "not_found")
-  assert(vo.LineStage({ has_takes = true, any_item = false, scanned = true }) == "not_found",
+  assert(vo.LineStage({ has_takes = false }) == "not_found")
+  assert(vo.LineStage({ has_takes = true, any_item = false }) == "not_found",
          "takes whose audio left the project are Not Found")
-  assert(vo.LineStage({ has_takes = true, any_item = true, any_uncut = true,
-                        scanned = true }) == "needs_edit")
-  assert(vo.LineStage({ has_takes = true, any_item = true, scanned = true }) == "needs_select")
+  assert(vo.LineStage({ has_takes = true, any_item = true,
+                        any_uncut = true }) == "needs_edit")
+  assert(vo.LineStage({ has_takes = true, any_item = true }) == "needs_select")
+  assert(vo.LineStage({ has_takes = true, any_item = true,
+                        picked = true }) == "unverified")
   assert(vo.LineStage({ has_takes = true, any_item = true, picked = true,
-                        scanned = true }) == "unverified")
-  assert(vo.LineStage({ has_takes = true, any_item = true, picked = true,
-                        verified = true, scanned = true }) == "done")
+                        verified = true }) == "done")
 end)
 
-test("a line with nothing recorded is Not Found even before a scan", function()
-  assert(vo.LineStage({ has_takes = false, scanned = false }) == "not_found",
-         "nothing to scan -- Not Scanned is only for lines a scanner would judge")
+test("the ladder reads persistent state only -- never whether a scanner ran", function()
+  -- The scan flag lives in session memory and is cleared by every Rebuild,
+  -- so a rung that depended on it jammed EVERY line at rung 1 the moment
+  -- you ticked a box. Nothing about a scanner may move a line's stage.
+  local off = vo.LineStage({ has_takes = true, any_item = true, scanned = false })
+  local on  = vo.LineStage({ has_takes = true, any_item = true, scanned = true })
+  assert(off == on and off == "needs_select", "got " .. off .. " / " .. on)
+  for _, id in ipairs(vo.TODO_STAGES) do
+    assert(id ~= "not_scanned", "not_scanned is not a stage any more")
+  end
 end)
 
 test("error homes match the AJ-approved mapping", function()
@@ -326,13 +332,13 @@ test("a done line is absent", function()
   assert(todo.by_key["s1"] == nil)
 end)
 
-test("scanner not run: delivered lines sit at Not Scanned", function()
+test("a scanner that has not run changes no line's stage", function()
   local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1" }
   local r2 = { script_row = "s2", asset = "line_b", status = "missing" }
   local todo = tb({ findings = {}, rows = { r1, r2 }, scanned = false })
-  assert(todo.by_key["s1"].stage == "not_scanned")
-  assert(todo.by_key["s2"].stage == "not_found",
-         "nothing recorded is Not Found regardless of scan state")
+  assert(todo.by_key["s1"].stage == "needs_select",
+         "got " .. tostring(todo.by_key["s1"].stage))
+  assert(todo.by_key["s2"].stage == "not_found")
 end)
 
 test("uncut items put the line at Needs edit", function()

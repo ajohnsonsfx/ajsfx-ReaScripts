@@ -41,18 +41,32 @@ that line, drawn under the card's existing content.
 place in the pipeline -- and may additionally carry errors. The stage names
 (AJ's list):
 
-    1. "Not Scanned"   -- the scanners that would judge this line have not run
-    2. "Not Found"     -- nothing plays this line: never matched, or the
+    1. "Not Found"     -- nothing plays this line: never matched, or the
                           audio left the project (tooltip says which)
-    3. "Needs edit"    -- takes still sitting uncut on the recording track
-    4. "Needs select"  -- takes exist, none is the pick
-    5. "Unverified"    -- delivered but no ears/stamp on it
-    6. "Done"          -- stage ladder cleared AND no errors; the line
+    2. "Needs edit"    -- takes still sitting uncut on the recording track
+    3. "Needs select"  -- takes exist, none is the pick
+    4. "Unverified"    -- delivered but no ears/stamp on it
+    5. "Done"          -- stage ladder cleared AND no errors; the line
                           leaves the Todo filter
 
 Only the earliest unmet stage shows -- a line that is Not Found has nothing
 to edit. This is the strip's stage remainder logic (`Strip.RowPasses`
 order), reused.
+
+**EVERY RUNG READS PERSISTENT PROJECT STATE.** AJ's list opened with a "Not
+Scanned" rung, meaning the suspects scan had not run. It was implemented,
+shipped to a live session, and removed the same day: `state.suspects` is
+cleared by `Rebuild` (`ajsfx_VO_Overview.lua:864`) on EVERY project change,
+so the flag meant "nobody pressed Scan since your last edit" -- and being
+rung 1, it swallowed every line the moment a checkbox was ticked. A real
+58-line session showed 58 lines reading Not Scanned and not one showing the
+stage it was actually at; the whole ladder was inert.
+
+The law it leaves behind: **a stage may only read state that survives a
+restart** (takes, items, uncut markers, picks, stamps). A scanner that has
+not run is a fact about the SESSION -- the Session card says so, and carries
+the button that fixes it -- never a fact about a line. A scan's findings
+still arrive as ERRORS once it has run.
 
 **Errors re-open their home stage.** Every error kind names the stage whose
 work fixes it, and a line's displayed stage is the EARLIEST of its ladder
@@ -170,10 +184,9 @@ contested and never counted.
 - Findings with no line -- **unheard sound** spans -- live on one pinned
   **Session** card at the top of the sheet, along with the batch verbs.
   Jump-only rows; each counts toward N.
-- The old "scan not run" status rows dissolve into the per-line **Not
-  Scanned** stage: while a scanner has not run this session, every line it
-  would judge sits at Not Scanned. Honest and impossible to miss -- a stale
-  scanner can never read as a clean sheet.
+- The "scan not run" rows stay SESSION-level, on that card, each with the
+  Scan button that clears it. They are the honest answer to "is this sheet
+  judged yet" without pretending to be a property of any line (Req-1).
 
 ## Req-6: keyboard walk
 
@@ -214,8 +227,8 @@ panels became the rail in beta33):
 - undecided suppresses nothing
 - line-less findings (unheard) group under the session key
 - stage entry: a line reports only its earliest unmet stage
-- scanner not run -> lines it would judge sit at Not Scanned; running it
-  moves them to their real stage
+- a scanner that has not run changes no line's stage, and `not_scanned` is
+  not in `vo.TODO_STAGES`
 - home stages: an error pulls the displayed stage back to its home when the
   home is earlier than the ladder rung; never forward
 - Done requires ladder cleared and zero errors

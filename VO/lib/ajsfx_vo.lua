@@ -6817,10 +6817,18 @@ end
 
 -- THE STAGE LADDER (SPEC-todo-by-line.md, AJ's names): a line has exactly ONE
 -- stage -- its place in the pipeline -- and shows the earliest unmet rung.
-vo.TODO_STAGES = { "not_scanned", "not_found", "needs_edit",
+--
+-- EVERY RUNG READS PERSISTENT PROJECT STATE. There was a "Not Scanned" rung
+-- above these, meaning the suspects scan had not run; it came out because the
+-- scan flag lives in session memory and Rebuild clears it on every project
+-- change, so the first rung swallowed every line the moment you ticked a box
+-- and no line ever showed the stage it was really at. A scanner that has not
+-- run is a fact about the SESSION -- the Session card says so, with the button
+-- that fixes it -- never a fact about a line.
+vo.TODO_STAGES = { "not_found", "needs_edit",
                    "needs_select", "unverified", "done" }
 vo.TODO_STAGE_LABEL = {
-  not_scanned = "Not Scanned", not_found = "Not Found",
+  not_found = "Not Found",
   needs_edit = "Needs edit", needs_select = "Needs select",
   unverified = "Unverified", done = "Done",
 }
@@ -6832,15 +6840,10 @@ function vo.StageIndex(id) return STAGE_INDEX[id] end
 -- g: has_takes (a row with take_index > 0 and not missing), any_item (a row
 -- with a live item), any_uncut (an item still holding >1 counting marker),
 -- picked (user_select somewhere), verified (user_status "verified"
--- somewhere), scanned (the suspects scan ran this session).
---
--- Not Found is checked before Not Scanned even though AJ's ladder lists
--- Not Scanned first: a line that does not exist in the audio cannot be
--- scanned, so Not Scanned is only for lines a scanner would judge.
+-- somewhere). All five survive a restart, which is the whole requirement.
 function vo.LineStage(g)
   g = g or {}
   if not g.has_takes or not g.any_item then return "not_found" end
-  if not g.scanned then return "not_scanned" end
   if g.any_uncut then return "needs_edit" end
   if not g.picked and not g.verified then return "needs_select" end
   if not g.verified then return "unverified" end
@@ -6886,7 +6889,6 @@ end
 --     findings    = <vo.InboxBuild output>,
 --     rows        = <the overview rows>,
 --     uncut       = { [item] = true },   -- items still holding >1 counting marker
---     scanned     = <bool: the suspects scan ran>,
 --     row_of_item = { [item] = row },    -- resolve item-only findings to lines
 --   }
 --   todo = { lines = {entry,...}, by_key = {key->entry}, session = {finding,...} }
@@ -6902,8 +6904,7 @@ function vo.TodoBuild(src)
   local function line_of(key, label)
     local g = by_key[key]
     if not g then
-      g = { key = key, label = label or "(unnamed)", errors = {},
-            gather = { scanned = src.scanned == true } }
+      g = { key = key, label = label or "(unnamed)", errors = {}, gather = {} }
       by_key[key] = g
       order[#order + 1] = g
     end
