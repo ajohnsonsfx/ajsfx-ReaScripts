@@ -73,13 +73,14 @@ test("a full swap renames both sides in one plan", function()
   assert(renamed(plan, rows[3]) == nil, "bystander was renamed")
 end)
 
-test("plain name on Outs is renamed away like a demotion", function()
+test("plain name on Outs is renamed away, into the out namespace", function()
   local rows = {
     { name = "Foo",      track_name = "Outs" },
     { name = "Foo_alt1", track_name = "Alts" },
   }
   local plan = vo.PlanRoleNames(rows, KNOWN, CFG)
-  assert(renamed(plan, rows[1]) == "Foo_alt2", "out kept the plain name")
+  assert(renamed(plan, rows[1]) == "Foo_out1", "out kept the plain name: "
+         .. tostring(renamed(plan, rows[1])))
 end)
 
 test("items off the role tracks are never renamed", function()
@@ -231,7 +232,7 @@ test("gaps close: a lone alt4 becomes alt1", function()
          "got " .. tostring(renamed(plan, rows[2])))
 end)
 
-test("alts renumber in timeline order, outs continue after", function()
+test("alts renumber in timeline order; outs number separately", function()
   local rows = {
     { name = "Foo",      track_name = "Selects", pos = 0 },
     { name = "Foo_alt7", track_name = "Alts",    pos = 30 },
@@ -241,7 +242,9 @@ test("alts renumber in timeline order, outs continue after", function()
   local plan = vo.PlanRoleNames(rows, KNOWN, CFG, RN)
   assert(renamed(plan, rows[3]) == "Foo_alt1", "earlier alt should be alt1")
   assert(renamed(plan, rows[2]) == "Foo_alt2", "later alt should be alt2")
-  assert(renamed(plan, rows[4]) == "Foo_alt3", "out continues after alts")
+  assert(renamed(plan, rows[4]) == "Foo_out1",
+         "an out must not take an alt number: "
+         .. tostring(renamed(plan, rows[4])))
 end)
 
 test("already-straight names plan zero renames (idempotent)", function()
@@ -283,6 +286,106 @@ test("straighten still refuses a conflicted line", function()
   }
   local plan = vo.PlanRoleNames(rows, KNOWN, CFG, RN)
   assert(#plan.renames == 0 and #plan.conflicts == 1)
+end)
+
+
+print("\nOuts get their own suffix and their own numbers:")
+
+test("an Outs take is named _out, not _alt", function()
+  -- AJ: otherwise "we have a lot of alt files that are not delivered, and it
+  -- sort of messes with the alt naming."
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_alt1", track_name = "Outs",    pos = 10 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG)
+  assert(renamed(plan, rows[2]) == "Foo_out1",
+         "got " .. tostring(renamed(plan, rows[2])))
+end)
+
+test("outs do not consume alt numbers", function()
+  -- The whole point: the alts delivered alongside the select stay 1..N with
+  -- no gaps punched in them by takes nobody ships.
+  local rows = {
+    { name = "Foo",  track_name = "Selects", pos = 0 },
+    { name = "Foo_alt6", track_name = "Outs",    pos = 10 },
+    { name = "Foo_alt7", track_name = "Alts",    pos = 20 },
+    { name = "Foo_alt8", track_name = "Outs",    pos = 30 },
+    { name = "Foo_alt9", track_name = "Alts",    pos = 40 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG)
+  -- The conservative pass leaves a uniquely-held alt number alone, so the
+  -- two alts keep 7 and 9. What moves is the OUTS: an _alt name says
+  -- nothing about the Outs track, so each is renamed into its own
+  -- namespace, numbering from 1 and taking no alt number with it.
+  assert(renamed(plan, rows[3]) == nil, "an alt keeping its number was renamed")
+  assert(renamed(plan, rows[5]) == nil, "an alt keeping its number was renamed")
+  assert(renamed(plan, rows[2]) == "Foo_out1", "first out: "
+         .. tostring(renamed(plan, rows[2])))
+  assert(renamed(plan, rows[4]) == "Foo_out2", "second out: "
+         .. tostring(renamed(plan, rows[4])))
+end)
+
+test("straighten leaves the delivered alts 1..N with no gaps", function()
+  -- The whole point, stated where it is actually true: after a straighten,
+  -- the numbers a line ships read 1, 2 with nothing rejected punched out of
+  -- the middle, however many outs sit beside them.
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_alt6", track_name = "Outs",    pos = 10 },
+    { name = "Foo_alt7", track_name = "Alts",    pos = 20 },
+    { name = "Foo_alt8", track_name = "Outs",    pos = 30 },
+    { name = "Foo_alt9", track_name = "Alts",    pos = 40 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG, { renumber = true })
+  assert(renamed(plan, rows[3]) == "Foo_alt1", tostring(renamed(plan, rows[3])))
+  assert(renamed(plan, rows[5]) == "Foo_alt2", tostring(renamed(plan, rows[5])))
+  assert(renamed(plan, rows[2]) == "Foo_out1", tostring(renamed(plan, rows[2])))
+  assert(renamed(plan, rows[4]) == "Foo_out2", tostring(renamed(plan, rows[4])))
+end)
+
+test("an out already correctly named plans nothing", function()
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_out1", track_name = "Outs",    pos = 10 },
+    { name = "Foo_alt1", track_name = "Alts",    pos = 20 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG)
+  assert(#plan.renames == 0, "planned " .. #plan.renames)
+end)
+
+test("a take moved from Outs back to Alts is renamed across namespaces", function()
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_out1", track_name = "Alts",    pos = 10 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG)
+  assert(renamed(plan, rows[2]) == "Foo_alt1",
+         "got " .. tostring(renamed(plan, rows[2])))
+end)
+
+test("an out name off the role tracks still reserves its out number", function()
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_out1", track_name = "Review",  pos = 10 },  -- untouchable
+    { name = "Foo_alt3", track_name = "Outs",    pos = 20 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG)
+  assert(renamed(plan, rows[3]) == "Foo_out2",
+         "must skip the held out1; got " .. tostring(renamed(plan, rows[3])))
+end)
+
+test("straighten renumbers each namespace from 1", function()
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_alt7", track_name = "Alts",    pos = 10 },
+    { name = "Foo_alt9", track_name = "Outs",    pos = 20 },
+    { name = "Foo_alt4", track_name = "Alts",    pos = 30 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, CFG, { renumber = true })
+  assert(renamed(plan, rows[2]) == "Foo_alt1", tostring(renamed(plan, rows[2])))
+  assert(renamed(plan, rows[4]) == "Foo_alt2", tostring(renamed(plan, rows[4])))
+  assert(renamed(plan, rows[3]) == "Foo_out1", tostring(renamed(plan, rows[3])))
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))

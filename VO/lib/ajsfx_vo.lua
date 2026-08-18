@@ -3435,20 +3435,42 @@ end
 function vo.PlanRoleNames(rows, known_bases, cfg, opts)
   opts = opts or {}
   cfg = cfg or {}
+  -- TWO NAMESPACES, NOT ONE. An Outs take is not delivered, so numbering it
+  -- among the alts punched gaps in the sequence that IS delivered -- a line
+  -- shipping two alts could read _alt1, _alt7 with five rejects eating the
+  -- middle (AJ: "we have a lot of alt files that are not delivered, and it
+  -- sort of messes with the alt naming"). Alts count 1..N among themselves
+  -- and outs count 1..N among themselves.
   local pattern = cfg.alt_append_pattern or "_alt{n}"
+  local out_pat = cfg.out_append_pattern or "_out{n}"
   local digits  = math.floor(cfg.alt_append_digits or 1)
   local start   = math.floor(cfg.alt_append_start or 1)
 
-  -- The alt pattern as a number extractor: "_alt{n}" pulls 3 out of
-  -- "Foo_alt3". Same escaping as vo.StripAltSuffix, capturing the number.
-  local esc = pattern:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")
-  local num_matcher = "^.-" .. esc:gsub("{n}", "(%%d+)") .. "$"
+  -- Each pattern as a number extractor: "_alt{n}" pulls 3 out of "Foo_alt3".
+  -- Same escaping as vo.StripAltSuffix, capturing the number.
+  local function matcher_for(p)
+    local esc = p:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")
+    return "^.-" .. esc:gsub("{n}", "(%%d+)") .. "$"
+  end
+  local num_matcher = matcher_for(pattern)
+  local out_matcher = matcher_for(out_pat)
+  -- Which namespace a name is already in, so a take crossing between Alts
+  -- and Outs is recognised as needing a new name rather than keeping a
+  -- number that means nothing on its new track.
+  local function suffix_of(nm)
+    if nm:match(num_matcher) then return "keep" end
+    if nm:match(out_matcher) then return "out" end
+    return nil
+  end
+  local PAT = { keep = pattern, out = out_pat }
+  local MATCH = { keep = num_matcher, out = out_matcher }
 
   local groups, order = {}, {}
   for _, row in ipairs(rows or {}) do
     local nm = row.name
     if type(nm) == "string" and nm ~= "" then
-      local base = vo.StripAltSuffix(nm, pattern) or nm
+      local base = vo.StripAltSuffix(nm, pattern)
+                   or vo.StripAltSuffix(nm, out_pat) or nm
       local g = groups[base]
       if not g then g = {}; groups[base] = g; order[#order + 1] = base end
       g[#g + 1] = row
@@ -3478,52 +3500,58 @@ function vo.PlanRoleNames(rows, known_bases, cfg, opts)
         -- Claim numbers in two passes so an untouched row's number is never
         -- handed to a renumbered one: first the rows this planner may not
         -- rename, then the role rows that keep a uniquely-held alt name.
-        local used, needs, blocked = {}, {}, nil
+        -- One pool per namespace, so an out number can never block an alt.
+        local used = { keep = {}, out = {} }
+        local needs, blocked = { keep = {}, out = {} }, nil
+        local function claim(nm)
+          local kind = suffix_of(nm)
+          if not kind then return end
+          local n = tonumber(nm:match(MATCH[kind]) or "")
+          if n then used[kind][n] = true end
+        end
         -- A promoted select's OLD number stays claimed: handing a name that
         -- existed a moment ago to a different take would quietly swap what
         -- "Foo_alt1" means to anything outside this project. The straighten
         -- pass drops this guard knowingly -- renumbering is what was asked.
-        if sel and not opts.renumber then
-          local n = tonumber(sel.name:match(num_matcher) or "")
-          if n then used[n] = true end
-        end
+        if sel and not opts.renumber then claim(sel.name) end
         for _, row in ipairs(g) do
           -- `is_take == false` is the caller saying "this clip carries no take
           -- marker" -- residue, not a delivery. It is still never renamed; it
           -- just stops holding a name and a number hostage.
           if row ~= sel and role_of[row] == nil and row.is_take ~= false then
             if row.name == base then blocked = true end
-            local n = tonumber(row.name:match(num_matcher) or "")
-            if n then used[n] = true end
+            claim(row.name)
           end
         end
         if opts.renumber then
-          -- Straighten: every keep/out row gets renumbered, in pos order,
-          -- keeps before outs -- only off-track holders keep their numbers.
-          local order_rows = {}
+          -- Straighten: every keep/out row gets renumbered in pos order,
+          -- each namespace from its own 1 -- only off-track holders keep
+          -- their numbers.
           for _, row in ipairs(g) do
-            if row ~= sel
-               and (role_of[row] == "keep" or role_of[row] == "out") then
-              order_rows[#order_rows + 1] = row
+            local role = role_of[row]
+            if row ~= sel and (role == "keep" or role == "out") then
+              needs[role][#needs[role] + 1] = row
             end
           end
-          table.sort(order_rows, function(a, b)
-            local ka = (role_of[a] == "out") and 1 or 0
-            local kb = (role_of[b] == "out") and 1 or 0
-            if ka ~= kb then return ka < kb end
-            return (a.pos or 0) < (b.pos or 0)
-          end)
-          needs = order_rows
+          for _, list in pairs(needs) do
+            table.sort(list, function(a, b) return (a.pos or 0) < (b.pos or 0) end)
+          end
         else
           for _, row in ipairs(g) do
-            if row ~= sel
-               and (role_of[row] == "keep" or role_of[row] == "out") then
+            local role = role_of[row]
+            if row ~= sel and (role == "keep" or role == "out") then
+              -- A number only counts as held if it is held in the namespace
+              -- this row now belongs to: a take dragged from Alts to Outs
+              -- wears _alt3, which says nothing about where it sits, so it
+              -- is renamed rather than left claiming an out number.
+              local n = (suffix_of(row.name) == role)
+                        and tonumber(row.name:match(MATCH[role]) or "") or nil
               if row.name == base then
-                needs[#needs + 1] = row     -- demoted: the plain name is the select's
+                needs[role][#needs[role] + 1] = row  -- demoted: plain name is the select's
+              elseif n and not used[role][n] then
+                used[role][n] = true
               else
-                local n = tonumber(row.name:match(num_matcher) or "")
-                if n and not used[n] then used[n] = true
-                else needs[#needs + 1] = row end  -- duplicate alt number
+                needs[role][#needs[role] + 1] = row
               end
             end
           end
@@ -3533,16 +3561,21 @@ function vo.PlanRoleNames(rows, known_bases, cfg, opts)
           plan.conflicts[#plan.conflicts + 1] = { base = base,
             detail = base .. " is already held by an item off the role tracks" }
         else
-          local n = start
-          for _, row in ipairs(needs) do
-            while used[n] do n = n + 1 end
-            used[n] = true
-            local want = vo.SanitizeName(base ..
-              vo.FormatAltAppend(pattern, n, digits))
-            -- A row already wearing its target name is not a rename; the
-            -- straighten pass hands most rows the name they hold.
-            if want ~= row.name then
-              plan.renames[#plan.renames + 1] = { row = row, name = want }
+          -- Alts first, then outs, each counting from `start` in its own
+          -- pool -- so the numbers a delivered line carries are 1..N with
+          -- nothing rejected punched out of the middle.
+          for _, role in ipairs({ "keep", "out" }) do
+            local n = start
+            for _, row in ipairs(needs[role]) do
+              while used[role][n] do n = n + 1 end
+              used[role][n] = true
+              local want = vo.SanitizeName(base ..
+                vo.FormatAltAppend(PAT[role], n, digits))
+              -- A row already wearing its target name is not a rename; the
+              -- straighten pass hands most rows the name they hold.
+              if want ~= row.name then
+                plan.renames[#plan.renames + 1] = { row = row, name = want }
+              end
             end
           end
           if sel and sel.name ~= base then
@@ -9190,6 +9223,11 @@ vo.CONFIG_SCHEMA = {
   -- The alt naming convention. Not bounded here: vo.PlanAltNames floors and
   -- clamps its own inputs, so a hand-edited ExtState cannot break a run.
   { key = "alt_append_pattern", kind = "string", default = "_alt{n}" },
+  -- Outs carry their OWN suffix and their own numbering. Sharing the alt
+  -- pattern meant takes nobody ships ate alt numbers and left gaps in the
+  -- sequence that is delivered. Start and digits are shared: they are how
+  -- AJ counts, not what the number means.
+  { key = "out_append_pattern", kind = "string", default = "_out{n}" },
   { key = "alt_append_start",   kind = "number", default = 1 },
   { key = "alt_append_digits",  kind = "number", default = 1 },
 
