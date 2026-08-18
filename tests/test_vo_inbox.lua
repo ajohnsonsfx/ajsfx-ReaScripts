@@ -276,6 +276,98 @@ test("error homes match the AJ-approved mapping", function()
   assert(vo.ErrorHome({ kind = "unheard", payload = {} }) == nil)
 end)
 
+print("\nTodoBuild:")
+
+local function tb(src) return vo.TodoBuild(src) end
+
+test("three findings across two takes of one line collapse to one entry", function()
+  local r1 = { script_row = "s1", asset = "line_a", deliver = "line_a",
+               take_index = 1, item = "i1" }
+  local r2 = { script_row = "s1", asset = "line_a", deliver = "line_a",
+               take_index = 2, item = "i2" }
+  local findings = vo.InboxBuild({
+    disagree = { { row = r1, detail = "something" },
+                 { row = r2, detail = "something else" } },
+    suspects = { { row = r2, triggers = { name_mismatch = true } } },
+  })
+  local todo, counts = tb({ findings = findings, rows = { r1, r2 }, scanned = true })
+  assert(counts.lines == 1, "one LINE, got " .. counts.lines)
+  assert(counts.total == 1)
+  assert(#todo.lines[1].errors == 3, "all three findings ride the entry, got "
+         .. #todo.lines[1].errors)
+end)
+
+test("errors pull the stage back to their home, never forward", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+               user_select = true, user_status = "verified" }
+  local findings = vo.InboxBuild({
+    contested = { { key = "s1", label = "line_a", count = 2, claimants = { r1 } } },
+  })
+  local todo = tb({ findings = findings, rows = { r1 }, scanned = true })
+  local e = todo.lines[1]
+  assert(e.stage == "needs_select", "verified line dropped back: " .. tostring(e.stage))
+  assert(e.conflict == true)
+  assert(e.stage_label == "Needs select")
+end)
+
+test("a clean unfinished line is stage-only work, no errors", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1" }
+  local todo, counts = tb({ findings = {}, rows = { r1 }, scanned = true })
+  local e = todo.lines[1]
+  assert(e.stage == "needs_select" and e.conflict == false and #e.errors == 0)
+  assert(counts.total == 1)
+end)
+
+test("a done line is absent", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+               user_select = true, user_status = "verified" }
+  local todo, counts = tb({ findings = {}, rows = { r1 }, scanned = true })
+  assert(counts.total == 0, "got " .. counts.total)
+  assert(todo.by_key["s1"] == nil)
+end)
+
+test("scanner not run: delivered lines sit at Not Scanned", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1" }
+  local r2 = { script_row = "s2", asset = "line_b", status = "missing" }
+  local todo = tb({ findings = {}, rows = { r1, r2 }, scanned = false })
+  assert(todo.by_key["s1"].stage == "not_scanned")
+  assert(todo.by_key["s2"].stage == "not_found",
+         "nothing recorded is Not Found regardless of scan state")
+end)
+
+test("uncut items put the line at Needs edit", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "rec" }
+  local todo = tb({ findings = {}, rows = { r1 }, scanned = true,
+                    uncut = { rec = true } })
+  assert(todo.by_key["s1"].stage == "needs_edit")
+end)
+
+test("item-only findings resolve to their line through row_of_item", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1" }
+  local findings = vo.InboxBuild({
+    parity_queue = { { item = "i1", divergence = { fields = { "name" } } } },
+  })
+  local todo, counts = tb({ findings = findings, rows = { r1 }, scanned = true,
+                            row_of_item = { i1 = r1 } })
+  assert(counts.lines == 1, "merged into the line, not a stray; got " .. counts.lines)
+  assert(#todo.lines[1].errors == 1)
+end)
+
+test("line-less findings land on the session list", function()
+  local findings = vo.InboxBuild({
+    unheard = { { source_path = "a.wav", start = 1, stop = 2 } },
+  })
+  local todo, counts = tb({ findings = findings, rows = {}, scanned = true })
+  assert(counts.session == 1 and counts.lines == 0 and counts.total == 1)
+  assert(todo.session[1].kind == "unheard")
+end)
+
+test("orphan rows are not lines", function()
+  local r1 = { asset = "junk", status = "orphan", take_index = 1, item = "i1" }
+  local todo, counts = tb({ findings = {}, rows = { r1 }, scanned = true })
+  assert(counts.total == 0)
+end)
+
 --------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

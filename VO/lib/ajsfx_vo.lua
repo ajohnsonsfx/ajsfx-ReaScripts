@@ -6875,6 +6875,102 @@ function vo.ErrorHome(f)
   return nil
 end
 
+-- THE COLLAPSE (SPEC-todo-by-line.md): findings and rows in, one entry per
+-- LINE with work out. An entry's stage is the earliest of its ladder rung
+-- (vo.LineStage) and any live error's home stage -- a verified line that
+-- grows a second select drops back to Needs select, because picking the
+-- select is the work you now have to redo. Done lines are simply absent:
+-- the sheet's Todo filter drains as work completes.
+--
+--   todo, counts = vo.TodoBuild{
+--     findings    = <vo.InboxBuild output>,
+--     rows        = <the overview rows>,
+--     uncut       = { [item] = true },   -- items still holding >1 counting marker
+--     scanned     = <bool: the suspects scan ran>,
+--     row_of_item = { [item] = row },    -- resolve item-only findings to lines
+--   }
+--   todo = { lines = {entry,...}, by_key = {key->entry}, session = {finding,...} }
+--   entry = { key, label, stage, stage_label, conflict, errors = {finding,...} }
+--   counts = { total, lines, session }
+function vo.TodoBuild(src)
+  src = src or {}
+  local uncut = src.uncut or {}
+  local row_of_item = src.row_of_item or {}
+
+  -- Gather per line, in sheet (rows) order.
+  local by_key, order = {}, {}
+  local function line_of(key, label)
+    local g = by_key[key]
+    if not g then
+      g = { key = key, label = label or "(unnamed)", errors = {},
+            gather = { scanned = src.scanned == true } }
+      by_key[key] = g
+      order[#order + 1] = g
+    end
+    return g
+  end
+  for _, row in ipairs(src.rows or {}) do
+    if row.status ~= "orphan" then
+      local g = line_of(vo.LineKey(row), row.deliver or row.asset)
+      local ga = g.gather
+      if row.status ~= "missing" and (row.take_index or 0) > 0 then
+        ga.has_takes = true
+        if row.item then ga.any_item = true end
+      end
+      if row.item and uncut[row.item] then ga.any_uncut = true end
+      if row.user_select then ga.picked = true end
+      if row.user_status == "verified" then ga.verified = true end
+    end
+  end
+
+  -- Attach errors; line-less findings go to the session list.
+  local session = {}
+  for _, f in ipairs(src.findings or {}) do
+    local home = vo.ErrorHome(f)
+    if home then
+      local p = f.payload or {}
+      local row = p.row or (p.item and row_of_item[p.item]) or nil
+      local key = (f.kind == "contested_select" and p.key)
+                  or (row and vo.LineKey(row)) or nil
+      if key then
+        local g = line_of(key, p.label or (row and (row.deliver or row.asset)))
+        g.errors[#g.errors + 1] = f
+        local h = vo.StageIndex(home)
+        if not g.err_stage or h < g.err_stage then g.err_stage = h end
+      else
+        -- An error that resolves to no line at all (item gone, no row):
+        -- session-level, still visible, never silently dropped.
+        session[#session + 1] = f
+      end
+    elseif f.kind == "unheard" then
+      session[#session + 1] = f
+    end
+    -- undecided / scan_* / unidentified: dissolved into the ladder; skip.
+  end
+
+  -- Resolve stages, keep only lines with work. Done requires the ladder
+  -- cleared AND zero errors -- the guard is belt-and-braces (error homes
+  -- are all earlier than done), so the invariant does not depend on the
+  -- mapping table staying that way.
+  local lines, out_by_key = {}, {}
+  for _, g in ipairs(order) do
+    local ladder = vo.StageIndex(vo.LineStage(g.gather))
+    local at = g.err_stage and math.min(g.err_stage, ladder) or ladder
+    local id = vo.TODO_STAGES[at]
+    if id ~= "done" or #g.errors > 0 then
+      local entry = { key = g.key, label = g.label, stage = id,
+                      stage_label = vo.TODO_STAGE_LABEL[id],
+                      conflict = #g.errors > 0, errors = g.errors }
+      lines[#lines + 1] = entry
+      out_by_key[g.key] = entry
+    end
+  end
+
+  local counts = { lines = #lines, session = #session,
+                   total = #lines + #session }
+  return { lines = lines, by_key = out_by_key, session = session }, counts
+end
+
 vo.VETTED_EXT = "P_EXT:ajsfx_vo_vetted"
 
 -- The HUMAN's mark, on its own key: "I checked, this read IS this line."
