@@ -823,3 +823,38 @@ The view-settings design predates the cards and describes the table's version
 of this: `docs/superpowers/specs/2026-08-01-vo-overview-view-settings-design.md`.
 The card design is
 `docs/superpowers/specs/2026-08-08-vo-overview-nested-rows-design.md`.
+
+## Which way does a verb point
+
+AJ, 2026-08-17, on why "Refresh" is the right word on this sheet:
+
+> "I LIKE refresh. The sheet is refreshing based on project info. [...] we can
+> use the term 'refresh' on the sheet, and that implies it's getting info from
+> somewhere else. This is going to be much more common than me trying to send
+> info FROM the sheet TO the project."
+
+Every verb in this window moves information in one of two directions, and the
+NAME has to say which. They are not symmetrical and must not read as if they
+were:
+
+**PROJECT -> SHEET is the common direction, and it is called Refresh.** The
+project is the truth; the sheet catches up. It is cheap, it is safe, and it
+is what the user does constantly -- so it gets the short, unalarming word, and
+one word covers all of it. The per-line Refresh on a Todo strip reads a line's
+Keep/Sel back off the tracks its items sit on. Nothing in the project moves.
+
+**SHEET -> PROJECT is rare, and every one of them is named for what it moves.**
+Pull moves items between tracks. Cut splits audio. Fix names renames clips.
+These change the thing being edited, so a user must never be able to fire one
+thinking they asked for a read. No verb in this direction may be called
+Refresh, Reload, Update, Sync, or anything else whose plain reading is "look
+again".
+
+The test for a new verb: if pressing it could lose work when pressed by
+mistake, it points at the project and needs a name that says so.
+
+Two older labels predate this rule and point project -> sheet while calling
+themselves "Adopt timeline" (the out-of-sync row verb, and its batch form
+"Adopt timeline for N"). They are the SAME write the per-line Refresh
+performs. Renaming them to Refresh would finish the convention; it has not
+been done, so the sheet currently carries two names for one operation.
