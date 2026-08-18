@@ -305,6 +305,45 @@ test("an item on Selects whose row says an explicit no is a disagreement", funct
   assert(#plan.disagree == 1, "disagree: " .. #plan.disagree)
 end)
 
+
+test("a Sel take on Selects is not nagged about Keep", function()
+  -- Sel AUTO-TICKS Keep (SetSelect: "Sel is the NARROWER of the two"), and
+  -- Pull's own law reads "Selects is Keep and Sel". Judging Keep against the
+  -- Alts track anyway flagged every properly-made select as "ticked Keep but
+  -- the item is not on the Alts track" -- AJ, live: a finished line reading
+  -- "Needs select - Conflict" while its select sat right there.
+  local plan = vo.PlanReconcile({
+    { item_guid = "g1", track_name = "Selects",
+      user_select = true, user_keep = true },
+  }, {})
+  assert(#plan.disagree == 0,
+         "flagged: " .. tostring((plan.disagree[1] or {}).detail))
+end)
+
+test("a Sel take on Selects with no Keep is equally fine", function()
+  local plan = vo.PlanReconcile({
+    { item_guid = "g1", track_name = "Selects",
+      user_select = true, user_keep = false },
+  }, {})
+  assert(#plan.disagree == 0,
+         "flagged: " .. tostring((plan.disagree[1] or {}).detail))
+end)
+
+test("Keep is still judged everywhere the track does not say Selects", function()
+  local plan = vo.PlanReconcile({
+    { item_guid = "g1", track_name = "Alts", user_select = false,
+      user_keep = false },
+  }, {})
+  assert(#plan.disagree == 1, "an Alts take not ticked Keep must still speak")
+end)
+
+test("a take ticked Sel off the Selects track still speaks", function()
+  local plan = vo.PlanReconcile({
+    { item_guid = "g1", track_name = "Review", user_select = true },
+  }, {})
+  assert(#plan.disagree == 1)
+end)
+
 test("a row with no item is not a disagreement", function()
   -- Nothing to disagree WITH. This is the orphan_marks case at most.
   local plan = vo.PlanReconcile({

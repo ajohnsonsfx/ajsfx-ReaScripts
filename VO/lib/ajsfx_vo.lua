@@ -3353,13 +3353,21 @@ function vo.PlanReconcile(rows, cfg)
     -- Only rows that HAVE an item can disagree with where it sits.
     if row.item_guid then
       local from_track = vo.MarkFromTrack(row.track_name, cfg)
+      -- SEL SUBSUMES KEEP, so a take on Selects is never judged on Keep.
+      -- SetSelect auto-ticks Keep with Sel ("Sel is the NARROWER of the
+      -- two") and Pull reads the destinations as "Review is not-Keep,
+      -- Selects is Keep and Sel, Alts is Keep not Sel" -- but this measured
+      -- Keep against the ALTS track alone, so every correctly-made select
+      -- reported "ticked Keep but the item is not on the Alts track". A
+      -- finished line read "Needs select - Conflict" with its select
+      -- sitting right there (AJ, live 2026-08-17).
       local wants_sel  = (from_track == "select")
       local wants_keep = (from_track == "keep")
       if (row.user_select == true) ~= wants_sel then
         plan.disagree[#plan.disagree + 1] = { row = row, detail = wants_sel
           and "on the Selects track but not ticked Sel"
           or  "ticked Sel but the item is not on the Selects track" }
-      elseif (row.user_keep == true) ~= wants_keep then
+      elseif not wants_sel and (row.user_keep == true) ~= wants_keep then
         plan.disagree[#plan.disagree + 1] = { row = row, detail = wants_keep
           and "on the Alts track but not ticked Keep"
           or  "ticked Keep but the item is not on the Alts track" }
