@@ -13521,10 +13521,15 @@ local function RunRemoteCommand(command)
     return table.concat(lines, "\n")
   elseif verb == "suspects" then
     -- The free hunt, headless: same scan the Check panel runs on open.
+    -- Timed: whether this can run inside Rebuild rather than on a press is
+    -- a question about its cost, and the cost is measurable.
+    local t0 = r.time_precise()
     local sus = vo.ScanSuspects(state.overview or {}, state.transcripts or {},
                                 state.lines or {}, vo.LoadConfig(),
                                 vo.VERIFY_THRESH)
-    local lines = { string.format("%d suspect(s)", #sus) }
+    local ms = (r.time_precise() - t0) * 1000
+    local lines = { string.format("%d suspect(s) in %.0f ms over %d row(s)",
+                                  #sus, ms, #(state.overview or {})) }
     for _, s in ipairs(sus) do
       local why = {}
       for k in pairs(s.triggers) do why[#why + 1] = k end
