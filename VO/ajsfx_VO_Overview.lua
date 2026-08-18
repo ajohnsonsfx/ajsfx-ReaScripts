@@ -9627,37 +9627,22 @@ function Inbox.JumpTo(item)
   r.UpdateArrange()
 end
 
--- Exactly one take of a line may be the select; SetSelect owns that law,
--- so the rail's pick verbs go through it like the sheet's boxes do.
-function Inbox.PickTake(asset, which)
-  local best
-  for _, row in ipairs(state.overview or {}) do
-    if row.asset == asset and row.status ~= "missing" and row.status ~= "orphan"
-       and (row.take_index or 0) > 0 then
-      if which == "first" then
-        if not best or row.take_index < best.take_index then best = row end
-      else
-        if not best or row.take_index > best.take_index then best = row end
-      end
-    end
-  end
-  if best then SetSelect(best, true) end
-end
-
--- Rebuild the rail only when a feed actually changed. Every feed is a
+-- Rebuild the collapse only when a feed actually changed. Every feed is a
 -- fresh table when its producer runs (Rebuild, or a scan), so identity is
 -- the cheap and honest staleness test -- no per-frame reassembly.
 function Inbox.MaybeAssemble()
-  if state.inbox
+  if state.todo
      and state.inbox_seen_rec   == state.reconcile
      and state.inbox_seen_queue == state.parity_queue
      and state.inbox_seen_sus   == state.suspects
      and state.inbox_seen_heard == state.unheard
+     and state.inbox_seen_conf  == state.conflicts
      and state.inbox_seen_over  == state.overview then
     return
   end
   state.inbox_seen_rec,   state.inbox_seen_queue = state.reconcile, state.parity_queue
   state.inbox_seen_sus,   state.inbox_seen_heard = state.suspects, state.unheard
+  state.inbox_seen_conf = state.conflicts
   state.inbox_seen_over = state.overview
 
   local cfg = vo.LoadConfig()
@@ -9673,29 +9658,8 @@ function Inbox.MaybeAssemble()
     no_audio[#no_audio + 1] = { row = e.row, why = "orphan" }
   end
 
-  -- Undecided LINES: takes exist, none picked, nobody settled it by hand.
-  -- Same eligibility AutoSelectTakes uses, so the rail never nags about a
-  -- line the pick verbs would refuse to touch.
-  local groups, seen = {}, {}
-  for _, row in ipairs(state.overview or {}) do
-    local a = row.asset
-    if a and row.status ~= "missing" and row.status ~= "orphan"
-       and (row.take_index or 0) > 0 then
-      local g = seen[a]
-      if not g then
-        g = { asset = a, row = row, takes = 0 }
-        seen[a] = g
-        groups[#groups + 1] = g
-      end
-      g.takes = g.takes + 1
-      if row.user_select then g.picked = true end
-      if row.user_status == "verified" then g.locked = true end
-    end
-  end
-  local undecided = {}
-  for _, g in ipairs(groups) do
-    if not g.picked and not g.locked then undecided[#undecided + 1] = g end
-  end
+  -- (Undecided lines are no longer a finding: the stage ladder's
+  -- "Needs select" rung carries them -- SPEC-todo-by-line.md.)
 
   -- The ranker promotes a Selects-track suspect above everything, but the
   -- scan entry only knows its row -- copy the track up where it can see it.
@@ -9743,38 +9707,31 @@ function Inbox.MaybeAssemble()
   -- contract: everything on it must be something the user actually has
   -- to do. The scan itself still runs (state.unidentified feeds the
   -- summary's own counts); it just no longer nags.
-  state.inbox, state.inbox_counts = vo.InboxBuild({
+  state.inbox = vo.InboxBuild({
     parity_queue = queue,
     disagree     = disagree,
     no_audio     = no_audio,
-    undecided    = undecided,
+    contested    = state.conflicts,
     suspects     = state.suspects,
     unheard      = state.unheard,
-    scanned      = { suspects = state.suspects ~= nil,
-                     unheard  = state.unheard  ~= nil },
     selects_track = cfg.track_selects or "Selects",
   })
-  -- DISPLAY ORDER IS WALK ORDER: the rail draws grouped by line, so the
-  -- list is reordered here to match -- groups keep their first-seen rank
-  -- position, a line's other findings gather behind it -- and J/K can
-  -- never hop around the screen.
-  local buckets, by_key, ordered = {}, {}, {}
-  for _, f in ipairs(state.inbox) do
-    local gkey = Inbox.Parts(f).group
-    local b = by_key[gkey]
-    if not b then
-      b = {}
-      by_key[gkey] = b
-      buckets[#buckets + 1] = b
-    end
-    b[#b + 1] = f
+  -- Item-only findings (parity divergences) resolve to their line through
+  -- the overview, not the take-name stem -- the reconciled project state is
+  -- the authority (SPEC-todo-by-line.md Req-5).
+  local by_item = {}
+  for _, row in ipairs(state.overview or {}) do
+    if row.item then by_item[row.item] = row end
   end
-  for _, b in ipairs(buckets) do
-    for _, f in ipairs(b) do ordered[#ordered + 1] = f end
-  end
-  state.inbox = ordered
+  state.todo, state.inbox_counts = vo.TodoBuild({
+    findings    = state.inbox,
+    rows        = state.overview,
+    uncut       = Strip.uncut,
+    scanned     = state.suspects ~= nil,
+    row_of_item = by_item,
+  })
 
-  local n = #state.inbox
+  local n = #state.todo.lines
   if state.inbox_sel and state.inbox_sel > n then
     state.inbox_sel = n > 0 and n or nil
   end
@@ -9816,7 +9773,7 @@ function Inbox.HandleKeys()
   local pop_flags = (Api('PopupFlags_AnyPopupId') or 0)
                   | (Api('PopupFlags_AnyPopupLevel') or 0)
   if pop_open and pop_flags ~= 0 and pop_open(ctx, "", pop_flags) then return end
-  local n = #(state.inbox or {})
+  local n = #((state.todo or {}).lines or {})
   if n == 0 then return end
   Inbox.keys_tick = (Inbox.keys_tick or 0) - 1
   if Inbox.keys_tick <= 0 or not Inbox.keys_cfg then
@@ -9839,10 +9796,30 @@ function Inbox.HandleKeys()
   if pressed("key_inbox_prev", true) then
     state.inbox_sel = math.max((state.inbox_sel or 2) - 1, 1)
   end
-  local f = state.inbox[state.inbox_sel or 0]
-  if not f then return end
-  if pressed("key_inbox_jump") then Inbox.Jump(f) end
-  local verbs = Inbox.RowVerbs(f)
+  -- The walk is over LINES now (SPEC-todo-by-line.md Req-6): J/K hop
+  -- entry to entry, jump goes to the line, the verb keys press the top
+  -- error's buttons. A stage-only entry has no error -- its jump is the
+  -- line's first sheet row.
+  local entry = ((state.todo or {}).lines or {})[state.inbox_sel or 0]
+  if not entry then return end
+  local f = entry.errors[1]
+  if pressed("key_inbox_jump") then
+    if f then
+      Inbox.Jump(f)
+    else
+      for _, row in ipairs(state.overview or {}) do
+        if vo.LineKey(row) == entry.key then
+          Inbox.GoTo(row)
+          if row.item then
+            local it = row.item
+            pending_action = function() Inbox.JumpTo(it) end
+          end
+          break
+        end
+      end
+    end
+  end
+  local verbs = f and Inbox.RowVerbs(f) or {}
   if pressed("key_inbox_verb1") and verbs[1] then verbs[1].fn() end
   if pressed("key_inbox_verb2") and verbs[2] then verbs[2].fn() end
 end
@@ -9939,11 +9916,23 @@ function Inbox.Parts(f)
     out.cat = (p.why == "unbacked") and "Marker without audio"
                                     or  "Marks without audio"
     from_row(p.row)
-  elseif k == "undecided" then
-    out.cat = "No take picked"
-    out.group = p.asset or "?"
-    out.tip = string.format("%d take%s, none picked", p.takes or 0,
-                            (p.takes or 0) == 1 and "" or "s")
+  elseif k == "contested_select" then
+    out.cat = "Multiple selects"
+    out.group = p.label or "?"
+    -- Name the claimants: which takes, on which tracks, who is ticked --
+    -- the argument itself, so settling it needs no hunt.
+    local who = {}
+    for _, row in ipairs(p.claimants or {}) do
+      who[#who + 1] = string.format("%s on %s%s",
+        (row.take_index or 0) > 0 and vo.TakeLetter(row.take_index) or "?",
+        row.track_name or "(no track)",
+        row.user_select and " (ticked Sel)" or "")
+    end
+    out.tip = string.format(
+      "%d takes claim this line's select:\n%s\n\n" ..
+      "Settle it by hand: untick the ones you are not delivering,\n" ..
+      "or drag them off the Selects track.",
+      p.count or #who, table.concat(who, "\n"))
   elseif k == "unheard" then
     out.cat = "Unheard sound"
     out.group = vo.Basename(p.source_path or "")
@@ -9951,10 +9940,6 @@ function Inbox.Parts(f)
     out.tip = string.format("%.1fs of audible sound no take marker and no\n" ..
                             "transcribed word covers",
                             (p.stop or 0) - (p.start or 0))
-  elseif k == "scan_suspects" then
-    out.cat, out.plain = "Suspects not scanned yet", true
-  elseif k == "scan_unheard" then
-    out.cat, out.plain = "Audio not swept for unheard sound", true
   end
   f._parts = out
   return out
@@ -9975,6 +9960,16 @@ function Inbox.Jump(f)
   if k == "out_of_sync" and p.divergence then
     local it = p.item
     pending_action = function() Inbox.JumpTo(it) end
+  elseif k == "contested_select" then
+    -- Go to the first claimant: the sheet row selects and the contested
+    -- line unfolds, rings and all.
+    local row = (p.claimants or {})[1]
+    if row then
+      pending_action = function()
+        Inbox.GoTo(row)
+        if row.item then Inbox.JumpTo(row.item) end
+      end
+    end
   elseif p.row then
     local row = p.row
     pending_action = function()
@@ -10071,16 +10066,6 @@ function Inbox.RowVerbs(f)
         pending_action = function() AddTakeMarkerFromSelection(row) end
       end,
       tip = "Write this take's marker onto the item selected in REAPER.\n" .. why } }
-  elseif k == "undecided" then
-    local asset = p.asset
-    return {
-      { label = "Pick last", fn = function()
-          pending_action = function() Inbox.PickTake(asset, "last") end
-        end, tip = "Mark this line's last take as the select." },
-      { label = "Pick first", fn = function()
-          pending_action = function() Inbox.PickTake(asset, "first") end
-        end, tip = "Mark this line's first take as the select." },
-    }
   elseif k == "suspect" or k == "suspect_select" then
     local row = p.row
     return { { label = "Re-listen", fn = function()
@@ -10090,112 +10075,128 @@ function Inbox.RowVerbs(f)
             "toggle says: it was flagged from stored data, so only the\n" ..
             "audio can settle it. The model reloads per item -- budget\n" ..
             "roughly 20s." } }
-  elseif k == "scan_suspects" then
-    return { { label = "Scan", fn = function()
-        pending_action = function()
-          state.suspects = vo.ScanSuspects(state.overview or {},
-            state.transcripts or {}, state.lines or {}, vo.LoadConfig(),
-            vo.VERIFY_THRESH)
-        end
-      end,
-      tip = "The free hunt: everything worth verifying, found from stored\n" ..
-            "data alone. A press, not a frame." } }
-  elseif k == "scan_unheard" then
-    return { { label = "Scan", fn = function()
-        pending_action = Repair.ScanUnheard
-      end,
-      tip = "Sweep the session's audio against the silence gate for sound\n" ..
-            "the transcript never heard. Seconds of AudioAccessor work, so\n" ..
-            "it runs when you ask rather than on every change." } }
   end
+  -- contested_select and every stage row: jump-only, per the verb law --
+  -- picking the select is a tick or a drag, not a rail button.
   return {}
 end
 
-function Inbox.Draw(width, height)
-  if not im.BeginChild(ctx, "##vo_inbox", width, height) then return end
-  local c = state.inbox_counts or { total = 0 }
-  im.TextDisabled(ctx, string.format("Todo (%d)", c.total))
-  im.Separator(ctx)
-  if c.total == 0 then
-    im.TextColored(ctx, 0x66BB66FF, "Nothing to do.")
-    im.TextDisabled(ctx,
-      "Every finding lands here, ranked.\n" ..
-      "Empty means the session agrees\nwith itself.")
+-- One line's Todo strip, drawn INSIDE its card (SPEC-todo-by-line.md):
+-- the stage header ("Needs select · Conflict"), then one amber row per
+-- error with its evidence and verbs. Stage rows are jump-only -- a Todo
+-- row offers a button only for a fix that is already a button somewhere
+-- else (AJ's verb law).
+function Inbox.DrawStrip(entry, indent)
+  indent = indent or 14
+  im.SetCursorPosX(ctx, im.GetCursorPosX(ctx) + indent)
+  local lines = (state.todo or {}).lines or {}
+  if state.inbox_sel and lines[state.inbox_sel] == entry then
+    im.TextColored(ctx, 0x3E6FA3FF, "\226\150\184")
+    im.SameLine(ctx)
   end
-  -- GROUPED BY LINE (AJ's layout): one header per line, then one amber
-  -- issue row per finding with its fixes BESIDE it -- a line with three
-  -- problems shows three rows under one name. Rank order still decides
-  -- which line comes first (its worst finding places it); within a line
-  -- the findings gather regardless of rank, which is the point.
-  local groups, order = {}, {}
-  for i, f in ipairs(state.inbox or {}) do
+  local head = entry.stage_label
+  if entry.conflict then head = head .. " \194\183 Conflict" end
+  im.PushStyleColor(ctx, im.Col_Text, 0xDDAA33FF)
+  im.Text(ctx, head)
+  im.PopStyleColor(ctx)
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "The next work on this line. Clears on its own\n" ..
+                       "when the state that caused it is fixed.")
+  end
+  for i, f in ipairs(entry.errors) do
     local parts = Inbox.Parts(f)
-    local g = groups[parts.group]
-    if not g then
-      g = { key = parts.group, items = {} }
-      groups[parts.group] = g
-      order[#order + 1] = g
+    local cat = parts.cat
+    if parts.take and parts.take ~= "" then cat = cat .. " " .. parts.take end
+    im.SetCursorPosX(ctx, im.GetCursorPosX(ctx) + indent + 8)
+    im.PushStyleColor(ctx, im.Col_Text, 0xDDAA33FF)
+    if im.SmallButton(ctx, Inbox.Clip(cat, 34) .. "##tds" .. entry.key .. i) then
+      Inbox.Jump(f)
     end
-    g.items[#g.items + 1] = { f = f, i = i, parts = parts }
+    im.PopStyleColor(ctx)
+    if im.IsItemHovered(ctx) then
+      local label, detail = Inbox.Label(f)
+      im.SetTooltip(ctx, label .. (detail and ("\n\n" .. detail) or "") ..
+        "\n\nClick: select it in REAPER / the sheet and move\nthe edit cursor to it.")
+    end
+    local verbs, fold = Inbox.RowVerbs(f)
+    if fold then
+      im.SameLine(ctx)
+      if im.SmallButton(ctx, fold .. "##tdf" .. entry.key .. i) then
+        im.OpenPopup(ctx, "##tdp" .. entry.key .. i)
+      end
+      if im.BeginPopup(ctx, "##tdp" .. entry.key .. i) then
+        for _, v in ipairs(verbs) do
+          if im.Selectable(ctx, "Fix from " .. v.label) then v.fn() end
+          if im.IsItemHovered(ctx) then im.SetTooltip(ctx, v.tip) end
+        end
+        im.EndPopup(ctx)
+      end
+    else
+      for vi, v in ipairs(verbs) do
+        im.SameLine(ctx)
+        if im.SmallButton(ctx, v.label .. "##tdv" .. entry.key .. i .. "_" .. vi) then
+          v.fn()
+        end
+        if im.IsItemHovered(ctx) and v.tip then im.SetTooltip(ctx, v.tip) end
+      end
+    end
   end
-  for _, g in ipairs(order) do
-    if g.key ~= "" then
-      im.TextDisabled(ctx, Inbox.Clip(g.key, 46))
-      if im.IsItemHovered(ctx) then im.SetTooltip(ctx, g.key) end
-    end
-    for _, entry in ipairs(g.items) do
-      local f, i, parts = entry.f, entry.i, entry.parts
-      local cat = parts.cat
-      if parts.take and parts.take ~= "" then
-        cat = cat .. " " .. parts.take
-      end
-      im.SetCursorPosX(ctx, im.GetCursorPosX(ctx)
-                            + (g.key ~= "" and 14 or 0))
-      if state.inbox_sel == i then
-        im.TextColored(ctx, 0x3E6FA3FF, "\226\150\184")
-        im.SameLine(ctx)
-      end
-      -- The issue is AMBER: the one word that says what kind of problem,
-      -- and the row's jump.
-      if not parts.plain then
-        im.PushStyleColor(ctx, im.Col_Text, 0xDDAA33FF)
-      end
-      if im.SmallButton(ctx, Inbox.Clip(cat, 26) .. "##inbevi" .. i) then
-        state.inbox_sel = i
-        Inbox.Jump(f)
-      end
-      if not parts.plain then im.PopStyleColor(ctx) end
-      if im.IsItemHovered(ctx) then
-        local label, detail = Inbox.Label(f)
-        im.SetTooltip(ctx, label ..
-          (detail and ("\n\n" .. detail) or "") ..
-          "\n\nClick: select it in REAPER / the sheet and move\nthe edit cursor to it.")
-      end
-      -- The fixes ride the same row as their issue.
-      local verbs, fold = Inbox.RowVerbs(f)
-      if fold then
-        im.SameLine(ctx)
-        if im.SmallButton(ctx, fold .. "##inbfold" .. i) then
-          im.OpenPopup(ctx, "##inbpop" .. i)
-        end
-        if im.BeginPopup(ctx, "##inbpop" .. i) then
-          for _, v in ipairs(verbs) do
-            if im.Selectable(ctx, "Fix from " .. v.label) then v.fn() end
-            if im.IsItemHovered(ctx) then im.SetTooltip(ctx, v.tip) end
-          end
-          im.EndPopup(ctx)
-        end
-      else
-        for vi, v in ipairs(verbs) do
-          im.SameLine(ctx)
-          if im.SmallButton(ctx, v.label .. "##inbverb" .. i .. "_" .. vi) then
-            v.fn()
-          end
-          if im.IsItemHovered(ctx) and v.tip then im.SetTooltip(ctx, v.tip) end
-        end
+end
+
+-- Line-less findings -- unheard sound -- plus the scanners' own state and
+-- the batch verbs, on one card pinned above the sheet. Drawn only when
+-- there is something to say (SPEC-todo-by-line.md Req-5).
+function Inbox.DrawSession()
+  local todo = state.todo or {}
+  local sess = todo.session or {}
+  local queue, dis = Inbox.queue or {}, Inbox.disagree or {}
+  im.TextDisabled(ctx, "Session")
+
+  -- A scanner that has not run this session: the lines it would judge sit
+  -- at Not Scanned in their cards; the button that RUNS it lives here --
+  -- the same Scan verbs the rail's status rows carried.
+  if state.suspects == nil then
+    im.SetCursorPosX(ctx, im.GetCursorPosX(ctx) + 14)
+    im.TextDisabled(ctx, "Suspects not scanned yet")
+    im.SameLine(ctx)
+    if im.SmallButton(ctx, "Scan##sessscansus") then
+      pending_action = function()
+        state.suspects = vo.ScanSuspects(state.overview or {},
+          state.transcripts or {}, state.lines or {}, vo.LoadConfig(),
+          vo.VERIFY_THRESH)
       end
     end
-    im.Spacing(ctx)
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "The free hunt: everything worth verifying, found\n" ..
+                         "from stored data alone. A press, not a frame.")
+    end
+  end
+  if state.unheard == nil then
+    im.SetCursorPosX(ctx, im.GetCursorPosX(ctx) + 14)
+    im.TextDisabled(ctx, "Audio not swept for unheard sound")
+    im.SameLine(ctx)
+    if im.SmallButton(ctx, "Scan##sessscanunh") then
+      pending_action = Repair.ScanUnheard
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Sweep the session's audio against the silence gate\n" ..
+        "for sound the transcript never heard. Seconds of\nAudioAccessor work.")
+    end
+  end
+
+  for i, f in ipairs(sess) do
+    local parts = Inbox.Parts(f)
+    im.SetCursorPosX(ctx, im.GetCursorPosX(ctx) + 14)
+    im.PushStyleColor(ctx, im.Col_Text, 0xDDAA33FF)
+    if im.SmallButton(ctx, Inbox.Clip(parts.cat .. " \194\183 " .. parts.group, 46)
+                           .. "##tsess" .. i) then
+      Inbox.Jump(f)
+    end
+    im.PopStyleColor(ctx)
+    if im.IsItemHovered(ctx) then
+      local label, detail = Inbox.Label(f)
+      im.SetTooltip(ctx, label .. (detail and ("\n\n" .. detail) or ""))
+    end
   end
 
   -- THE BATCH VERBS the panels had, kept: more than one finding of a kind
@@ -10204,10 +10205,8 @@ function Inbox.Draw(width, height)
   local function BatchHeader()
     if batch_drawn then return end
     batch_drawn = true
-    im.Separator(ctx)
     im.TextDisabled(ctx, "All of them:")
   end
-  local queue = Inbox.queue or {}
   if #queue > 1 then
     BatchHeader()
     if im.SmallButton(ctx, string.format("Fix %d out of sync\226\128\166##inbboos",
@@ -10308,7 +10307,7 @@ function Inbox.Draw(width, height)
     end
   end
 
-  im.EndChild(ctx)
+  im.Separator(ctx)
 end
 
 -- THE PIPELINE STRIP's methods (redesign spec, phase 2): six meters over
@@ -10548,28 +10547,29 @@ function Strip.Draw()
       "Off: nothing runs by itself, and the rail collects everything for\n" ..
       "you to fix by hand.")
   end
-  -- The Todo count doubles as the rail's toggle: the whole right column
-  -- (findings + log) folds away and the sheet takes the width. The count
-  -- stays on this button even while the rail is hidden, so a session can
-  -- never LOOK clean just because the list is out of sight.
+  -- The Todo count is the STRIPS' toggle now (SPEC-todo-by-line.md): each
+  -- line's Todo lives in its card, and this hides them all -- plus the log
+  -- column, so the sheet takes the width. The count stays on this button
+  -- even while the strips are hidden, so a session can never LOOK clean
+  -- just because the work is out of sight.
   im.SameLine(ctx)
   local inb = state.inbox_counts or { total = 0 }
-  local on = not state.rail_hidden
+  local on = not state.todo_hidden
   if on then
     im.PushStyleColor(ctx, im.Col_Button,
                       im.GetStyleColor(ctx, im.Col_ButtonActive))
   end
   if im.SmallButton(ctx, string.format("Todo (%d)", inb.total)) then
-    state.rail_hidden = on
-    r.SetExtState(vo.EXT_SECTION, "rail_hidden",
-                  tostring(state.rail_hidden), true)
-    if not state.rail_hidden and inb.total > 0 then state.inbox_sel = 1 end
+    state.todo_hidden = on
+    r.SetExtState(vo.EXT_SECTION, "todo_hidden",
+                  tostring(state.todo_hidden), true)
+    if not state.todo_hidden and inb.total > 0 then state.inbox_sel = 1 end
   end
   if on then im.PopStyleColor(ctx) end
   if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, state.rail_hidden
-      and "Show the Todo rail and the log. The count keeps counting\nwhile they are hidden."
-      or  "Hide the Todo rail and the log; the sheet takes the width.\nThe count stays here, still honest.")
+    im.SetTooltip(ctx, state.todo_hidden
+      and "Show each line's Todo strip and the log. The count keeps\ncounting while they are hidden."
+      or  "Hide the Todo strips and the log; the sheet takes the width.\nThe count stays here, still honest.")
   end
 end
 
@@ -12551,6 +12551,15 @@ local function DrawLineCard(node, z, flat_index, avail_w)
     end
     DrawAddTakeRow(rep, cx + CARD_PAD)
   end
+  -- The line's Todo, IN the card (SPEC-todo-by-line.md): the next stage of
+  -- work plus any errors. Folded cards show it too -- the strip is the
+  -- card's summary of what is left, and hiding it behind the fold would
+  -- make a folded sheet look done.
+  if not state.todo_hidden then
+    local todo_entry = state.todo and state.todo.by_key
+                       and state.todo.by_key[vo.LineKey(rep)]
+    if todo_entry then Inbox.DrawStrip(todo_entry) end
+  end
   im.EndGroup(ctx)
   local _, gh = im.GetItemRectSize(ctx)
   rep._card_full_h = gh + CARD_PAD * 2
@@ -12694,6 +12703,10 @@ local function DrawCardsBody(avail_w)
     im.TextDisabled(ctx, "With both, Edit \226\134\146 Run the whole pass does the rest.")
     return
   end
+  -- The Session card, pinned above the first line: line-less findings
+  -- (unheard sound), the scanners' own state, and the batch verbs
+  -- (SPEC-todo-by-line.md Req-5).
+  if not state.todo_hidden then Inbox.DrawSession() end
   local flat_index = state.flat_index or {}
   for ni, node in ipairs(state.nodes) do
     if node.kind == "line" or node.kind == "orphans" then
@@ -13069,23 +13082,30 @@ local function RunRemoteCommand(command)
     state.stage_filter = (rest ~= "" and rest ~= "clear") and rest or nil
     return "stage=" .. tostring(state.stage_filter)
   elseif verb == "todo" then
-    -- The rail's list as text: counts by kind, then every row's label
-    -- and tooltip detail. Read-only; what the triage eye needs.
+    -- The collapsed Todo as text: one line per LINE with work -- stage,
+    -- then its errors -- and the session rows. Read-only; what the triage
+    -- eye needs (SPEC-todo-by-line.md).
+    Strip.Assemble()
     Inbox.MaybeAssemble()
-    local out, kinds = {}, {}
-    local counts = state.inbox_counts or { total = 0 }
-    for k2, n2 in pairs(counts.by_kind or {}) do
-      kinds[#kinds + 1] = k2 .. "=" .. n2
-    end
-    table.sort(kinds)
-    out[#out + 1] = string.format("todo %d (%s)", counts.total or 0,
-                                  table.concat(kinds, ", "))
-    for i, f in ipairs(state.inbox or {}) do
+    local out = {}
+    local todo = state.todo or {}
+    for i, e in ipairs(todo.lines or {}) do
       if i > 200 then out[#out + 1] = "...capped at 200" break end
-      local lab, tip = Inbox.Label(f)
-      out[#out + 1] = string.format("%3d [%s] %s%s", i, f.kind, lab,
-        tip and (" || " .. tip:gsub("\n", " ")) or "")
+      out[#out + 1] = string.format("%3d %s: %s%s", i, e.label, e.stage_label,
+        e.conflict and (" (" .. #e.errors .. " error(s))") or "")
+      for _, f in ipairs(e.errors) do
+        local lab, tip = Inbox.Label(f)
+        out[#out + 1] = string.format("      [%s] %s%s", f.kind, lab,
+          tip and (" || " .. tip:gsub("\n", " ")) or "")
+      end
     end
+    for _, f in ipairs(todo.session or {}) do
+      local lab = Inbox.Label(f)
+      out[#out + 1] = "session: " .. lab
+    end
+    local counts = state.inbox_counts or { total = 0 }
+    out[#out + 1] = string.format("todo %d (%d line(s), %d session)",
+      counts.total or 0, counts.lines or 0, counts.session or 0)
     return table.concat(out, "\n")
   elseif verb == "rematch" then
     Rematch()
@@ -13880,8 +13900,10 @@ local function loop()
   -- The rail's list and the strip's meters, refreshed only when a feed
   -- changed; before Begin so the toolbar count, the strip and the rail
   -- all draw the same frame's answer.
-  Inbox.MaybeAssemble()
+  -- Strip first: Inbox.MaybeAssemble reads Strip.uncut for the stage
+  -- ladder, so the meters' collections must be current before the collapse.
   Strip.Assemble()
+  Inbox.MaybeAssemble()
 
   -- After the filters, so the follow lights rows the table is actually
   -- showing this frame.
@@ -14198,22 +14220,23 @@ local function loop()
     -- centerpiece (AJ's call on the redesign spec), the rail answers
     -- "what now", and THE LOG rides under the rail -- actions and their
     -- reports in one column, newest first. The Log tab retired with it.
-    -- The Sources STAGE swaps in for the sheet: same slot, same rail.
+    -- The Sources STAGE swaps in for the sheet: same slot.
     --
-    -- BOTH are collapsible (AJ, first session with it: the two sections
-    -- "eat up a lot of space"): the strip's Todo button hides the whole
-    -- rail and gives the sheet the full width, and the Log folds to its
-    -- header line. Each remembers its state across sessions.
-    if state.rail_hidden == nil then
-      state.rail_hidden = r.GetExtState(vo.EXT_SECTION, "rail_hidden") == "true"
+    -- The rail is gone (SPEC-todo-by-line.md): each line's Todo lives in
+    -- its card, and the right column holds only the LOG. The Todo button
+    -- hides the strips AND this column so the sheet takes the full width,
+    -- and the Log still folds to its header line. Each remembers its
+    -- state across sessions.
+    if state.todo_hidden == nil then
+      state.todo_hidden = r.GetExtState(vo.EXT_SECTION, "todo_hidden") == "true"
     end
     if state.log_folded == nil then
       state.log_folded = r.GetExtState(vo.EXT_SECTION, "log_folded") == "true"
     end
     local sheet_avail = select(1, im.GetContentRegionAvail(ctx))
-    local rail_w = state.rail_hidden and 0
+    local rail_w = state.todo_hidden and 0
                    or math.min(Inbox.WIDTH, math.floor(sheet_avail * 0.38))
-    local sheet_w = state.rail_hidden and 0  -- 0 = the full width, in ImGui
+    local sheet_w = state.todo_hidden and 0  -- 0 = the full width, in ImGui
                     or (sheet_avail - rail_w - item_gap)
     if state.stage_filter == "sources" then
       if im.BeginChild(ctx, "##vo_sources_stage", sheet_w, body_h) then
@@ -14223,16 +14246,15 @@ local function loop()
     else
       DrawCards(body_h, sheet_w)
     end
-    if not state.rail_hidden then
+    if not state.todo_hidden then
     im.SameLine(ctx)
     im.BeginGroup(ctx)
     local log_h
     if state.log_folded then
       log_h = im.GetFrameHeightWithSpacing(ctx)
     else
-      log_h = math.max(110, math.floor(body_h * 0.30))
+      log_h = body_h
     end
-    Inbox.Draw(rail_w, body_h - log_h - item_gap)
     if im.BeginChild(ctx, "##vo_log", rail_w, log_h) then
       local log = state.log or {}
       -- The header is the fold: the whole strip collapses to this line.
@@ -14245,7 +14267,7 @@ local function loop()
       if im.IsItemHovered(ctx) then
         im.SetTooltip(ctx, state.log_folded
           and "Unfold the log strip."
-          or  "Fold the log down to this line. The entries stay; the\nspace goes to the Todo list.")
+          or  "Fold the log down to this line. The entries stay; the\nspace goes back to the sheet.")
       end
       im.SameLine(ctx)
       if im.SmallButton(ctx, "Copy") and #log > 0 then
@@ -14334,10 +14356,10 @@ local function loop()
       im.EndChild(ctx)
     end
     im.EndGroup(ctx)
-    end -- not rail_hidden
-    -- No keys into a rail that is not on screen: an invisible walk
+    end -- not todo_hidden
+    -- No keys into strips that are not on screen: an invisible walk
     -- firing verbs is exactly the surprise this tool forbids.
-    if not state.rail_hidden then Inbox.HandleKeys() end
+    if not state.todo_hidden then Inbox.HandleKeys() end
 
     if not state.project_path then
       im.TextColored(ctx, 0xDDAA33FF,
