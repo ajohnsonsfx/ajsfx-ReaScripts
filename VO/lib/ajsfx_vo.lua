@@ -3442,7 +3442,13 @@ function vo.PlanRoleNames(rows, known_bases, cfg, opts)
   -- sort of messes with the alt naming"). Alts count 1..N among themselves
   -- and outs count 1..N among themselves.
   local pattern = cfg.alt_append_pattern or "_alt{n}"
-  local out_pat = cfg.out_append_pattern or "_out{n}"
+  -- DEFAULTS TO THE ALT PATTERN, i.e. off. Writing _out names without
+  -- teaching the five places that strip a suffix to find a line meant every
+  -- out stopped resolving to its script line -- 33 items fell off a finished
+  -- session (AJ, live, mid-export). The namespace is sound; the readers have
+  -- to learn it before the writer may use it again.
+  local out_pat = cfg.out_append_pattern
+  if not out_pat or out_pat == "" then out_pat = pattern end
   local digits  = math.floor(cfg.alt_append_digits or 1)
   local start   = math.floor(cfg.alt_append_start or 1)
 
@@ -3454,16 +3460,23 @@ function vo.PlanRoleNames(rows, known_bases, cfg, opts)
   end
   local num_matcher = matcher_for(pattern)
   local out_matcher = matcher_for(out_pat)
-  -- Which namespace a name is already in, so a take crossing between Alts
-  -- and Outs is recognised as needing a new name rather than keeping a
-  -- number that means nothing on its new track.
-  local function suffix_of(nm)
-    if nm:match(num_matcher) then return "keep" end
-    if nm:match(out_matcher) then return "out" end
-    return nil
-  end
-  local PAT = { keep = pattern, out = out_pat }
+  -- ONE pattern or two? With the out namespace off (the default) alts and
+  -- outs share a pattern AND a number pool, which is the behaviour that
+  -- predates it. Getting this wrong made a CONSERVATIVE pass plan 27
+  -- renumbers of takes nobody had touched, because every Outs row read as
+  -- sitting in the wrong namespace.
+  local split = (out_pat ~= pattern)
+  local PAT   = { keep = pattern,     out = out_pat }
   local MATCH = { keep = num_matcher, out = out_matcher }
+
+  -- The number this name already holds in `role`'s namespace, or nil if it
+  -- is not in that namespace at all. Unsplit, a number is just a number.
+  local function held_number(nm, role)
+    if not split then return tonumber(nm:match(num_matcher) or "") end
+    local other = (role == "keep") and out_matcher or num_matcher
+    if nm:match(other) then return nil end
+    return tonumber(nm:match(MATCH[role]) or "")
+  end
 
   local groups, order = {}, {}
   for _, row in ipairs(rows or {}) do
@@ -3501,13 +3514,17 @@ function vo.PlanRoleNames(rows, known_bases, cfg, opts)
         -- handed to a renumbered one: first the rows this planner may not
         -- rename, then the role rows that keep a uniquely-held alt name.
         -- One pool per namespace, so an out number can never block an alt.
-        local used = { keep = {}, out = {} }
+        -- Unsplit, the two roles share one pool, so outs go on counting
+        -- where the alts stopped -- exactly as before the namespace existed.
+        local used = { keep = {} }
+        used.out = split and {} or used.keep
         local needs, blocked = { keep = {}, out = {} }, nil
         local function claim(nm)
-          local kind = suffix_of(nm)
-          if not kind then return end
-          local n = tonumber(nm:match(MATCH[kind]) or "")
-          if n then used[kind][n] = true end
+          for _, kind in ipairs({ "keep", "out" }) do
+            local n = held_number(nm, kind)
+            if n then used[kind][n] = true end
+            if not split then return end
+          end
         end
         -- A promoted select's OLD number stays claimed: handing a name that
         -- existed a moment ago to a different take would quietly swap what
@@ -3544,8 +3561,7 @@ function vo.PlanRoleNames(rows, known_bases, cfg, opts)
               -- this row now belongs to: a take dragged from Alts to Outs
               -- wears _alt3, which says nothing about where it sits, so it
               -- is renamed rather than left claiming an out number.
-              local n = (suffix_of(row.name) == role)
-                        and tonumber(row.name:match(MATCH[role]) or "") or nil
+              local n = held_number(row.name, role)
               if row.name == base then
                 needs[role][#needs[role] + 1] = row  -- demoted: plain name is the select's
               elseif n and not used[role][n] then
@@ -9227,7 +9243,7 @@ vo.CONFIG_SCHEMA = {
   -- pattern meant takes nobody ships ate alt numbers and left gaps in the
   -- sequence that is delivered. Start and digits are shared: they are how
   -- AJ counts, not what the number means.
-  { key = "out_append_pattern", kind = "string", default = "_out{n}" },
+  { key = "out_append_pattern", kind = "string", default = "" },
   { key = "alt_append_start",   kind = "number", default = 1 },
   { key = "alt_append_digits",  kind = "number", default = 1 },
 

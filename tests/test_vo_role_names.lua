@@ -24,7 +24,7 @@ local vo = require("ajsfx_vo")
 print("\n=== ajsfx_vo.lua PlanRoleNames Unit Tests ===\n")
 
 local CFG = { alt_append_pattern = "_alt{n}", alt_append_start = 1,
-              alt_append_digits = 1 }
+              alt_append_digits = 1, out_append_pattern = "_out{n}" }
 local KNOWN = { Foo = true, Bar = true }
 
 local function renamed(plan, row)
@@ -386,6 +386,43 @@ test("straighten renumbers each namespace from 1", function()
   assert(renamed(plan, rows[2]) == "Foo_alt1", tostring(renamed(plan, rows[2])))
   assert(renamed(plan, rows[4]) == "Foo_alt2", tostring(renamed(plan, rows[4])))
   assert(renamed(plan, rows[3]) == "Foo_out1", tostring(renamed(plan, rows[3])))
+end)
+
+
+print("\nDefault config (out namespace OFF) must not churn:")
+
+-- The shipped default: no out_append_pattern at all. AJ's session ran a
+-- CONSERVATIVE pass under a half-disabled namespace and it planned 27
+-- renumbers of takes nobody had touched, because every Outs row read as
+-- sitting in the wrong namespace.
+local PLAIN = { alt_append_pattern = "_alt{n}", alt_append_start = 1,
+                alt_append_digits = 1 }
+
+test("settled names plan nothing at all", function()
+  local rows = {
+    { name = "Foo",       track_name = "Selects", pos = 0 },
+    { name = "Foo_alt5",  track_name = "Alts",    pos = 10 },
+    { name = "Foo_alt11", track_name = "Outs",    pos = 20 },
+    { name = "Foo_alt2",  track_name = "Outs",    pos = 30 },
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, PLAIN)
+  local names = {}
+  for _, rn in ipairs(plan.renames) do names[#names + 1] = rn.name end
+  assert(#plan.renames == 0,
+         "churned: " .. table.concat(names, ", "))
+end)
+
+test("outs and alts share one number pool when unsplit", function()
+  local rows = {
+    { name = "Foo",      track_name = "Selects", pos = 0 },
+    { name = "Foo_alt1", track_name = "Alts",    pos = 10 },
+    { name = "Bar",      track_name = "Selects", pos = 20 },
+    { name = "Bar",      track_name = "Outs",    pos = 30 },  -- needs a number
+  }
+  local plan = vo.PlanRoleNames(rows, KNOWN, PLAIN)
+  assert(renamed(plan, rows[4]) == "Bar_alt1",
+         "an unsplit out must take an alt number: "
+         .. tostring(renamed(plan, rows[4])))
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))
