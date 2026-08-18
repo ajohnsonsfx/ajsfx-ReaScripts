@@ -9600,8 +9600,6 @@ end
 -- Lua's 200-local ceiling.
 local Inbox = {}
 
-Inbox.WIDTH = 340
-
 -- What a suspect's trigger keys mean, as short category labels.
 Inbox.TRIGGERS = { name_mismatch = "Words mismatch", thin = "Thin coverage",
                    unmarked = "No marker", stamp = "Vet stale",
@@ -10310,6 +10308,106 @@ function Inbox.DrawSession()
   im.Separator(ctx)
 end
 
+-- THE LOG, in its own floating window (AJ: the log column "takes up a ton
+-- of room" -- the sheet keeps the full width, the record floats where you
+-- put it). Opened from the strip's Log button; remembers being open.
+-- ClipWrite and EntryText are locals of the main draw function, so the
+-- caller hands them in rather than this reaching for globals that are nil.
+function Inbox.DrawLog(clipwrite, entrytext)
+  if not state.log_open then return end
+  local log = state.log or {}
+  im.SetNextWindowSize(ctx, 420, 520, im.Cond_FirstUseEver)
+  local visible, open = im.Begin(ctx, string.format("VO Log (%d)###vo_log_win", #log), true)
+  if open ~= state.log_open then
+    state.log_open = open
+    r.SetExtState(vo.EXT_SECTION, "log_open", tostring(open), true)
+  end
+  if visible then
+    if im.SmallButton(ctx, "Copy") and #log > 0 then
+      -- Everything: what you copy is the whole record, not whichever
+      -- entries happened to be open.
+      local out = {}
+      for _, e in ipairs(log) do out[#out + 1] = entrytext(e) end
+      clipwrite(table.concat(out, "\n"))
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Copy every entry as text. For just one, right-click it.\n" ..
+                         "ImGui text is drawn rather than selectable, hence\n" ..
+                         "buttons and a context menu.")
+    end
+    im.SameLine(ctx)
+    if im.SmallButton(ctx, "Clear") then
+      state.log = {}
+      state.logged_message, state.logged_summary = nil, nil
+      Trim.log_save()
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, "Empty the log. It does not touch your audio.\n\n" ..
+                         "The log is stored WITH THE PROJECT, so it survives this\n" ..
+                         "window closing, the script restarting, and a crash. It\n" ..
+                         "goes when the project does.")
+    end
+    if (state.log_copied or 0) > 0 then
+      state.log_copied = state.log_copied - 1
+      im.SameLine(ctx)
+      im.TextColored(ctx, 0x66BB66FF, "copied")
+    end
+    im.Separator(ctx)
+    if #log == 0 then
+      im.TextDisabled(ctx,
+        "Nothing yet. Every run lands here as one entry,\nnewest first, and the entries stay.")
+    end
+    -- NEWEST FIRST: the entry you just caused is the one at the top,
+    -- no scrolling to find it.
+    for i = #log, 1, -1 do
+      local e = log[i]
+      local colour = e.kind == "error" and 0xDD6666FF
+                  or e.kind == "warn"  and 0xDDAA44FF or 0xCCCCCCFF
+      -- The header is a SUMMARY of the action, short enough to stay on
+      -- one line: a tree label cannot wrap, so the full text lives
+      -- inside where it can. Entries open closed.
+      local head = tostring(e.title or ""):gsub("%s+", " ")
+      if #head > 44 then head = head:sub(1, 43) .. "\226\128\166" end
+      im.PushStyleColor(ctx, im.Col_Text, colour)
+      local topen = im.TreeNode(ctx, string.format("%s  %s##log%d",
+                                                   e.stamp or "", head, i))
+      im.PopStyleColor(ctx)
+
+      -- Right-click THIS entry. Checked immediately after the tree
+      -- node, so IsItemHovered still refers to it.
+      local menu = "##logentry" .. i
+      if im.IsItemHovered(ctx) and im.IsMouseClicked(ctx, 1) then
+        im.OpenPopup(ctx, menu)
+      end
+      if im.BeginPopup(ctx, menu) then
+        if im.Selectable(ctx, "Copy this entry") then clipwrite(entrytext(e)) end
+        if im.Selectable(ctx, "Copy this entry's headline only") then
+          clipwrite((e.stamp or "") .. "  " .. (e.title or ""))
+        end
+        im.EndPopup(ctx)
+      end
+
+      if topen then
+        im.PushTextWrapPos(ctx, 0)
+        im.TextColored(ctx, colour, e.title or "")
+        for _, ln in ipairs(e.lines or {}) do
+          im.TextColored(ctx,
+            ln.kind == "warn" and 0xDDAA44FF or 0x999999FF, ln.text or "")
+        end
+        im.PopTextWrapPos(ctx)
+        im.TreePop(ctx)
+      end
+    end
+    -- Newest-first puts a fresh entry at the top; snap there when one
+    -- arrives so it is visible without a hunt.
+    if state.log_scroll then
+      im.SetScrollY(ctx, 0)
+      state.log_scroll = nil
+    end
+  end
+  im.End(ctx)
+end
+
 -- THE PIPELINE STRIP's methods (redesign spec, phase 2): six meters over
 -- the sheet, each stage a FILTER -- click "Decided 180/195" and the sheet
 -- shows exactly the fifteen undecided lines. Counts come from the same
@@ -10448,9 +10546,12 @@ function Strip.RowPasses(row)
     return row.status ~= "orphan" and row.asset ~= nil
        and not (Strip.covered or {})[row.asset]
   elseif f == "todo" then
-    -- Only lines with work left (SPEC-todo-by-line.md): the sheet drains
-    -- as Todo clears; empty sheet = session done.
+    -- Incomplete: only lines with work left (SPEC-todo-by-line.md): the
+    -- sheet drains as Todo clears; empty sheet = session done.
     return state.todo ~= nil and state.todo.by_key[vo.LineKey(row)] ~= nil
+  elseif f == "done" then
+    -- Complete: the inverse -- ladder cleared, no errors.
+    return state.todo ~= nil and state.todo.by_key[vo.LineKey(row)] == nil
   end
   return true
 end
@@ -10551,11 +10652,10 @@ function Strip.Draw()
       "Off: nothing runs by itself, and the rail collects everything for\n" ..
       "you to fix by hand.")
   end
-  -- The Todo count is the STRIPS' toggle now (SPEC-todo-by-line.md): each
-  -- line's Todo lives in its card, and this hides them all -- plus the log
-  -- column, so the sheet takes the width. The count stays on this button
-  -- even while the strips are hidden, so a session can never LOOK clean
-  -- just because the work is out of sight.
+  -- The Todo count is the STRIPS' toggle (SPEC-todo-by-line.md): each
+  -- line's Todo lives in its card, and this hides them all. The count
+  -- stays on this button even while the strips are hidden, so a session
+  -- can never LOOK clean just because the work is out of sight.
   im.SameLine(ctx)
   local inb = state.inbox_counts or { total = 0 }
   local on = not state.todo_hidden
@@ -10572,25 +10672,51 @@ function Strip.Draw()
   if on then im.PopStyleColor(ctx) end
   if im.IsItemHovered(ctx) then
     im.SetTooltip(ctx, state.todo_hidden
-      and "Show each line's Todo strip and the log. The count keeps\ncounting while they are hidden."
-      or  "Hide the Todo strips and the log; the sheet takes the width.\nThe count stays here, still honest.")
+      and "Show each line's Todo strip. The count keeps counting\nwhile they are hidden."
+      or  "Hide the Todo strips. The count stays here, still honest.")
   end
-  -- The drain filter, one click from the count (SPEC-todo-by-line.md):
-  -- only lines with work; finish a line and it leaves the sheet.
+  -- Filter by STATUS (AJ): Incomplete = lines with work left, Complete =
+  -- lines that are done. Mutually exclusive; neither pressed = all lines.
+  -- Incomplete is the drain: finish a line and it leaves the sheet --
+  -- empty sheet, session done.
   im.SameLine(ctx)
-  local filtering = state.stage_filter == "todo"
-  if filtering then
+  local function status_button(label, id, tip)
+    local active = state.stage_filter == id
+    if active then
+      im.PushStyleColor(ctx, im.Col_Button,
+                        im.GetStyleColor(ctx, im.Col_ButtonActive))
+    end
+    if im.SmallButton(ctx, label) then
+      state.stage_filter = (not active) and id or nil
+    end
+    if active then im.PopStyleColor(ctx) end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx, active and "Show every line again." or tip)
+    end
+  end
+  status_button("Incomplete", "todo",
+    "Only lines with work left. Finish a line's Todo and it\nleaves the sheet -- empty sheet, session done.")
+  im.SameLine(ctx)
+  status_button("Complete", "done",
+    "Only finished lines: ladder cleared, no errors.\nThe inverse of Incomplete.")
+
+  -- The log, in its own window now -- the count rides the button here
+  -- so the record is never out of sight even when its window is.
+  im.SameLine(ctx)
+  local log_on = state.log_open == true
+  if log_on then
     im.PushStyleColor(ctx, im.Col_Button,
                       im.GetStyleColor(ctx, im.Col_ButtonActive))
   end
-  if im.SmallButton(ctx, filtering and "All lines" or "Only todo") then
-    state.stage_filter = filtering and nil or "todo"
+  if im.SmallButton(ctx, string.format("Log (%d)", #(state.log or {}))) then
+    state.log_open = not log_on
+    r.SetExtState(vo.EXT_SECTION, "log_open", tostring(state.log_open), true)
   end
-  if filtering then im.PopStyleColor(ctx) end
+  if log_on then im.PopStyleColor(ctx) end
   if im.IsItemHovered(ctx) then
-    im.SetTooltip(ctx, filtering
-      and "Show every line again."
-      or  "Only lines with work left. Finish a line's Todo and it\nleaves the sheet -- empty sheet, session done.")
+    im.SetTooltip(ctx, log_on
+      and "Close the log window."
+      or  "Open the log in its own window: every run, newest first.\nStored with the project.")
   end
 end
 
@@ -14237,147 +14363,26 @@ local function loop()
     local body_h = math.max(120,
       avail_h - im.GetFrameHeightWithSpacing(ctx) * rows)
 
-    -- The sheet and the rail split the body: the sheet stays the
-    -- centerpiece (AJ's call on the redesign spec), the rail answers
-    -- "what now", and THE LOG rides under the rail -- actions and their
-    -- reports in one column, newest first. The Log tab retired with it.
-    -- The Sources STAGE swaps in for the sheet: same slot.
-    --
-    -- The rail is gone (SPEC-todo-by-line.md): each line's Todo lives in
-    -- its card, and the right column holds only the LOG. The Todo button
-    -- hides the strips AND this column so the sheet takes the full width,
-    -- and the Log still folds to its header line. Each remembers its
-    -- state across sessions.
+    -- THE SHEET IS THE BODY, full width (SPEC-todo-by-line.md, amended:
+    -- AJ, first session with the strips -- the log column "takes up a ton
+    -- of room"). Each line's Todo lives in its card; the LOG lives in its
+    -- own floating window (Inbox.DrawLog), opened from the strip's Log
+    -- button. The Sources STAGE swaps in for the sheet: same slot.
     if state.todo_hidden == nil then
       state.todo_hidden = r.GetExtState(vo.EXT_SECTION, "todo_hidden") == "true"
     end
-    if state.log_folded == nil then
-      state.log_folded = r.GetExtState(vo.EXT_SECTION, "log_folded") == "true"
+    if state.log_open == nil then
+      state.log_open = r.GetExtState(vo.EXT_SECTION, "log_open") == "true"
     end
-    local sheet_avail = select(1, im.GetContentRegionAvail(ctx))
-    local rail_w = state.todo_hidden and 0
-                   or math.min(Inbox.WIDTH, math.floor(sheet_avail * 0.38))
-    local sheet_w = state.todo_hidden and 0  -- 0 = the full width, in ImGui
-                    or (sheet_avail - rail_w - item_gap)
     if state.stage_filter == "sources" then
-      if im.BeginChild(ctx, "##vo_sources_stage", sheet_w, body_h) then
+      if im.BeginChild(ctx, "##vo_sources_stage", 0, body_h) then
         sources_ui.Draw(ctx)
         im.EndChild(ctx)
       end
     else
-      DrawCards(body_h, sheet_w)
+      DrawCards(body_h, 0)
     end
-    if not state.todo_hidden then
-    im.SameLine(ctx)
-    im.BeginGroup(ctx)
-    local log_h
-    if state.log_folded then
-      log_h = im.GetFrameHeightWithSpacing(ctx)
-    else
-      log_h = body_h
-    end
-    if im.BeginChild(ctx, "##vo_log", rail_w, log_h) then
-      local log = state.log or {}
-      -- The header is the fold: the whole strip collapses to this line.
-      if im.SmallButton(ctx, string.format("%s Log (%d)##logfold",
-           state.log_folded and "\226\150\184" or "\226\150\190", #log)) then
-        state.log_folded = not state.log_folded
-        r.SetExtState(vo.EXT_SECTION, "log_folded",
-                      tostring(state.log_folded), true)
-      end
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, state.log_folded
-          and "Unfold the log strip."
-          or  "Fold the log down to this line. The entries stay; the\nspace goes back to the sheet.")
-      end
-      im.SameLine(ctx)
-      if im.SmallButton(ctx, "Copy") and #log > 0 then
-        -- Everything, folded or not: what you copy is the whole record,
-        -- not whichever entries happened to be open.
-        local out = {}
-        for _, e in ipairs(log) do out[#out + 1] = EntryText(e) end
-        ClipWrite(table.concat(out, "\n"))
-      end
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, "Copy every entry as text. For just one, right-click it.\n" ..
-                           "ImGui text is drawn rather than selectable, hence\n" ..
-                           "buttons and a context menu.")
-      end
-      im.SameLine(ctx)
-      if im.SmallButton(ctx, "Clear") then
-        state.log = {}
-        state.logged_message, state.logged_summary = nil, nil
-        Trim.log_save()
-      end
-      if im.IsItemHovered(ctx) then
-        im.SetTooltip(ctx, "Empty the log. It does not touch your audio.\n\n" ..
-                           "The log is stored WITH THE PROJECT, so it survives this\n" ..
-                           "window closing, the script restarting, and a crash. It\n" ..
-                           "goes when the project does.")
-      end
-      if (state.log_copied or 0) > 0 then
-        state.log_copied = state.log_copied - 1
-        im.SameLine(ctx)
-        im.TextColored(ctx, 0x66BB66FF, "copied")
-      end
-      if not state.log_folded then
-      im.Separator(ctx)
-      if #log == 0 then
-        im.TextDisabled(ctx,
-          "Nothing yet. Every run lands\nhere as one entry, newest\nfirst, and the entries stay.")
-      end
-      -- NEWEST FIRST: the strip sits under the rail, so the entry you
-      -- just caused is the one at the top, no scrolling to find it.
-      for i = #log, 1, -1 do
-        local e = log[i]
-        local colour = e.kind == "error" and 0xDD6666FF
-                    or e.kind == "warn"  and 0xDDAA44FF or 0xCCCCCCFF
-        -- The header is a SUMMARY of the action, short enough to stay on
-        -- one line: a tree label cannot wrap, so the full text lives
-        -- inside where it can. Entries open closed.
-        local head = tostring(e.title or ""):gsub("%s+", " ")
-        if #head > 44 then head = head:sub(1, 43) .. "\226\128\166" end
-        im.PushStyleColor(ctx, im.Col_Text, colour)
-        local topen = im.TreeNode(ctx, string.format("%s  %s##log%d",
-                                                     e.stamp or "", head, i))
-        im.PopStyleColor(ctx)
-
-        -- Right-click THIS entry. Checked immediately after the tree
-        -- node, so IsItemHovered still refers to it.
-        local menu = "##logentry" .. i
-        if im.IsItemHovered(ctx) and im.IsMouseClicked(ctx, 1) then
-          im.OpenPopup(ctx, menu)
-        end
-        if im.BeginPopup(ctx, menu) then
-          if im.Selectable(ctx, "Copy this entry") then ClipWrite(EntryText(e)) end
-          if im.Selectable(ctx, "Copy this entry's headline only") then
-            ClipWrite((e.stamp or "") .. "  " .. (e.title or ""))
-          end
-          im.EndPopup(ctx)
-        end
-
-        if topen then
-          im.PushTextWrapPos(ctx, 0)
-          im.TextColored(ctx, colour, e.title or "")
-          for _, ln in ipairs(e.lines or {}) do
-            im.TextColored(ctx,
-              ln.kind == "warn" and 0xDDAA44FF or 0x999999FF, ln.text or "")
-          end
-          im.PopTextWrapPos(ctx)
-          im.TreePop(ctx)
-        end
-      end
-      -- Newest-first puts a fresh entry at the top; snap there when one
-      -- arrives so it is visible without a hunt.
-      if state.log_scroll then
-        im.SetScrollY(ctx, 0)
-        state.log_scroll = nil
-      end
-      end -- not log_folded
-      im.EndChild(ctx)
-    end
-    im.EndGroup(ctx)
-    end -- not todo_hidden
+    Inbox.DrawLog(ClipWrite, EntryText)
     -- No keys into strips that are not on screen: an invisible walk
     -- firing verbs is exactly the surprise this tool forbids.
     if not state.todo_hidden then Inbox.HandleKeys() end
