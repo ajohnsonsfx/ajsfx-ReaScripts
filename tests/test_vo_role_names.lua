@@ -540,5 +540,27 @@ test("no name at all falls back to the marker's line", function()
   assert(vo.NamedAssetOf("", "line_b", NA_LINES, {}) == "line_b")
 end)
 
+
+print("\nAn out name is a conventional name too:")
+
+test("the out suffix is accepted like the alt suffix", function()
+  -- AJ: the marker carries the script filename, the item carries filename +
+  -- append. Both are CORRECT. Only the alt suffix was recognised, so every
+  -- out was reported as marker/item name mismatch.
+  assert(vo.IsConventionalAltName("Foo_out1", "Foo", "_alt{n}", "_out{n}"),
+         "an out name read as a disagreement")
+  assert(vo.IsConventionalAltName("Foo_alt3", "Foo", "_alt{n}", "_out{n}"))
+end)
+
+test("a genuinely different name is still a disagreement", function()
+  assert(not vo.IsConventionalAltName("Bar_out1", "Foo", "_alt{n}", "_out{n}"))
+  assert(not vo.IsConventionalAltName("Foo_wat1", "Foo", "_alt{n}", "_out{n}"))
+end)
+
+test("with no out pattern it behaves exactly as before", function()
+  assert(vo.IsConventionalAltName("Foo_alt3", "Foo", "_alt{n}"))
+  assert(not vo.IsConventionalAltName("Foo_out1", "Foo", "_alt{n}"))
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

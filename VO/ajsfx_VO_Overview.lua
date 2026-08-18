@@ -1226,7 +1226,8 @@ local function Rebuild()
   for _, t in ipairs(state.transcripts or {}) do pq_words[t.path] = t.words end
   local pq_seen = {}
   for _, d in ipairs(vo.ParityDiff(pq_takes,
-      { alt_pattern = cfg.alt_append_pattern })) do
+      { alt_pattern = cfg.alt_append_pattern,
+        out_pattern = cfg.out_append_pattern })) do
     -- The EVIDENCE rides with the row: what the take actually says, so the
     -- reader can judge the disagreement without a hunt. The audit that
     -- taught this: a row reading "marker says X, item says Y" left the one

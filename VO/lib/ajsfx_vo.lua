@@ -1248,8 +1248,16 @@ end
 --
 -- Anchored at both ends: "line_042_alt1_room" is a name with a reason behind
 -- it, not the convention.
-function vo.IsConventionalAltName(name, base, pattern)
+-- A take of a line wears the line name plus a role suffix: the marker
+-- carries the script filename and the item carries filename + append, and
+-- BOTH are correct. Any configured suffix counts -- reading only the alt
+-- pattern reported every out as a marker/item name mismatch (AJ, live).
+function vo.IsConventionalAltName(name, base, pattern, out_pattern)
   if not name or not base or base == "" then return false end
+  if out_pattern and out_pattern ~= "" and out_pattern ~= pattern
+     and vo.IsConventionalAltName(name, base, out_pattern) then
+    return true
+  end
   -- Lua patterns: braces are not magic, so escaping the rest leaves "{n}"
   -- findable afterwards.
   local function esc(s)
@@ -2168,10 +2176,12 @@ function vo.ParityDiff(takes, opts)
       local deliver = tk.sheet and tk.sheet.deliver
       local agrees = not (iname and iname ~= "")
         or iname == tk.marker.asset
-        or vo.IsConventionalAltName(iname, tk.marker.asset, opts.alt_pattern)
+        or vo.IsConventionalAltName(iname, tk.marker.asset, opts.alt_pattern,
+                                    opts.out_pattern)
         or (deliver and deliver ~= "" and
             (iname == deliver
-             or vo.IsConventionalAltName(iname, deliver, opts.alt_pattern)))
+             or vo.IsConventionalAltName(iname, deliver, opts.alt_pattern,
+                                         opts.out_pattern)))
       if not agrees then
         fields[#fields + 1] = "name"
         detail = string.format("marker says %s, item says %s",
