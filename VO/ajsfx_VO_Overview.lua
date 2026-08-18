@@ -10617,6 +10617,36 @@ function Strip.Draw()
     if im.IsItemHovered(ctx) then
       im.SetTooltip(ctx, Strip.TIPS[s.id] or s.label)
     end
+    -- THE FREE HUNT, BESIDE THE METER IT FEEDS (AJ). It lived only on the
+    -- Session card, which scrolls away with the sheet -- so the one button
+    -- that turns suspicion on was invisible exactly while you were working.
+    -- Amber until it has run: an unscanned sheet must never read as a clean
+    -- one, and this is the press that settles it.
+    if s.id == "verified" then
+      im.SameLine(ctx)
+      local never = state.suspects == nil
+      if never then im.PushStyleColor(ctx, im.Col_Text, 0xDDAA33FF) end
+      if im.SmallButton(ctx, "Scan##stripscan") then
+        pending_action = function()
+          state.suspects = vo.ScanSuspects(state.overview or {},
+            state.transcripts or {}, state.lines or {}, vo.LoadConfig(),
+            vo.VERIFY_THRESH)
+          state.message, state.message_kind = string.format(
+            "Scanned %d row(s): %d worth a listen.",
+            #(state.overview or {}), #state.suspects), "ok"
+        end
+      end
+      if never then im.PopStyleColor(ctx) end
+      if im.IsItemHovered(ctx) then
+        im.SetTooltip(ctx, never
+          and ("The free hunt: which delivered takes are worth a listen,\n" ..
+               "found from stored words alone -- no whisper, no audio pass.\n" ..
+               "Its findings land on the lines themselves as errors.\n\n" ..
+               "NOT RUN YET, so no line is carrying what it would say.")
+          or  ("Re-run the free hunt over the stored words.\n\n" ..
+               (state.suspects and (#state.suspects .. " take(s) flagged last time.") or "")))
+      end
+    end
   end
   if state.stage_filter then
     im.SameLine(ctx)
