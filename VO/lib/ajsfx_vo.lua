@@ -9855,7 +9855,12 @@ function vo.ResolveScratchDir(cfg)
       local h, p = r.EnumProjects(-1, "")
       return h, p
     end)
-    local name = ok and proj and proj ~= ""
+    -- A failed pcall returns (false, errormessage): `handle` is then the
+    -- error TEXT, not a project. Naming a directory after it wrote folders
+    -- called "unsaved-attempttocallanilvaluefieldEnumProjects" -- so a call
+    -- that failed now names nothing at all.
+    if not ok then handle, proj = nil, nil end
+    local name = proj and proj ~= ""
       and proj:match("([^/\\]+)%.[Rr][Pp][Pp]$")
     if not name then
       -- An unsaved project has no name to be isolated BY, and a shared
