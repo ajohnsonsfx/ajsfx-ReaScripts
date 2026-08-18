@@ -45,7 +45,16 @@ place in the pipeline -- and may additionally carry errors. The stage names
                           audio left the project (tooltip says which)
     2. "Needs edit"    -- takes still sitting uncut on the recording track
     3. "Needs select"  -- takes exist, none is the pick
-    4. "Unverified"    -- delivered but no ears/stamp on it
+    4. "Unverified"    -- delivered, but nobody has confirmed the READ:
+                          no OK box of yours (confirmed_state) and no Vet
+                          stamp of the machine's, on the take that SHIPS.
+                          The Lock box is not a verdict -- it settles which
+                          take, not whether the read is right, and reading
+                          it here left a session of hand-OK'd lines all
+                          saying Unverified (AJ, live). OK on an ALT does
+                          not verify the line; the select is what ships.
+                          Its one button is Verify -- the rung must never
+                          name a problem and no remedy
     5. "Done"          -- stage ladder cleared AND no errors; the line
                           leaves the Todo filter
 

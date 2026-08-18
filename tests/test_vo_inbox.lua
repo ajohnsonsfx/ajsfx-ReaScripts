@@ -362,6 +362,31 @@ test("error homes match the AJ-approved mapping", function()
   assert(vo.ErrorHome({ kind = "unheard", payload = {} }) == nil)
 end)
 
+
+test("OK on the delivered take clears Unverified -- it is YOUR ears", function()
+  -- The Lock box writes user_status='verified'; the OK box writes
+  -- confirmed_state='ok'. Reading only the first counted LOCKS and left a
+  -- whole session of hand-OK'd lines reading Unverified (AJ, live).
+  assert(vo.LineStage({ has_takes = true, any_item = true,
+                        picked = true, verified = true }) == "done")
+end)
+
+test("the machine's Vet counts as well as yours", function()
+  local g = { has_takes = true, any_item = true, picked = true, verified = true }
+  assert(vo.LineStage(g) == "done")
+end)
+
+test("a Lock alone settles the pick but never the verdict", function()
+  -- Locked, nothing picked: past Needs select (the Decided meter agrees),
+  -- but locking is not listening, so it stops at Unverified.
+  assert(vo.LineStage({ has_takes = true, any_item = true,
+                        locked = true }) == "unverified")
+end)
+
+test("picked but nobody has confirmed it is Unverified", function()
+  assert(vo.LineStage({ has_takes = true, any_item = true,
+                        picked = true }) == "unverified")
+end)
 print("\nTodoBuild:")
 
 local function tb(src) return vo.TodoBuild(src) end
@@ -385,7 +410,7 @@ end)
 
 test("errors pull the stage back to their home, never forward", function()
   local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
-               user_select = true, user_status = "verified" }
+               user_select = true, confirmed_state = "ok" }
   local findings = vo.InboxBuild({
     contested = { { key = "s1", label = "line_a", count = 2, claimants = { r1 } } },
   })
@@ -406,7 +431,7 @@ end)
 
 test("a done line is absent", function()
   local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
-               user_select = true, user_status = "verified" }
+               user_select = true, confirmed_state = "ok" }
   local todo, counts = tb({ findings = {}, rows = { r1 }, scanned = true })
   assert(counts.total == 0, "got " .. counts.total)
   assert(todo.by_key["s1"] == nil)
@@ -454,6 +479,41 @@ test("orphan rows are not lines", function()
   assert(counts.total == 0)
 end)
 
+
+test("a picked take with OK ticked leaves the Todo entirely", function()
+  -- AJ's live report: every line read Unverified although he had ticked OK
+  -- on each one. The gather was reading the LOCK box, not the OK box.
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+               user_select = true, confirmed_state = "ok" }
+  local todo, counts = tb({ findings = {}, rows = { r1 } })
+  assert(counts.total == 0, "still on the list: "
+         .. tostring(todo.by_key["s1"] and todo.by_key["s1"].stage))
+end)
+
+test("the machine's Vet stamp clears it too", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+               user_select = true, vetted_state = "ok" }
+  local _, counts = tb({ findings = {}, rows = { r1 } })
+  assert(counts.total == 0)
+end)
+
+test("OK on an ALT does not verify the line -- the select is what ships", function()
+  local sel = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+                user_select = true }
+  local alt = { script_row = "s1", asset = "line_a", take_index = 2, item = "i2",
+                confirmed_state = "ok" }
+  local todo = tb({ findings = {}, rows = { sel, alt } })
+  assert(todo.by_key["s1"].stage == "unverified",
+         "got " .. tostring(todo.by_key["s1"] and todo.by_key["s1"].stage))
+end)
+
+test("a Lock settles the pick but leaves the line Unverified", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+               user_status = "verified" }
+  local todo = tb({ findings = {}, rows = { r1 } })
+  assert(todo.by_key["s1"].stage == "unverified",
+         "got " .. tostring(todo.by_key["s1"].stage))
+end)
 --------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end

@@ -6921,7 +6921,7 @@ function vo.LineStage(g)
   g = g or {}
   if not g.has_takes or not g.any_item then return "not_found" end
   if g.any_uncut then return "needs_edit" end
-  if not g.picked and not g.verified then return "needs_select" end
+  if not g.picked and not g.locked then return "needs_select" end
   if not g.verified then return "unverified" end
   return "done"
 end
@@ -6996,7 +6996,17 @@ function vo.TodoBuild(src)
       end
       if row.item and uncut[row.item] then ga.any_uncut = true end
       if row.user_select then ga.picked = true end
-      if row.user_status == "verified" then ga.verified = true end
+      -- The Lock box (user_status "verified") settles WHICH take, exactly as
+      -- the Decided meter reads it. It is not a verdict on the READ.
+      if row.user_status == "verified" then ga.locked = true end
+      -- VERIFICATION IS EARS: the OK box is yours (confirmed_state), the Vet
+      -- stamp is the machine's, and it counts for the take that actually ships.
+      -- Reading the Lock box instead left a whole session of hand-OK'd lines
+      -- all reading Unverified (AJ, live 2026-08-17).
+      if (row.user_select or row.user_status == "verified")
+         and (row.confirmed_state == "ok" or row.vetted_state == "ok") then
+        ga.verified = true
+      end
     end
   end
 

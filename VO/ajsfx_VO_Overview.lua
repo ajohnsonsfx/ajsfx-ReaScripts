@@ -10140,6 +10140,41 @@ function Inbox.DrawStrip(entry, indent)
     im.SetTooltip(ctx, "The next work on this line. Clears on its own\n" ..
                        "when the state that caused it is fixed.")
   end
+  -- THE ONE STAGE WITH A BUTTON. Verify is already a verb in the bar, so
+  -- offering it here breaks no law (a Todo row may press what is already a
+  -- button elsewhere) -- and Unverified was the rung that named the problem
+  -- and no remedy, which is the one thing a Todo row must never do (AJ).
+  -- Acts on the take that ships, not the alts.
+  if entry.stage == "unverified" then
+    im.SameLine(ctx)
+    if im.SmallButton(ctx, "Verify##tdver" .. entry.key) then
+      local key = entry.key
+      pending_action = function()
+        local rows = {}
+        for _, row in ipairs(state.overview or {}) do
+          if vo.LineKey(row) == key and row.item
+             and (row.user_select or row.user_status == "verified") then
+            rows[#rows + 1] = row
+          end
+        end
+        if #rows > 0 then
+          Verify.Enqueue(rows)
+        else
+          state.message, state.message_kind =
+            "Nothing picked on that line to verify.", "warn"
+        end
+      end
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx,
+        "Listen to this line's delivered take and stamp it. A fresh\n" ..
+        "whisper decode -- the model reloads per item, so budget\n" ..
+        "roughly 20s.\n\n" ..
+        "Ticking OK on the take yourself does the same job instantly,\n" ..
+        "and is the right answer when whisper mishears a read that is\n" ..
+        "actually correct.")
+    end
+  end
   for i, f in ipairs(entry.errors) do
     local parts = Inbox.Parts(f)
     local cat = parts.cat
