@@ -7754,11 +7754,28 @@ function Dest.flush_auto_sort()
   if moved > 0 then
     r.UpdateArrange()
     Reload()
+    -- THE NAME FOLLOWS IN THE SAME BREATH. The watcher would get to this a
+    -- few settled frames later, but between the move and the sweep the take
+    -- sits on Selects still wearing an alt name -- and everything that reads
+    -- names sees it: AJ ticked Sel and was told his new select had a name
+    -- conflict, by a disagreement the tool was already on its way to fixing.
+    -- An intermediate state nobody asked for is exactly what one transaction
+    -- per verb exists to prevent (SPEC-todo-by-line.md).
+    local name_trouble = false
+    if vo.LoadConfig().names_follow_tracks ~= false then
+      RoleNames.Apply(true)
+      -- A refused rename is the one thing here worth interrupting for: it
+      -- means two takes claim one name and the tool would not guess. Its
+      -- message survives; the routine "sorted N" line does not overwrite it.
+      name_trouble = (state.message_kind == "error")
+    end
+    if not name_trouble then
     state.message, state.message_kind = string.format(
       "Sorted %d take%s onto the track its marks say.%s", moved,
       moved == 1 and "" or "s",
       stranded > 0 and string.format(
         " %d had no audio in the timeline to move.", stranded) or ""), "ok"
+    end
   elseif stranded > 0 then
     state.message, state.message_kind = string.format(
       "Nothing to sort: %d marked take%s has no audio in the timeline.",
@@ -13718,6 +13735,23 @@ local function RunRemoteCommand(command)
       named_no_marker, mm.n or 0) }
     for _, s in ipairs(mm) do bits[#bits + 1] = "   " .. s end
     return table.concat(bits, "\n")
+  elseif verb == "role_names" then
+    -- Read-only: what "names follow the tracks" WOULD do right now, and what
+    -- it would refuse. Changes nothing. Exists because a rename that does not
+    -- happen looks identical to one that was never wanted, and the difference
+    -- is always in the conflict list.
+    local plan = RoleNames.Plan()
+    local bits = { string.format("%d rename(s), %d conflict(s)",
+                                 #plan.renames, #plan.conflicts) }
+    for i, rn in ipairs(plan.renames) do
+      if i > 30 then bits[#bits + 1] = "   ..." break end
+      bits[#bits + 1] = string.format("   %s -> %s",
+        (rn.row and rn.row.name) or "?", rn.name or "?")
+    end
+    for _, c in ipairs(plan.conflicts) do
+      bits[#bits + 1] = "   CONFLICT " .. tostring(c.detail)
+    end
+    return table.concat(bits, "\n")
   elseif verb == "cut_scope" then
     -- The cut's scope funnel, WITHOUT cutting. CutCandidates only reads, so
     -- this is safe to fire at a live session: it answers "why did it only cut
@@ -14061,6 +14095,22 @@ local function RunRemoteCommand(command)
     AutoSelectTakes(AffectedRows(), rule)
     return string.format("pick %s: %s", rule,
                          state.message or "ran with no result string")
+  elseif verb == "sel" then
+    -- The Sel CHECKBOX, headless -- SetSelect and its auto-sort, not the
+    -- richer MakeSelect the context verb presses. The two reach the same
+    -- state by different code, so a test that drives one proves nothing
+    -- about the other; this is how the checkbox path gets tested at all.
+    local name, want = rest:match("^(%S+)%s+(%S+)$")
+    if not name then return "usage: sel <take name> on|off" end
+    for _, row in ipairs(state.overview or {}) do
+      if row.take_name == name then
+        local on = (want == "on")
+        Batch(function() SetSelect(row, on) end)
+        return string.format("sel %s %s: %s", name, want,
+                             state.message or "no result string")
+      end
+    end
+    return "no row carries the take name: " .. name
   elseif verb == "make_select" then
     -- Promote the take currently named `rest` to its line's Select.
     for _, row in ipairs(state.overview or {}) do
