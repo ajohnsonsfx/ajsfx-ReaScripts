@@ -2344,7 +2344,11 @@ end
 -- session kept a 26s clip at position 0 called "..._HungryAlone_Root_alt2" --
 -- a name it had every right to be believed about, since Pull routes by name and
 -- the sheet lists it as a take. Residue outside every region is still residue.
-function Trim.clear_residue_names(regions)
+function Trim.clear_residue_names(regions, dry)
+  -- `dry` counts without writing, so a button can say how many clips it
+  -- would touch BEFORE it is pressed. One walk, one set of rules: a count
+  -- that came from a second implementation could disagree with the sweep,
+  -- and a number that lies about what a press will do is worse than none.
   local cleared = 0
   -- Tracks can go stale the same way items do -- deleting a recording folder
   -- takes its children with it -- so the region's track is checked too.
@@ -2369,7 +2373,9 @@ function Trim.clear_residue_names(regions)
         if take and not r.TakeIsMIDI(take) then
           local _, nm = r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
           if nm and nm ~= "" and not Trim.has_marker(item) then
-            r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", true)
+            if not dry then
+              r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", true)
+            end
             cleared = cleared + 1
           end
         end
@@ -2402,7 +2408,7 @@ end
 -- ordinary track to anything scanning by role, and Review is full of marked
 -- takes, so it would have been swept as if it were a recording. Every
 -- destination Pull writes to is asked for by name instead.
-function Trim.sweep_residue_names()
+function Trim.sweep_residue_names(dry)
   local cfg, seen, regions = vo.LoadConfig(), {}, {}
   local dest = {}
   for _, k in ipairs({ "track_selects", "track_alts", "track_review", "track_outs" }) do
@@ -2434,7 +2440,7 @@ function Trim.sweep_residue_names()
       end
     end
   end
-  return Trim.clear_residue_names(regions), #regions
+  return Trim.clear_residue_names(regions, dry), #regions
 end
 
 -- Clips whose NAME and whose MARKER name two different lines.
@@ -10341,6 +10347,51 @@ function Inbox.DrawSession()
     if im.IsItemHovered(ctx) then
       im.SetTooltip(ctx, "Sweep the session's audio against the silence gate\n" ..
         "for sound the transcript never heard. Seconds of\nAudioAccessor work.")
+    end
+  end
+
+  -- RESIDUE: clips wearing a take's name with no take marker under them.
+  -- The cut leaves them behind on the recording track, and because THE NAME
+  -- IS THE ASSIGNMENT the sheet adopts each one as an extra take of that
+  -- line -- a take that cannot be played, cannot be verified, and shows a
+  -- source span of nothing. AJ hit one as "a take that seems to be a
+  -- mistake (may not exist)". The sweep was already written; it just had no
+  -- button, which meant the only cure was a seam command.
+  --
+  -- Counted on the rebuild tick, not per frame: it walks every item on every
+  -- recording track.
+  if state.residue_seen ~= state.overview then
+    state.residue_seen = state.overview
+    state.residue_count = select(1, Trim.sweep_residue_names(true))
+  end
+  if (state.residue_count or 0) > 0 then
+    im.SetCursorPosX(ctx, im.GetCursorPosX(ctx) + 14)
+    im.TextDisabled(ctx, string.format(
+      "%d clip(s) named as takes with no marker", state.residue_count))
+    im.SameLine(ctx)
+    if im.SmallButton(ctx, "Clear names##sessresidue") then
+      pending_action = function()
+        local cleared, tracks
+        core.Transaction("VO Overview: clear residue names", function()
+          cleared, tracks = Trim.sweep_residue_names()
+        end)
+        state.residue_seen = nil
+        Reload()
+        state.message, state.message_kind = string.format(
+          "Cleared the take name from %d clip(s) with no take marker, " ..
+          "across %d recording track(s).", cleared, tracks), "ok"
+      end
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx,
+        "Take the names off clips that carry no take marker.\n\n" ..
+        "The marker IS the take, so a named clip without one is residue\n" ..
+        "the cut left behind -- but the name still claims a line, so the\n" ..
+        "sheet lists it as a take you cannot play or verify.\n\n" ..
+        "NO AUDIO IS TOUCHED: nothing is split, moved, muted or deleted,\n" ..
+        "and only clips off the Selects/Alts/Review/Outs tracks are read.\n" ..
+        "If one of them holds a real read, Match transcript to script\n" ..
+        "will find it and mark it properly.")
     end
   end
 
