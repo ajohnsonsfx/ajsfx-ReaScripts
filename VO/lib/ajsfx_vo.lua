@@ -6729,8 +6729,8 @@ end
 -- that has not run this session gets a "scan" row at its kind's slot --
 -- a stale scanner must never read as a clean one.
 vo.INBOX_WEIGHT = {
-  suspect_select = 10, out_of_sync = 20, no_audio = 30, unidentified = 40,
-  undecided = 50, suspect = 60, unheard = 70,
+  suspect_select = 10, contested_select = 15, out_of_sync = 20, no_audio = 30,
+  unidentified = 40, undecided = 50, suspect = 60, unheard = 70,
   scan_suspects = 60, scan_unheard = 70,
 }
 
@@ -6750,6 +6750,9 @@ function vo.InboxBuild(src)
   for _, s in ipairs(src.suspects or {}) do
     add((sel and s.track == sel) and "suspect_select" or "suspect", s)
   end
+  -- A line with two claimants for the select (vo.SelectConflicts entries):
+  -- the root the marks-vs-track findings are symptoms of.
+  for _, c in ipairs(src.contested or {}) do add("contested_select", c) end
   for _, q in ipairs(src.parity_queue or {}) do add("out_of_sync", q) end
   for _, d in ipairs(src.disagree or {})     do add("out_of_sync", d) end
   for _, e in ipairs(src.no_audio or {})     do add("no_audio", e) end

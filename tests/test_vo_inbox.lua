@@ -162,6 +162,21 @@ test("blank bindings never clash", function()
     "two disabled bindings reported as clashing")
 end)
 
+print("\nContested selects:")
+
+test("contested_select ranks above out_of_sync, below suspect_select", function()
+  local f = vo.InboxBuild({
+    parity_queue = { { item = "i1" } },
+    contested    = { { key = "s1", label = "line_a", count = 2, claimants = {} } },
+    suspects     = { { track = "Selects", row = {} } },
+    selects_track = "Selects",
+  })
+  assert(f[1].kind == "suspect_select", "1st: " .. f[1].kind)
+  assert(f[2].kind == "contested_select", "2nd: " .. f[2].kind)
+  assert(f[3].kind == "out_of_sync", "3rd: " .. f[3].kind)
+  assert(f[2].payload.label == "line_a", "payload is the conflict entry")
+end)
+
 --------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
