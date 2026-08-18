@@ -460,5 +460,48 @@ test("a pattern that does not collide still plans normally", function()
          "got " .. tostring(renamed(plan, rows[2])))
 end)
 
+
+print("\nBaseOfTakeName: the line is found however the take was named:")
+
+local BK = { Foo = true, Bar = true, Foo_Alt1 = true }
+
+test("the current pattern still wins", function()
+  assert(vo.BaseOfTakeName("Foo_alt3", BK, CFG) == "Foo")
+end)
+
+test("a name left by an OLD pattern is still found", function()
+  -- AJ changed the alt suffix to _alt_take{n} to dodge a collision. Every
+  -- take already named _alt5 stopped being recognised as a take of its line,
+  -- so Fix names reported "already agree" and did nothing at all.
+  local cfg = { alt_append_pattern = "_alt_take{n}", alt_append_start = 1,
+                alt_append_digits = 1 }
+  assert(vo.BaseOfTakeName("Foo_alt5", BK, cfg) == "Foo",
+         "got " .. tostring(vo.BaseOfTakeName("Foo_alt5", BK, cfg)))
+  assert(vo.BaseOfTakeName("Foo_alt_take2", BK, cfg) == "Foo")
+end)
+
+test("an out name is found even when the readers never knew the pattern", function()
+  local cfg = { alt_append_pattern = "_alt{n}", out_append_pattern = "_out{n}",
+                alt_append_start = 1, alt_append_digits = 1 }
+  assert(vo.BaseOfTakeName("Foo_out2", BK, cfg) == "Foo",
+         "got " .. tostring(vo.BaseOfTakeName("Foo_out2", BK, cfg)))
+end)
+
+test("the LONGEST line name wins, so a line that is itself a suffix is safe", function()
+  -- Foo_Alt1 is a real script line. A take of it must resolve to it, not to
+  -- Foo with a suffix of "_Alt1".
+  assert(vo.BaseOfTakeName("Foo_Alt1_alt2", BK, CFG) == "Foo_Alt1",
+         "got " .. tostring(vo.BaseOfTakeName("Foo_Alt1_alt2", BK, CFG)))
+  assert(vo.BaseOfTakeName("Foo_Alt1", BK, CFG) == "Foo_Alt1")
+end)
+
+test("a name belonging to no line stays itself", function()
+  assert(vo.BaseOfTakeName("Stray_alt1", BK, CFG) == "Stray_alt1")
+end)
+
+test("no line list means no guessing", function()
+  assert(vo.BaseOfTakeName("Foo_alt3", nil, CFG) == "Foo")
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

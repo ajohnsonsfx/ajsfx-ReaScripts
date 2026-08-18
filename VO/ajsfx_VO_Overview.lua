@@ -1015,9 +1015,18 @@ local function Rebuild()
       source_names[vo.NormalizeItemName(vo.Basename(info.path))] = true
     end
   end
+  local known_line_bases = {}
+  for _, l in ipairs(state.lines or {}) do
+    local b = vo.SanitizeName(l.deliver or l.asset or "")
+    if b ~= "" then known_line_bases[b] = true end
+  end
   state.check = vo.CheckCoverage(named_items, state.lines, {
     source_names = source_names,
     alt_pattern  = cfg.alt_append_pattern,
+    out_pattern  = cfg.out_append_pattern,
+    -- The line names themselves, so a take wearing a suffix some earlier
+    -- setting wrote is still counted for its line.
+    known_bases  = known_line_bases,
   })
 
   -- Name-based fallback for the rows: an item carrying a line's delivered
@@ -1032,7 +1041,11 @@ local function Rebuild()
   local pool = {}
   for _, ni in ipairs(named_items) do
     if ni.item and not claimed[ni.item] then
-      local stem = vo.StripAltSuffix(ni.name, cfg.alt_append_pattern) or ni.name
+      -- Which LINE this item claims, found from the line names rather than
+      -- from the current suffix setting -- an out named _out1, or an alt
+      -- still wearing a suffix an older setting wrote, resolves to its line
+      -- instead of falling off the script (vo.BaseOfTakeName).
+      local stem = vo.BaseOfTakeName(ni.name, known_line_bases, cfg)
       local key = vo.NormalizeItemName(stem)
       if key ~= "" then
         pool[key] = pool[key] or {}

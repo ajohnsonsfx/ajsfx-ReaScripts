@@ -963,9 +963,22 @@ function vo.CheckCoverage(items, lines, opts)
 
   for _, it in ipairs(items or {}) do
     local at, why = vo.ResolveItemName(index, it.name)
-    if not at and why ~= "ambiguous" and opts.alt_pattern then
-      local base = vo.StripAltSuffix(it.name, opts.alt_pattern)
-      if base then at, why = vo.ResolveItemName(index, base) end
+    -- The gate stays: a caller that names no pattern and no line list is
+    -- asking for raw resolution, and must not have suffixes guessed for it.
+    if not at and why ~= "ambiguous"
+       and (opts.alt_pattern or opts.known_bases) then
+      -- Which line does this name claim? Asked of the LINE NAMES, not of
+      -- the current suffix setting -- an out named _out1, or an alt still
+      -- wearing a suffix an older setting wrote, is a take of its line and
+      -- not a stray. Reading it by pattern alone put 83 items of a finished
+      -- session under "not on the script" the moment the setting changed.
+      local base = vo.BaseOfTakeName(it.name, opts.known_bases, {
+        alt_append_pattern = opts.alt_pattern,
+        out_append_pattern = opts.out_pattern,
+      })
+      if base and base ~= it.name then
+        at, why = vo.ResolveItemName(index, base)
+      end
     end
     if not at and why ~= "ambiguous" and opts.source_names
        and opts.source_names[vo.NormalizeItemName(it.name)] then
@@ -3432,6 +3445,57 @@ end
 -- their number to someone else either. The default (no renumber) stays
 -- conservative on purpose: it is what the drag-follow sweep runs, and a
 -- number you have seen must never quietly become a different take.
+-- WHICH LINE IS THIS TAKE OF? Answered from the LINE NAMES, not from the
+-- suffix pattern -- because the pattern is a setting, and a setting can
+-- change while the names already written down cannot.
+--
+-- That bit hard. AJ changed the alt suffix to dodge a collision, and every
+-- take already named "_alt5" stopped being recognised as a take of anything:
+-- PlanRoleNames grouped it under the whole string, no line answered to that,
+-- and it was skipped in silence. "Fix names" reported that names and tracks
+-- already agreed while 83 items sat unresolved.
+--
+-- The pattern is still tried first, because it is exact and cheap. Only when
+-- it fails does this fall back to the longest line name the take name starts
+-- with -- longest, so a script carrying both "Foo" and "Foo_Alt1" resolves a
+-- take of the latter to the latter rather than reading "_Alt1" as a suffix.
+function vo.BaseOfTakeName(name, known_bases, cfg)
+  local nm = tostring(name or "")
+  if nm == "" then return nm end
+  cfg = cfg or {}
+
+  local function known(b)
+    return b and b ~= "" and (not known_bases or known_bases[b]) and b or nil
+  end
+
+  -- 1. the suffixes this project is configured to write
+  local hit = known(vo.StripAltSuffix(nm, cfg.alt_append_pattern or "_alt{n}"))
+  if hit then return hit end
+  local out_pat = cfg.out_append_pattern
+  if out_pat and out_pat ~= "" then
+    hit = known(vo.StripAltSuffix(nm, out_pat))
+    if hit then return hit end
+  end
+
+  -- 2. the name IS a line
+  if known_bases and known_bases[nm] then return nm end
+
+  -- 3. whatever suffix some earlier setting wrote: the longest line name
+  --    this take name begins with, with a separator after it.
+  if known_bases then
+    local best
+    for b in pairs(known_bases) do
+      if #b < #nm and nm:sub(1, #b) == b
+         and (not best or #b > #best) then
+        best = b
+      end
+    end
+    if best then return best end
+  end
+
+  return nm
+end
+
 function vo.PlanRoleNames(rows, known_bases, cfg, opts)
   opts = opts or {}
   cfg = cfg or {}
@@ -3491,8 +3555,10 @@ function vo.PlanRoleNames(rows, known_bases, cfg, opts)
   for _, row in ipairs(rows or {}) do
     local nm = row.name
     if type(nm) == "string" and nm ~= "" then
-      local base = vo.StripAltSuffix(nm, pattern)
-                   or vo.StripAltSuffix(nm, out_pat) or nm
+      -- Found from the LINE NAMES, so a take still wearing a suffix some
+      -- earlier setting wrote is grouped with its line rather than skipped
+      -- as a name nothing answers to (vo.BaseOfTakeName).
+      local base = vo.BaseOfTakeName(nm, known_bases, cfg)
       local g = groups[base]
       if not g then g = {}; groups[base] = g; order[#order + 1] = base end
       g[#g + 1] = row
