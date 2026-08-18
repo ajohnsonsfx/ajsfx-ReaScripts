@@ -77,6 +77,23 @@ not run is a fact about the SESSION -- the Session card says so, and carries
 the button that fixes it -- never a fact about a line. A scan's findings
 still arrive as ERRORS once it has run.
 
+**Ignore: the decision that ends a line.** Some lines are CORRECT with
+nothing delivered -- cut from the script, read by another performer,
+delivered from elsewhere. No amount of work resolves them, so without a
+way to dismiss one the list can never reach empty, and an empty list is
+the whole promise (AJ). An ignored line builds no stage and no errors:
+`vo.TodoBuild` drops it before the gather, so nothing about it can be
+counted or drawn.
+
+Stored keyed by the LINE (`Ignore,script,asset,nth,1` in the sidecar,
+beside the line edits and names), never as a take mark: takes come and go,
+and the reason a line is dismissed has nothing to do with any one of them.
+One press covers every take and survives a restart. Nothing is renamed,
+moved or deleted -- the card stays, showing `Ignored` and a **Restore**
+button, because a dismissed line must never be a dead end. Restoring brings
+the line and its findings straight back, since nothing was stored while it
+was gone. Seam: `ignore <needle>` / `unignore <needle>`.
+
 **Errors re-open their home stage.** Every error kind names the stage whose
 work fixes it, and a line's displayed stage is the EARLIEST of its ladder
 rung and any live error's home stage -- a verified line that grows a second

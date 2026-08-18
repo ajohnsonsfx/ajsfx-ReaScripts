@@ -554,6 +554,7 @@ local function LoadProjectFile()
   state.entries, state.project_error, state.parse_failed = {}, "", false
   state.scripts, state.appends, state.pins = {}, {}, {}
   state.line_edits, state.names, state.subs = {}, {}, {}
+  state.ignored = {}
   state.speakers = {}
   state.subs_text = nil
   state.expanded = {}
@@ -585,6 +586,7 @@ local function LoadProjectFile()
     state.appends = parsed.appends or {}
     state.pins    = parsed.pins or {}
     state.line_edits = parsed.line_edits or {}
+    state.ignored    = parsed.ignored or {}
     state.names      = parsed.names or {}
     state.subs       = parsed.subs or {}
     -- Which characters this project is editing; empty means all of them.
@@ -662,6 +664,7 @@ local function SaveProjectFile()
     entries,
     { scripts = state.scripts, appends = state.appends, pins = state.pins,
       line_edits = state.line_edits, names = state.names,
+      ignored = state.ignored,
       subs = state.subs, speakers = state.speakers,
       view = {
         character   = state.character,
@@ -1150,6 +1153,19 @@ local function Rebuild()
   -- line contested?" once per visible take, and walking the conflict list for
   -- each would be a nested scan on every frame. Built here because nothing can
   -- change a conflict without coming back through Rebuild.
+  -- WHICH LINES ARE DISMISSED. Keyed by the line like the edits and the
+  -- names, so it reaches every take of it and survives a restart; read onto
+  -- the rows here because the Todo collapse is pure and takes rows, not
+  -- stores. A line whose script left the list keeps its record (the map
+  -- simply stops matching), so re-adding the CSV restores the decision.
+  local ignore_map = vo.KeyedTextMap(state.ignored)
+  if next(ignore_map) then
+    for _, row in ipairs(state.overview) do
+      row.line_ignored = ignore_map[
+        vo.AppendKey(row.script, row.asset, row.append_nth)] ~= nil or nil
+    end
+  end
+
   state.conflict_keys = {}
   for _, c in ipairs(state.conflicts) do state.conflict_keys[c.key] = c.count end
 
@@ -3292,6 +3308,26 @@ function Line.SetName(row, text)
   Rebuild()
 end
 
+
+-- "This line is not my job." A cut line, a line another performer reads, a
+-- line delivered from somewhere else -- the script still lists it, the sheet
+-- still shows it, and the Todo stops asking about it (AJ).
+--
+-- Keyed by the LINE like the edit and the name above, so one press covers
+-- every take of it and the decision survives a restart. Deliberately NOT a
+-- take mark: takes come and go, and the reason a line is dismissed has
+-- nothing to do with any particular one.
+--
+-- Nothing about the line is otherwise touched -- no rename, no delete, no
+-- mark. Un-ignoring restores exactly what was there, because nothing was
+-- taken away.
+function Line.SetIgnored(row, on)
+  if not row.line_key then return end
+  vo.SetKeyedText(state.ignored, row.script or "", row.asset or "",
+                  row.append_nth or 1, on and "1" or "")
+  state.dirty = true
+  Rebuild()
+end
 -- The words this reader's transcriber mishears, edited where you notice them.
 --
 -- They used to be a box in the Settings window, filled from global ExtState, so
@@ -8623,6 +8659,7 @@ local function ResetProject(also_transcripts)
   -- or the in-memory copy writes the sidecar straight back.
   state.entries, state.scripts, state.appends, state.pins = {}, {}, {}, {}
   state.line_edits, state.names, state.subs = {}, {}, {}
+  state.ignored = {}
   state.speakers = {}
   state.subs_text = nil
   state.loaded = { scripts = {}, lines = {} }
@@ -10123,6 +10160,38 @@ end
 -- error with its evidence and verbs. Stage rows are jump-only -- a Todo
 -- row offers a button only for a fix that is already a button somewhere
 -- else (AJ's verb law).
+-- The first sheet row of a line, by Todo key. The collapse hands out line
+-- KEYS, but the line-keyed setters (Line.SetIgnored and friends) want a row
+-- to read script/asset/nth off -- any take of the line answers the same.
+function Inbox.RowOfLine(key)
+  for _, row in ipairs(state.overview or {}) do
+    if vo.LineKey(row) == key then return row end
+  end
+end
+
+-- An ignored line draws this instead of a Todo strip: dismissed lines must
+-- never be a dead end. Without it the only record of the decision would be
+-- the line's absence from a list, and there would be nothing anywhere to
+-- press to undo it.
+function Inbox.DrawIgnored(row, indent)
+  im.SetCursorPosX(ctx, im.GetCursorPosX(ctx) + (indent or 14))
+  im.TextDisabled(ctx, "Ignored")
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "This line is dismissed: the Todo does not count it\n" ..
+                       "and no finding on it is shown.")
+  end
+  im.SameLine(ctx)
+  if im.SmallButton(ctx, "Restore##tdunign") then
+    local captured = row
+    pending_action = function() Line.SetIgnored(captured, false) end
+  end
+  if im.IsItemHovered(ctx) then
+    im.SetTooltip(ctx, "Put this line back on the Todo, with whatever is\n" ..
+                       "true about it now. Nothing was stored while it was\n" ..
+                       "dismissed, so nothing is stale.")
+  end
+end
+
 function Inbox.DrawStrip(entry, indent)
   indent = indent or 14
   im.SetCursorPosX(ctx, im.GetCursorPosX(ctx) + indent)
@@ -10173,6 +10242,29 @@ function Inbox.DrawStrip(entry, indent)
         "Ticking OK on the take yourself does the same job instantly,\n" ..
         "and is the right answer when whisper mishears a read that is\n" ..
         "actually correct.")
+    end
+  end
+  -- IGNORE: not a fix, a DECISION -- the one thing on a Todo row that says
+  -- "stop asking". A cut line, a line another performer reads, a line
+  -- delivered from elsewhere: all correct states that no amount of work
+  -- resolves, so without this the list can never reach empty and an empty
+  -- list is the whole promise (AJ). Takes the far end of the row, away from
+  -- the fixes, because it is a different KIND of act.
+  local ign_row = Inbox.RowOfLine(entry.key)
+  if ign_row and ign_row.line_key then
+    im.SameLine(ctx)
+    if im.SmallButton(ctx, "Ignore##tdign" .. entry.key) then
+      local captured = ign_row
+      pending_action = function() Line.SetIgnored(captured, true) end
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx,
+        "Stop asking about this line. For a line that is CORRECT as it\n" ..
+        "stands -- cut from the script, read by someone else, delivered\n" ..
+        "from elsewhere.\n\n" ..
+        "Nothing is renamed, moved or deleted. The line keeps its card;\n" ..
+        "only the Todo lets it go, and Restore on the card brings it and\n" ..
+        "its findings straight back.")
     end
   end
   for i, f in ipairs(entry.errors) do
@@ -12833,7 +12925,11 @@ local function DrawLineCard(node, z, flat_index, avail_w)
   if not state.todo_hidden then
     local todo_entry = state.todo and state.todo.by_key
                        and state.todo.by_key[vo.LineKey(rep)]
-    if todo_entry then Inbox.DrawStrip(todo_entry) end
+    if todo_entry then
+      Inbox.DrawStrip(todo_entry)
+    elseif rep.line_ignored then
+      Inbox.DrawIgnored(rep)
+    end
   end
   im.EndGroup(ctx)
   local _, gh = im.GetItemRectSize(ctx)
@@ -13405,6 +13501,26 @@ local function RunRemoteCommand(command)
     out[#out + 1] = string.format("todo %d (%d line(s), %d session)",
       counts.total or 0, counts.lines or 0, counts.session or 0)
     return table.concat(out, "\n")
+  elseif verb == "ignore" or verb == "unignore" then
+    -- Dismiss (or restore) the first line whose delivered name matches.
+    local on = (verb == "ignore")
+    local needle = rest:lower()
+    if needle == "" then
+      local n = 0
+      for _, row in ipairs(state.overview or {}) do
+        if row.line_ignored and row.take_index == 1 then n = n + 1 end
+      end
+      return string.format("%d ignored line(s)", n)
+    end
+    for _, row in ipairs(state.overview or {}) do
+      if row.line_key and tostring(row.deliver or row.asset or ""):lower()
+                          :find(needle, 1, true) then
+        Line.SetIgnored(row, on)
+        return string.format("%s %s", on and "ignored" or "restored",
+                             row.deliver or row.asset)
+      end
+    end
+    return "no line matches " .. rest
   elseif verb == "rematch" then
     Rematch()
     return "rematched: " .. RemoteStatus()

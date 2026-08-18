@@ -6986,8 +6986,16 @@ function vo.TodoBuild(src)
     end
     return g
   end
+  -- IGNORED LINES ARE NOT WORK. A cut line, a line another performer reads,
+  -- a line recorded elsewhere -- the script still lists it and the sheet
+  -- still shows it, but nothing about it is owed (AJ). Collected before the
+  -- gather so neither a stage nor an error can be built for one.
+  local ignored = {}
   for _, row in ipairs(src.rows or {}) do
-    if row.status ~= "orphan" then
+    if row.line_ignored then ignored[vo.LineKey(row)] = true end
+  end
+  for _, row in ipairs(src.rows or {}) do
+    if row.status ~= "orphan" and not ignored[vo.LineKey(row)] then
       local g = line_of(vo.LineKey(row), row.deliver or row.asset)
       local ga = g.gather
       if row.status ~= "missing" and (row.take_index or 0) > 0 then
@@ -7019,7 +7027,10 @@ function vo.TodoBuild(src)
       local row = p.row or (p.item and row_of_item[p.item]) or nil
       local key = (f.kind == "contested_select" and p.key)
                   or (row and vo.LineKey(row)) or nil
-      if key then
+      if key and ignored[key] then
+        -- Dismissed line: its findings go with it. Un-ignoring brings them
+        -- straight back, because nothing about them was stored.
+      elseif key then
         local g = line_of(key, p.label or (row and (row.deliver or row.asset)))
         g.errors[#g.errors + 1] = f
         local h = vo.StageIndex(home)
@@ -7582,6 +7593,17 @@ function vo.SerializeProjectFile(entries, meta)
     end
   end
 
+  -- Lines dismissed as not this session.s job. Same key, same rules: the
+  -- record IS the decision, so removing it is how a line comes back.
+  for _, e in ipairs(meta.ignored or {}) do
+    if e.text and e.text ~= "" then
+      out[#out + 1] = vo.FormatCSVRow({
+        "Ignore", e.script or "", e.asset or "",
+        tostring(e.nth or 1), e.text,
+      })
+    end
+  end
+
   -- The filename the user typed over the script's own. Same key, same rules;
   -- it supersedes Append, which is no longer reachable from the card but is
   -- still written above so a project saved by an older version keeps its names.
@@ -7719,6 +7741,7 @@ function vo.ParseProjectFile(text)
 
   local parsed = { version = version, scripts = {}, appends = {},
                    line_edits = {}, names = {}, subs = {}, speakers = {},
+                   ignored = {},
                    entries = {}, pins = {}, view = { col_filters = {}, expanded = {} } }
   -- The pre-multi-script format, folded in below only if no Script row appears.
   local legacy_path, legacy_mapping = nil, nil
@@ -7756,6 +7779,19 @@ function vo.ParseProjectFile(text)
       if asset ~= "" and nth and text ~= "" then
         parsed.line_edits[#parsed.line_edits + 1] =
           { script = script, asset = asset, nth = math.floor(nth), text = text }
+      end
+    elseif key == "Ignore" then
+      -- A LINE the user has decided is not this session.s job: a cut line, a
+      -- line another performer reads, a line recorded elsewhere. Keyed by the
+      -- line exactly as Line and Name are, and read even when no loaded line
+      -- answers to it -- re-exporting the CSV must not silently un-ignore
+      -- what you dismissed.
+      local script, asset = rows[i][2] or "", rows[i][3] or ""
+      local nth, text = tonumber(rows[i][4] or ""), rows[i][5] or ""
+      if asset ~= "" and nth then
+        parsed.ignored[#parsed.ignored + 1] =
+          { script = script, asset = asset, nth = math.floor(nth),
+            text = (text ~= "") and text or "1" }
       end
     elseif key == "Sub" then
       local from, to = rows[i][2] or "", rows[i][3] or ""

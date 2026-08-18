@@ -514,6 +514,37 @@ test("a Lock settles the pick but leaves the line Unverified", function()
   assert(todo.by_key["s1"].stage == "unverified",
          "got " .. tostring(todo.by_key["s1"].stage))
 end)
+
+test("an ignored line is not work, whatever stage it would be at", function()
+  local r1 = { script_row = "s1", asset = "line_a", status = "missing",
+               line_ignored = true }
+  local r2 = { script_row = "s2", asset = "line_b", status = "missing" }
+  local todo, counts = tb({ findings = {}, rows = { r1, r2 } })
+  assert(counts.total == 1, "got " .. counts.total)
+  assert(todo.by_key["s1"] == nil, "the ignored line is still on the list")
+  assert(todo.by_key["s2"].stage == "not_found")
+end)
+
+test("an ignored line's errors go with it", function()
+  local r1 = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+               line_ignored = true }
+  local findings = vo.InboxBuild({
+    disagree = { { row = r1, detail = "something" } },
+  })
+  local todo, counts = tb({ findings = findings, rows = { r1 } })
+  assert(counts.total == 0, "got " .. counts.total)
+  assert(#todo.session == 0, "a dismissed line's finding leaked to the session")
+end)
+
+test("ignoring one take's row ignores the whole LINE", function()
+  -- The mark is on the line, so it reaches every take of it -- including
+  -- takes whose own row was never touched.
+  local a = { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+              line_ignored = true }
+  local b = { script_row = "s1", asset = "line_a", take_index = 2, item = "i2" }
+  local _, counts = tb({ findings = {}, rows = { a, b } })
+  assert(counts.total == 0, "got " .. counts.total)
+end)
 --------------------------------
 print(string.format("\n=== Results: %d passed, %d failed ===", passed, failed))
 if failed > 0 then os.exit(1) end
