@@ -11804,11 +11804,23 @@ local function CardZones(w)
   -- rail is gone and the full-width sheet left the exported names clipped
   -- in a column that no longer needed to be that narrow (AJ). The name is
   -- the deliverable -- give it the room the width now affords.
-  local name_w = math.min(560, math.max(200, math.floor(w * 0.35)))
-  local fixed  = z.text + name_w + CARD_PAD * 2
-  z.text_w  = math.max(160, w - fixed)
-  z.name    = z.text + z.text_w + 6
-  z.name_w  = name_w
+  --
+  -- STACKED below the breakpoint (AJ): a window too narrow for two real
+  -- columns puts the name UNDER its text -- take names under transcripts,
+  -- the delivered/script filenames under the line -- rather than clipping
+  -- both columns into uselessness side by side.
+  z.stack = w < 950
+  if z.stack then
+    z.text_w = math.max(160, w - z.text - CARD_PAD * 2)
+    z.name   = z.text
+    z.name_w = z.text_w
+  else
+    local name_w = math.min(560, math.max(200, math.floor(w * 0.35)))
+    local fixed  = z.text + name_w + CARD_PAD * 2
+    z.text_w  = math.max(160, w - fixed)
+    z.name    = z.text + z.text_w + 6
+    z.name_w  = name_w
+  end
   return z
 end
 
@@ -12178,8 +12190,15 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
     end
   end
 
-  -- Name: the item's own name, editable.
-  im.SetCursorScreenPos(ctx, rx + z.name, ry)
+  -- Name: the item's own name, editable. Stacked mode puts it on its own
+  -- row under the transcript (the cursor sits below whatever the
+  -- transcript branch drew); side-by-side it shares the row.
+  local name_y = ry
+  if z.stack then
+    name_y = math.max(select(2, im.GetCursorScreenPos(ctx)),
+                      ry + im.GetTextLineHeight(ctx) + 2)
+  end
+  im.SetCursorScreenPos(ctx, rx + z.name, name_y)
   local shown = row.take_name or row.name_override or row.deliver or row.asset or ""
   if row.planned and not row.item then
     im.TextDisabled(ctx, "(planned)")
@@ -12307,6 +12326,9 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   -- line as READ on every take row below it, which is the comparison the
   -- window exists to make -- a ragged start made the eye do the work.
   local said_x = rx + z.text
+  -- The line text wraps before the filename column -- unless stacked, when
+  -- there is no filename column and the words take the card's width.
+  local text_wrap = (z.stack and (z.text + z.text_w) or (z.name - 8)) - z.text
   if rep.character and rep.character ~= "" then
     im.SameLine(ctx)
     im.SetCursorScreenPos(ctx, rx + z.marks, ry)
@@ -12320,7 +12342,7 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   if rep.line_text and rep.line_text ~= "" then
     im.SetCursorScreenPos(ctx, said_x, ry)
     -- Wraps before the filename column, which shares this row.
-    im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + (rx + z.name - 8 - said_x))
+    im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + text_wrap)
     wrap_depth = wrap_depth + 1
     im.Text(ctx, rep.line_text)
     im.PopTextWrapPos(ctx)
@@ -12378,7 +12400,7 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   local prov_y = y2
   if orig and orig ~= "" and (open or rep.line_edited) then
     im.SetCursorScreenPos(ctx, said_x, y2)
-    im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + (rx + z.name - 8 - said_x))
+    im.PushTextWrapPos(ctx, im.GetCursorPosX(ctx) + text_wrap)
     wrap_depth = wrap_depth + 1
     im.TextDisabled(ctx, orig)
     im.PopTextWrapPos(ctx)
@@ -12394,16 +12416,20 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   -- directly under the name this line will deliver as, the same way the grey
   -- line sits under the words. Same rule for when it shows: always on an open
   -- card, and on a folded one only when the name was typed over.
+  -- Stacked, the provenance row cannot be shared: the script filename gets
+  -- its own row under the grey line, in the text column.
+  if z.stack then prov_y = y2 end
   if rep.asset and rep.asset ~= "" and (open or rep.name_edited) then
-    im.SetCursorScreenPos(ctx, rx + z.name, prov_y)
-    im.PushClipRect(ctx, rx + z.name, prov_y,
-                    rx + z.name + z.name_w, prov_y + line_h, true)
+    local nx = z.stack and said_x or (rx + z.name)
+    im.SetCursorScreenPos(ctx, nx, prov_y)
+    im.PushClipRect(ctx, nx, prov_y, nx + z.name_w, prov_y + line_h, true)
     im.TextDisabled(ctx, rep.asset)
     im.PopClipRect(ctx)
     if im.BeginPopupContextItem(ctx, "##band_origname_menu") then
       if im.MenuItem(ctx, "Copy original filename") then Copy(rep.asset) end
       im.EndPopup(ctx)
     end
+    if z.stack then y2 = prov_y + line_h + 2 end
   end
 
   -- The one badge still worth the right edge: nothing is ticked for delivery.
@@ -12428,8 +12454,13 @@ local function DrawCardBand(node, z, key, open, x0, band_w)
   local shown = rep.deliver or base
   local clash = rep.line_key ~= nil and shown ~= ""
                 and state.dupe_names[shown] == true
-  im.SetCursorScreenPos(ctx, rx + z.name, ry)
-  im.PushClipRect(ctx, rx + z.name, ry, rx + z.name + z.name_w, ry + line_h, true)
+  -- Stacked: the delivered name gets its own row under the line (and under
+  -- the provenance pair when those are showing) instead of the top-right
+  -- column that no longer exists at this width.
+  local dn_x = z.stack and said_x or (rx + z.name)
+  local dn_y = z.stack and y2 or ry
+  im.SetCursorScreenPos(ctx, dn_x, dn_y)
+  im.PushClipRect(ctx, dn_x, dn_y, dn_x + z.name_w, dn_y + line_h, true)
   if clash then im.TextColored(ctx, 0xDD6666FF, shown)
   else im.TextDisabled(ctx, shown) end
   im.PopClipRect(ctx)
@@ -12592,8 +12623,12 @@ local function DrawTakeHeaderRow(z, rx)
   end
   im.SetCursorScreenPos(ctx, rx + z.text, y)
   im.TextDisabled(ctx, "Transcript")
-  im.SetCursorScreenPos(ctx, rx + z.name, y)
-  im.TextDisabled(ctx, "Item name")
+  -- Stacked: the names sit under the transcripts, so a second column
+  -- label would name a column that is not there.
+  if not z.stack then
+    im.SetCursorScreenPos(ctx, rx + z.name, y)
+    im.TextDisabled(ctx, "Item name")
+  end
   PopCellFont(sf)
 end
 
