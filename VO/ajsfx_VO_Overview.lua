@@ -10325,6 +10325,53 @@ function Inbox.DrawStrip(entry, indent)
         "its findings straight back.")
     end
   end
+  -- REFRESH: THE TIMELINE IS RIGHT, THE MARKS CATCH UP. A mark you set by
+  -- hand outranks the track it sits on (vo.EffectiveMarks rule 1) -- which
+  -- is what lets a tick survive a Pull -- but it also means dragging a
+  -- ticked take off Selects leaves the tick behind, and the line reads
+  -- contested with nothing visibly wrong (AJ, live: two items moved, the
+  -- Sel checkmark did not follow). The watcher usually catches this; when
+  -- it does not, this is the press that settles it.
+  --
+  -- Same write as the "Adopt timeline" verb and its batch form, so a line
+  -- fixed here and a queue fixed there cannot end up meaning different
+  -- things.
+  if entry.conflict and ign_row then
+    im.SameLine(ctx)
+    if im.SmallButton(ctx, "Refresh##tdadopt" .. entry.key) then
+      local key = entry.key
+      pending_action = function()
+        local cfg, n = vo.LoadConfig(), 0
+        Batch(function()
+          for _, row in ipairs(state.overview or {}) do
+            if vo.LineKey(row) == key and row.item then
+              local want = vo.MarkFromTrack(row.track_name, cfg)
+              Mutate(row, function(e)
+                if want == "out" then
+                  e.select, e.keep = false, false
+                else
+                  e.select = (want == "select") or nil
+                  e.keep   = (want == "keep")   or nil
+                end
+              end)
+              n = n + 1
+            end
+          end
+        end)
+        state.message, state.message_kind = string.format(
+          "Read %d take(s) back off the timeline.", n), "ok"
+      end
+    end
+    if im.IsItemHovered(ctx) then
+      im.SetTooltip(ctx,
+        "The TIMELINE is right: set every take of this line's Keep/Sel\n" ..
+        "from the track its item actually sits on.\n\n" ..
+        "For when you moved items by hand and a tick stayed behind -- a\n" ..
+        "mark set by hand outranks the track, so it has to be told.\n\n" ..
+        "If the MARKS are right instead and the items are in the wrong\n" ..
+        "place, run Pull: that is what moves them.")
+    end
+  end
   for i, f in ipairs(entry.errors) do
     local parts = Inbox.Parts(f)
     local cat = parts.cat
@@ -14142,6 +14189,28 @@ local function RunRemoteCommand(command)
     AutoSelectTakes(AffectedRows(), rule)
     return string.format("pick %s: %s", rule,
                          state.message or "ran with no result string")
+  elseif verb == "refresh_marks" then
+    -- The strip's Refresh, headless: read one line's Keep/Sel back off the
+    -- tracks its items sit on.
+    local cfg, n = vo.LoadConfig(), 0
+    Batch(function()
+      for _, row in ipairs(state.overview or {}) do
+        if row.item and tostring(row.deliver or row.asset or "")
+                          :find(rest, 1, true) then
+          local want = vo.MarkFromTrack(row.track_name, cfg)
+          Mutate(row, function(e)
+            if want == "out" then
+              e.select, e.keep = false, false
+            else
+              e.select = (want == "select") or nil
+              e.keep   = (want == "keep")   or nil
+            end
+          end)
+          n = n + 1
+        end
+      end
+    end)
+    return string.format("read %d take(s) back off the timeline", n)
   elseif verb == "sel" then
     -- The Sel CHECKBOX, headless -- SetSelect and its auto-sort, not the
     -- richer MakeSelect the context verb presses. The two reach the same
