@@ -142,6 +142,37 @@ test("no marks is no destination -- the caller hands it back to the parent", fun
   assert(vo.TrackForMarks(nil) == nil)
 end)
 
+
+test("an explicit no to Keep is Outs, not nowhere", function()
+  -- AJ: unticking Keep is a DECISION now that Outs exists -- the take is
+  -- rejected, not merely un-filed. A STORED false is what says so; a stored
+  -- nil is a take nobody has ruled on and still goes back to its parent.
+  assert(vo.TrackForMarks({ select = false, keep = false },
+                          { keep = false }) == "outs")
+  assert(vo.TrackForMarks({ select = false, keep = false },
+                          { keep = nil }) == nil,
+         "never-decided must not be filed as rejected")
+  assert(vo.TrackForMarks({ select = false, keep = false }) == nil,
+         "no stored marks at all is still no decision")
+end)
+
+test("a live tick always beats a stored rejection", function()
+  -- Ticking Keep again while a stale false is still stored must read as
+  -- Alts, or the box and the track would say different things.
+  assert(vo.TrackForMarks({ select = false, keep = true },
+                          { keep = false }) == "alts")
+  assert(vo.TrackForMarks({ select = true, keep = false },
+                          { keep = false }) == "selects")
+end)
+
+test("Outs round-trips with MarkFromTrack", function()
+  -- The two directions have to agree or an item sorted onto Outs would read
+  -- back as something else on the next rebuild.
+  local cat = vo.TrackForMarks({ select = false, keep = false }, { keep = false })
+  assert(cat == "outs")
+  assert(vo.MarkFromTrack("Outs", {}) == "out")
+end)
+
 test("it round-trips with MarkFromTrack", function()
   -- The two directions have to agree, or an auto-sorted item would read back
   -- off its new track as a different mark on the very next rebuild.

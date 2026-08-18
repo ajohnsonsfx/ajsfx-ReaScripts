@@ -1030,7 +1030,7 @@ function vo.PlanPull(items, lines, marks, opts)
   local index = vo.BuildNameIndex(lines)
 
   local groups, order = {}, {}
-  local summary = { selects = 0, alts = 0, review = 0,
+  local summary = { selects = 0, alts = 0, review = 0, outs = 0,
                     unknown = 0, ambiguous = 0 }
 
   for _, item in ipairs(items or {}) do
@@ -1076,10 +1076,17 @@ function vo.PlanPull(items, lines, marks, opts)
           moves[#moves + 1] = { id = item.id, line = at,
                                 dest = "alts", rename = item.override or deliver }
           summary.alts = summary.alts + 1
+        elseif mark == "out" then
+          -- An explicit no to Keep. Pull has to agree with the auto-sort or
+          -- the two would file the same take differently and each rebuild
+          -- would undo the other (vo.TrackForMarks).
+          moves[#moves + 1] = { id = item.id, line = at, dest = "outs" }
+          summary.outs = summary.outs + 1
         else
-          -- Unticked takes go to Review and STAY there. Not a rejection and not
-          -- a decision -- the first Pull of a session puts everything there,
-          -- and what is left after the marking is what was never wanted.
+          -- Takes nobody has ruled on go to Review and STAY there. Not a
+          -- rejection and not a decision -- the first Pull of a session puts
+          -- everything there, and what is left after the marking is what was
+          -- never wanted.
           moves[#moves + 1] = { id = item.id, line = at, dest = "review" }
           summary.review = summary.review + 1
         end
@@ -1940,16 +1947,24 @@ end
 -- Sel wins over Keep, the same precedence vo.PlanPull uses: a take that is both
 -- is THE delivery, and a take that is only Keep ships beside it as an alt.
 --
+-- AN EXPLICIT NO TO KEEP IS OUTS (AJ, once the Outs track existed). Unticking
+-- Keep is a decision -- "not this one" -- and Outs is where a rejected take
+-- belongs; it used to land back on the recording, which is where a take
+-- nobody has RULED on goes, so a rejection and an untouched take were filed
+-- identically. `stored` is the raw entry, where a false means the user said
+-- no and a nil means nobody has said anything: the difference the effective
+-- marks cannot carry, because both read as false.
+--
 -- Returns nil for "no decision", and nil is deliberately NOT Review here. Pull
 -- parks undecided takes on Review because a first pass has to put everything
--- somewhere before anyone has listened. Auto-sort answers a click that just
--- REMOVED a decision, and the honest place for a take nobody is keeping is the
--- recording it was cut out of -- the caller reads nil as "hand it back to its
--- parent".
-function vo.TrackForMarks(marks)
+-- somewhere before anyone has listened. The honest place for a take nobody has
+-- ruled on is the recording it was cut out of -- the caller reads nil as "hand
+-- it back to its parent".
+function vo.TrackForMarks(marks, stored)
   marks = marks or {}
   if marks.select then return "selects" end
   if marks.keep   then return "alts"    end
+  if stored and stored.keep == false then return "outs" end
   return nil
 end
 

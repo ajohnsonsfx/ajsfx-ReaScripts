@@ -3469,8 +3469,6 @@ end
 -- Any number of takes may be KEPT, so this has no exclusivity at all. A keep
 -- is an extra delivery, not a competing answer to which take the delivery is.
 local function SetKeep(row, on)
-  -- Same tri-state rule as SetSelect: an explicit no only where the track
-  -- would otherwise speak for this mark.
   local cfg = vo.LoadConfig()
   Mutate(row, function(e)
     if on then
@@ -3482,11 +3480,14 @@ local function SetKeep(row, on)
       if e.select == true then
         e.select = (vo.MarkFromTrack(row.track_name, cfg) == "select") and false or nil
       end
-      if vo.MarkFromTrack(row.track_name, cfg) == "keep" then
-        e.keep = false
-      else
-        e.keep = nil
-      end
+      -- ALWAYS an explicit no, wherever the item sits. Unticking Keep is a
+      -- rejection now that Outs exists (AJ), and a rejection has to be
+      -- RECORDED or the next rebuild reads the take as one nobody has ruled
+      -- on and hands it back to the recording. This used to store nothing
+      -- unless the Alts track would otherwise re-tick it, which was right
+      -- while "not kept" meant "not filed" and wrong the moment it meant
+      -- "filed under Outs".
+      e.keep = false
     end
   end)
   Dest.auto_sort(row)
@@ -5489,7 +5490,13 @@ local function TargetItems()
       -- is then just saying the obvious.
       if row then
         if row.user_select then marks[item] = "select"
-        elseif row.user_keep then marks[item] = "keep" end
+        elseif row.user_keep then marks[item] = "keep"
+        elseif row.mark_keep == false then
+          -- An explicit no to Keep: Outs, the same answer the auto-sort
+          -- gives. A stored NIL is a take nobody has ruled on and still
+          -- goes to Review.
+          marks[item] = "out"
+        end
       end
     end
   end
@@ -7725,8 +7732,13 @@ function Dest.flush_auto_sort()
           -- nil means no decision, and the take goes back to the recording it
           -- came out of rather than to Review. It lands over the uncut audio it
           -- was sliced from, which is where it was before anything filed it.
+          -- The STORED marks ride along: an explicit no to Keep files the
+          -- take on Outs, while a take nobody has ruled on goes back to its
+          -- parent. The effective marks alone cannot tell those apart.
           local cat  = vo.TrackForMarks({ select = row.user_select,
-                                          keep   = row.user_keep })
+                                          keep   = row.user_keep },
+                                        { select = row.mark_select,
+                                          keep   = row.mark_keep })
           local dest = cat and vo.EnsureChildTrack(parent, base[cat]) or parent
           if dest and r.GetMediaItem_Track(item) ~= dest then
             r.MoveMediaItemToTrack(item, dest)
@@ -7985,8 +7997,8 @@ local function Pull()
     where = " Groups: " .. table.concat(state.pull_groups, "; ") .. "."
   end
   state.message, state.message_kind = string.format(
-    "Pulled %d select, %d alt, %d to review. %d item(s) not on the script.%s%s%s",
-    summary.selects, summary.alts, summary.review,
+    "Pulled %d select, %d alt, %d to review, %d out. %d item(s) not on the script.%s%s%s",
+    summary.selects, summary.alts, summary.review, summary.outs or 0,
     summary.unknown + summary.ambiguous,
     (state.pull_muted or 0) > 0
       and string.format(" %d silent leftover(s) muted.", state.pull_muted)
