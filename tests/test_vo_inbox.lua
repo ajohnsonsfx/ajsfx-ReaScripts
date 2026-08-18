@@ -236,6 +236,86 @@ test("suppression copies, never mutates, the caller's suspect entry", function()
   assert(s.triggers.thin == true, "the caller's table was mutated")
 end)
 
+print("\nRescanChanged:")
+
+-- One source, one word, so JudgeLine has something to disagree with.
+local function scan_rows()
+  return {
+    { script_row = "s1", asset = "line_a", take_index = 1, item = "i1",
+      source_path = "a.wav", source_start = 0, source_stop = 1,
+      take_name = "line_a", marker_id = "m1" },
+    { script_row = "s2", asset = "line_b", take_index = 1, item = "i2",
+      source_path = "a.wav", source_start = 1, source_stop = 2,
+      take_name = "line_b", marker_id = "m2" },
+  }
+end
+local SCAN_TX = { { path = "a.wav", words = {
+  { text = "hello", t0 = 0, t1 = 0.5 }, { text = "world", t0 = 1, t1 = 1.5 } } } }
+local SCAN_LINES = { { asset = "line_a", text = "hello" },
+                     { asset = "line_b", text = "world" } }
+
+test("never scanned stays never scanned -- no verdict is invented", function()
+  local f, m = vo.RescanChanged(nil, nil, scan_rows(), SCAN_TX, SCAN_LINES, {})
+  assert(f == nil and m == nil)
+end)
+
+test("an empty prev map is a full scan, and the map covers every row", function()
+  local rows = scan_rows()
+  local _, m = vo.RescanChanged({}, {}, rows, SCAN_TX, SCAN_LINES, {})
+  assert(m["s1#1"] and m["s2#1"], "both rows fingerprinted")
+end)
+
+test("a rebuild that changed nothing keeps every verdict, re-pointed", function()
+  local rows = scan_rows()
+  local f1, m1 = vo.RescanChanged({}, {}, rows, SCAN_TX, SCAN_LINES, {})
+  -- Rebuild: fresh row tables, identical content.
+  local rows2 = scan_rows()
+  local f2, m2 = vo.RescanChanged(m1, f1, rows2, SCAN_TX, SCAN_LINES, {})
+  assert(#f2 == #f1, "kept " .. #f2 .. " of " .. #f1)
+  for _, f in ipairs(f2) do
+    local same = false
+    for _, r2 in ipairs(rows2) do if f.row == r2 then same = true end end
+    assert(same, "a carried finding still points at the OLD row table")
+  end
+end)
+
+test("a Sel tick changes no verdict -- it is not something the hunt reads", function()
+  local rows = scan_rows()
+  local f1, m1 = vo.RescanChanged({}, {}, rows, SCAN_TX, SCAN_LINES, {})
+  local rows2 = scan_rows()
+  rows2[1].user_select = true
+  rows2[1].user_keep = true
+  local _, m2 = vo.RescanChanged(m1, f1, rows2, SCAN_TX, SCAN_LINES, {})
+  assert(m2["s1#1"] == m1["s1#1"], "the fingerprint moved on a Sel tick")
+end)
+
+test("a trim re-judges that row alone", function()
+  local rows = scan_rows()
+  local f1, m1 = vo.RescanChanged({}, {}, rows, SCAN_TX, SCAN_LINES, {})
+  local rows2 = scan_rows()
+  rows2[1].source_stop = 0.2            -- trimmed: a different stretch of audio
+  local _, m2 = vo.RescanChanged(m1, f1, rows2, SCAN_TX, SCAN_LINES, {})
+  assert(m2["s1#1"] ~= m1["s1#1"], "trimming must move the fingerprint")
+  assert(m2["s2#1"] == m1["s2#1"], "the untouched row must not move")
+end)
+
+test("a row that vanished takes its finding with it", function()
+  local rows = scan_rows()
+  local f1, m1 = vo.RescanChanged({}, {}, rows, SCAN_TX, SCAN_LINES, {})
+  local rows2 = { scan_rows()[1] }
+  local f2, m2 = vo.RescanChanged(m1, f1, rows2, SCAN_TX, SCAN_LINES, {})
+  assert(m2["s2#1"] == nil, "the gone row is out of the map")
+  for _, f in ipairs(f2) do
+    assert(vo.SuspectIdentity(f.row) ~= "s2#1", "a finding outlived its row")
+  end
+end)
+
+test("orphans are never fingerprinted -- their keys collide and are not judged", function()
+  local rows = { { asset = "junk", status = "orphan", take_index = 1 } }
+  local _, m = vo.RescanChanged({}, {}, rows, SCAN_TX, SCAN_LINES, {})
+  assert(next(m) == nil, "an orphan entered the scan map")
+end)
+
 print("\nLineStage / ErrorHome:")
 
 test("the ladder in order", function()

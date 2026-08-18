@@ -6722,6 +6722,82 @@ function vo.ScanSuspects(rows, transcripts, lines, cfg, thresh)
   return out
 end
 
+-- WHAT THE FREE HUNT READ, per row. A suspect verdict is only as good as
+-- these fields: change one and the verdict has to be re-earned; change
+-- anything else -- a Sel tick, a drag between tracks, a note -- and it
+-- still stands. The same law the Vet stamp lives by
+-- (vo.VettedFingerprint), applied to the scan.
+function vo.SuspectFingerprint(row)
+  return table.concat({
+    tostring(row.status or ""),
+    row.item and "1" or "0",
+    tostring(row.source_path or ""),
+    string.format("%.4f", tonumber(row.source_start) or 0),
+    string.format("%.4f", tonumber(row.source_stop) or 0),
+    tostring(row.take_name or ""),
+    tostring(row.asset or ""),
+    tostring(row.marker_id or ""),
+    tostring(row.confirmed_state or ""),
+    tostring(row.vetted_state or ""),
+  }, "|")
+end
+
+-- WHICH row, across a rebuild. Rebuild constructs fresh row tables, so a
+-- verdict cannot be carried by object identity; a take is named by its
+-- line and its take number, both of which survive.
+function vo.SuspectIdentity(row)
+  return vo.LineKey(row) .. "#" .. tostring(row.take_index or 0)
+end
+
+-- ONCE SCANNED, STAYS SCANNED (AJ). Rebuild used to throw the whole scan
+-- away on every project change, which was needless: almost nothing you do
+-- -- ticking Sel, dragging to Alts, typing a note -- touches anything the
+-- hunt reads. With the findings living on the line cards, discarding them
+-- meant they vanished the moment you ticked a box.
+--
+-- Rows whose inputs are unchanged keep their verdict and re-point at the
+-- rebuilt row. Rows that changed are re-judged, alone -- a handful of rows
+-- rather than the whole sheet. Rows that vanished take their findings with
+-- them.
+--
+-- `prev` nil means NEVER SCANNED and returns nil, nil: a scan nobody asked
+-- for must not be invented. An EMPTY prev map is a full scan, which is how
+-- the Scan button and a changed transcript both come through here.
+function vo.RescanChanged(prev, prev_findings, rows, transcripts, lines, cfg, thresh)
+  if not prev then return nil, nil end
+  local held = {}
+  for _, f in ipairs(prev_findings or {}) do
+    if f.row then held[vo.SuspectIdentity(f.row)] = f end
+  end
+  local map, changed = {}, {}
+  for _, row in ipairs(rows or {}) do
+    if row.status ~= "orphan" then
+      local id, fp = vo.SuspectIdentity(row), vo.SuspectFingerprint(row)
+      map[id] = fp
+      if prev[id] ~= fp then changed[#changed + 1] = row end
+    end
+  end
+  local fresh = {}
+  for _, f in ipairs(vo.ScanSuspects(changed, transcripts, lines, cfg, thresh)) do
+    fresh[vo.SuspectIdentity(f.row)] = f
+  end
+  -- Emitted in ROW order, so the list a rebuild produces reads in the same
+  -- order as the one a full scan produces.
+  local out = {}
+  for _, row in ipairs(rows or {}) do
+    if row.status ~= "orphan" then
+      local id = vo.SuspectIdentity(row)
+      if fresh[id] then
+        out[#out + 1] = fresh[id]
+      elseif prev[id] == map[id] and held[id] then
+        held[id].row = row
+        out[#out + 1] = held[id]
+      end
+    end
+  end
+  return out, map
+end
+
 -- One ranked list of everything that needs the human. Merges every
 -- scanner's output; the WEIGHTS are the priority law (spec: the redesign
 -- design doc, Req-2): what the ears must settle on the Selects track
