@@ -147,6 +147,18 @@ test("an explicit scratch_dir still isolates projects from each other", function
   assert(d ~= "C:/scratch", "must not be the bare root")
 end)
 
+test("a failed EnumProjects names the folder, never the error text", function()
+  -- pcall returns (false, errormessage), so the failure branch used to read
+  -- the error TEXT as a project handle and mkdir it: real folders named
+  -- "unsaved-VOlibajsfxvolua9855attempttocallanilvaluefieldEnumProjects"
+  -- appeared under the configured scratch root.
+  local saved = reaper.EnumProjects
+  reaper.EnumProjects = nil
+  local d = vo.ResolveScratchDir({ scratch_dir = "C:/scratch" })
+  reaper.EnumProjects = saved
+  assert(d == "C:/scratch/unsaved-0", "got: " .. d)
+end)
+
 test("no scratch_dir keeps the project-folder default", function()
   local d = vo.ResolveScratchDir({})
   assert(d:find("vo_scratch", 1, true), "expected a vo_scratch path: " .. d)
