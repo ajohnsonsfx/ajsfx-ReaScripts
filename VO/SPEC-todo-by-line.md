@@ -53,8 +53,10 @@ place in the pipeline -- and may additionally carry errors. The stage names
                           it here left a session of hand-OK'd lines all
                           saying Unverified (AJ, live). OK on an ALT does
                           not verify the line; the select is what ships.
-                          Its one button is Verify -- the rung must never
-                          name a problem and no remedy
+                          Its one button is Verify, and the empty OK box
+                          of the take that ships wears an amber ring: the
+                          rung must never name a problem and no remedy,
+                          nor make you hunt for where to click
     5. "Done"          -- stage ladder cleared AND no errors; the line
                           leaves the Todo filter
 

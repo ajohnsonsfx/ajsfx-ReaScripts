@@ -12402,6 +12402,28 @@ local function DrawCardTakeRow(row, z, vis_index, x0, inner_w)
       im.SetCursorScreenPos(ctx, rx + z.marks + 102, ry)
       local okd = row.confirmed_state == "ok"
       local ohit = im.Checkbox(ctx, "##okd", okd)
+
+      -- THE RING POINTS AT THE NEXT CLICK. A line sitting at Unverified is
+      -- waiting for exactly one thing -- your ears on the take that ships --
+      -- so the empty OK box of the SELECT wears the ring, and no other box
+      -- on the line does (AJ: "my eyes are drawn immediately to what I need
+      -- to do"). Ticking it clears the rung, so the ring goes with it.
+      --
+      -- Same amber and same geometry as the contested-Sel ring, drawn
+      -- OUTSIDE the box so it reads as an annotation on the tick rather
+      -- than the tick having changed shape. The rect comes from the box.s
+      -- own position and size for the reason the Sel ring does: an ImGui
+      -- field the binding lacks RAISES in the shim rather than reading nil.
+      if not okd and row.user_select == true and state.todo then
+        local ent = state.todo.by_key and state.todo.by_key[vo.LineKey(row)]
+        if ent and ent.stage == "unverified" then
+          local bw, bh = im.GetItemRectSize(ctx)
+          local bx, by = rx + z.marks + 102, ry
+          im.DrawList_AddRect(im.GetWindowDrawList(ctx),
+                              bx - 2, by - 2, bx + bw + 2, by + bh + 2,
+                              0xEECC33FF, 2, 0, 2)
+        end
+      end
       if im.IsItemHovered(ctx) then
         im.SetTooltip(ctx, okd
           and ("OK: YOU checked that this read is this line, whatever the\n" ..
